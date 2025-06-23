@@ -54,8 +54,8 @@ When reporting a bug, make sure to answer these five questions:
 
 A proposal is an issue that proposes a new API for the SDK, or a change to the
 signature or behavior of an existing API. Proposals should be labeled with the
-'Proposal' label, and require an explicit approval from a maintainer before
-being accepted (indicated by the 'Proposal-Accepted' label). Proposals must
+'proposal' label, and require an explicit approval from a maintainer before
+being accepted (indicated by the 'proposal-accepted' label). Proposals must
 remain open for at least a week to allow discussion before being accepted or
 declined by a maintainer.
 
@@ -105,14 +105,14 @@ If you encounter a conduct-related issue, please mail conduct@golang.org.
 ## Governance
 
 Initially, the Go SDK repository will be administered by the Go team and
-Anthropic, and they will be the Approvers (the set of people able to merge PRs
-to the SDK). The policies here are also intended to satisfy necessary
-constraints of the Go team's participation in the project. This may change in
-the future: see 'Ongoing Evaluation' below.
+Anthropic, and they will be the approvers (the set of people able to merge PRs
+to the SDK), also referred to as the 'working group'. The policies here are
+also intended to satisfy necessary constraints of the Go team's participation
+in the project. This may change in the future: see 'Ongoing Evaluation' below.
 
 ### Steering meetings
 
-On a regular basis, the maintainers will host a virtual steering meeting to
+On a regular basis, the working group will host a virtual steering meeting to
 discuss outstanding proposals and other changes to the SDK. These meetings and
 their agendas will be announced in advance, and open to all. The
 meetings will be recorded, and recordings and meeting notes will be made
@@ -139,9 +139,9 @@ procompetitive.
 
 A note to readers: this policy was drafted in consultation with counsel, and so
 uses terms like 'Steering Committee', which may be confusing in the context of
-other 'steering committees' for the Model Context Protocol. In the context here,
-'Steering Committee' means the set of Approvers, who are able to approve pull
-requests and/or make administrative changes to the project.
+other 'steering committees' for Model Context Protocol. In the context here,
+'Steering Committee' means the working group: the set of people who are able to
+approve pull requests and/or make administrative changes to the project.
 
 ### Antitrust policy
 
