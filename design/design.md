@@ -470,6 +470,10 @@ server.AddReceivingMiddleware(withLogging)
 
 **Differences from mcp-go**: Version 0.26.0 of mcp-go defines 24 server hooks. Each hook consists of a field in the `Hooks` struct, a `Hooks.Add` method, and a type for the hook function. These are rarely used. The most common is `OnError`, which occurs fewer than ten times in open-source code.
 
+#### Rate Limiting
+
+Rate limiting can be configured using middleware. Please see [examples/rate-limiting](<https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/rate-limiting>] for an example on how to implement this.
+
 ### Errors
 
 With the exception of tool handler errors, protocol errors are handled transparently as Go errors: errors in server-side feature handlers are propagated as errors from calls from the `ClientSession`, and vice-versa.
