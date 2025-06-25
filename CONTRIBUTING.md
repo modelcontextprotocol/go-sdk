@@ -68,6 +68,15 @@ This process is similar to the [Go proposal
 process](https://github.com/golang/proposal), but is necessarily lighter weight
 to accommodate the greater rate of change expected for the SDK.
 
+### Design discussion
+
+For open ended design discussion (anything that doesn't fall into the issue
+categories above), use [GitHub
+Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions).
+Ideally, each discussion should be focused on one aspect of the design. For
+example: Tool Binding and Session APIs would be two separate discussions.
+When discussions reach a consensus, they should be promoted into proposals.
+
 ## Contributing code
 
 The project uses GitHub pull requests (PRs) to review changes.
