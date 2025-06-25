@@ -71,7 +71,7 @@ func main() {
 		log.Fatal("tool failed")
 	}
 	for _, c := range res.Content {
-		log.Print(c.Text)
+		log.Print(c.(*mcp.TextContent).Text)
 	}
 }
 ```
@@ -95,14 +95,18 @@ type HiParams struct {
 
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
-		Content: []*mcp.ContentBlock{mcp.NewTextContent("Hi " + params.Name)},
+		Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + params.Name}},
 	}, nil
 }
 
 func main() {
 	// Create a server with a single tool.
 	server := mcp.NewServer("greeter", "v1.0.0", nil)
-	server.AddTools(mcp.NewServerTool("greet", "say hi", SayHi))
+	server.AddTools(
+		mcp.NewServerTool("greet", "say hi", SayHi, mcp.Input(
+			mcp.Property("name", mcp.Description("the name of the person to greet")),
+		)),
+	)
 	// Run the server over stdin/stdout, until the client disconnects
 	if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
 		log.Fatal(err)
