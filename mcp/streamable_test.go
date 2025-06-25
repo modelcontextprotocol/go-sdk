@@ -143,10 +143,11 @@ func TestStreamableServerTransport(t *testing.T) {
 	initReq := req(1, "initialize", &InitializeParams{})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &serverCapabilities{
-			Logging:   &loggingCapabilities{},
-			Prompts:   &promptCapabilities{ListChanged: true},
-			Resources: &resourceCapabilities{ListChanged: true},
-			Tools:     &toolCapabilities{ListChanged: true},
+			Completions: &completionCapabilities{},
+			Logging:     &loggingCapabilities{},
+			Prompts:     &promptCapabilities{ListChanged: true},
+			Resources:   &resourceCapabilities{ListChanged: true},
+			Tools:       &toolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: "2025-03-26",
 		ServerInfo:      &implementation{Name: "testServer", Version: "v1.0.0"},

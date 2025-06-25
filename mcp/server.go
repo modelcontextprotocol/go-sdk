@@ -57,6 +57,8 @@ type ServerOptions struct {
 	RootsListChangedHandler func(context.Context, *ServerSession, *RootsListChangedParams)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ServerSession, *ProgressNotificationParams)
+	// If non-nil, called when "completion/complete" is received.
+	CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -224,6 +226,13 @@ func (s *Server) AddResourceTemplates(templates ...*ServerResourceTemplate) {
 func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
+}
+
+func (s *Server) complete(ctx context.Context, ss *ServerSession, params *CompleteParams) (Result, error) {
+	if s.opts.CompletionHandler == nil {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+	return s.opts.CompletionHandler(ctx, ss, params)
 }
 
 // changeAndNotify is called when a feature is added or removed.
@@ -563,6 +572,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
 var serverMethodInfos = map[string]methodInfo{
+	methodComplete:               newMethodInfo(serverMethod((*Server).complete)),
 	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize)),
 	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping)),
 	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts)),
@@ -646,6 +656,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		// reject unsupported features.
 		ProtocolVersion: version,
 		Capabilities: &serverCapabilities{
+			Completions: &completionCapabilities{},
 			Prompts: &promptCapabilities{
 				ListChanged: true,
 			},
