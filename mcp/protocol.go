@@ -129,6 +129,25 @@ type CallToolResultFor[Out any] struct {
 	StructuredContent Out `json:"structuredContent,omitempty"`
 }
 
+// UnmarshalJSON handles the unmarshalling of content into the Content
+// interface.
+func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
+	type res CallToolResultFor[Out] // avoid recursion
+	var wire struct {
+		res
+		Content []*wireContent `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
+		return err
+	}
+	*x = CallToolResultFor[Out](wire.res)
+	return nil
+}
+
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.

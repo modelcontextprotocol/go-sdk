@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"maps"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestParamsMeta(t *testing.T) {
@@ -66,4 +68,48 @@ func TestParamsMeta(t *testing.T) {
 	p.SetProgressToken(int(1))
 	p.SetProgressToken(int32(1))
 	p.SetProgressToken(int64(1))
+}
+
+func TestContentUnmarshal(t *testing.T) {
+	// Verify that types with a Content field round-trip properly.
+	roundtrip := func(in, out any) {
+		t.Helper()
+		data, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, out); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(in, out); diff != "" {
+			t.Errorf("mismatch (-want, +got):\n%s", diff)
+		}
+	}
+
+	content := []Content{&TextContent{Text: "t"}}
+
+	ctr := &CallToolResult{
+		Meta:              Meta{"m": true},
+		Content:           content,
+		IsError:           true,
+		StructuredContent: map[string]any{"s": "x"},
+	}
+	var got CallToolResult
+	roundtrip(ctr, &got)
+
+	ctrf := &CallToolResultFor[int]{
+		Meta:              Meta{"m": true},
+		Content:           content,
+		IsError:           true,
+		StructuredContent: 3,
+	}
+	var gotf CallToolResultFor[int]
+	roundtrip(ctrf, &gotf)
+
+	pm := &PromptMessage{
+		Content: content[0],
+		Role:    "",
+	}
+	var gotpm PromptMessage
+	roundtrip(pm, &gotpm)
 }
