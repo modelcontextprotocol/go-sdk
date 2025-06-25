@@ -850,7 +850,30 @@ type ClientOptions struct {
 
 ### Completion
 
-Clients call the spec method `Complete` to request completions. Servers automatically handle these requests based on their collections of prompts and resources.
+Clients call the spec method `Complete` to request completions. If a server installs a `CompletionHandler`, it will be called when the client sends a completion request.
+
+```go
+// A CompletionHandler handles a call to completion/complete.
+type CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
+
+type ServerOptions struct {
+  ...
+  // If non-nil, called when a client sends a completion request.
+  CompletionHandler CompletionHandler
+}
+```
+
+#### Securty Considerations
+
+Implementors of the CompletionHandler MUST adhere to the following security guidelines:
+
+- **Validate all completion inputs**: The CompleteRequest received by the handler may contain arbitrary data from the client. Before processing, thoroughly validate all fields.
+
+- **Implement appropriate rate limiting**: Completion requests can be high-frequency, especially in interactive user experiences. Without rate limiting, a malicious client could potentially overload the server, leading to denial-of-service (DoS) attacks. Consider applying rate limits per client session, IP address, or API key, depending on your deployment model. This can be implemented within the CompletionHandler itself or via middleware (see [Middleware](#middleware)) that wraps the handler.
+
+- **Control access to sensitive suggestions**: Completion suggestions should only expose information that the requesting client is authorized to access. If your completion logic draws from sensitive data sources (e.g., internal file paths, user data, restricted API endpoints), ensure that the CompletionHandler performs proper authorization checks before generating or returning suggestions. This might involve checking the ServerSession context for authentication details or consulting an external authorization system.
+
+- **Prevent completion-based information disclosure**: Be mindful that even seemingly innocuous completion suggestions can inadvertently reveal sensitive information. For example, suggesting internal system paths or confidential identifiers could be an attack vector. Ensure that the generated CompleteResult contains only appropriate and non-sensitive information for the given client and context. Avoid revealing internal data structures or error messages that could aid an attacker.
 
 **Differences from mcp-go**: the client API is similar. mcp-go has not yet defined its server-side behavior.
 
