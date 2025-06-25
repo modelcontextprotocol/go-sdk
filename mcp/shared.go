@@ -207,13 +207,7 @@ func sessionMethod[S Session, P Params, R Result](f func(S, context.Context, P) 
 
 // Error codes
 const (
-	// The error code to return when a resource isn't found.
-	// See https://modelcontextprotocol.io/specification/2025-03-26/server/resources#error-handling
-	// However, the code they chose is in the wrong space
-	// (see https://github.com/modelcontextprotocol/modelcontextprotocol/issues/509).
-	// so we pick a different one, arbitrarily for now (until they fix it).
-	// The immediate problem is that jsonprc2 defines -32002 as "server closing".
-	CodeResourceNotFound = -31002
+	CodeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	CodeUnsupportedMethod = -31001
 )
