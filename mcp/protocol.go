@@ -770,7 +770,7 @@ type ToolAnnotations struct {
 	// (This property is meaningful only when `readOnlyHint == false`)
 	//
 	// Default: true
-	DestructiveHint bool `json:"destructiveHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
 	// If true, calling the tool repeatedly with the same arguments will have no
 	// additional effect on the its environment.
 	//
@@ -783,7 +783,7 @@ type ToolAnnotations struct {
 	// a web search tool is open, whereas that of a memory tool is not.
 	//
 	// Default: true
-	OpenWorldHint bool `json:"openWorldHint,omitempty"`
+	OpenWorldHint *bool `json:"openWorldHint,omitempty"`
 	// If true, the tool does not modify its environment.
 	//
 	// Default: false
