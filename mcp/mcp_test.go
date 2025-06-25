@@ -370,7 +370,7 @@ func TestEndToEnd(t *testing.T) {
 
 			mustLog := func(level LoggingLevel, data any) {
 				t.Helper()
-				if err := ss.LoggingMessage(ctx, &LoggingMessageParams{
+				if err := ss.Log(ctx, &LoggingMessageParams{
 					Logger: "test",
 					Level:  level,
 					Data:   data,

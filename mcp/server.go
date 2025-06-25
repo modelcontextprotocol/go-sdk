@@ -413,7 +413,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 		}
 		// TODO(jba): figure out mime type. Omit for now: Server.readResource will fill it in.
 		return &ReadResourceResult{Contents: []*ResourceContents{
-			&ResourceContents{URI: params.URI, Blob: data},
+			{URI: params.URI, Blob: data},
 		}}, nil
 	}
 }
@@ -510,12 +510,10 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 	return handleSend[*CreateMessageResult](ctx, ss, methodCreateMessage, orZero[Params](params))
 }
 
-// LoggingMessage sends a logging message to the client.
+// Log sends a log message to the client.
 // The message is not sent if the client has not called SetLevel, or if its level
 // is below that of the last SetLevel.
-//
-// TODO(jba): rename to Log or LogMessage. A logging message is the thing that is sent to logging.
-func (ss *ServerSession) LoggingMessage(ctx context.Context, params *LoggingMessageParams) error {
+func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
 	logLevel := ss.logLevel
 	ss.mu.Unlock()
