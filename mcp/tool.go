@@ -44,6 +44,8 @@ type ServerTool struct {
 // The input schema for the tool is extracted from the request type for the
 // handler, and used to unmmarshal and validate requests to the handler. This
 // schema may be customized using the [Input] option.
+//
+// TODO(jba): check that structured content is set in response.
 func NewServerTool[In, Out any](name, description string, handler ToolHandlerFor[In, Out], opts ...ToolOption) *ServerTool {
 	st, err := newServerToolErr[In, Out](name, description, handler, opts...)
 	if err != nil {
