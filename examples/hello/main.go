@@ -25,7 +25,7 @@ type HiArgs struct {
 func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {
 	return &mcp.CallToolResultFor[struct{}]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Name},
+			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
 		},
 	}, nil
 }
