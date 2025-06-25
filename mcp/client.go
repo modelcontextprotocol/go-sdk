@@ -9,6 +9,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -56,6 +57,10 @@ type ClientOptions struct {
 	ResourceListChangedHandler  func(context.Context, *ClientSession, *ResourceListChangedParams)
 	LoggingMessageHandler       func(context.Context, *ClientSession, *LoggingMessageParams)
 	ProgressNotificationHandler func(context.Context, *ClientSession, *ProgressNotificationParams)
+	// If non-zero, defines an interval for regular "ping" requests.
+	// If the peer fails to respond to pings originating from the keepalive check,
+	// the session is automatically closed.
+	KeepAlive time.Duration
 }
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
@@ -118,6 +123,11 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 		_ = cs.Close()
 		return nil, err
 	}
+
+	if c.opts.KeepAlive > 0 {
+		cs.startKeepalive(c.opts.KeepAlive)
+	}
+
 	return cs, nil
 }
 
@@ -131,12 +141,21 @@ type ClientSession struct {
 	conn             *jsonrpc2.Connection
 	client           *Client
 	initializeResult *InitializeResult
+	keepaliveCancel  context.CancelFunc
 }
 
 // Close performs a graceful close of the connection, preventing new requests
 // from being handled, and waiting for ongoing requests to return. Close then
 // terminates the connection.
 func (cs *ClientSession) Close() error {
+	// Note: keepaliveCancel access is safe without a mutex because:
+	// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+	// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
+	// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
+	//    Close is idempotent and conn.Close() handles concurrent calls correctly
+	if cs.keepaliveCancel != nil {
+		cs.keepaliveCancel()
+	}
 	return cs.conn.Close()
 }
 
@@ -144,6 +163,11 @@ func (cs *ClientSession) Close() error {
 // Generally, clients should be responsible for closing the connection.
 func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
+}
+
+// startKeepalive starts the keepalive mechanism for this client session.
+func (cs *ClientSession) startKeepalive(interval time.Duration) {
+	startKeepalive(cs, interval, &cs.keepaliveCancel)
 }
 
 // AddRoots adds the given roots to the client,

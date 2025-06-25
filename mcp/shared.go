@@ -308,3 +308,41 @@ type listResult[T any] interface {
 	// Returns a pointer to the param's NextCursor field.
 	nextCursorPtr() *string
 }
+
+// keepaliveSession represents a session that supports keepalive functionality.
+type keepaliveSession interface {
+	Ping(ctx context.Context, params *PingParams) error
+	Close() error
+}
+
+// startKeepalive starts the keepalive mechanism for a session.
+// It assigns the cancel function to the provided cancelPtr and starts a goroutine
+// that sends ping messages at the specified interval.
+func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Assign cancel function before starting goroutine to avoid race condition.
+	// We cannot return it because the caller may need to cancel during the
+	// window between goroutine scheduling and function return.
+	*cancelPtr = cancel
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
+				err := session.Ping(pingCtx, nil)
+				pingCancel()
+				if err != nil {
+					// Ping failed, close the session
+					_ = session.Close()
+					return
+				}
+			}
+		}
+	}()
+}

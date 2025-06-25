@@ -838,3 +838,101 @@ func falseSchema() *jsonschema.Schema { return &jsonschema.Schema{Not: &jsonsche
 func nopHandler(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
 	return nil, nil
 }
+
+func TestKeepAlive(t *testing.T) {
+	// TODO: try to use the new synctest package for this test once we upgrade to Go 1.24+.
+	// synctest would allow us to control time and avoid the time.Sleep calls, making the test
+	// faster and more deterministic.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ct, st := NewInMemoryTransports()
+
+	serverOpts := &ServerOptions{
+		KeepAlive: 100 * time.Millisecond,
+	}
+	s := NewServer("testServer", "v1.0.0", serverOpts)
+	s.AddTools(NewServerTool("greet", "say hi", sayHi))
+
+	ss, err := s.Connect(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	clientOpts := &ClientOptions{
+		KeepAlive: 100 * time.Millisecond,
+	}
+	c := NewClient("testClient", "v1.0.0", clientOpts)
+	cs, err := c.Connect(ctx, ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Wait for a few keepalive cycles to ensure pings are working
+	time.Sleep(300 * time.Millisecond)
+
+	// Test that the connection is still alive by making a call
+	result, err := cs.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "user"},
+	})
+	if err != nil {
+		t.Fatalf("call failed after keepalive: %v", err)
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected content in result")
+	}
+	if textContent, ok := result.Content[0].(*TextContent); !ok || textContent.Text != "hi user" {
+		t.Fatalf("unexpected result: %v", result.Content[0])
+	}
+}
+
+func TestKeepAliveFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ct, st := NewInMemoryTransports()
+
+	// Server without keepalive (to test one-sided keepalive)
+	s := NewServer("testServer", "v1.0.0", nil)
+	s.AddTools(NewServerTool("greet", "say hi", sayHi))
+	ss, err := s.Connect(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Client with short keepalive
+	clientOpts := &ClientOptions{
+		KeepAlive: 50 * time.Millisecond,
+	}
+	c := NewClient("testClient", "v1.0.0", clientOpts)
+	cs, err := c.Connect(ctx, ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Let the connection establish properly first
+	time.Sleep(30 * time.Millisecond)
+
+	// simulate ping failure
+	ss.Close()
+
+	// Wait for keepalive to detect the failure and close the client
+	// check periodically instead of just waiting
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = cs.CallTool(ctx, &CallToolParams{
+			Name:      "greet",
+			Arguments: map[string]any{"Name": "user"},
+		})
+		if errors.Is(err, ErrConnectionClosed) {
+			return // Test passed
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Errorf("expected connection to be closed by keepalive, but it wasn't. Last error: %v", err)
+}
