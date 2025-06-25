@@ -242,9 +242,13 @@ func notifySessions[S Session](sessions []S, method string, params Params) {
 	}
 }
 
+// Meta is additional metadata for requests, responses and other types.
 type Meta map[string]any
 
-func (m Meta) GetMeta() map[string]any   { return m }
+// GetMeta returns metadata from a value.
+func (m Meta) GetMeta() map[string]any { return m }
+
+// SetMeta sets the metadata on a value.
 func (m *Meta) SetMeta(x map[string]any) { *m = x }
 
 const progressTokenKey = "progressToken"
@@ -269,7 +273,9 @@ func setProgressToken(p Params, pt any) {
 
 // Params is a parameter (input) type for an MCP call or notification.
 type Params interface {
+	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
+	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
 }
 
@@ -288,7 +294,9 @@ type RequestParams interface {
 
 // Result is a result of an MCP call.
 type Result interface {
+	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
+	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
 }
 
