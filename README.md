@@ -71,7 +71,9 @@ func main() {
 		log.Fatal("tool failed")
 	}
 	for _, c := range res.Content {
-		log.Print(c.Text)
+		if t, ok := c.(*mcp.TextContent); ok {
+			log.Print(t.Text)
+		}
 	}
 }
 ```
@@ -94,8 +96,10 @@ type HiParams struct {
 }
 
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
-	return &mcp.CallToolResultFor[any]{
-		Content: []*mcp.ContentBlock{mcp.NewTextContent("Hi " + params.Name)},
+return &mcp.CallToolResultFor[any]{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "Hi " + params.Name},
+		},
 	}, nil
 }
 
