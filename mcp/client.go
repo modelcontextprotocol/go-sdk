@@ -233,6 +233,7 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 var clientMethodInfos = map[string]methodInfo{
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete)),
 	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping)),
 	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots)),
 	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage)),
@@ -326,6 +327,10 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 // ReadResource ask the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
 	return handleSend[*ReadResourceResult](ctx, cs, methodReadResource, orZero[Params](params))
+}
+
+func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
+	return handleSend[*CompleteResult](ctx, cs, methodComplete, orZero[Params](params))
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, s *ClientSession, params *ToolListChangedParams) (Result, error) {
