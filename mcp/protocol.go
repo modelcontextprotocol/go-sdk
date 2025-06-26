@@ -182,6 +182,36 @@ type ClientCapabilities struct {
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
 }
 
+type CompleteParamsArgument struct {
+	// The name of the argument
+	Name string `json:"name"`
+	// The value of the argument to use for completion matching.
+	Value string `json:"value"`
+}
+
+type CompleteParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The argument's information
+	Argument CompleteParamsArgument `json:"argument"`
+	Ref      *Reference             `json:"ref"`
+}
+
+type CompletionResultDetails struct {
+	HasMore bool     `json:"hasMore,omitempty"`
+	Total   int64    `json:"total,omitempty"`
+	Values  []string `json:"values"`
+}
+
+// The server's response to a completion/complete request
+type CompleteResult struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta       `json:"_meta,omitempty"`
+	Completion CompletionResultDetails `json:"completion"`
+}
+
 type CreateMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -836,6 +866,9 @@ type implementation struct {
 	Version string `json:"version"`
 }
 
+// Present if the server supports argument autocompletion suggestions.
+type completionCapabilities struct{}
+
 // Present if the server supports sending log messages to the client.
 type loggingCapabilities struct{}
 
@@ -858,7 +891,7 @@ type resourceCapabilities struct {
 // additional capabilities.
 type serverCapabilities struct {
 	// Present if the server supports argument autocompletion suggestions.
-	Completions struct{} `json:"completions,omitempty"`
+	Completions completionCapabilities `json:"completions,omitempty"`
 	// Experimental, non-standard capabilities that the server supports.
 	Experimental map[string]struct{} `json:"experimental,omitempty"`
 	// Present if the server supports sending log messages to the client.
