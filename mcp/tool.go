@@ -21,7 +21,7 @@ import (
 type ToolHandler func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error)
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[json.RawMessage]) (Out, error)
 
 // A rawToolHandler is like a ToolHandler, but takes the arguments as as json.RawMessage.
 type rawToolHandler = func(context.Context, *ServerSession, *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error)
@@ -36,6 +36,22 @@ type ServerTool struct {
 	inputResolved, outputResolved *jsonschema.Resolved
 }
 
+// A ToolInput is a tool definition defining the input of a tool.
+type ToolInput interface {
+	// Schema returns the JSON schema for the tool's input.
+	Schema() (*jsonschema.Schema, error)
+	// SetParams sets the parameters for the tool's input from raw JSON.
+	SetParams(json.RawMessage) error
+}
+
+// A ToolOutput is an interface defining the output of a tool.
+type ToolOutput interface {
+	// Schema returns the JSON schema for the tool's output.
+	// Schema() (*jsonschema.Schema, error) // TODO implement output schema in future
+	// Result returns the result of the tool's execution.
+	Result() (*CallToolResult, error)
+}
+
 // NewServerTool is a helper to make a tool using reflection on the given type parameters.
 // When the tool is called, CallToolParams.Arguments will be of type In.
 //
@@ -46,7 +62,7 @@ type ServerTool struct {
 // schema may be customized using the [Input] option.
 //
 // TODO(jba): check that structured content is set in response.
-func NewServerTool[In, Out any](name, description string, handler ToolHandlerFor[In, Out], opts ...ToolOption) *ServerTool {
+func NewServerTool[In ToolInput, Out ToolOutput](name, description string, handler ToolHandlerFor[In, Out], opts ...ToolOption) *ServerTool {
 	st, err := newServerToolErr[In, Out](name, description, handler, opts...)
 	if err != nil {
 		panic(fmt.Errorf("NewServerTool(%q): %w", name, err))
@@ -54,14 +70,17 @@ func NewServerTool[In, Out any](name, description string, handler ToolHandlerFor
 	return st
 }
 
-func newServerToolErr[In, Out any](name, description string, handler ToolHandlerFor[In, Out], opts ...ToolOption) (*ServerTool, error) {
-	// TODO: check that In is a struct.
-	ischema, err := jsonschema.For[In]()
+func newServerToolErr[In ToolInput, Out ToolOutput](name, description string, handler ToolHandlerFor[In, Out], opts ...ToolOption) (*ServerTool, error) {
+	// instantiate zero value of In type
+	var in In
+	ischema, err := in.Schema()
+
 	if err != nil {
 		return nil, err
 	}
 	// TODO: uncomment when output schemas drop.
-	// oschema, err := jsonschema.For[TRes]()
+	// var o Out
+	// oschema, err := o.Schema()
 	// if err != nil {
 	// 	return nil, err
 	// }
@@ -85,25 +104,13 @@ func newServerToolErr[In, Out any](name, description string, handler ToolHandler
 				return nil, err
 			}
 		}
-		// TODO(jba): future-proof this copy.
-		params := &CallToolParamsFor[In]{
-			Meta:      rparams.Meta,
-			Name:      rparams.Name,
-			Arguments: args,
-		}
-		res, err := handler(ctx, ss, params)
+
+		res, err := handler(ctx, ss, rparams)
 		if err != nil {
 			return nil, err
 		}
 
-		var ctr CallToolResult
-		if res != nil {
-			// TODO(jba): future-proof this copy.
-			ctr.Meta = res.Meta
-			ctr.Content = res.Content
-			ctr.IsError = res.IsError
-		}
-		return &ctr, nil
+		return res.Result()
 	}
 	return t, nil
 }
