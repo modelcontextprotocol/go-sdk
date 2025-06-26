@@ -6,6 +6,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"testing"
 
@@ -15,6 +16,45 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+type testSayHiParams struct {
+	Name string `json:"name"`
+}
+
+func (p *testSayHiParams) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[testSayHiParams]()
+}
+
+func (p *testSayHiParams) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, p)
+}
+
+type testSayHiResult struct{}
+
+func (r *testSayHiResult) Result() (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{}, nil
+}
+
+func testSayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[json.RawMessage]) (*testSayHiResult, error) {
+	var args testSayHiParams
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
+	result := &testSayHiResult{}
+	toolResult, err := result.Result()
+	if err != nil {
+		return nil, err
+	}
+
+	toolResult.Content = []mcp.Content{
+		&mcp.TextContent{Text: "Hi " + args.Name},
+	}
+
+	return result, nil
+}
+
 func TestList(t *testing.T) {
 	ctx := context.Background()
 	clientSession, serverSession, server := createSessions(ctx)
@@ -22,9 +62,9 @@ func TestList(t *testing.T) {
 	defer serverSession.Close()
 
 	t.Run("tools", func(t *testing.T) {
-		toolA := mcp.NewServerTool("apple", "apple tool", SayHi)
-		toolB := mcp.NewServerTool("banana", "banana tool", SayHi)
-		toolC := mcp.NewServerTool("cherry", "cherry tool", SayHi)
+		toolA := mcp.NewServerTool[*testSayHiParams, *testSayHiResult]("apple", "apple tool", testSayHi)
+		toolB := mcp.NewServerTool[*testSayHiParams, *testSayHiResult]("banana", "banana tool", testSayHi)
+		toolC := mcp.NewServerTool[*testSayHiParams, *testSayHiResult]("cherry", "cherry tool", testSayHi)
 		tools := []*mcp.ServerTool{toolA, toolB, toolC}
 		wantTools := []*mcp.Tool{toolA.Tool, toolB.Tool, toolC.Tool}
 		server.AddTools(tools...)

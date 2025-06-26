@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,11 +31,36 @@ type hiParams struct {
 	Name string
 }
 
-func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
+func (p *hiParams) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[hiParams]()
+}
+
+func (p *hiParams) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, p)
+}
+
+type hiResult struct {
+	Message string
+}
+
+func (r *hiResult) Result() (*CallToolResult, error) {
+	return &CallToolResult{
+		Content: []Content{&TextContent{Text: r.Message}},
+	}, nil
+}
+
+func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[json.RawMessage]) (*hiResult, error) {
+	var args hiParams
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := ss.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("ping failed: %v", err)
 	}
-	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
+	return &hiResult{Message: "hi " + args.Name}, nil
 }
 
 func TestEndToEnd(t *testing.T) {
@@ -435,7 +461,7 @@ var (
 	errTestFailure = errors.New("mcp failure")
 
 	tools = map[string]*ServerTool{
-		"greet": NewServerTool("greet", "say hi", sayHi),
+		"greet": NewServerTool[*hiParams, *hiResult]("greet", "say hi", sayHi),
 		"fail": {
 			Tool: &Tool{Name: "fail"},
 			Handler: func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
@@ -569,7 +595,7 @@ func basicConnection(t *testing.T, tools ...*ServerTool) (*ServerSession, *Clien
 }
 
 func TestServerClosing(t *testing.T) {
-	cc, cs := basicConnection(t, NewServerTool("greet", "say hi", sayHi))
+	cc, cs := basicConnection(t, NewServerTool[*hiParams, *hiResult]("greet", "say hi", sayHi))
 	defer cs.Close()
 
 	ctx := context.Background()

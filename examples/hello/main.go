@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,11 +24,36 @@ type HiArgs struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {
-	return &mcp.CallToolResultFor[struct{}]{
+func (h *HiArgs) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[HiArgs]()
+}
+
+func (h *HiArgs) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, h)
+}
+
+type HiResult struct {
+	Message string
+}
+
+func (h *HiResult) Result() (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
+			&mcp.TextContent{Text: h.Message},
 		},
+	}, nil
+}
+
+func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[json.RawMessage]) (*HiResult, error) {
+	var args HiArgs
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
+	return &HiResult{
+		Message: "Hi " + args.Name,
 	}, nil
 }
 
@@ -43,7 +70,7 @@ func main() {
 	flag.Parse()
 
 	server := mcp.NewServer("greeter", "v0.0.1", nil)
-	server.AddTools(mcp.NewServerTool("greet", "say hi", SayHi, mcp.Input(
+	server.AddTools(mcp.NewServerTool[*HiArgs, *HiResult]("greet", "say hi", SayHi, mcp.Input(
 		mcp.Property("name", mcp.Description("the name to say hi to")),
 	)))
 	server.AddPrompts(&mcp.ServerPrompt{

@@ -9,24 +9,40 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
+
+type sharedTestReq struct {
+	I int
+	B bool
+	S string `json:",omitempty"`
+	P *int   `json:",omitempty"`
+}
+
+func (r *sharedTestReq) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[sharedTestReq]()
+}
+
+func (r *sharedTestReq) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, r)
+}
+
+type sharedTestResult struct{}
+
+func (d *sharedTestResult) Result() (*CallToolResult, error) {
+	return &CallToolResult{}, nil
+}
 
 // TODO(jba): this shouldn't be in this file, but tool_test.go doesn't have access to unexported symbols.
 func TestNewServerToolValidate(t *testing.T) {
 	// Check that the tool returned from NewServerTool properly validates its input schema.
 
-	type req struct {
-		I int
-		B bool
-		S string `json:",omitempty"`
-		P *int   `json:",omitempty"`
+	dummyHandler := func(context.Context, *ServerSession, *CallToolParamsFor[json.RawMessage]) (*sharedTestResult, error) {
+		return &sharedTestResult{}, nil
 	}
 
-	dummyHandler := func(context.Context, *ServerSession, *CallToolParamsFor[req]) (*CallToolResultFor[any], error) {
-		return nil, nil
-	}
-
-	tool := NewServerTool("test", "test", dummyHandler)
+	tool := NewServerTool[*sharedTestReq, *sharedTestResult]("test", "test", dummyHandler)
 	// Need to add the tool to a server to get resolved schemas.
 	// s := NewServer("", "", nil)
 

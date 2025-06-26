@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -18,18 +19,43 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[SayHiParams]) (*CallToolResultFor[any], error) {
-	return &CallToolResultFor[any]{
+func (p *SayHiParams) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[SayHiParams]()
+}
+
+func (p *SayHiParams) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, p)
+}
+
+type SayHiResult struct {
+	Message string
+}
+
+func (r *SayHiResult) Result() (*CallToolResult, error) {
+	return &CallToolResult{
 		Content: []Content{
-			&TextContent{Text: "Hi " + params.Name},
+			&TextContent{Text: r.Message},
 		},
 	}, nil
 }
 
+func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[json.RawMessage]) (*SayHiResult, error) {
+	var args SayHiParams
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
+	return &SayHiResult{
+		Message: "Hi " + args.Name,
+	}, nil
+}
+
 func TestFeatureSetOrder(t *testing.T) {
-	toolA := NewServerTool("apple", "apple tool", SayHi).Tool
-	toolB := NewServerTool("banana", "banana tool", SayHi).Tool
-	toolC := NewServerTool("cherry", "cherry tool", SayHi).Tool
+	toolA := NewServerTool[*SayHiParams, *SayHiResult]("apple", "apple tool", SayHi).Tool
+	toolB := NewServerTool[*SayHiParams, *SayHiResult]("banana", "banana tool", SayHi).Tool
+	toolC := NewServerTool[*SayHiParams, *SayHiResult]("cherry", "cherry tool", SayHi).Tool
 
 	testCases := []struct {
 		tools []*Tool
@@ -52,9 +78,9 @@ func TestFeatureSetOrder(t *testing.T) {
 }
 
 func TestFeatureSetAbove(t *testing.T) {
-	toolA := NewServerTool("apple", "apple tool", SayHi).Tool
-	toolB := NewServerTool("banana", "banana tool", SayHi).Tool
-	toolC := NewServerTool("cherry", "cherry tool", SayHi).Tool
+	toolA := NewServerTool[*SayHiParams, *SayHiResult]("apple", "apple tool", SayHi).Tool
+	toolB := NewServerTool[*SayHiParams, *SayHiResult]("banana", "banana tool", SayHi).Tool
+	toolC := NewServerTool[*SayHiParams, *SayHiResult]("cherry", "cherry tool", SayHi).Tool
 
 	testCases := []struct {
 		tools []*Tool

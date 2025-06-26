@@ -6,9 +6,11 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -16,11 +18,36 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[SayHiParams]) (*mcp.CallToolResultFor[any], error) {
-	return &mcp.CallToolResultFor[any]{
+func (s *SayHiParams) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[SayHiParams]()
+}
+
+func (s *SayHiParams) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, s)
+}
+
+type SayHiResult struct {
+	Message string
+}
+
+func (s *SayHiResult) Result() (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
+			&mcp.TextContent{Text: s.Message},
 		},
+	}, nil
+}
+
+func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[json.RawMessage]) (*SayHiResult, error) {
+	var args SayHiParams
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
+	return &SayHiResult{
+		Message: "Hi " + args.Name,
 	}, nil
 }
 
@@ -29,7 +56,8 @@ func ExampleServer() {
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
 	server := mcp.NewServer("greeter", "v0.0.1", nil)
-	server.AddTools(mcp.NewServerTool("greet", "say hi", SayHi))
+	server.AddTools(mcp.NewServerTool[*SayHiParams, *SayHiResult](
+		"greet", "say hi", SayHi))
 
 	serverSession, err := server.Connect(ctx, serverTransport)
 	if err != nil {
