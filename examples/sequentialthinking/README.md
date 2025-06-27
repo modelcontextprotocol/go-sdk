@@ -183,14 +183,6 @@ Each thinking session maintains:
 - **Branch relationships**: Links to alternative reasoning paths
 - **Status management**: Active, completed, or paused sessions
 
-## Testing
-
-Run the comprehensive test suite:
-
-```bash
-go test -v
-```
-
 ## Use Cases
 
 **Ideal for:**

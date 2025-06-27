@@ -54,7 +54,7 @@ func TestStartThinking(t *testing.T) {
 	}
 
 	// Verify session was stored
-	session, exists := store.GetSession("test_session")
+	session, exists := store.Session("test_session")
 	if !exists {
 		t.Fatal("Session was not stored")
 	}
@@ -125,7 +125,7 @@ func TestContinueThinking(t *testing.T) {
 	}
 
 	// Verify session was updated
-	session, exists := store.GetSession("test_continue")
+	session, exists := store.Session("test_continue")
 	if !exists {
 		t.Fatal("Session not found")
 	}
@@ -192,7 +192,7 @@ func TestContinueThinkingWithCompletion(t *testing.T) {
 	}
 
 	// Verify session status
-	session, exists := store.GetSession("test_completion")
+	session, exists := store.Session("test_completion")
 	if !exists {
 		t.Fatal("Session not found")
 	}
@@ -208,9 +208,9 @@ func TestContinueThinkingRevision(t *testing.T) {
 	session := &ThinkingSession{
 		ID:      "test_revision",
 		Problem: "Test problem",
-		Thoughts: []Thought{
-			{ID: 1, Content: "Original thought", Created: time.Now()},
-			{ID: 2, Content: "Second thought", Created: time.Now()},
+		Thoughts: []*Thought{
+			{Index: 1, Content: "Original thought", Created: time.Now()},
+			{Index: 2, Content: "Second thought", Created: time.Now()},
 		},
 		CurrentThought: 2,
 		EstimatedTotal: 3,
@@ -249,7 +249,7 @@ func TestContinueThinkingRevision(t *testing.T) {
 	}
 
 	// Verify thought was revised
-	updatedSession, _ := store.GetSession("test_revision")
+	updatedSession, _ := store.Session("test_revision")
 	if updatedSession.Thoughts[0].Content != "Revised first thought" {
 		t.Error("First thought should be revised")
 	}
@@ -265,8 +265,8 @@ func TestContinueThinkingBranching(t *testing.T) {
 	session := &ThinkingSession{
 		ID:      "test_branch",
 		Problem: "Test problem",
-		Thoughts: []Thought{
-			{ID: 1, Content: "First thought", Created: time.Now()},
+		Thoughts: []*Thought{
+			{Index: 1, Content: "First thought", Created: time.Now()},
 		},
 		CurrentThought: 1,
 		EstimatedTotal: 3,
@@ -278,11 +278,10 @@ func TestContinueThinkingBranching(t *testing.T) {
 	store.SetSession(session)
 
 	ctx := context.Background()
-	createBranch := true
 	continueArgs := ContinueThinkingArgs{
 		SessionID:    "test_branch",
 		Thought:      "Alternative approach",
-		CreateBranch: &createBranch,
+		CreateBranch: true,
 	}
 
 	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
@@ -306,7 +305,7 @@ func TestContinueThinkingBranching(t *testing.T) {
 	}
 
 	// Verify branch was created
-	updatedSession, _ := store.GetSession("test_branch")
+	updatedSession, _ := store.Session("test_branch")
 	if len(updatedSession.Branches) != 1 {
 		t.Errorf("Expected 1 branch, got %d", len(updatedSession.Branches))
 	}
@@ -317,7 +316,7 @@ func TestContinueThinkingBranching(t *testing.T) {
 	}
 
 	// Verify branch session exists
-	branchSession, exists := store.GetSession(branchID)
+	branchSession, exists := store.Session(branchID)
 	if !exists {
 		t.Fatal("Branch session should exist")
 	}
@@ -333,10 +332,10 @@ func TestReviewThinking(t *testing.T) {
 	session := &ThinkingSession{
 		ID:      "test_review",
 		Problem: "Complex problem",
-		Thoughts: []Thought{
-			{ID: 1, Content: "First thought", Created: time.Now(), Revised: false},
-			{ID: 2, Content: "Second thought", Created: time.Now(), Revised: true},
-			{ID: 3, Content: "Final thought", Created: time.Now(), Revised: false},
+		Thoughts: []*Thought{
+			{Index: 1, Content: "First thought", Created: time.Now(), Revised: false},
+			{Index: 2, Content: "Second thought", Created: time.Now(), Revised: true},
+			{Index: 3, Content: "Final thought", Created: time.Now(), Revised: false},
 		},
 		CurrentThought: 3,
 		EstimatedTotal: 3,
@@ -399,13 +398,13 @@ func TestReviewThinking(t *testing.T) {
 	}
 }
 
-func TestGetThinkingHistory(t *testing.T) {
+func TestThinkingHistory(t *testing.T) {
 	// Setup test sessions
 	store = NewSessionStore()
 	session1 := &ThinkingSession{
 		ID:             "session1",
 		Problem:        "Problem 1",
-		Thoughts:       []Thought{{ID: 1, Content: "Thought 1", Created: time.Now()}},
+		Thoughts:       []*Thought{{Index: 1, Content: "Thought 1", Created: time.Now()}},
 		CurrentThought: 1,
 		EstimatedTotal: 2,
 		Status:         "active",
@@ -415,7 +414,7 @@ func TestGetThinkingHistory(t *testing.T) {
 	session2 := &ThinkingSession{
 		ID:             "session2",
 		Problem:        "Problem 2",
-		Thoughts:       []Thought{{ID: 1, Content: "Thought 1", Created: time.Now()}},
+		Thoughts:       []*Thought{{Index: 1, Content: "Thought 1", Created: time.Now()}},
 		CurrentThought: 1,
 		EstimatedTotal: 3,
 		Status:         "completed",
@@ -432,9 +431,9 @@ func TestGetThinkingHistory(t *testing.T) {
 		URI: "thinking://sessions",
 	}
 
-	result, err := GetThinkingHistory(ctx, nil, listParams)
+	result, err := ThinkingHistory(ctx, nil, listParams)
 	if err != nil {
-		t.Fatalf("GetThinkingHistory() error = %v", err)
+		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
 
 	if len(result.Contents) != 1 {
@@ -462,9 +461,9 @@ func TestGetThinkingHistory(t *testing.T) {
 		URI: "thinking://session1",
 	}
 
-	result, err = GetThinkingHistory(ctx, nil, sessionParams)
+	result, err = ThinkingHistory(ctx, nil, sessionParams)
 	if err != nil {
-		t.Fatalf("GetThinkingHistory() error = %v", err)
+		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
 
 	var retrievedSession ThinkingSession
@@ -521,7 +520,7 @@ func TestInvalidOperations(t *testing.T) {
 	session := &ThinkingSession{
 		ID:             "test_invalid",
 		Problem:        "Test",
-		Thoughts:       []Thought{{ID: 1, Content: "Thought", Created: time.Now()}},
+		Thoughts:       []*Thought{{Index: 1, Content: "Thought", Created: time.Now()}},
 		CurrentThought: 1,
 		EstimatedTotal: 2,
 		Status:         "active",
@@ -547,4 +546,3 @@ func TestInvalidOperations(t *testing.T) {
 		t.Error("Expected error for invalid revision step")
 	}
 }
-
