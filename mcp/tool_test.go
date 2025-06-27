@@ -16,76 +16,80 @@ import (
 )
 
 // testToolHandler is used for type inference in TestNewServerTool.
-func testToolHandler[T any](context.Context, *ServerSession, *CallToolParamsFor[T]) (*CallToolResultFor[any], error) {
+func testToolHandler[In, Out any](context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error) {
 	panic("not implemented")
 }
 
+func srvTool[In, Out any](t *testing.T, tool *Tool, handler ToolHandlerFor[In, Out]) *serverTool {
+	t.Helper()
+	st, err := newServerTool(tool, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
 func TestNewServerTool(t *testing.T) {
+	type (
+		Name struct {
+			Name string `json:"name"`
+		}
+		Size struct {
+			Size int `json:"size"`
+		}
+	)
+
+	nameSchema := &jsonschema.Schema{
+		Type:     "object",
+		Required: []string{"name"},
+		Properties: map[string]*jsonschema.Schema{
+			"name": {Type: "string"},
+		},
+		AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
+	}
+	sizeSchema := &jsonschema.Schema{
+		Type:     "object",
+		Required: []string{"size"},
+		Properties: map[string]*jsonschema.Schema{
+			"size": {Type: "integer"},
+		},
+		AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
+	}
+
 	tests := []struct {
-		tool *ServerTool
-		want *jsonschema.Schema
+		tool            *serverTool
+		wantIn, wantOut *jsonschema.Schema
 	}{
 		{
-			NewServerTool("basic", "", testToolHandler[struct {
-				Name string `json:"name"`
-			}]),
-			&jsonschema.Schema{
-				Type:     "object",
-				Required: []string{"name"},
-				Properties: map[string]*jsonschema.Schema{
-					"name": {Type: "string"},
-				},
-				AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
-			},
+			srvTool(t, &Tool{Name: "basic"}, testToolHandler[Name, Size]),
+			nameSchema,
+			sizeSchema,
 		},
 		{
-			NewServerTool("enum", "", testToolHandler[struct{ Name string }], Input(
-				Property("Name", Enum("x", "y", "z")),
-			)),
-			&jsonschema.Schema{
-				Type:     "object",
-				Required: []string{"Name"},
-				Properties: map[string]*jsonschema.Schema{
-					"Name": {Type: "string", Enum: []any{"x", "y", "z"}},
-				},
-				AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
-			},
+			srvTool(t, &Tool{
+				Name:        "in untouched",
+				InputSchema: &jsonschema.Schema{},
+			}, testToolHandler[Name, Size]),
+			&jsonschema.Schema{},
+			sizeSchema,
 		},
 		{
-			NewServerTool("required", "", testToolHandler[struct {
-				Name     string `json:"name"`
-				Language string `json:"language"`
-				X        int    `json:"x,omitempty"`
-				Y        int    `json:"y,omitempty"`
-			}], Input(
-				Property("x", Required(true)))),
-			&jsonschema.Schema{
-				Type:     "object",
-				Required: []string{"name", "language", "x"},
-				Properties: map[string]*jsonschema.Schema{
-					"language": {Type: "string"},
-					"name":     {Type: "string"},
-					"x":        {Type: "integer"},
-					"y":        {Type: "integer"},
-				},
-				AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
-			},
+			srvTool(t, &Tool{Name: "out untouched", OutputSchema: &jsonschema.Schema{}}, testToolHandler[Name, Size]),
+			nameSchema,
+			&jsonschema.Schema{},
 		},
 		{
-			NewServerTool("set_schema", "", testToolHandler[struct {
-				X int `json:"x,omitempty"`
-				Y int `json:"y,omitempty"`
-			}], Input(
-				Schema(&jsonschema.Schema{Type: "object"})),
-			),
-			&jsonschema.Schema{
-				Type: "object",
-			},
+			srvTool(t, &Tool{Name: "nil out"}, testToolHandler[Name, any]),
+			nameSchema,
+			nil,
 		},
 	}
 	for _, test := range tests {
-		if diff := cmp.Diff(test.want, test.tool.Tool.InputSchema, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
-			t.Errorf("NewServerTool(%v) mismatch (-want +got):\n%s", test.tool.Tool.Name, diff)
+		if diff := cmp.Diff(test.wantIn, test.tool.tool.InputSchema, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			t.Errorf("newServerTool(%q) input schema mismatch (-want +got):\n%s", test.tool.tool.Name, diff)
+		}
+		if diff := cmp.Diff(test.wantOut, test.tool.tool.OutputSchema, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			t.Errorf("newServerTool(%q) output schema mismatch (-want +got):\n%s", test.tool.tool.Name, diff)
 		}
 	}
 }

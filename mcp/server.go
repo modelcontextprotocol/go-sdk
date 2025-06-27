@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"log"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 const DefaultPageSize = 1000
@@ -37,7 +37,7 @@ type Server struct {
 
 	mu                      sync.Mutex
 	prompts                 *featureSet[*ServerPrompt]
-	tools                   *featureSet[*ServerTool]
+	tools                   *featureSet[*serverTool]
 	resources               *featureSet[*ServerResource]
 	resourceTemplates       *featureSet[*ServerResourceTemplate]
 	sessions                []*ServerSession
@@ -88,7 +88,7 @@ func NewServer(name, version string, opts *ServerOptions) *Server {
 		version:                 version,
 		opts:                    *opts,
 		prompts:                 newFeatureSet(func(p *ServerPrompt) string { return p.Prompt.Name }),
-		tools:                   newFeatureSet(func(t *ServerTool) string { return t.Tool.Name }),
+		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:               newFeatureSet(func(r *ServerResource) string { return r.Resource.URI }),
 		resourceTemplates:       newFeatureSet(func(t *ServerResourceTemplate) string { return t.ResourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
@@ -118,55 +118,44 @@ func (s *Server) RemovePrompts(names ...string) {
 		func() bool { return s.prompts.remove(names...) })
 }
 
-// AddTools adds the given tools to the server,
-// replacing any with the same names.
-// The arguments must not be modified after this call.
-//
-// AddTools panics if errors are detected.
-func (s *Server) AddTools(tools ...*ServerTool) {
-	if err := s.addToolsErr(tools...); err != nil {
+// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// The tool's input schema must be non-nil.
+// The Tool argument must not be modified after this call.
+func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	// TODO(jba): This is a breaking behavior change. Add before v0.2.0?
+	if t.InputSchema == nil {
+		log.Printf("mcp: tool %q has a nil input schema. This will panic in a future release.", t.Name)
+		// panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
+	}
+	if err := addToolErr(s, t, h); err != nil {
 		panic(err)
 	}
 }
 
-// addToolsErr is like [AddTools], but returns an error instead of panicking.
-func (s *Server) addToolsErr(tools ...*ServerTool) error {
-	// Only notify if something could change.
-	if len(tools) == 0 {
-		return nil
+// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// If the tool's input schema is nil, it is set to the schema inferred from the In
+// type parameter, using [jsonschema.For].
+// If the tool's output schema is nil and the Out type parameter is not the empty
+// interface, then the output schema is set to the schema inferred from Out.
+// The Tool argument must not be modified after this call.
+func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
+	if err := addToolErr(s, t, h); err != nil {
+		panic(err)
 	}
-	// Wrap the user's Handlers with rawHandlers that take a json.RawMessage.
-	for _, st := range tools {
-		if st.rawHandler == nil {
-			// This ServerTool was not created with NewServerTool.
-			if st.Handler == nil {
-				return fmt.Errorf("AddTools: tool %q has no handler", st.Tool.Name)
-			}
-			st.rawHandler = newRawHandler(st)
-			// Resolve the schemas, with no base URI. We don't expect tool schemas to
-			// refer outside of themselves.
-			if st.Tool.InputSchema != nil {
-				r, err := st.Tool.InputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-				if err != nil {
-					return err
-				}
-				st.inputResolved = r
-			}
+}
 
-			// if st.Tool.OutputSchema != nil {
-			// 	st.outputResolved, err := st.Tool.OutputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-			// 	if err != nil {
-			// 		return err
-			// 	}
-			// }
-		}
+func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
+	defer util.Wrapf(&err, "adding tool %q", t.Name)
+	st, err := newServerTool(t, h)
+	if err != nil {
+		return err
 	}
-
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
-	// TODO: surface notify error here?
+	// TODO: Batch these changes by size and time? The typescript SDK doesn't.
+	// TODO: Surface notify error here? best not, in case we need to batch.
 	s.changeAndNotify(notificationToolListChanged, &ToolListChangedParams{},
-		func() bool { s.tools.add(tools...); return true })
+		func() bool { s.tools.add(st); return true })
 	return nil
 }
 
@@ -293,22 +282,22 @@ func (s *Server) listTools(_ context.Context, _ *ServerSession, params *ListTool
 	if params == nil {
 		params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, params, &ListToolsResult{}, func(res *ListToolsResult, tools []*ServerTool) {
+	return paginateList(s.tools, s.opts.PageSize, params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
-			res.Tools = append(res.Tools, t.Tool)
+			res.Tools = append(res.Tools, t.tool)
 		}
 	})
 }
 
 func (s *Server) callTool(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error) {
 	s.mu.Lock()
-	tool, ok := s.tools.get(params.Name)
+	st, ok := s.tools.get(params.Name)
 	s.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("%s: unknown tool %q", jsonrpc2.ErrInvalidParams, params.Name)
 	}
-	return tool.rawHandler(ctx, cc, params)
+	return st.handler(ctx, cc, params)
 }
 
 func (s *Server) listResources(_ context.Context, _ *ServerSession, params *ListResourcesParams) (*ListResourcesResult, error) {

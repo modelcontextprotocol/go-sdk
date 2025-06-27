@@ -22,12 +22,14 @@ func TestList(t *testing.T) {
 	defer serverSession.Close()
 
 	t.Run("tools", func(t *testing.T) {
-		toolA := mcp.NewServerTool("apple", "apple tool", SayHi)
-		toolB := mcp.NewServerTool("banana", "banana tool", SayHi)
-		toolC := mcp.NewServerTool("cherry", "cherry tool", SayHi)
-		tools := []*mcp.ServerTool{toolA, toolB, toolC}
-		wantTools := []*mcp.Tool{toolA.Tool, toolB.Tool, toolC.Tool}
-		server.AddTools(tools...)
+		var wantTools []*mcp.Tool
+		for _, name := range []string{"apple", "banana", "cherry"} {
+			wantTools = append(wantTools, &mcp.Tool{Name: name, Description: name + " tool"})
+		}
+
+		for _, t := range wantTools {
+			mcp.AddTool(server, t, SayHi)
+		}
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListTools(ctx, nil)
 			if err != nil {
