@@ -137,7 +137,7 @@ func (h *LoggingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Handle implements [slog.Handler.Handle] by writing the Record to a JSONHandler,
-// then calling [ServerSession.LoggingMesssage] with the result.
+// then calling [ServerSession.LoggingMessage] with the result.
 func (h *LoggingHandler) Handle(ctx context.Context, r slog.Record) error {
 	err := h.handle(ctx, r)
 	// TODO(jba): find a way to surface the error.
