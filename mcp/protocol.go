@@ -39,70 +39,18 @@ type Annotations struct {
 	Priority float64 `json:"priority,omitempty"`
 }
 
-type CallToolParams struct {
-	// This property is reserved by the protocol to allow clients and servers to
-	// attach additional metadata to their responses.
-	Meta      `json:"_meta,omitempty"`
-	Arguments any    `json:"arguments,omitempty"`
-	Name      string `json:"name"`
-}
-
-func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
-func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
+type CallToolParams = CallToolParamsFor[any]
 
 type CallToolParamsFor[In any] struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta      `json:"_meta,omitempty"`
-	Arguments In     `json:"arguments,omitempty"`
 	Name      string `json:"name"`
+	Arguments In     `json:"arguments,omitempty"`
 }
 
 // The server's response to a tool call.
-type CallToolResult struct {
-	// This property is reserved by the protocol to allow clients and servers to
-	// attach additional metadata to their responses.
-	Meta `json:"_meta,omitempty"`
-	// A list of content objects that represent the unstructured result of the tool
-	// call.
-	Content []Content `json:"content"`
-	// Whether the tool call ended in an error.
-	//
-	// If not set, this is assumed to be false (the call was successful).
-	//
-	// Any errors that originate from the tool should be reported inside the result
-	// object, with isError set to true, not as an MCP protocol-level error
-	// response. Otherwise, the LLM would not be able to see that an error occurred
-	// and self-correct.
-	//
-	// However, any errors in finding the tool, an error indicating that the
-	// server does not support tool calls, or any other exceptional conditions,
-	// should be reported as an MCP error response.
-	IsError bool `json:"isError,omitempty"`
-	// An optional JSON object that represents the structured result of the tool
-	// call.
-	// TODO(jba,rfindley): should this be any?
-	StructuredContent map[string]any `json:"structuredContent,omitempty"`
-}
-
-// UnmarshalJSON handles the unmarshalling of content into the Content
-// interface.
-func (x *CallToolResult) UnmarshalJSON(data []byte) error {
-	type res CallToolResult // avoid recursion
-	var wire struct {
-		res
-		Content []*wireContent `json:"content"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-	var err error
-	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
-		return err
-	}
-	*x = CallToolResult(wire.res)
-	return nil
-}
+type CallToolResult = CallToolResultFor[any]
 
 type CallToolResultFor[Out any] struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -111,6 +59,9 @@ type CallToolResultFor[Out any] struct {
 	// A list of content objects that represent the unstructured result of the tool
 	// call.
 	Content []Content `json:"content"`
+	// An optional JSON object that represents the structured result of the tool
+	// call.
+	StructuredContent Out `json:"structuredContent,omitempty"`
 	// Whether the tool call ended in an error.
 	//
 	// If not set, this is assumed to be false (the call was successful).
@@ -124,9 +75,6 @@ type CallToolResultFor[Out any] struct {
 	// server does not support tool calls, or any other exceptional conditions,
 	// should be reported as an MCP error response.
 	IsError bool `json:"isError,omitempty"`
-	// An optional JSON object that represents the structured result of the tool
-	// call.
-	StructuredContent Out `json:"structuredContent,omitempty"`
 }
 
 // UnmarshalJSON handles the unmarshalling of content into the Content
@@ -147,6 +95,9 @@ func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
 	*x = CallToolResultFor[Out](wire.res)
 	return nil
 }
+
+func (x *CallToolParamsFor[Out]) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CallToolParamsFor[Out]) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to

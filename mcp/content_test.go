@@ -7,7 +7,6 @@ package mcp_test
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -94,7 +93,6 @@ func TestContent(t *testing.T) {
 			t.Errorf("json.Marshal(%v) mismatch (-want +got):\n%s", test.in, diff)
 		}
 		result := fmt.Sprintf(`{"content":[%s]}`, string(got))
-		log.Println(result)
 		var out mcp.CallToolResult
 		if err := json.Unmarshal([]byte(result), &out); err != nil {
 			t.Fatal(err)

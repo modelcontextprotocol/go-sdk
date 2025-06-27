@@ -17,7 +17,7 @@ import (
 // A ToolHandler handles a call to tools/call.
 // [CallToolParams.Arguments] will contain a map[string]any that has been validated
 // against the input schema.
-// Perhaps this should be an alias for ToolHandlerFor[map[string]any, map[string]any].
+// TODO: Perhaps this should be an alias for ToolHandlerFor[map[string]any, map[string]any]?
 type ToolHandler func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
