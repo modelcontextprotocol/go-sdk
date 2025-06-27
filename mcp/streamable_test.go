@@ -22,7 +22,25 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
+
+// Test tool types for streamable test
+type testToolInput struct{}
+
+func (t *testToolInput) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[testToolInput]()
+}
+
+func (t *testToolInput) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, t)
+}
+
+type testToolOutput struct{}
+
+func (t *testToolOutput) Result() (*CallToolResult, error) {
+	return &CallToolResult{}, nil
+}
 
 func TestStreamableTransports(t *testing.T) {
 	// This test checks that the streamable server and client transports can
@@ -32,7 +50,7 @@ func TestStreamableTransports(t *testing.T) {
 
 	// 1. Create a server with a simple "greet" tool.
 	server := NewServer("testServer", "v1.0.0", nil)
-	server.AddTools(NewServerTool("greet", "say hi", sayHi))
+	server.AddTools(NewServerTool[*hiParams, *hiResult]("greet", "say hi", sayHi))
 
 	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 	// cookie-checking middleware.
@@ -316,12 +334,15 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer("testServer", "v1.0.0", nil)
-			tool := NewServerTool("tool", "test tool", func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
+
+			testHandler := func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[json.RawMessage]) (*testToolOutput, error) {
 				if test.tool != nil {
 					test.tool(t, ctx, ss)
 				}
-				return &CallToolResultFor[any]{}, nil
-			})
+				return &testToolOutput{}, nil
+			}
+
+			tool := NewServerTool[*testToolInput, *testToolOutput]("tool", "test tool", testHandler)
 			server.AddTools(tool)
 
 			// Start the streamable handler.

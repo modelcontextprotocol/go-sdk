@@ -6,10 +6,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -19,12 +21,39 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[SayHiParams]) (*mcp.CallToolResultFor[any], error) {
-	return &mcp.CallToolResultFor[any]{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
-		},
-	}, nil
+func (s *SayHiParams) Schema() (*jsonschema.Schema, error) {
+	return jsonschema.For[SayHiParams]()
+}
+
+func (s *SayHiParams) SetParams(raw json.RawMessage) error {
+	return json.Unmarshal(raw, s)
+}
+
+type SayHiResult struct{}
+
+func (s *SayHiResult) Result() (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{}, nil
+}
+
+func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[json.RawMessage]) (*SayHiResult, error) {
+	var args SayHiParams
+	if params.Arguments != nil {
+		if err := args.SetParams(params.Arguments); err != nil {
+			return nil, err
+		}
+	}
+
+	result := &SayHiResult{}
+	toolResult, err := result.Result()
+	if err != nil {
+		return nil, err
+	}
+
+	toolResult.Content = []mcp.Content{
+		&mcp.TextContent{Text: "Hi " + args.Name},
+	}
+
+	return result, nil
 }
 
 func main() {
@@ -35,10 +64,10 @@ func main() {
 	}
 
 	server1 := mcp.NewServer("greeter1", "v0.0.1", nil)
-	server1.AddTools(mcp.NewServerTool("greet1", "say hi", SayHi))
+	server1.AddTools(mcp.NewServerTool[*SayHiParams, *SayHiResult]("greet1", "say hi", SayHi))
 
 	server2 := mcp.NewServer("greeter2", "v0.0.1", nil)
-	server2.AddTools(mcp.NewServerTool("greet2", "say hello", SayHi))
+	server2.AddTools(mcp.NewServerTool[*SayHiParams, *SayHiResult]("greet2", "say hello", SayHi))
 
 	log.Printf("MCP servers serving at %s\n", *httpAddr)
 	handler := mcp.NewSSEHandler(func(request *http.Request) *mcp.Server {
