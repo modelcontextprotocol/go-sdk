@@ -142,6 +142,18 @@ type ClientSession struct {
 	client           *Client
 	initializeResult *InitializeResult
 	keepaliveCancel  context.CancelFunc
+	sessionIDFunc    func() string
+}
+
+func (cs *ClientSession) setSessionIDFunc(f func() string) {
+	cs.sessionIDFunc = f
+}
+
+func (cs *ClientSession) ID() string {
+	if cs.sessionIDFunc == nil {
+		return ""
+	}
+	return cs.sessionIDFunc()
 }
 
 // Close performs a graceful close of the connection, preventing new requests

@@ -36,6 +36,9 @@ type methodHandler any // MethodHandler[*ClientSession] | MethodHandler[*ServerS
 // A Session is either a ClientSession or a ServerSession.
 type Session interface {
 	*ClientSession | *ServerSession
+	// ID returns the session ID, or the empty string if there is none.
+	ID() string
+
 	sendingMethodInfos() map[string]methodInfo
 	receivingMethodInfos() map[string]methodInfo
 	sendingMethodHandler() methodHandler

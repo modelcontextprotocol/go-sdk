@@ -69,7 +69,10 @@ func TestStreamableTransports(t *testing.T) {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer session.Close()
-
+	sid := session.ID()
+	if sid == "" {
+		t.Error("empty session ID")
+	}
 	// 4. The client calls the "greet" tool.
 	params := &CallToolParams{
 		Name:      "greet",
@@ -78,6 +81,9 @@ func TestStreamableTransports(t *testing.T) {
 	got, err := session.CallTool(ctx, params)
 	if err != nil {
 		t.Fatalf("CallTool() failed: %v", err)
+	}
+	if g := session.ID(); g != sid {
+		t.Errorf("session ID: got %q, want %q", g, sid)
 	}
 
 	// 5. Verify that the correct response is received.
