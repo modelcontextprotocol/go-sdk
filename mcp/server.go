@@ -496,11 +496,23 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 type ServerSession struct {
 	server           *Server
 	conn             *jsonrpc2.Connection
+	sessionIDFunc    func() string
 	mu               sync.Mutex
 	logLevel         LoggingLevel
 	initializeParams *InitializeParams
 	initialized      bool
 	keepaliveCancel  context.CancelFunc
+}
+
+func (ss *ServerSession) setSessionIDFunc(f func() string) {
+	ss.sessionIDFunc = f
+}
+
+func (ss *ServerSession) ID() string {
+	if ss.sessionIDFunc == nil {
+		return ""
+	}
+	return ss.sessionIDFunc()
 }
 
 // Ping pings the client.
