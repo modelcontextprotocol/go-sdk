@@ -266,8 +266,6 @@ func ContinueThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Ca
 				Status:         "active",
 				Created:        time.Now(),
 				LastActivity:   time.Now(),
-				Branches:       []string{},
-				Version:        0,
 			}
 
 			return session, nil
