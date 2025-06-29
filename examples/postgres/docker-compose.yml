@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  postgres-mcp-server:
+    build: .
+    environment:
+      DATABASE_URL: "postgres://testuser:testpass@postgres:5432/testdb?sslmode=disable"
+    depends_on:
+      - postgres
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres_data:
