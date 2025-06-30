@@ -1,12 +1,12 @@
 ### PR Tips
 
-- The title should be "package: description".
-For example, "mcp: rename LoggingMessage to Log".
-For more pervasive changes, use "all" instead of a package name.
+Typically, PRs should consist of a single commit, and so should generally follow
+the [rules for Go commit messages](https://go.dev/wiki/CommitMessage), with the following
+changes and additions:
 
-- The commit message should provide context (why this commit?) and describe the changes
+- Markdown is allowed.
+
+- For a pervasive change, use "all" in the title instead of a package name.
+
+- The PR description should provide context (why this change?) and describe the changes
   at a high level. Changes that are obvious from the diffs don't need to be mentioned.
-
-- Mention related issues with 'For #NNN' or 'Fixes #NNN' at the end of the commit message.
-
-- Look for PRs similar to yours in the log of this repo, or the Go repo (github.com/golang/go).
