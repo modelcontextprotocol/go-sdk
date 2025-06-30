@@ -127,7 +127,7 @@ type Schema struct {
 	// https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.7
 	Format string `json:"format,omitempty"`
 
-	// Extra allows for additional keywords beyond those specified
+	// Extra allows for additional keywords beyond those specified.
 	Extra map[string]any `json:"-"`
 
 	// computed fields

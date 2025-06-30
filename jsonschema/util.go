@@ -312,7 +312,9 @@ func assert(cond bool, msg string) {
 // marshalStructWithMap calls json.Marshal on a value of type T, so T must not
 // have a MarshalJSON method that calls this function, on pain of infinite regress.
 //
-// note that there is a similar function in mcp/util.go, but they are not the same
+// Note that there is a similar function in mcp/util.go, but they are not the same.
+// Here the function requires `-` json tag, does not clear the mapField map,
+// and handles embedded struct due to the implementation of jsonNames in this package.
 //
 // TODO: avoid this restriction on T by forcing it to marshal in a default way.
 // See https://go.dev/play/p/EgXKJHxEx_R.
@@ -357,7 +359,10 @@ func marshalStructWithMap[T any](s *T, mapField string) ([]byte, error) {
 
 // unmarshalStructWithMap is the inverse of marshalStructWithMap.
 // T has the same restrictions as in that function.
-// note that there is a similar function in mcp/util.go, but they are not the same
+//
+// Note that there is a similar function in mcp/util.go, but they are not the same.
+// Here jsonNames also returns fields from embedded structs, hence this function
+// handles embedded structs as well.
 func unmarshalStructWithMap[T any](data []byte, v *T, mapField string) error {
 	// Unmarshal into the struct, ignoring unknown fields.
 	if err := json.Unmarshal(data, v); err != nil {
@@ -383,7 +388,9 @@ var jsonNamesMap sync.Map // from reflect.Type to map[string]bool
 // jsonNames returns the set of JSON object keys that t will marshal into,
 // including fields from embedded structs in t.
 // t must be a struct type.
-// note that there is a similar function in mcp/util.go, but they are not the same
+//
+// Note that there is a similar function in mcp/util.go, but they are not the same
+// Here the function recurses over embedded structs and includes fields from them.
 func jsonNames(t reflect.Type) map[string]bool {
 	// Lock not necessary: at worst we'll duplicate work.
 	if val, ok := jsonNamesMap.Load(t); ok {
