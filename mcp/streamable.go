@@ -254,7 +254,7 @@ func (s *StreamableServerTransport) Connect(context.Context) (Connection, error)
 //
 // Currently, this is implemented in [ServerSession.handle]. This is not ideal,
 // because it means that a user of the MCP package couldn't implement the
-// streamable transport, as they'd lack this priviledged access.
+// streamable transport, as they'd lack this privileged access.
 //
 // If we ever wanted to expose this mechanism, we have a few options:
 //  1. Make ServerSession an interface, and provide an implementation of

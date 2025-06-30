@@ -22,7 +22,7 @@ type SayHiParams struct {
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[SayHiParams]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Name},
+			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
 		},
 	}, nil
 }

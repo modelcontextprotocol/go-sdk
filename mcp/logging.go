@@ -137,7 +137,7 @@ func (h *LoggingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Handle implements [slog.Handler.Handle] by writing the Record to a JSONHandler,
-// then calling [ServerSession.LoggingMesssage] with the result.
+// then calling [ServerSession.LoggingMessage] with the result.
 func (h *LoggingHandler) Handle(ctx context.Context, r slog.Record) error {
 	err := h.handle(ctx, r)
 	// TODO(jba): find a way to surface the error.
@@ -185,5 +185,5 @@ func (h *LoggingHandler) handle(ctx context.Context, r slog.Record) error {
 	// documentation says not to.
 	// In this case logging is a service to clients, not a means for debugging the
 	// server, so we want to cancel the log message.
-	return h.ss.LoggingMessage(ctx, params)
+	return h.ss.Log(ctx, params)
 }

@@ -1,9 +1,6 @@
 # MCP Go SDK
 
-<!-- TODO: update pkgsite links here to point to the modelcontextprotocol
-module, once it exists. -->
-
-[![PkgGoDev](https://pkg.go.dev/badge/golang.org/x/tools)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an unreleased implementation of the official Go
 software development kit (SDK) for the Model Context Protocol (MCP).
@@ -13,6 +10,18 @@ and subject to breaking changes. Please test it out and file bug reports or API
 proposals, but don't use it in real projects. See the issue tracker for known
 issues and missing features. We aim to release a stable version of the SDK in
 August, 2025.
+
+## Design
+
+The design doc for this SDK is at [design.md](./design/design.md), which was
+initially reviewed at
+[modelcontextprotocol/discussions/364](https://github.com/orgs/modelcontextprotocol/discussions/364).
+
+Further design discussion should occur in
+[issues](https://github.com/modelcontextprotocol/go-sdk/issues) (for concrete
+proposals) or
+[discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
+open-ended discussion. See CONTRIBUTING.md for details.
 
 ## Package documentation
 
@@ -40,15 +49,6 @@ with its client over stdin/stdout:
 %include server/server.go -
 
 The `examples/` directory contains more example clients and servers.
-
-## Design
-
-The design doc for this SDK is at [design.md](./design/design.md), which was
-initially reviewed at
-[modelcontextprotocol/discussions/364](https://github.com/orgs/modelcontextprotocol/discussions/364).
-
-Further design discussion should occur in GitHub issues. See CONTRIBUTING.md
-for details.
 
 ## Acknowledgements
 

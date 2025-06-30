@@ -23,7 +23,7 @@ type Annotations struct {
 	// Describes who the intended customer of this object or data is.
 	//
 	// It can include multiple entries to indicate content useful for multiple
-	// audiences (e.g., `["user", "assistant"]`).
+	// audiences (e.g., []Role{"user", "assistant"}).
 	Audience []Role `json:"audience,omitempty"`
 	// The moment the resource was last modified, as an ISO 8601 formatted string.
 	//
@@ -71,12 +71,12 @@ type CallToolResult struct {
 	//
 	// If not set, this is assumed to be false (the call was successful).
 	//
-	// Any errors that originate from the tool SHOULD be reported inside the result
-	// object, with `isError` set to true, _not_ as an MCP protocol-level error
+	// Any errors that originate from the tool should be reported inside the result
+	// object, with isError set to true, not as an MCP protocol-level error
 	// response. Otherwise, the LLM would not be able to see that an error occurred
 	// and self-correct.
 	//
-	// However, any errors in _finding_ the tool, an error indicating that the
+	// However, any errors in finding the tool, an error indicating that the
 	// server does not support tool calls, or any other exceptional conditions,
 	// should be reported as an MCP error response.
 	IsError bool `json:"isError,omitempty"`
@@ -116,8 +116,8 @@ type CallToolResultFor[Out any] struct {
 	//
 	// If not set, this is assumed to be false (the call was successful).
 	//
-	// Any errors that originate from the tool SHOULD be reported inside the result
-	// object, with `isError` set to true, not as an MCP protocol-level error
+	// Any errors that originate from the tool should be reported inside the result
+	// object, with isError set to true, not as an MCP protocol-level error
 	// response. Otherwise, the LLM would not be able to see that an error occurred
 	// and self-correct.
 	//
@@ -130,16 +130,35 @@ type CallToolResultFor[Out any] struct {
 	StructuredContent Out `json:"structuredContent,omitempty"`
 }
 
+// UnmarshalJSON handles the unmarshalling of content into the Content
+// interface.
+func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
+	type res CallToolResultFor[Out] // avoid recursion
+	var wire struct {
+		res
+		Content []*wireContent `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
+		return err
+	}
+	*x = CallToolResultFor[Out](wire.res)
+	return nil
+}
+
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
-	// An optional string describing the reason for the cancellation. This MAY be
+	// An optional string describing the reason for the cancellation. This may be
 	// logged or presented to the user.
 	Reason string `json:"reason,omitempty"`
 	// The ID of the request to cancel.
 	//
-	// This MUST correspond to the ID of a request previously issued in the same
+	// This must correspond to the ID of a request previously issued in the same
 	// direction.
 	RequestID any `json:"requestId"`
 }
@@ -256,21 +275,21 @@ type CreateMessageParams struct {
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
 	// A request to include context from one or more MCP servers (including the
-	// caller), to be attached to the prompt. The client MAY ignore this request.
+	// caller), to be attached to the prompt. The client may ignore this request.
 	IncludeContext string `json:"includeContext,omitempty"`
 	// The maximum number of tokens to sample, as requested by the server. The
-	// client MAY choose to sample fewer tokens than requested.
+	// client may choose to sample fewer tokens than requested.
 	MaxTokens int64              `json:"maxTokens"`
 	Messages  []*SamplingMessage `json:"messages"`
 	// Optional metadata to pass through to the LLM provider. The format of this
 	// metadata is provider-specific.
 	Metadata struct{} `json:"metadata,omitempty"`
-	// The server's preferences for which model to select. The client MAY ignore
+	// The server's preferences for which model to select. The client may ignore
 	// these preferences.
 	ModelPreferences *ModelPreferences `json:"modelPreferences,omitempty"`
 	StopSequences    []string          `json:"stopSequences,omitempty"`
 	// An optional system prompt the server wants to use for sampling. The client
-	// MAY modify or omit this prompt.
+	// may modify or omit this prompt.
 	SystemPrompt string  `json:"systemPrompt,omitempty"`
 	Temperature  float64 `json:"temperature,omitempty"`
 }
@@ -324,7 +343,7 @@ type InitializeParams struct {
 	Capabilities *ClientCapabilities `json:"capabilities"`
 	ClientInfo   *implementation     `json:"clientInfo"`
 	// The latest version of the Model Context Protocol that the client supports.
-	// The client MAY decide to support older versions as well.
+	// The client may decide to support older versions as well.
 	ProtocolVersion string `json:"protocolVersion"`
 }
 
@@ -342,11 +361,11 @@ type InitializeResult struct {
 	//
 	// This can be used by clients to improve the LLM's understanding of available
 	// tools, resources, etc. It can be thought of like a "hint" to the model. For
-	// example, this information MAY be added to the system prompt.
+	// example, this information may be added to the system prompt.
 	Instructions string `json:"instructions,omitempty"`
 	// The version of the Model Context Protocol that the server wants to use. This
 	// may not match the version that the client requested. If the client cannot
-	// support this version, it MUST disconnect.
+	// support this version, it must disconnect.
 	ProtocolVersion string          `json:"protocolVersion"`
 	ServerInfo      *implementation `json:"serverInfo"`
 }
@@ -512,12 +531,12 @@ func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) 
 type ModelHint struct {
 	// A hint for a model name.
 	//
-	// The client SHOULD treat this as a substring of a model name; for example: -
+	// The client should treat this as a substring of a model name; for example: -
 	// `claude-3-5-sonnet` should match `claude-3-5-sonnet-20241022` - `sonnet`
 	// should match `claude-3-5-sonnet-20241022`, `claude-3-sonnet-20240229`, etc. -
 	// `claude` should match any Claude model
 	//
-	// The client MAY also map the string to a different provider's model name or a
+	// The client may also map the string to a different provider's model name or a
 	// different model family, as long as it fills a similar niche; for example: -
 	// `gemini-1.5-flash` could match `claude-3-haiku-20240307`
 	Name string `json:"name,omitempty"`
@@ -532,7 +551,7 @@ type ModelHint struct {
 // on. This interface allows servers to express their priorities across multiple
 // dimensions to help clients make an appropriate selection for their use case.
 //
-// These preferences are always advisory. The client MAY ignore them. It is also
+// These preferences are always advisory. The client may ignore them. It is also
 // up to the client to decide how to interpret these preferences and how to
 // balance them against other considerations.
 type ModelPreferences struct {
@@ -541,10 +560,10 @@ type ModelPreferences struct {
 	CostPriority float64 `json:"costPriority,omitempty"`
 	// Optional hints to use for model selection.
 	//
-	// If multiple hints are specified, the client MUST evaluate them in order (such
+	// If multiple hints are specified, the client must evaluate them in order (such
 	// that the first match is taken).
 	//
-	// The client SHOULD prioritize these hints over the numeric priorities, but MAY
+	// The client should prioritize these hints over the numeric priorities, but may
 	// still use the priorities to select from ambiguous matches.
 	Hints []*ModelHint `json:"hints,omitempty"`
 	// How much to prioritize intelligence and capabilities when selecting a model.
@@ -624,7 +643,7 @@ func (x *PromptListChangedParams) SetProgressToken(t any) { setProgressToken(x, 
 
 // Describes a message returned as part of a prompt.
 //
-// This is similar to `SamplingMessage`, but also supports the embedding of
+// This is similar to SamplingMessage, but also supports the embedding of
 // resources from the MCP server.
 type PromptMessage struct {
 	Content Content `json:"content"`
@@ -697,7 +716,7 @@ type Resource struct {
 	// easily understood, even by those unfamiliar with domain-specific terminology.
 	//
 	// If not provided, the name should be used for display (except for Tool, where
-	// `annotations.title` should be given precedence over using `name`, if
+	// Annotations.Title should be given precedence over using name, if
 	// present).
 	Title string `json:"title,omitempty"`
 	// The URI of this resource.
@@ -735,7 +754,7 @@ type ResourceTemplate struct {
 	// easily understood, even by those unfamiliar with domain-specific terminology.
 	//
 	// If not provided, the name should be used for display (except for Tool, where
-	// `annotations.title` should be given precedence over using `name`, if
+	// Annotations.Title should be given precedence over using name, if
 	// present).
 	Title string `json:"title,omitempty"`
 	// A URI template (according to RFC 6570) that can be used to construct resource
@@ -845,9 +864,9 @@ type Tool struct {
 
 // Additional properties describing a Tool to clients.
 //
-// NOTE: all properties in ToolAnnotations are **hints**. They are not
+// NOTE: all properties in ToolAnnotations are hints. They are not
 // guaranteed to provide a faithful description of tool behavior (including
-// descriptive properties like `title`).
+// descriptive properties like title).
 //
 // Clients should never make tool use decisions based on ToolAnnotations
 // received from untrusted servers.
@@ -855,14 +874,14 @@ type ToolAnnotations struct {
 	// If true, the tool may perform destructive updates to its environment. If
 	// false, the tool performs only additive updates.
 	//
-	// (This property is meaningful only when `readOnlyHint == false`)
+	// (This property is meaningful only when ReadOnlyHint == false.)
 	//
 	// Default: true
-	DestructiveHint bool `json:"destructiveHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
 	// If true, calling the tool repeatedly with the same arguments will have no
 	// additional effect on the its environment.
 	//
-	// (This property is meaningful only when `readOnlyHint == false`)
+	// (This property is meaningful only when ReadOnlyHint == false.)
 	//
 	// Default: false
 	IdempotentHint bool `json:"idempotentHint,omitempty"`
@@ -871,7 +890,7 @@ type ToolAnnotations struct {
 	// a web search tool is open, whereas that of a memory tool is not.
 	//
 	// Default: true
-	OpenWorldHint bool `json:"openWorldHint,omitempty"`
+	OpenWorldHint *bool `json:"openWorldHint,omitempty"`
 	// If true, the tool does not modify its environment.
 	//
 	// Default: false

@@ -68,6 +68,15 @@ This process is similar to the [Go proposal
 process](https://github.com/golang/proposal), but is necessarily lighter weight
 to accommodate the greater rate of change expected for the SDK.
 
+### Design discussion
+
+For open ended design discussion (anything that doesn't fall into the issue
+categories above), use [GitHub
+Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions).
+Ideally, each discussion should be focused on one aspect of the design. For
+example: Tool Binding and Session APIs would be two separate discussions.
+When discussions reach a consensus, they should be promoted into proposals.
+
 ## Contributing code
 
 The project uses GitHub pull requests (PRs) to review changes.
@@ -95,6 +104,19 @@ copyright header following the format below:
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 ```
+
+### Updating the README
+
+The top-level `README.md` file is generated from `internal/readme/README.src.md`
+and should not be edited directly. To update the README:
+
+1. Make your changes to `internal/readme/README.src.md`
+2. Run `make` in the `internal/readme/` directory to regenerate `README.md`
+3. Commit both files together
+
+The CI system will automatically check that the README is up-to-date by running
+`make` and verifying no changes result. If you see a CI failure about the
+README being out of sync, follow the steps above to regenerate it.
 
 ## Code of conduct
 

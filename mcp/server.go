@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -59,6 +60,10 @@ type ServerOptions struct {
 	ProgressNotificationHandler func(context.Context, *ServerSession, *ProgressNotificationParams)
 	// If non-nil, called when "completion/complete" is received.
 	CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
+	// If non-zero, defines an interval for regular "ping" requests.
+	// If the peer fails to respond to pings originating from the keepalive check,
+	// the session is automatically closed.
+	KeepAlive time.Duration
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -422,7 +427,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 		}
 		// TODO(jba): figure out mime type. Omit for now: Server.readResource will fill it in.
 		return &ReadResourceResult{Contents: []*ResourceContents{
-			&ResourceContents{URI: params.URI, Blob: data},
+			{URI: params.URI, Blob: data},
 		}}, nil
 	}
 }
@@ -469,6 +474,9 @@ func (s *Server) Connect(ctx context.Context, t Transport) (*ServerSession, erro
 }
 
 func (s *Server) callInitializedHandler(ctx context.Context, ss *ServerSession, params *InitializedParams) (Result, error) {
+	if s.opts.KeepAlive > 0 {
+		ss.startKeepalive(s.opts.KeepAlive)
+	}
 	return callNotificationHandler(ctx, s.opts.InitializedHandler, ss, params)
 }
 
@@ -501,6 +509,7 @@ type ServerSession struct {
 	logLevel         LoggingLevel
 	initializeParams *InitializeParams
 	initialized      bool
+	keepaliveCancel  context.CancelFunc
 }
 
 // Ping pings the client.
@@ -519,12 +528,10 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 	return handleSend[*CreateMessageResult](ctx, ss, methodCreateMessage, orZero[Params](params))
 }
 
-// LoggingMessage sends a logging message to the client.
+// Log sends a log message to the client.
 // The message is not sent if the client has not called SetLevel, or if its level
 // is below that of the last SetLevel.
-//
-// TODO(jba): rename to Log or LogMessage. A logging message is the thing that is sent to logging.
-func (ss *ServerSession) LoggingMessage(ctx context.Context, params *LoggingMessageParams) error {
+func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
 	logLevel := ss.logLevel
 	ss.mu.Unlock()
@@ -691,12 +698,25 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*e
 // requests from being handled, and waiting for ongoing requests to return.
 // Close then terminates the connection.
 func (ss *ServerSession) Close() error {
+	if ss.keepaliveCancel != nil {
+		// Note: keepaliveCancel access is safe without a mutex because:
+		// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+		// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
+		// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
+		//    Close is idempotent and conn.Close() handles concurrent calls correctly
+		ss.keepaliveCancel()
+	}
 	return ss.conn.Close()
 }
 
 // Wait waits for the connection to be closed by the client.
 func (ss *ServerSession) Wait() error {
 	return ss.conn.Wait()
+}
+
+// startKeepalive starts the keepalive mechanism for this server session.
+func (ss *ServerSession) startKeepalive(interval time.Duration) {
+	startKeepalive(ss, interval, &ss.keepaliveCancel)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

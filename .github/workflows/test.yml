@@ -8,8 +8,25 @@ on:
   
 permissions:
   contents: read
-  
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+    - name: Check out code
+      uses: actions/checkout@v4
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "The following files are not properly formatted:"
+          echo "$unformatted"
+          exit 1
+        fi
+        echo "All Go files are properly formatted"
+  
   test:
     runs-on: ubuntu-latest
     strategy:
