@@ -479,6 +479,7 @@ func TestCompleteResult(t *testing.T) {
 			}
 		})
 	}
+}
 
 func TestContentUnmarshal(t *testing.T) {
 	// Verify that types with a Content field round-trip properly.
