@@ -193,7 +193,7 @@ type CompleteParamsArgument struct {
 // CompleteContext represents additional, optional context for completions.
 type CompleteContext struct {
 	// Previously-resolved variables in a URI template or prompt.
-	Arguments []string `json:"arguments,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 // CompleteReference represents a completion reference type (ref/prompt ref/resource).

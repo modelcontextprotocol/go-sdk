@@ -269,10 +269,13 @@ func TestCompleteParams(t *testing.T) {
 					Value: "go",
 				},
 				Context: &CompleteContext{
-					Arguments: []string{"var1", "var2"},
+					Arguments: map[string]string{
+						"framework":    "mcp",
+						"language": "python",
+					},
 				},
 			},
-			want: `{"argument":{"name":"language","value":"go"},"context":{"arguments":["var1","var2"]},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
+			want: `{"argument":{"name":"language","value":"go"},"context":{"arguments":{"framework":"mcp","language":"python"}},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
 		},
 		{
 			name: "PromptCompletionEmptyContextArguments",
@@ -286,7 +289,7 @@ func TestCompleteParams(t *testing.T) {
 					Value: "go",
 				},
 				Context: &CompleteContext{
-					Arguments: []string{},
+					Arguments: map[string]string{},
 				},
 			},
 			want: `{"argument":{"name":"language","value":"go"},"context":{},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
@@ -317,20 +320,23 @@ func TestCompleteParams(t *testing.T) {
 		},
 		{
 			name: "PromptCompletionWithContext",
-			in:   `{"argument":{"name":"language","value":"go"},"context":{"arguments":["var1","var2"]},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
+			in:   `{"argument":{"name":"language","value":"go"},"context":{"arguments":{"framework":"mcp","language":"python"}},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
 			want: CompleteParams{
 				Ref:      &CompleteReference{Type: "ref/prompt", Name: "my_prompt"},
 				Argument: CompleteParamsArgument{Name: "language", Value: "go"},
-				Context:  &CompleteContext{Arguments: []string{"var1", "var2"}},
+				Context: &CompleteContext{Arguments: map[string]string{
+					"framework":    "mcp",
+					"language": "python",
+				}},
 			},
 		},
 		{
 			name: "PromptCompletionEmptyContextArguments",
-			in:   `{"argument":{"name":"language","value":"go"},"context":{"arguments":[]},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
+			in:   `{"argument":{"name":"language","value":"go"},"context":{"arguments":{}},"ref":{"type":"ref/prompt","name":"my_prompt"}}`,
 			want: CompleteParams{
 				Ref:      &CompleteReference{Type: "ref/prompt", Name: "my_prompt"},
 				Argument: CompleteParamsArgument{Name: "language", Value: "go"},
-				Context:  &CompleteContext{Arguments: []string{}},
+				Context:  &CompleteContext{Arguments: map[string]string{}},
 			},
 		},
 		{
