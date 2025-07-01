@@ -50,7 +50,7 @@ type Connection interface {
 	Read(context.Context) (JSONRPCMessage, error)
 	Write(context.Context, JSONRPCMessage) error
 	Close() error // may be called concurrently by both peers
-	sessionID() string
+	SessionID() string
 }
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
@@ -95,7 +95,7 @@ type binder[T handler] interface {
 
 type handler interface {
 	handle(ctx context.Context, req *JSONRPCRequest) (any, error)
-	setSessionIDFunc(func() string) // so Sessions can get the session ID
+	setConn(Connection)
 }
 
 func connect[H handler](ctx context.Context, t Transport, b binder[H]) (H, error) {
@@ -126,7 +126,7 @@ func connect[H handler](ctx context.Context, t Transport, b binder[H]) (H, error
 		},
 	})
 	assert(preempter.conn != nil, "unbound preempter")
-	h.setSessionIDFunc(conn.sessionID)
+	h.setConn(conn)
 	return h, nil
 }
 
@@ -203,7 +203,7 @@ type loggingConn struct {
 	w        io.Writer
 }
 
-func (c *loggingConn) sessionID() string { return c.delegate.sessionID() }
+func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
 
 // loggingReader is a stream middleware that logs incoming messages.
 func (s *loggingConn) Read(ctx context.Context) (JSONRPCMessage, error) {
@@ -290,7 +290,7 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	}
 }
 
-func (c *ioConn) sessionID() string { return "" }
+func (c *ioConn) SessionID() string { return "" }
 
 // addBatch records a msgBatch for an incoming batch payload.
 // It returns an error if batch is malformed, containing previously seen IDs.

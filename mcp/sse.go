@@ -264,7 +264,7 @@ type sseServerConn struct {
 }
 
 // TODO(jba): get the session ID. (Not urgent because SSE transports have been removed from the spec.)
-func (s sseServerConn) sessionID() string { return "" }
+func (s sseServerConn) SessionID() string { return "" }
 
 // Read implements jsonrpc2.Reader.
 func (s sseServerConn) Read(ctx context.Context) (JSONRPCMessage, error) {
@@ -522,7 +522,7 @@ type sseClientConn struct {
 }
 
 // TODO(jba): get the session ID. (Not urgent because SSE transports have been removed from the spec.)
-func (c *sseClientConn) sessionID() string { return "" }
+func (c *sseClientConn) SessionID() string { return "" }
 
 func (c *sseClientConn) isDone() bool {
 	c.mu.Lock()

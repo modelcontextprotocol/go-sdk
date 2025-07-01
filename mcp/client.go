@@ -142,18 +142,18 @@ type ClientSession struct {
 	client           *Client
 	initializeResult *InitializeResult
 	keepaliveCancel  context.CancelFunc
-	sessionIDFunc    func() string
+	mcpConn          Connection
 }
 
-func (cs *ClientSession) setSessionIDFunc(f func() string) {
-	cs.sessionIDFunc = f
+func (cs *ClientSession) setConn(c Connection) {
+	cs.mcpConn = c
 }
 
 func (cs *ClientSession) ID() string {
-	if cs.sessionIDFunc == nil {
+	if cs.mcpConn == nil {
 		return ""
 	}
-	return cs.sessionIDFunc()
+	return cs.mcpConn.SessionID()
 }
 
 // Close performs a graceful close of the connection, preventing new requests

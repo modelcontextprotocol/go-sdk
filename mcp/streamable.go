@@ -161,7 +161,7 @@ func NewStreamableServerTransport(sessionID string) *StreamableServerTransport {
 	}
 }
 
-func (t *StreamableServerTransport) sessionID() string {
+func (t *StreamableServerTransport) SessionID() string {
 	return t.id
 }
 
@@ -642,7 +642,7 @@ type streamableClientConn struct {
 	err error
 }
 
-func (c *streamableClientConn) sessionID() string {
+func (c *streamableClientConn) SessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c._sessionID
