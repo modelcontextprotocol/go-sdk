@@ -270,8 +270,8 @@ func TestCompleteParams(t *testing.T) {
 				},
 				Context: &CompleteContext{
 					Arguments: map[string]string{
-						"framework":    "mcp",
-						"language": "python",
+						"framework": "mcp",
+						"language":  "python",
 					},
 				},
 			},
@@ -325,8 +325,8 @@ func TestCompleteParams(t *testing.T) {
 				Ref:      &CompleteReference{Type: "ref/prompt", Name: "my_prompt"},
 				Argument: CompleteParamsArgument{Name: "language", Value: "go"},
 				Context: &CompleteContext{Arguments: map[string]string{
-					"framework":    "mcp",
-					"language": "python",
+					"framework": "mcp",
+					"language":  "python",
 				}},
 			},
 		},
