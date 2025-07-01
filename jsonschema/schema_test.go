@@ -65,7 +65,13 @@ func TestJSONRoundTrip(t *testing.T) {
 			`{"$vocabulary":{"b":true, "a":false}}`,
 			`{"$vocabulary":{"a":false,"b":true}}`,
 		},
-		{`{"unk":0}`, `{"unk":0}`},     // unknown fields are not dropped
+		{`{"unk":0}`, `{"unk":0}`}, // unknown fields are not dropped
+		{
+			// known and unknown fields are not dropped
+			// note that the order will be by the declaration order in the anonymous struct inside MarshalJSON
+			`{"comment":"test","type":"example","unk":0}`,
+			`{"type":"example","comment":"test","unk":0}`,
+		},
 		{`{"extra":0}`, `{"extra":0}`}, // extra is not a special keyword and should not be dropped
 		{`{"Extra":0}`, `{"Extra":0}`}, // Extra is not a special keyword and should not be dropped
 	} {
