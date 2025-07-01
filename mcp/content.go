@@ -89,7 +89,7 @@ func (c *AudioContent) fromWire(wire *wireContent) {
 	c.Annotations = wire.Annotations
 }
 
-// ResourceLink represents a link to resources.
+// ResourceLink is a link to a resource
 type ResourceLink struct {
 	URI         string
 	Name        string
