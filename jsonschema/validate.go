@@ -25,6 +25,7 @@ const draft202012 = "https://json-schema.org/draft/2020-12/schema"
 
 // Validate validates the instance, which must be a JSON value, against the schema.
 // It returns nil if validation is successful or an error if it is not.
+// If the schema type is "object", instance can be a map[string]any or a struct.
 func (rs *Resolved) Validate(instance any) error {
 	if s := rs.root.Schema; s != "" && s != draft202012 {
 		return fmt.Errorf("cannot validate version %s, only %s", s, draft202012)
