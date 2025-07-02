@@ -32,6 +32,9 @@ type Resolved struct {
 // resolvedInfo holds information specific to a schema that is computed by [Schema.Resolve].
 type resolvedInfo struct {
 	s *Schema
+	// The JSON Pointer path from the root schema to here.
+	// Used in errors.
+	path string
 	// The schema's base schema.
 	// If the schema is the root or has an ID, its base is itself.
 	// Otherwise, its base is the innermost enclosing schema whose base
@@ -149,11 +152,15 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	if baseURI.Fragment != "" {
 		return nil, fmt.Errorf("base URI %s must not have a fragment", baseURI)
 	}
+	rs := &Resolved{root: s, resolvedInfo:map[*Schema]*resolvedInfo{}}
+	for s := rs.root.all() {
+		rs.resolvedInfo[s] = &resolvedInfo{s:s}
+	}
+
 	if err := s.check(); err != nil {
 		return nil, err
 	}
 
-	rs := &Resolved{root: s}
 	if err := resolveURIs(rs, baseURI); err != nil {
 		return nil, err
 	}
@@ -207,9 +214,10 @@ func (root *Schema) checkStructure() error {
 		}
 		if s.path != "" {
 			// We've seen s before.
-			// The schema graph at root is not a tree, but it needs to be because
-			// a schema's base must be unique.
-			// A cycle would also put Schema.all into an infinite recursion.
+			// The schema graph at root is not a tree, but it needs to
+			// be because a schema's base must be unique.
+			// A cycle would also put Schema.all into an infinite
+			// recursion.
 			return fmt.Errorf("jsonschema: schemas at %s do not form a tree; %s appears more than once (also at %s)",
 				root, s.path, p)
 		}

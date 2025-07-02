@@ -195,7 +195,6 @@ func TestRefCycle(t *testing.T) {
 	}
 
 	rs, err := schemas["root"].Resolve(&ResolveOptions{Loader: loader})
-	t.Logf("%#v", rs.resolvedInfo)
 	if err != nil {
 		t.Fatal(err)
 	}

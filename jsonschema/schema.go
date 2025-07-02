@@ -132,10 +132,6 @@ type Schema struct {
 	// These fields are independent of arguments to Schema.Resolved,
 	// though they are computed there.
 
-	// The JSON Pointer path from the root schema to here.
-	// Used in errors.
-	path string
-
 	// Map from anchors to subschemas.
 	anchors map[string]anchorInfo
 
@@ -169,14 +165,6 @@ func (s *Schema) String() string {
 	}
 	return "<anonymous schema>"
 }
-
-// // ResolvedRef returns the Schema to which this schema's $ref keyword
-// // refers, or nil if it doesn't have a $ref.
-// // It returns nil if this schema has not been resolved, meaning that
-// // [Schema.Resolve] was called on it or one of its ancestors.
-// func (s *Schema) ResolvedRef() *Schema {
-// 	return s.resolvedRef
-// }
 
 func (s *Schema) basicChecks() error {
 	if s.Type != "" && s.Types != nil {
