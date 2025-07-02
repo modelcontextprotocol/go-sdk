@@ -9,8 +9,8 @@ The latest version contains breaking changes:
 - NewServerTool is replaced by AddTool. AddTool takes a Tool rather than a name and description, so you can 
   set any field on the Tool that you want before associating it with a handler.
 
-- ToolOptions are gone. If you don't want AddTool to infer a JSON Schema for you, you can construct one
-  as a struct literal.
+- Tool options have been removed. If you don't want AddTool to infer a JSON Schema for you, you can construct one
+  as a struct literal, or using any other code that suits you.
 
 - AddPrompts, AddResources and AddResourceTemplates are similarly replaced by singular methods which pair the
   feature with a handler. The ServerXXX types have been removed.

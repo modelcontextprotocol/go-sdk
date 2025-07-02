@@ -98,40 +98,6 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 	return err
 }
 
-// newRawHandler creates a rawToolHandler for tools not created through NewServerTool.
-// It unmarshals the arguments into a map[string]any and validates them against the
-// schema, then calls the ServerTool's handler.
-// func newRawHandler(st *ServerTool) rawToolHandler {
-// 	if st.Handler == nil {
-// 		panic("st.Handler is nil")
-// 	}
-// 	return func(ctx context.Context, ss *ServerSession, rparams *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error) {
-// 		// Unmarshal the args into what should be a map.
-// 		var args map[string]any
-// 		if rparams.Arguments != nil {
-// 			if err := unmarshalSchema(rparams.Arguments, st.inputResolved, &args); err != nil {
-// 				return nil, err
-// 			}
-// 		}
-// 		// TODO: generate copy
-// 		params := &CallToolParamsFor[map[string]any]{
-// 			Meta:      rparams.Meta,
-// 			Name:      rparams.Name,
-// 			Arguments: args,
-// 		}
-// 		res, err := st.Handler(ctx, ss, params)
-// 		// TODO(rfindley): investigate why server errors are embedded in this strange way,
-// 		// rather than returned as jsonrpc2 server errors.
-// 		if err != nil {
-// 			return &CallToolResult{
-// 				Content: []Content{&TextContent{Text: err.Error()}},
-// 				IsError: true,
-// 			}, nil
-// 		}
-// 		return res, nil
-// 	}
-// }
-
 // unmarshalSchema unmarshals data into v and validates the result according to
 // the given resolved schema.
 func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any) error {
