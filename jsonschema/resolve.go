@@ -32,6 +32,19 @@ type Resolved struct {
 // resolvedInfo holds information specific to a schema that is computed by [Schema.Resolve].
 type resolvedInfo struct {
 	s *Schema
+	// The schema's base schema.
+	// If the schema is the root or has an ID, its base is itself.
+	// Otherwise, its base is the innermost enclosing schema whose base
+	// is itself.
+	// Intuitively, a base schema is one that can be referred to with a
+	// fragmentless URI.
+	base *Schema
+	// The URI for the schema, if it is the root or has an ID.
+	// Otherwise nil.
+	// Invariants:
+	//   s.base.uri != nil.
+	//   s.base == s <=> s.uri != nil
+	uri *url.URL
 	// The schema to which Ref refers.
 	resolvedRef *Schema
 
@@ -140,17 +153,16 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 		return nil, err
 	}
 
-	m, err := resolveURIs(s, baseURI)
-	if err != nil {
+	rs := &Resolved{root: s}
+	if err := resolveURIs(rs, baseURI); err != nil {
 		return nil, err
 	}
-	rs := &Resolved{root: s, resolvedURIs: m, resolvedInfo: map[*Schema]*resolvedInfo{}}
 
 	// Remember the schema by both the URI we loaded it from and its canonical name,
 	// which may differ if the schema has an $id.
 	// We must set the map before calling resolveRefs, or ref cycles will cause unbounded recursion.
 	r.loaded[baseURI.String()] = rs
-	r.loaded[s.uri.String()] = rs
+	r.loaded[rs.resolvedInfo[s].uri.String()] = rs
 
 	if err := r.resolveRefs(rs); err != nil {
 		return nil, err
@@ -195,10 +207,9 @@ func (root *Schema) checkStructure() error {
 		}
 		if s.path != "" {
 			// We've seen s before.
-			// The schema graph at root is not a tree, but it needs to
-			// be because we assume a unique parent when we store a schema's base
-			// in the Schema. A cycle would also put Schema.all into an infinite
-			// recursion.
+			// The schema graph at root is not a tree, but it needs to be because
+			// a schema's base must be unique.
+			// A cycle would also put Schema.all into an infinite recursion.
 			return fmt.Errorf("jsonschema: schemas at %s do not form a tree; %s appears more than once (also at %s)",
 				root, s.path, p)
 		}
@@ -305,8 +316,6 @@ func (s *Schema) checkLocal(report func(error)) {
 // to baseURI.
 // See https://json-schema.org/draft/2020-12/json-schema-core#section-8.2, section
 // 8.2.1.
-
-// TODO(jba): dynamicAnchors (§8.2.2)
 //
 // Every schema has a base URI and a parent base URI.
 //
@@ -336,11 +345,17 @@ func (s *Schema) checkLocal(report func(error)) {
 //	allOf/1        http://b.com (absolute $id; doesn't matter that it's not under the loaded URI)
 //	allOf/2        http://a.com/root.json (inherited from parent)
 //	allOf/2/not    http://a.com/root.json (inherited from parent)
-func resolveURIs(root *Schema, baseURI *url.URL) (map[string]*Schema, error) {
-	resolvedURIs := map[string]*Schema{}
-
+func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 	var resolve func(s, base *Schema) error
 	resolve = func(s, base *Schema) error {
+		assert(rs.resolvedInfo[base] != nil, "base resolved info not set")
+		info := rs.resolvedInfo[s]
+		if info == nil {
+			info = &resolvedInfo{s: s}
+			rs.resolvedInfo[s] = info
+		}
+		baseURI := rs.resolvedInfo[base].uri
+
 		// ids are scoped to the root.
 		if s.ID != "" {
 			// A non-empty ID establishes a new base.
@@ -352,21 +367,21 @@ func resolveURIs(root *Schema, baseURI *url.URL) (map[string]*Schema, error) {
 				return fmt.Errorf("$id %s must not have a fragment", s.ID)
 			}
 			// The base URI for this schema is its $id resolved against the parent base.
-			s.uri = base.uri.ResolveReference(idURI)
-			if !s.uri.IsAbs() {
-				return fmt.Errorf("$id %s does not resolve to an absolute URI (base is %s)", s.ID, s.base.uri)
+			info.uri = baseURI.ResolveReference(idURI)
+			if !info.uri.IsAbs() {
+				return fmt.Errorf("$id %s does not resolve to an absolute URI (base is %s)", s.ID, baseURI)
 			}
-			resolvedURIs[s.uri.String()] = s
+			rs.resolvedURIs[info.uri.String()] = s
 			base = s // needed for anchors
 		}
-		s.base = base
+		info.base = base
 
 		// Anchors and dynamic anchors are URI fragments that are scoped to their base.
 		// We treat them as keys in a map stored within the schema.
 		setAnchor := func(anchor string, dynamic bool) error {
 			if anchor != "" {
 				if _, ok := base.anchors[anchor]; ok {
-					return fmt.Errorf("duplicate anchor %q in %s", anchor, base.uri)
+					return fmt.Errorf("duplicate anchor %q in %s", anchor, baseURI)
 				}
 				if base.anchors == nil {
 					base.anchors = map[string]anchorInfo{}
@@ -388,13 +403,13 @@ func resolveURIs(root *Schema, baseURI *url.URL) (map[string]*Schema, error) {
 	}
 
 	// Set the root URI to the base for now. If the root has an $id, this will change.
-	root.uri = baseURI
-	// The original base, even if changed, is still a valid way to refer to the root.
-	resolvedURIs[baseURI.String()] = root
-	if err := resolve(root, root); err != nil {
-		return nil, err
+	rs.resolvedInfo = map[*Schema]*resolvedInfo{
+		rs.root: {s: rs.root, uri: baseURI},
 	}
-	return resolvedURIs, nil
+	// The original base, even if changed, is still a valid way to refer to the root.
+	rs.resolvedURIs = map[string]*Schema{baseURI.String(): rs.root}
+
+	return resolve(rs.root, rs.root)
 }
 
 // resolveRefs replaces every ref in the schemas with the schema it refers to.
@@ -402,9 +417,7 @@ func resolveURIs(root *Schema, baseURI *url.URL) (map[string]*Schema, error) {
 // that needs to be loaded.
 func (r *resolver) resolveRefs(rs *Resolved) error {
 	for s := range rs.root.all() {
-		assert(rs.resolvedInfo[s] == nil, "schema resolved info already set")
-		info := &resolvedInfo{s: s}
-		rs.resolvedInfo[s] = info
+		info := rs.resolvedInfo[s]
 		if s.Ref != "" {
 			refSchema, _, err := r.resolveRef(rs, s, s.Ref)
 			if err != nil {
@@ -440,7 +453,8 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 		return nil, "", err
 	}
 	// URI-resolve the ref against the current base URI to get a complete URI.
-	refURI = s.base.uri.ResolveReference(refURI)
+	base := rs.resolvedInfo[s].base
+	refURI = rs.resolvedInfo[base].uri.ResolveReference(refURI)
 	// The non-fragment part of a ref URI refers to the base URI of some schema.
 	// This part is the same for dynamic refs too: their non-fragment part resolves
 	// lexically.

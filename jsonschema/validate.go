@@ -214,7 +214,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 			// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 			var dynamicSchema *Schema
 			for _, s := range st.stack {
-				info, ok := s.base.anchors[info.dynamicRefAnchor]
+				info, ok := st.rs.resolvedInfo[s].base.anchors[info.dynamicRefAnchor]
 				if ok && info.dynamic {
 					dynamicSchema = info.schema
 					break
@@ -574,7 +574,7 @@ func (st *state) resolveDynamicRef(schema *Schema) (*Schema, error) {
 	// on the stack.
 	// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 	for _, s := range st.stack {
-		info, ok := s.base.anchors[info.dynamicRefAnchor]
+		info, ok := st.rs.resolvedInfo[s].base.anchors[info.dynamicRefAnchor]
 		if ok && info.dynamic {
 			return info.schema, nil
 		}

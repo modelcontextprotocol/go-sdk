@@ -129,8 +129,9 @@ func TestResolveURIs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := resolveURIs(root, base)
-			if err != nil {
+
+			rs := &Resolved{root: root}
+			if err := resolveURIs(rs, base); err != nil {
 				t.Fatal(err)
 			}
 
@@ -154,6 +155,7 @@ func TestResolveURIs(t *testing.T) {
 				},
 			}
 
+			got := rs.resolvedURIs
 			gotKeys := slices.Sorted(maps.Keys(got))
 			wantKeys := slices.Sorted(maps.Keys(wantIDs))
 			if !slices.Equal(gotKeys, wantKeys) {

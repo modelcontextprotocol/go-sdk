@@ -13,7 +13,6 @@ import (
 	"iter"
 	"maps"
 	"math"
-	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -130,22 +129,8 @@ type Schema struct {
 	// Extra allows for additional keywords beyond those specified.
 	Extra map[string]any `json:"-"`
 
-	// computed fields
-
-	// This schema's base schema.
-	// If the schema is the root or has an ID, its base is itself.
-	// Otherwise, its base is the innermost enclosing schema whose base
-	// is itself.
-	// Intuitively, a base schema is one that can be referred to with a
-	// fragmentless URI.
-	base *Schema
-
-	// The URI for the schema, if it is the root or has an ID.
-	// Otherwise nil.
-	// Invariants:
-	//   s.base.uri != nil.
-	//   s.base == s <=> s.uri != nil
-	uri *url.URL
+	// These fields are independent of arguments to Schema.Resolved,
+	// though they are computed there.
 
 	// The JSON Pointer path from the root schema to here.
 	// Used in errors.
@@ -176,13 +161,8 @@ type anchorInfo struct {
 
 // String returns a short description of the schema.
 func (s *Schema) String() string {
-	if s.uri != nil {
-		if u := s.uri.String(); u != "" {
-			return u
-		}
-	}
 	if a := cmp.Or(s.Anchor, s.DynamicAnchor); a != "" {
-		return fmt.Sprintf("%q, anchor %s", s.base.uri.String(), a)
+		return fmt.Sprintf("anchor %s", a)
 	}
 	if s.path != "" {
 		return s.path
