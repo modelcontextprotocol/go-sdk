@@ -65,6 +65,15 @@ type ThinkingSession struct {
 }
 
 // A SessionStore is a global session store (in a real implementation, this might be a database).
+//
+// Locking Strategy:
+// The SessionStore uses a RWMutex to protect the sessions map from concurrent access.
+// All ThinkingSession modifications happen on deep copies, never on shared instances.
+// This means:
+// - Read locks protect map access (reading from a Go map during writes causes panics)
+// - Write locks protect map modifications (adding/removing/replacing sessions)
+// - Session field modifications always happen on local copies via CompareAndSwap
+// - No shared ThinkingSession state is ever modified directly
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*ThinkingSession // key is session ID
@@ -94,6 +103,15 @@ func (s *SessionStore) SetSession(session *ThinkingSession) {
 
 // CompareAndSwap atomically updates a session if the version matches.
 // Returns true if the update succeeded, false if there was a version mismatch.
+//
+// This method implements optimistic concurrency control:
+// 1. Read lock to safely access the map and copy the session
+// 2. Deep copy the session (all modifications happen on this copy)
+// 3. Release read lock and apply updates to the copy
+// 4. Write lock to check version and atomically update if unchanged
+//
+// The read lock in step 1 is necessary to prevent map access races,
+// not to protect ThinkingSession fields (which are never modified in-place).
 func (s *SessionStore) CompareAndSwap(sessionID string, updateFunc func(*ThinkingSession) (*ThinkingSession, error)) error {
 	for {
 		// Get current session
@@ -146,6 +164,39 @@ func (s *SessionStore) Sessions() []*ThinkingSession {
 	return slices.Collect(maps.Values(s.sessions))
 }
 
+// SessionsSnapshot returns a deep copy of all sessions for safe concurrent access.
+func (s *SessionStore) SessionsSnapshot() []*ThinkingSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sessions := make([]*ThinkingSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		// Create a deep copy of each session
+		sessionCopy := *session
+		sessionCopy.Thoughts = deepCopyThoughts(session.Thoughts)
+		sessionCopy.Branches = slices.Clone(session.Branches)
+		sessions = append(sessions, &sessionCopy)
+	}
+	return sessions
+}
+
+// SessionSnapshot returns a deep copy of a session for safe concurrent access.
+func (s *SessionStore) SessionSnapshot(id string) (*ThinkingSession, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	session, exists := s.sessions[id]
+	if !exists {
+		return nil, false
+	}
+
+	// Create a deep copy
+	sessionCopy := *session
+	sessionCopy.Thoughts = deepCopyThoughts(session.Thoughts)
+	sessionCopy.Branches = slices.Clone(session.Branches)
+	return &sessionCopy, true
+}
+
 var store = NewSessionStore()
 
 // StartThinkingArgs are the arguments for starting a new thinking session.
@@ -173,6 +224,16 @@ type ReviewThinkingArgs struct {
 // ThinkingHistoryArgs are the arguments for retrieving thinking history.
 type ThinkingHistoryArgs struct {
 	SessionID string `json:"sessionId"`
+}
+
+// deepCopyThoughts creates a deep copy of a slice of thoughts.
+func deepCopyThoughts(thoughts []*Thought) []*Thought {
+	thoughtsCopy := make([]*Thought, len(thoughts))
+	for i, t := range thoughts {
+		thoughtCopy := *t
+		thoughtsCopy[i] = &thoughtCopy
+	}
+	return thoughtsCopy
 }
 
 // StartThinking begins a new sequential thinking session for a complex problem.
@@ -252,11 +313,7 @@ func ContinueThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Ca
 			session.LastActivity = time.Now()
 
 			// Create a new session for the branch (deep copy thoughts)
-			thoughtsCopy := make([]*Thought, len(session.Thoughts))
-			for i, t := range session.Thoughts {
-				thoughtCopy := *t
-				thoughtsCopy[i] = &thoughtCopy
-			}
+			thoughtsCopy := deepCopyThoughts(session.Thoughts)
 			branchSession = &ThinkingSession{
 				ID:             branchID,
 				Problem:        session.Problem + " (Alternative branch)",
@@ -347,24 +404,44 @@ func ContinueThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Ca
 func ReviewThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[ReviewThinkingArgs]) (*mcp.CallToolResultFor[any], error) {
 	args := params.Arguments
 
-	session, exists := store.Session(args.SessionID)
+	// Get a snapshot of the session to avoid race conditions
+	store.mu.RLock()
+	session, exists := store.sessions[args.SessionID]
 	if !exists {
+		store.mu.RUnlock()
 		return nil, fmt.Errorf("session %s not found", args.SessionID)
 	}
+	// Create a snapshot of the data we need while holding the lock
+	sessionSnapshot := struct {
+		ID             string
+		Problem        string
+		Status         string
+		EstimatedTotal int
+		Branches       []string
+		Thoughts       []*Thought
+	}{
+		ID:             session.ID,
+		Problem:        session.Problem,
+		Status:         session.Status,
+		EstimatedTotal: session.EstimatedTotal,
+		Branches:       slices.Clone(session.Branches),
+		Thoughts:       deepCopyThoughts(session.Thoughts),
+	}
+	store.mu.RUnlock()
 
 	var review strings.Builder
-	fmt.Fprintf(&review, "=== Thinking Review: %s ===\n", session.ID)
-	fmt.Fprintf(&review, "Problem: %s\n", session.Problem)
-	fmt.Fprintf(&review, "Status: %s\n", session.Status)
-	fmt.Fprintf(&review, "Steps: %d of ~%d\n", len(session.Thoughts), session.EstimatedTotal)
+	fmt.Fprintf(&review, "=== Thinking Review: %s ===\n", sessionSnapshot.ID)
+	fmt.Fprintf(&review, "Problem: %s\n", sessionSnapshot.Problem)
+	fmt.Fprintf(&review, "Status: %s\n", sessionSnapshot.Status)
+	fmt.Fprintf(&review, "Steps: %d of ~%d\n", len(sessionSnapshot.Thoughts), sessionSnapshot.EstimatedTotal)
 
-	if len(session.Branches) > 0 {
-		fmt.Fprintf(&review, "Branches: %s\n", strings.Join(session.Branches, ", "))
+	if len(sessionSnapshot.Branches) > 0 {
+		fmt.Fprintf(&review, "Branches: %s\n", strings.Join(sessionSnapshot.Branches, ", "))
 	}
 
 	fmt.Fprintf(&review, "\n--- Thought Sequence ---\n")
 
-	for i, thought := range session.Thoughts {
+	for i, thought := range sessionSnapshot.Thoughts {
 		status := ""
 		if thought.Revised {
 			status = " (revised)"
@@ -394,8 +471,8 @@ func ThinkingHistory(ctx context.Context, ss *mcp.ServerSession, params *mcp.Rea
 
 	sessionID := u.Host
 	if sessionID == "sessions" {
-		// List all sessions
-		sessions := store.Sessions()
+		// List all sessions - use snapshot for thread safety
+		sessions := store.SessionsSnapshot()
 		data, err := json.MarshalIndent(sessions, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal sessions: %w", err)
@@ -412,8 +489,8 @@ func ThinkingHistory(ctx context.Context, ss *mcp.ServerSession, params *mcp.Rea
 		}, nil
 	}
 
-	// Get specific session
-	session, exists := store.Session(sessionID)
+	// Get specific session - use snapshot for thread safety
+	session, exists := store.SessionSnapshot(sessionID)
 	if !exists {
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
@@ -487,7 +564,7 @@ func main() {
 				if v, ok := params.Arguments["estimatedSteps"].(float64); ok {
 					args.EstimatedSteps = int(v)
 				}
-				
+
 				result, err := StartThinking(ctx, ss, &mcp.CallToolParamsFor[StartThinkingArgs]{
 					Meta:      params.Meta,
 					Name:      params.Name,
@@ -534,7 +611,7 @@ func main() {
 				if v, ok := params.Arguments["estimatedTotal"].(float64); ok {
 					args.EstimatedTotal = int(v)
 				}
-				
+
 				result, err := ContinueThinking(ctx, ss, &mcp.CallToolParamsFor[ContinueThinkingArgs]{
 					Meta:      params.Meta,
 					Name:      params.Name,
@@ -565,7 +642,7 @@ func main() {
 				if v, ok := params.Arguments["sessionId"].(string); ok {
 					args.SessionID = v
 				}
-				
+
 				result, err := ReviewThinking(ctx, ss, &mcp.CallToolParamsFor[ReviewThinkingArgs]{
 					Meta:      params.Meta,
 					Name:      params.Name,
