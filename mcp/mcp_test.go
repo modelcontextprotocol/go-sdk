@@ -73,8 +73,23 @@ func TestEndToEnd(t *testing.T) {
 		func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
-	add(prompts, s.AddPrompts, "code_review", "fail")
-	add(resources, s.AddResources, "info.txt", "fail.txt")
+	s.AddPrompt(&Prompt{
+		Name:        "code_review",
+		Description: "do a code review",
+		Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
+	}, func(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			Description: "Code review prompt",
+			Messages: []*PromptMessage{
+				{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
+			},
+		}, nil
+	})
+	s.AddPrompt(&Prompt{Name: "fail"}, func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
+		return nil, errTestFailure
+	})
+	s.AddResource(resource1, readHandler)
+	s.AddResource(resource2, readHandler)
 
 	// Connect the server.
 	ss, err := s.Connect(ctx, st)
@@ -163,7 +178,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("fail returned unexpected error: got %v, want containing %v", err, errTestFailure)
 		}
 
-		s.AddPrompts(&ServerPrompt{Prompt: &Prompt{Name: "T"}})
+		s.AddPrompt(&Prompt{Name: "T"}, nil)
 		waitForNotification(t, "prompts")
 		s.RemovePrompts("T")
 		waitForNotification(t, "prompts")
@@ -230,8 +245,7 @@ func TestEndToEnd(t *testing.T) {
 			MIMEType:    "text/template",
 			URITemplate: "file:///{+filename}", // the '+' means that filename can contain '/'
 		}
-		st := &ServerResourceTemplate{ResourceTemplate: template, Handler: readHandler}
-		s.AddResourceTemplates(st)
+		s.AddResourceTemplate(template, readHandler)
 		tres, err := cs.ListResourceTemplates(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -276,7 +290,7 @@ func TestEndToEnd(t *testing.T) {
 			}
 		}
 
-		s.AddResources(&ServerResource{Resource: &Resource{URI: "http://U"}})
+		s.AddResource(&Resource{URI: "http://U"}, nil)
 		waitForNotification(t, "resources")
 		s.RemoveResources("http://U")
 		waitForNotification(t, "resources")
@@ -418,30 +432,6 @@ func TestEndToEnd(t *testing.T) {
 var (
 	errTestFailure = errors.New("mcp failure")
 
-	prompts = map[string]*ServerPrompt{
-		"code_review": {
-			Prompt: &Prompt{
-				Name:        "code_review",
-				Description: "do a code review",
-				Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
-			},
-			Handler: func(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
-				return &GetPromptResult{
-					Description: "Code review prompt",
-					Messages: []*PromptMessage{
-						{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
-					},
-				}, nil
-			},
-		},
-		"fail": {
-			Prompt: &Prompt{Name: "fail"},
-			Handler: func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
-				return nil, errTestFailure
-			},
-		},
-	}
-
 	resource1 = &Resource{
 		Name:     "public",
 		MIMEType: "text/plain",
@@ -458,11 +448,6 @@ var (
 		URI:      "embedded:info",
 	}
 	readHandler = fileResourceHandler("testdata/files")
-	resources   = map[string]*ServerResource{
-		"info.txt": {resource1, readHandler},
-		"fail.txt": {resource2, readHandler},
-		"info":     {resource3, handleEmbeddedResource},
-	}
 )
 
 var embeddedResources = map[string]string{

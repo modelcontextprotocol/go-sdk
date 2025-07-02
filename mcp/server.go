@@ -36,10 +36,10 @@ type Server struct {
 	opts    ServerOptions
 
 	mu                      sync.Mutex
-	prompts                 *featureSet[*ServerPrompt]
+	prompts                 *featureSet[*serverPrompt]
 	tools                   *featureSet[*serverTool]
-	resources               *featureSet[*ServerResource]
-	resourceTemplates       *featureSet[*ServerResourceTemplate]
+	resources               *featureSet[*serverResource]
+	resourceTemplates       *featureSet[*serverResourceTemplate]
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
@@ -87,28 +87,23 @@ func NewServer(name, version string, opts *ServerOptions) *Server {
 		name:                    name,
 		version:                 version,
 		opts:                    *opts,
-		prompts:                 newFeatureSet(func(p *ServerPrompt) string { return p.Prompt.Name }),
+		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
-		resources:               newFeatureSet(func(r *ServerResource) string { return r.Resource.URI }),
-		resourceTemplates:       newFeatureSet(func(t *ServerResourceTemplate) string { return t.ResourceTemplate.URITemplate }),
+		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
+		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 	}
 }
 
-// AddPrompts adds the given prompts to the server,
-// replacing any with the same names.
-func (s *Server) AddPrompts(prompts ...*ServerPrompt) {
-	// Only notify if something could change.
-	if len(prompts) == 0 {
-		return
-	}
-	// Assume there was a change, since add replaces existing roots.
-	// (It's possible a root was replaced with an identical one, but not worth checking.)
+// AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
+func (s *Server) AddPrompt(p *Prompt, h PromptHandler) {
+	// Assume there was a change, since add replaces existing items.
+	// (It's possible an item was replaced with an identical one, but not worth checking.)
 	s.changeAndNotify(
 		notificationPromptListChanged,
 		&PromptListChangedParams{},
-		func() bool { s.prompts.add(prompts...); return true })
+		func() bool { s.prompts.add(&serverPrompt{p, h}); return true })
 }
 
 // RemovePrompts removes the prompts with the given names.
@@ -166,26 +161,19 @@ func (s *Server) RemoveTools(names ...string) {
 		func() bool { return s.tools.remove(names...) })
 }
 
-// AddResources adds the given resources to the server.
-// If a resource with the same URI already exists, it is replaced.
-// AddResources panics if a resource URI is invalid or not absolute (has an empty scheme).
-func (s *Server) AddResources(resources ...*ServerResource) {
-	// Only notify if something could change.
-	if len(resources) == 0 {
-		return
-	}
+// AddResource adds a [Resource] to the server, or replaces one with the same URI.
+// AddResource panics if the resource URI is invalid or not absolute (has an empty scheme).
+func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			for _, r := range resources {
-				u, err := url.Parse(r.Resource.URI)
-				if err != nil {
-					panic(err) // url.Parse includes the URI in the error
-				}
-				if !u.IsAbs() {
-					panic(fmt.Errorf("URI %s needs a scheme", r.Resource.URI))
-				}
-				s.resources.add(r)
+			u, err := url.Parse(r.URI)
+			if err != nil {
+				panic(err) // url.Parse includes the URI in the error
 			}
+			if !u.IsAbs() {
+				panic(fmt.Errorf("URI %s needs a scheme", r.URI))
+			}
+			s.resources.add(&serverResource{r, h})
 			return true
 		})
 }
@@ -197,20 +185,13 @@ func (s *Server) RemoveResources(uris ...string) {
 		func() bool { return s.resources.remove(uris...) })
 }
 
-// AddResourceTemplates adds the given resource templates to the server.
-// If a resource template with the same URI template already exists, it will be replaced.
-// AddResourceTemplates panics if a URI template is invalid or not absolute (has an empty scheme).
-func (s *Server) AddResourceTemplates(templates ...*ServerResourceTemplate) {
-	// Only notify if something could change.
-	if len(templates) == 0 {
-		return
-	}
+// AddResourceTemplate adds a [ResourceTemplate] to the server, or replaces on with the same URI.
+// AddResourceTemplate panics if a URI template is invalid or not absolute (has an empty scheme).
+func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			for _, t := range templates {
-				// TODO: check template validity.
-				s.resourceTemplates.add(t)
-			}
+			// TODO: check template validity.
+			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
 		})
 }
@@ -257,10 +238,10 @@ func (s *Server) listPrompts(_ context.Context, _ *ServerSession, params *ListPr
 	if params == nil {
 		params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*ServerPrompt) {
+	return paginateList(s.prompts, s.opts.PageSize, params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
-			res.Prompts = append(res.Prompts, p.Prompt)
+			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
 }
@@ -273,7 +254,7 @@ func (s *Server) getPrompt(ctx context.Context, cc *ServerSession, params *GetPr
 		// TODO: surface the error code over the wire, instead of flattening it into the string.
 		return nil, fmt.Errorf("%s: unknown prompt %q", jsonrpc2.ErrInvalidParams, params.Name)
 	}
-	return prompt.Handler(ctx, cc, params)
+	return prompt.handler(ctx, cc, params)
 }
 
 func (s *Server) listTools(_ context.Context, _ *ServerSession, params *ListToolsParams) (*ListToolsResult, error) {
@@ -306,10 +287,10 @@ func (s *Server) listResources(_ context.Context, _ *ServerSession, params *List
 	if params == nil {
 		params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*ServerResource) {
+	return paginateList(s.resources, s.opts.PageSize, params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
-			res.Resources = append(res.Resources, r.Resource)
+			res.Resources = append(res.Resources, r.resource)
 		}
 	})
 }
@@ -321,10 +302,10 @@ func (s *Server) listResourceTemplates(_ context.Context, _ *ServerSession, para
 		params = &ListResourceTemplatesParams{}
 	}
 	return paginateList(s.resourceTemplates, s.opts.PageSize, params, &ListResourceTemplatesResult{},
-		func(res *ListResourceTemplatesResult, rts []*ServerResourceTemplate) {
+		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
-				res.ResourceTemplates = append(res.ResourceTemplates, rt.ResourceTemplate)
+				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
 }
@@ -365,12 +346,12 @@ func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, boo
 	defer s.mu.Unlock()
 	// Try resources first.
 	if r, ok := s.resources.get(uri); ok {
-		return r.Handler, r.Resource.MIMEType, true
+		return r.handler, r.resource.MIMEType, true
 	}
 	// Look for matching template.
 	for rt := range s.resourceTemplates.all() {
 		if rt.Matches(uri) {
-			return rt.Handler, rt.ResourceTemplate.MIMEType, true
+			return rt.handler, rt.resourceTemplate.MIMEType, true
 		}
 	}
 	return nil, "", false

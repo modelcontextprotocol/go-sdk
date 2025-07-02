@@ -11,8 +11,7 @@ import (
 // A PromptHandler handles a call to prompts/get.
 type PromptHandler func(context.Context, *ServerSession, *GetPromptParams) (*GetPromptResult, error)
 
-// A Prompt is a prompt definition bound to a prompt handler.
-type ServerPrompt struct {
-	Prompt  *Prompt
-	Handler PromptHandler
+type serverPrompt struct {
+	prompt  *Prompt
+	handler PromptHandler
 }
