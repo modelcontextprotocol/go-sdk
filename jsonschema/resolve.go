@@ -25,6 +25,22 @@ type Resolved struct {
 	root *Schema
 	// map from $ids to their schemas
 	resolvedURIs map[string]*Schema
+	// map from schemas to additional info computed during resolution
+	resolvedInfo map[*Schema]*resolvedInfo
+}
+
+// resolvedInfo holds information specific to a schema that is computed by [Schema.Resolve].
+type resolvedInfo struct {
+	s *Schema
+	// The schema to which Ref refers.
+	resolvedRef *Schema
+
+	// If the schema has a dynamic ref, exactly one of the next two fields
+	// will be non-zero after successful resolution.
+	// The schema to which the dynamic ref refers when it acts lexically.
+	resolvedDynamicRef *Schema
+	// The anchor to look up on the stack when the dynamic ref acts dynamically.
+	dynamicRefAnchor string
 }
 
 // Schema returns the schema that was resolved.
@@ -59,6 +75,8 @@ type ResolveOptions struct {
 // Resolve resolves all references within the schema and performs other tasks that
 // prepare the schema for validation.
 // If opts is nil, the default values are used.
+// The schema must not be changed after Resolve is called.
+// The same schema may be resolved multiple times.
 func (root *Schema) Resolve(opts *ResolveOptions) (*Resolved, error) {
 	// There are up to five steps required to prepare a schema to validate.
 	// 1. Load: read the schema from somewhere and unmarshal it.
@@ -71,9 +89,6 @@ func (root *Schema) Resolve(opts *ResolveOptions) (*Resolved, error) {
 	//    in a map from URIs to schemas within root.
 	// 4. Resolve references: all refs in the schemas are replaced with the schema they refer to.
 	// 5. (Optional.) If opts.ValidateDefaults is true, validate the defaults.
-	if root.path != "" {
-		return nil, fmt.Errorf("jsonschema: Resolve: %s already resolved", root)
-	}
 	r := &resolver{loaded: map[string]*Resolved{}}
 	if opts != nil {
 		r.opts = *opts
@@ -129,7 +144,8 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	if err != nil {
 		return nil, err
 	}
-	rs := &Resolved{root: s, resolvedURIs: m}
+	rs := &Resolved{root: s, resolvedURIs: m, resolvedInfo: map[*Schema]*resolvedInfo{}}
+
 	// Remember the schema by both the URI we loaded it from and its canonical name,
 	// which may differ if the schema has an $id.
 	// We must set the map before calling resolveRefs, or ref cycles will cause unbounded recursion.
@@ -161,6 +177,10 @@ func (root *Schema) check() error {
 // checkStructure verifies that root and its subschemas form a tree.
 // It also assigns each schema a unique path, to improve error messages.
 func (root *Schema) checkStructure() error {
+	if root.path != "" {
+		// We have done this before, and it will always produce the same result.
+		return nil
+	}
 	var check func(reflect.Value, []byte) error
 	check = func(v reflect.Value, path []byte) error {
 		// For the purpose of error messages, the root schema has path "root"
@@ -382,6 +402,9 @@ func resolveURIs(root *Schema, baseURI *url.URL) (map[string]*Schema, error) {
 // that needs to be loaded.
 func (r *resolver) resolveRefs(rs *Resolved) error {
 	for s := range rs.root.all() {
+		assert(rs.resolvedInfo[s] == nil, "schema resolved info already set")
+		info := &resolvedInfo{s: s}
+		rs.resolvedInfo[s] = info
 		if s.Ref != "" {
 			refSchema, _, err := r.resolveRef(rs, s, s.Ref)
 			if err != nil {
@@ -389,7 +412,7 @@ func (r *resolver) resolveRefs(rs *Resolved) error {
 			}
 			// Whether or not the anchor referred to by $ref fragment is dynamic,
 			// the ref still treats it lexically.
-			s.resolvedRef = refSchema
+			info.resolvedRef = refSchema
 		}
 		if s.DynamicRef != "" {
 			refSchema, frag, err := r.resolveRef(rs, s, s.DynamicRef)
@@ -399,11 +422,11 @@ func (r *resolver) resolveRefs(rs *Resolved) error {
 			if frag != "" {
 				// The dynamic ref's fragment points to a dynamic anchor.
 				// We must resolve the fragment at validation time.
-				s.dynamicRefAnchor = frag
+				info.dynamicRefAnchor = frag
 			} else {
 				// There is no dynamic anchor in the lexically referenced schema,
 				// so the dynamic ref behaves like a lexical ref.
-				s.resolvedDynamicRef = refSchema
+				info.resolvedDynamicRef = refSchema
 			}
 		}
 	}
@@ -447,6 +470,13 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 			}
 			referencedSchema = lrs.root
 			assert(referencedSchema != nil, "nil referenced schema")
+			// Copy the resolvedInfos from lrs into rs, without overwriting
+			// (hence we can't use maps.Insert).
+			for s, i := range lrs.resolvedInfo {
+				if rs.resolvedInfo[s] == nil {
+					rs.resolvedInfo[s] = i
+				}
+			}
 		}
 	}
 

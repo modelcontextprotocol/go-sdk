@@ -193,13 +193,14 @@ func TestRefCycle(t *testing.T) {
 	}
 
 	rs, err := schemas["root"].Resolve(&ResolveOptions{Loader: loader})
+	t.Logf("%#v", rs.resolvedInfo)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	check := func(s *Schema, key string) {
 		t.Helper()
-		if s.resolvedRef != schemas[key] {
+		if rs.resolvedInfo[s].resolvedRef != schemas[key] {
 			t.Errorf("%s resolvedRef != schemas[%q]", s.json(), key)
 		}
 	}

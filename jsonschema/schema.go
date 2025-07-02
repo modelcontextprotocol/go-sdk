@@ -151,16 +151,6 @@ type Schema struct {
 	// Used in errors.
 	path string
 
-	// The schema to which Ref refers.
-	resolvedRef *Schema
-
-	// If the schema has a dynamic ref, exactly one of the next two fields
-	// will be non-zero after successful resolution.
-	// The schema to which the dynamic ref refers when it acts lexically.
-	resolvedDynamicRef *Schema
-	// The anchor to look up on the stack when the dynamic ref acts dynamically.
-	dynamicRefAnchor string
-
 	// Map from anchors to subschemas.
 	anchors map[string]anchorInfo
 
@@ -200,13 +190,13 @@ func (s *Schema) String() string {
 	return "<anonymous schema>"
 }
 
-// ResolvedRef returns the Schema to which this schema's $ref keyword
-// refers, or nil if it doesn't have a $ref.
-// It returns nil if this schema has not been resolved, meaning that
-// [Schema.Resolve] was called on it or one of its ancestors.
-func (s *Schema) ResolvedRef() *Schema {
-	return s.resolvedRef
-}
+// // ResolvedRef returns the Schema to which this schema's $ref keyword
+// // refers, or nil if it doesn't have a $ref.
+// // It returns nil if this schema has not been resolved, meaning that
+// // [Schema.Resolve] was called on it or one of its ancestors.
+// func (s *Schema) ResolvedRef() *Schema {
+// 	return s.resolvedRef
+// }
 
 func (s *Schema) basicChecks() error {
 	if s.Type != "" && s.Types != nil {
