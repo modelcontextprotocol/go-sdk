@@ -64,6 +64,14 @@ type ThinkingSession struct {
 	Version int `json:"version"`
 }
 
+// clone returns a deep copy of the ThinkingSession.
+func (s *ThinkingSession) clone() *ThinkingSession {
+	sessionCopy := *s
+	sessionCopy.Thoughts = deepCopyThoughts(s.Thoughts)
+	sessionCopy.Branches = slices.Clone(s.Branches)
+	return &sessionCopy
+}
+
 // A SessionStore is a global session store (in a real implementation, this might be a database).
 //
 // Locking Strategy:
@@ -122,18 +130,12 @@ func (s *SessionStore) CompareAndSwap(sessionID string, updateFunc func(*Thinkin
 			return fmt.Errorf("session %s not found", sessionID)
 		}
 		// Create a deep copy
-		sessionCopy := *current
-		sessionCopy.Thoughts = slices.Clone(current.Thoughts)
-		for i, thought := range current.Thoughts {
-			thoughtCopy := *thought
-			sessionCopy.Thoughts[i] = &thoughtCopy
-		}
-		sessionCopy.Branches = slices.Clone(current.Branches)
+		sessionCopy := current.clone()
 		oldVersion := current.Version
 		s.mu.RUnlock()
 
 		// Apply the update
-		updated, err := updateFunc(&sessionCopy)
+		updated, err := updateFunc(sessionCopy)
 		if err != nil {
 			return err
 		}
@@ -172,10 +174,7 @@ func (s *SessionStore) SessionsSnapshot() []*ThinkingSession {
 	sessions := make([]*ThinkingSession, 0, len(s.sessions))
 	for _, session := range s.sessions {
 		// Create a deep copy of each session
-		sessionCopy := *session
-		sessionCopy.Thoughts = deepCopyThoughts(session.Thoughts)
-		sessionCopy.Branches = slices.Clone(session.Branches)
-		sessions = append(sessions, &sessionCopy)
+		sessions = append(sessions, session.clone())
 	}
 	return sessions
 }
@@ -191,10 +190,7 @@ func (s *SessionStore) SessionSnapshot(id string) (*ThinkingSession, bool) {
 	}
 
 	// Create a deep copy
-	sessionCopy := *session
-	sessionCopy.Thoughts = deepCopyThoughts(session.Thoughts)
-	sessionCopy.Branches = slices.Clone(session.Branches)
-	return &sessionCopy, true
+	return session.clone(), true
 }
 
 var store = NewSessionStore()
@@ -405,29 +401,10 @@ func ReviewThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Call
 	args := params.Arguments
 
 	// Get a snapshot of the session to avoid race conditions
-	store.mu.RLock()
-	session, exists := store.sessions[args.SessionID]
+	sessionSnapshot, exists := store.SessionSnapshot(args.SessionID)
 	if !exists {
-		store.mu.RUnlock()
 		return nil, fmt.Errorf("session %s not found", args.SessionID)
 	}
-	// Create a snapshot of the data we need while holding the lock
-	sessionSnapshot := struct {
-		ID             string
-		Problem        string
-		Status         string
-		EstimatedTotal int
-		Branches       []string
-		Thoughts       []*Thought
-	}{
-		ID:             session.ID,
-		Problem:        session.Problem,
-		Status:         session.Status,
-		EstimatedTotal: session.EstimatedTotal,
-		Branches:       slices.Clone(session.Branches),
-		Thoughts:       deepCopyThoughts(session.Thoughts),
-	}
-	store.mu.RUnlock()
 
 	var review strings.Builder
 	fmt.Fprintf(&review, "=== Thinking Review: %s ===\n", sessionSnapshot.ID)
