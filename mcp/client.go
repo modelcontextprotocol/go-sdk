@@ -9,6 +9,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -56,6 +57,10 @@ type ClientOptions struct {
 	ResourceListChangedHandler  func(context.Context, *ClientSession, *ResourceListChangedParams)
 	LoggingMessageHandler       func(context.Context, *ClientSession, *LoggingMessageParams)
 	ProgressNotificationHandler func(context.Context, *ClientSession, *ProgressNotificationParams)
+	// If non-zero, defines an interval for regular "ping" requests.
+	// If the peer fails to respond to pings originating from the keepalive check,
+	// the session is automatically closed.
+	KeepAlive time.Duration
 }
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
@@ -118,6 +123,11 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 		_ = cs.Close()
 		return nil, err
 	}
+
+	if c.opts.KeepAlive > 0 {
+		cs.startKeepalive(c.opts.KeepAlive)
+	}
+
 	return cs, nil
 }
 
@@ -131,12 +141,33 @@ type ClientSession struct {
 	conn             *jsonrpc2.Connection
 	client           *Client
 	initializeResult *InitializeResult
+	keepaliveCancel  context.CancelFunc
+	mcpConn          Connection
+}
+
+func (cs *ClientSession) setConn(c Connection) {
+	cs.mcpConn = c
+}
+
+func (cs *ClientSession) ID() string {
+	if cs.mcpConn == nil {
+		return ""
+	}
+	return cs.mcpConn.SessionID()
 }
 
 // Close performs a graceful close of the connection, preventing new requests
 // from being handled, and waiting for ongoing requests to return. Close then
 // terminates the connection.
 func (cs *ClientSession) Close() error {
+	// Note: keepaliveCancel access is safe without a mutex because:
+	// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+	// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
+	// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
+	//    Close is idempotent and conn.Close() handles concurrent calls correctly
+	if cs.keepaliveCancel != nil {
+		cs.keepaliveCancel()
+	}
 	return cs.conn.Close()
 }
 
@@ -144,6 +175,11 @@ func (cs *ClientSession) Close() error {
 // Generally, clients should be responsible for closing the connection.
 func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
+}
+
+// startKeepalive starts the keepalive mechanism for this client session.
+func (cs *ClientSession) startKeepalive(interval time.Duration) {
+	startKeepalive(cs, interval, &cs.keepaliveCancel)
 }
 
 // AddRoots adds the given roots to the client,
@@ -167,7 +203,7 @@ func (c *Client) RemoveRoots(uris ...string) {
 		func() bool { return c.roots.remove(uris...) })
 }
 
-// changeAndNotifyClient is called when a feature is added or removed.
+// changeAndNotify is called when a feature is added or removed.
 // It calls change, which should do the work and report whether a change actually occurred.
 // If there was a change, it notifies a snapshot of the sessions.
 func (c *Client) changeAndNotify(notification string, params Params, change func() bool) {
@@ -233,6 +269,7 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 var clientMethodInfos = map[string]methodInfo{
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete)),
 	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping)),
 	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots)),
 	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage)),
@@ -323,9 +360,13 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 	return handleSend[*ListResourceTemplatesResult](ctx, cs, methodListResourceTemplates, orZero[Params](params))
 }
 
-// ReadResource ask the server to read a resource and return its contents.
+// ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
 	return handleSend[*ReadResourceResult](ctx, cs, methodReadResource, orZero[Params](params))
+}
+
+func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
+	return handleSend[*CompleteResult](ctx, cs, methodComplete, orZero[Params](params))
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, s *ClientSession, params *ToolListChangedParams) (Result, error) {

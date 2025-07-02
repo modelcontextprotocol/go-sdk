@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -57,6 +58,12 @@ type ServerOptions struct {
 	RootsListChangedHandler func(context.Context, *ServerSession, *RootsListChangedParams)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ServerSession, *ProgressNotificationParams)
+	// If non-nil, called when "completion/complete" is received.
+	CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
+	// If non-zero, defines an interval for regular "ping" requests.
+	// If the peer fails to respond to pings originating from the keepalive check,
+	// the session is automatically closed.
+	KeepAlive time.Duration
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -224,6 +231,13 @@ func (s *Server) AddResourceTemplates(templates ...*ServerResourceTemplate) {
 func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
+}
+
+func (s *Server) complete(ctx context.Context, ss *ServerSession, params *CompleteParams) (Result, error) {
+	if s.opts.CompletionHandler == nil {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+	return s.opts.CompletionHandler(ctx, ss, params)
 }
 
 // changeAndNotify is called when a feature is added or removed.
@@ -460,6 +474,9 @@ func (s *Server) Connect(ctx context.Context, t Transport) (*ServerSession, erro
 }
 
 func (s *Server) callInitializedHandler(ctx context.Context, ss *ServerSession, params *InitializedParams) (Result, error) {
+	if s.opts.KeepAlive > 0 {
+		ss.startKeepalive(s.opts.KeepAlive)
+	}
 	return callNotificationHandler(ctx, s.opts.InitializedHandler, ss, params)
 }
 
@@ -488,10 +505,23 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 type ServerSession struct {
 	server           *Server
 	conn             *jsonrpc2.Connection
+	mcpConn          Connection
 	mu               sync.Mutex
 	logLevel         LoggingLevel
 	initializeParams *InitializeParams
 	initialized      bool
+	keepaliveCancel  context.CancelFunc
+}
+
+func (ss *ServerSession) setConn(c Connection) {
+	ss.mcpConn = c
+}
+
+func (ss *ServerSession) ID() string {
+	if ss.mcpConn == nil {
+		return ""
+	}
+	return ss.mcpConn.SessionID()
 }
 
 // Ping pings the client.
@@ -561,6 +591,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
 var serverMethodInfos = map[string]methodInfo{
+	methodComplete:               newMethodInfo(serverMethod((*Server).complete)),
 	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize)),
 	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping)),
 	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts)),
@@ -644,6 +675,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		// reject unsupported features.
 		ProtocolVersion: version,
 		Capabilities: &serverCapabilities{
+			Completions: &completionCapabilities{},
 			Prompts: &promptCapabilities{
 				ListChanged: true,
 			},
@@ -678,12 +710,25 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*e
 // requests from being handled, and waiting for ongoing requests to return.
 // Close then terminates the connection.
 func (ss *ServerSession) Close() error {
+	if ss.keepaliveCancel != nil {
+		// Note: keepaliveCancel access is safe without a mutex because:
+		// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+		// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
+		// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
+		//    Close is idempotent and conn.Close() handles concurrent calls correctly
+		ss.keepaliveCancel()
+	}
 	return ss.conn.Close()
 }
 
 // Wait waits for the connection to be closed by the client.
 func (ss *ServerSession) Wait() error {
 	return ss.conn.Wait()
+}
+
+// startKeepalive starts the keepalive mechanism for this server session.
+func (ss *ServerSession) startKeepalive(interval time.Duration) {
+	startKeepalive(ss, interval, &ss.keepaliveCancel)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

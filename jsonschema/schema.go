@@ -127,6 +127,9 @@ type Schema struct {
 	// https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.7
 	Format string `json:"format,omitempty"`
 
+	// Extra allows for additional keywords beyond those specified.
+	Extra map[string]any `json:"-"`
+
 	// computed fields
 
 	// This schema's base schema.
@@ -236,7 +239,7 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 		Type:                 typ,
 		schemaWithoutMethods: (*schemaWithoutMethods)(s),
 	}
-	return json.Marshal(ms)
+	return marshalStructWithMap(&ms, "Extra")
 }
 
 func (s *Schema) UnmarshalJSON(data []byte) error {
@@ -269,7 +272,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	}{
 		schemaWithoutMethods: (*schemaWithoutMethods)(s),
 	}
-	if err := json.Unmarshal(data, &ms); err != nil {
+	if err := unmarshalStructWithMap(data, &ms, "Extra"); err != nil {
 		return err
 	}
 	// Unmarshal "type" as either Type or Types.

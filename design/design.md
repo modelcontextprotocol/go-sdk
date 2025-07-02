@@ -470,6 +470,10 @@ server.AddReceivingMiddleware(withLogging)
 
 **Differences from mcp-go**: Version 0.26.0 of mcp-go defines 24 server hooks. Each hook consists of a field in the `Hooks` struct, a `Hooks.Add` method, and a type for the hook function. These are rarely used. The most common is `OnError`, which occurs fewer than ten times in open-source code.
 
+#### Rate Limiting
+
+Rate limiting can be configured using middleware. Please see [examples/rate-limiting](<https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/rate-limiting>] for an example on how to implement this.
+
 ### Errors
 
 With the exception of tool handler errors, protocol errors are handled transparently as Go errors: errors in server-side feature handlers are propagated as errors from calls from the `ClientSession`, and vice-versa.
@@ -863,7 +867,7 @@ type ServerOptions struct {
 }
 ```
 
-#### Securty Considerations
+#### Security Considerations
 
 Implementors of the CompletionHandler MUST adhere to the following security guidelines:
 
@@ -952,7 +956,7 @@ In addition to the `List` methods, the SDK provides an iterator method for each 
 
 # Governance and Community
 
-While the sections above propose an initial implementation of the Go SDK, MCP is evolving rapidly. SDKs need to keep pace, by implementing changes to the spec, fixing bugs, and accomodating new and emerging use-cases. This section proposes how the SDK project can be managed so that it can change safely and transparently.
+While the sections above propose an initial implementation of the Go SDK, MCP is evolving rapidly. SDKs need to keep pace, by implementing changes to the spec, fixing bugs, and accommodating new and emerging use-cases. This section proposes how the SDK project can be managed so that it can change safely and transparently.
 
 Initially, the Go SDK repository will be administered by the Go team and Anthropic, and they will be the Approvers (the set of people able to merge PRs to the SDK). The policies here are also intended to satisfy necessary constraints of the Go team's participation in the project.
 
@@ -980,7 +984,7 @@ A proposal is an issue that proposes a new API for the SDK, or a change to the s
 
 Proposals that are straightforward and uncontroversial may be approved based on GitHub discussion. However, proposals that are deemed to be sufficiently unclear or complicated will be deferred to a regular steering meeting (see below).
 
-This process is similar to the [Go proposal process](https://github.com/golang/proposal), but is necessarily lighter weight to accomodate the greater rate of change expected for the SDK.
+This process is similar to the [Go proposal process](https://github.com/golang/proposal), but is necessarily lighter weight to accommodate the greater rate of change expected for the SDK.
 
 ### Steering meetings
 

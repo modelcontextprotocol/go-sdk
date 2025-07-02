@@ -161,6 +161,10 @@ func NewStreamableServerTransport(sessionID string) *StreamableServerTransport {
 	}
 }
 
+func (t *StreamableServerTransport) SessionID() string {
+	return t.id
+}
+
 // A StreamableServerTransport implements the [Transport] interface for a
 // single session.
 type StreamableServerTransport struct {
@@ -254,7 +258,7 @@ func (s *StreamableServerTransport) Connect(context.Context) (Connection, error)
 //
 // Currently, this is implemented in [ServerSession.handle]. This is not ideal,
 // because it means that a user of the MCP package couldn't implement the
-// streamable transport, as they'd lack this priviledged access.
+// streamable transport, as they'd lack this privileged access.
 //
 // If we ever wanted to expose this mechanism, we have a few options:
 //  1. Make ServerSession an interface, and provide an implementation of
@@ -331,7 +335,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
-	var requests = make(map[JSONRPCID]struct{})
+	requests := make(map[JSONRPCID]struct{})
 	for _, msg := range incoming {
 		if req, ok := msg.(*JSONRPCRequest); ok && req.ID.IsValid() {
 			requests[req.ID] = struct{}{}
@@ -624,18 +628,24 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 }
 
 type streamableClientConn struct {
-	url       string
-	sessionID string
-	client    *http.Client
-	incoming  chan []byte
-	done      chan struct{}
+	url      string
+	client   *http.Client
+	incoming chan []byte
+	done     chan struct{}
 
 	closeOnce sync.Once
 	closeErr  error
 
-	mu sync.Mutex
+	mu         sync.Mutex
+	_sessionID string
 	// bodies map[*http.Response]io.Closer
 	err error
+}
+
+func (c *streamableClientConn) SessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c._sessionID
 }
 
 // Read implements the [Connection] interface.
@@ -658,7 +668,7 @@ func (s *streamableClientConn) Write(ctx context.Context, msg JSONRPCMessage) er
 		return s.err
 	}
 
-	sessionID := s.sessionID
+	sessionID := s._sessionID
 	if sessionID == "" {
 		// Hold lock for the first request.
 		defer s.mu.Unlock()
@@ -681,7 +691,7 @@ func (s *streamableClientConn) Write(ctx context.Context, msg JSONRPCMessage) er
 
 	if sessionID == "" {
 		// locked
-		s.sessionID = gotSessionID
+		s._sessionID = gotSessionID
 	}
 
 	return nil
@@ -753,7 +763,7 @@ func (s *streamableClientConn) Close() error {
 		if err != nil {
 			s.closeErr = err
 		} else {
-			req.Header.Set("Mcp-Session-Id", s.sessionID)
+			req.Header.Set("Mcp-Session-Id", s._sessionID)
 			if _, err := s.client.Do(req); err != nil {
 				s.closeErr = err
 			}

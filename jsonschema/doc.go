@@ -40,7 +40,7 @@ or as a value of this type:
 
 # Inference
 
-The [For] and [ForType] functions return a [Schema] describing the given Go type.
+The [For] function returns a [Schema] describing the given Go type.
 The type cannot contain any function or channel types, and any map types must have a string key.
 For example, calling For on the above Player type results in this schema:
 

@@ -7,7 +7,6 @@ package mcp_test
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -83,6 +82,24 @@ func TestContent(t *testing.T) {
 			},
 			`{"type":"resource","resource":{"uri":"file://foo","mimeType":"text","text":"abc"},"_meta":{"key":"value"},"annotations":{"priority":1}}`,
 		},
+		{
+			&mcp.ResourceLink{
+				URI:  "file:///path/to/file.txt",
+				Name: "file.txt",
+			},
+			`{"type":"resource_link","uri":"file:///path/to/file.txt","name":"file.txt"}`,
+		},
+		{
+			&mcp.ResourceLink{
+				URI:         "https://example.com/resource",
+				Name:        "Example Resource",
+				Title:       "A comprehensive example resource",
+				Description: "This resource demonstrates all fields",
+				MIMEType:    "text/plain",
+				Meta:        mcp.Meta{"custom": "metadata"},
+			},
+			`{"type":"resource_link","mimeType":"text/plain","uri":"https://example.com/resource","name":"Example Resource","title":"A comprehensive example resource","description":"This resource demonstrates all fields","_meta":{"custom":"metadata"}}`,
+		},
 	}
 
 	for _, test := range tests {
@@ -94,7 +111,6 @@ func TestContent(t *testing.T) {
 			t.Errorf("json.Marshal(%v) mismatch (-want +got):\n%s", test.in, diff)
 		}
 		result := fmt.Sprintf(`{"content":[%s]}`, string(got))
-		log.Println(result)
 		var out mcp.CallToolResult
 		if err := json.Unmarshal([]byte(result), &out); err != nil {
 			t.Fatal(err)

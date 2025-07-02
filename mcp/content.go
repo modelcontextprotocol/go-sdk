@@ -10,10 +10,8 @@ import (
 	"fmt"
 )
 
-// A Content is a [TextContent], [ImageContent], [AudioContent] or
-// [EmbeddedResource].
-//
-// TODO(rfindley): add ResourceLink.
+// A Content is a [TextContent], [ImageContent], [AudioContent],
+// [ResourceLink], or [EmbeddedResource].
 type Content interface {
 	MarshalJSON() ([]byte, error)
 	fromWire(*wireContent)
@@ -91,6 +89,43 @@ func (c *AudioContent) fromWire(wire *wireContent) {
 	c.Annotations = wire.Annotations
 }
 
+// ResourceLink is a link to a resource
+type ResourceLink struct {
+	URI         string
+	Name        string
+	Title       string
+	Description string
+	MIMEType    string
+	Size        *int64
+	Meta        Meta
+	Annotations *Annotations
+}
+
+func (c *ResourceLink) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&wireContent{
+		Type:        "resource_link",
+		URI:         c.URI,
+		Name:        c.Name,
+		Title:       c.Title,
+		Description: c.Description,
+		MIMEType:    c.MIMEType,
+		Size:        c.Size,
+		Meta:        c.Meta,
+		Annotations: c.Annotations,
+	})
+}
+
+func (c *ResourceLink) fromWire(wire *wireContent) {
+	c.URI = wire.URI
+	c.Name = wire.Name
+	c.Title = wire.Title
+	c.Description = wire.Description
+	c.MIMEType = wire.MIMEType
+	c.Size = wire.Size
+	c.Meta = wire.Meta
+	c.Annotations = wire.Annotations
+}
+
 // EmbeddedResource contains embedded resources.
 type EmbeddedResource struct {
 	Resource    *ResourceContents
@@ -151,17 +186,22 @@ func (r ResourceContents) MarshalJSON() ([]byte, error) {
 }
 
 // wireContent is the wire format for content.
-// It represents the protocol types TextContent, ImageContent, AudioContent
-// and EmbeddedResource.
+// It represents the protocol types TextContent, ImageContent, AudioContent,
+// ResourceLink, and EmbeddedResource.
 // The Type field distinguishes them. In the protocol, each type has a constant
 // value for the field.
-// At most one of Text, Data, and Resource is non-zero.
+// At most one of Text, Data, Resource, and URI is non-zero.
 type wireContent struct {
 	Type        string            `json:"type"`
 	Text        string            `json:"text,omitempty"`
 	MIMEType    string            `json:"mimeType,omitempty"`
 	Data        []byte            `json:"data,omitempty"`
 	Resource    *ResourceContents `json:"resource,omitempty"`
+	URI         string            `json:"uri,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Size        *int64            `json:"size,omitempty"`
 	Meta        Meta              `json:"_meta,omitempty"`
 	Annotations *Annotations      `json:"annotations,omitempty"`
 }
@@ -193,6 +233,10 @@ func contentFromWire(wire *wireContent, allow map[string]bool) (Content, error) 
 		return v, nil
 	case "audio":
 		v := new(AudioContent)
+		v.fromWire(wire)
+		return v, nil
+	case "resource_link":
+		v := new(ResourceLink)
 		v.fromWire(wire)
 		return v, nil
 	case "resource":

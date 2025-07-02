@@ -15,6 +15,9 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
+	"sync"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // Equal reports whether two Go values representing JSON values are equal according
@@ -281,4 +284,137 @@ func assert(cond bool, msg string) {
 	if !cond {
 		panic("assertion failed: " + msg)
 	}
+}
+
+// marshalStructWithMap marshals its first argument to JSON, treating the field named
+// mapField as an embedded map. The first argument must be a pointer to
+// a struct. The underlying type of mapField must be a map[string]any, and it must have
+// a "-" json tag, meaning it will not be marshaled.
+//
+// For example, given this struct:
+//
+//	type S struct {
+//	   A int
+//	   Extra map[string] any `json:"-"`
+//	}
+//
+// and this value:
+//
+//	s := S{A: 1, Extra: map[string]any{"B": 2}}
+//
+// the call marshalJSONWithMap(s, "Extra") would return
+//
+//	{"A": 1, "B": 2}
+//
+// It is an error if the map contains the same key as another struct field's
+// JSON name.
+//
+// marshalStructWithMap calls json.Marshal on a value of type T, so T must not
+// have a MarshalJSON method that calls this function, on pain of infinite regress.
+//
+// Note that there is a similar function in mcp/util.go, but they are not the same.
+// Here the function requires `-` json tag, does not clear the mapField map,
+// and handles embedded struct due to the implementation of jsonNames in this package.
+//
+// TODO: avoid this restriction on T by forcing it to marshal in a default way.
+// See https://go.dev/play/p/EgXKJHxEx_R.
+func marshalStructWithMap[T any](s *T, mapField string) ([]byte, error) {
+	// Marshal the struct and the map separately, and concatenate the bytes.
+	// This strategy is dramatically less complicated than
+	// constructing a synthetic struct or map with the combined keys.
+	if s == nil {
+		return []byte("null"), nil
+	}
+	s2 := *s
+	vMapField := reflect.ValueOf(&s2).Elem().FieldByName(mapField)
+	mapVal := vMapField.Interface().(map[string]any)
+
+	// Check for duplicates.
+	names := jsonNames(reflect.TypeFor[T]())
+	for key := range mapVal {
+		if names[key] {
+			return nil, fmt.Errorf("map key %q duplicates struct field", key)
+		}
+	}
+
+	structBytes, err := json.Marshal(s2)
+	if err != nil {
+		return nil, fmt.Errorf("marshalStructWithMap(%+v): %w", s, err)
+	}
+	if len(mapVal) == 0 {
+		return structBytes, nil
+	}
+	mapBytes, err := json.Marshal(mapVal)
+	if err != nil {
+		return nil, err
+	}
+	if len(structBytes) == 2 { // must be "{}"
+		return mapBytes, nil
+	}
+	// "{X}" + "{Y}" => "{X,Y}"
+	res := append(structBytes[:len(structBytes)-1], ',')
+	res = append(res, mapBytes[1:]...)
+	return res, nil
+}
+
+// unmarshalStructWithMap is the inverse of marshalStructWithMap.
+// T has the same restrictions as in that function.
+//
+// Note that there is a similar function in mcp/util.go, but they are not the same.
+// Here jsonNames also returns fields from embedded structs, hence this function
+// handles embedded structs as well.
+func unmarshalStructWithMap[T any](data []byte, v *T, mapField string) error {
+	// Unmarshal into the struct, ignoring unknown fields.
+	if err := json.Unmarshal(data, v); err != nil {
+		return err
+	}
+	// Unmarshal into the map.
+	m := map[string]any{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	// Delete from the map the fields of the struct.
+	for n := range jsonNames(reflect.TypeFor[T]()) {
+		delete(m, n)
+	}
+	if len(m) != 0 {
+		reflect.ValueOf(v).Elem().FieldByName(mapField).Set(reflect.ValueOf(m))
+	}
+	return nil
+}
+
+var jsonNamesMap sync.Map // from reflect.Type to map[string]bool
+
+// jsonNames returns the set of JSON object keys that t will marshal into,
+// including fields from embedded structs in t.
+// t must be a struct type.
+//
+// Note that there is a similar function in mcp/util.go, but they are not the same
+// Here the function recurses over embedded structs and includes fields from them.
+func jsonNames(t reflect.Type) map[string]bool {
+	// Lock not necessary: at worst we'll duplicate work.
+	if val, ok := jsonNamesMap.Load(t); ok {
+		return val.(map[string]bool)
+	}
+	m := map[string]bool{}
+	for i := range t.NumField() {
+		field := t.Field(i)
+		// handle embedded structs
+		if field.Anonymous {
+			fieldType := field.Type
+			if fieldType.Kind() == reflect.Ptr {
+				fieldType = fieldType.Elem()
+			}
+			for n := range jsonNames(fieldType) {
+				m[n] = true
+			}
+			continue
+		}
+		info := util.FieldJSONInfo(field)
+		if !info.Omit {
+			m[info.Name] = true
+		}
+	}
+	jsonNamesMap.Store(t, m)
+	return m
 }
