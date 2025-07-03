@@ -151,8 +151,6 @@ func TestStreamableServerTransport(t *testing.T) {
 		Capabilities: &serverCapabilities{
 			Completions: &completionCapabilities{},
 			Logging:     &loggingCapabilities{},
-			Prompts:     &promptCapabilities{ListChanged: true},
-			Resources:   &resourceCapabilities{ListChanged: true},
 			Tools:       &toolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: "2025-03-26",
