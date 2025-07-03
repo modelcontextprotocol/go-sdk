@@ -14,7 +14,6 @@ import (
 	"maps"
 	"math"
 	"reflect"
-	"regexp"
 	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -128,19 +127,6 @@ type Schema struct {
 
 	// Extra allows for additional keywords beyond those specified.
 	Extra map[string]any `json:"-"`
-
-	// These fields are independent of arguments to Schema.Resolved,
-	// though they are computed there.
-
-	// Map from anchors to subschemas.
-	anchors map[string]anchorInfo
-
-	// compiled regexps
-	pattern           *regexp.Regexp
-	patternProperties map[*regexp.Regexp]*Schema
-
-	// the set of required properties
-	isRequired map[string]bool
 }
 
 // falseSchema returns a new Schema tree that fails to validate any value.
@@ -157,11 +143,11 @@ type anchorInfo struct {
 
 // String returns a short description of the schema.
 func (s *Schema) String() string {
+	if s.ID != "" {
+		return s.ID
+	}
 	if a := cmp.Or(s.Anchor, s.DynamicAnchor); a != "" {
 		return fmt.Sprintf("anchor %s", a)
-	}
-	if s.path != "" {
-		return s.path
 	}
 	return "<anonymous schema>"
 }

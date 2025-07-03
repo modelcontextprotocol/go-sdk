@@ -29,6 +29,14 @@ type Resolved struct {
 	resolvedInfo map[*Schema]*resolvedInfo
 }
 
+func newResolved(s *Schema) *Resolved {
+	return &Resolved{
+		root:         s,
+		resolvedURIs: map[string]*Schema{},
+		resolvedInfo: map[*Schema]*resolvedInfo{},
+	}
+}
+
 // resolvedInfo holds information specific to a schema that is computed by [Schema.Resolve].
 type resolvedInfo struct {
 	s *Schema
@@ -57,11 +65,36 @@ type resolvedInfo struct {
 	resolvedDynamicRef *Schema
 	// The anchor to look up on the stack when the dynamic ref acts dynamically.
 	dynamicRefAnchor string
+
+	// The following fields are independent of arguments to Schema.Resolved,
+	// so they could live on the Schema. We put them here for simplicity.
+
+	// The set of required properties.
+	isRequired map[string]bool
+
+	// Compiled regexps.
+	pattern           *regexp.Regexp
+	patternProperties map[*regexp.Regexp]*Schema
+
+	// Map from anchors to subschemas.
+	anchors map[string]anchorInfo
 }
 
 // Schema returns the schema that was resolved.
 // It must not be modified.
 func (r *Resolved) Schema() *Schema { return r.root }
+
+// schemaString returns a short string describing the schema.
+func (r *Resolved) schemaString(s *Schema) string {
+	if s.ID != "" {
+		return s.ID
+	}
+	info := r.resolvedInfo[s]
+	if info.path != "" {
+		return info.path
+	}
+	return "<anonymous schema>"
+}
 
 // A Loader reads and unmarshals the schema at uri, if any.
 type Loader func(uri *url.URL) (*Schema, error)
@@ -152,12 +185,9 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	if baseURI.Fragment != "" {
 		return nil, fmt.Errorf("base URI %s must not have a fragment", baseURI)
 	}
-	rs := &Resolved{root: s, resolvedInfo:map[*Schema]*resolvedInfo{}}
-	for s := rs.root.all() {
-		rs.resolvedInfo[s] = &resolvedInfo{s:s}
-	}
+	rs := newResolved(s)
 
-	if err := s.check(); err != nil {
+	if err := s.check(rs.resolvedInfo); err != nil {
 		return nil, err
 	}
 
@@ -177,10 +207,10 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	return rs, nil
 }
 
-func (root *Schema) check() error {
+func (root *Schema) check(infos map[*Schema]*resolvedInfo) error {
 	// Check for structural validity. Do this first and fail fast:
 	// bad structure will cause other code to panic.
-	if err := root.checkStructure(); err != nil {
+	if err := root.checkStructure(infos); err != nil {
 		return err
 	}
 
@@ -188,18 +218,16 @@ func (root *Schema) check() error {
 	report := func(err error) { errs = append(errs, err) }
 
 	for ss := range root.all() {
-		ss.checkLocal(report)
+		ss.checkLocal(report, infos)
 	}
 	return errors.Join(errs...)
 }
 
 // checkStructure verifies that root and its subschemas form a tree.
 // It also assigns each schema a unique path, to improve error messages.
-func (root *Schema) checkStructure() error {
-	if root.path != "" {
-		// We have done this before, and it will always produce the same result.
-		return nil
-	}
+func (root *Schema) checkStructure(infos map[*Schema]*resolvedInfo) error {
+	assert(len(infos) == 0, "non-empty infos")
+
 	var check func(reflect.Value, []byte) error
 	check = func(v reflect.Value, path []byte) error {
 		// For the purpose of error messages, the root schema has path "root"
@@ -212,16 +240,15 @@ func (root *Schema) checkStructure() error {
 		if s == nil {
 			return fmt.Errorf("jsonschema: schema at %s is nil", p)
 		}
-		if s.path != "" {
+		if info, ok := infos[s]; ok {
 			// We've seen s before.
 			// The schema graph at root is not a tree, but it needs to
 			// be because a schema's base must be unique.
-			// A cycle would also put Schema.all into an infinite
-			// recursion.
+			// A cycle would also put Schema.all into an infinite recursion.
 			return fmt.Errorf("jsonschema: schemas at %s do not form a tree; %s appears more than once (also at %s)",
-				root, s.path, p)
+				root, info.path, p)
 		}
-		s.path = p
+		infos[s] = &resolvedInfo{s: s, path: p}
 
 		for _, info := range schemaFieldInfos {
 			fv := v.Elem().FieldByIndex(info.sf.Index)
@@ -263,7 +290,7 @@ func (root *Schema) checkStructure() error {
 // Since checking a regexp involves compiling it, checkLocal saves those compiled regexps
 // in the schema for later use.
 // It appends the errors it finds to errs.
-func (s *Schema) checkLocal(report func(error)) {
+func (s *Schema) checkLocal(report func(error), infos map[*Schema]*resolvedInfo) {
 	addf := func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		report(fmt.Errorf("jsonschema.Schema: %s: %s", s, msg))
@@ -289,33 +316,35 @@ func (s *Schema) checkLocal(report func(error)) {
 		addf("cannot validate a schema with $vocabulary")
 	}
 
+	info := infos[s]
+
 	// Check and compile regexps.
 	if s.Pattern != "" {
 		re, err := regexp.Compile(s.Pattern)
 		if err != nil {
 			addf("pattern: %v", err)
 		} else {
-			s.pattern = re
+			info.pattern = re
 		}
 	}
 	if len(s.PatternProperties) > 0 {
-		s.patternProperties = map[*regexp.Regexp]*Schema{}
+		info.patternProperties = map[*regexp.Regexp]*Schema{}
 		for reString, subschema := range s.PatternProperties {
 			re, err := regexp.Compile(reString)
 			if err != nil {
 				addf("patternProperties[%q]: %v", reString, err)
 				continue
 			}
-			s.patternProperties[re] = subschema
+			info.patternProperties[re] = subschema
 		}
 	}
 
 	// Build a set of required properties, to avoid quadratic behavior when validating
 	// a struct.
 	if len(s.Required) > 0 {
-		s.isRequired = map[string]bool{}
+		info.isRequired = map[string]bool{}
 		for _, r := range s.Required {
-			s.isRequired[r] = true
+			info.isRequired[r] = true
 		}
 	}
 }
@@ -356,13 +385,8 @@ func (s *Schema) checkLocal(report func(error)) {
 func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 	var resolve func(s, base *Schema) error
 	resolve = func(s, base *Schema) error {
-		assert(rs.resolvedInfo[base] != nil, "base resolved info not set")
 		info := rs.resolvedInfo[s]
-		if info == nil {
-			info = &resolvedInfo{s: s}
-			rs.resolvedInfo[s] = info
-		}
-		baseURI := rs.resolvedInfo[base].uri
+		baseInfo := rs.resolvedInfo[base]
 
 		// ids are scoped to the root.
 		if s.ID != "" {
@@ -375,12 +399,13 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 				return fmt.Errorf("$id %s must not have a fragment", s.ID)
 			}
 			// The base URI for this schema is its $id resolved against the parent base.
-			info.uri = baseURI.ResolveReference(idURI)
+			info.uri = baseInfo.uri.ResolveReference(idURI)
 			if !info.uri.IsAbs() {
-				return fmt.Errorf("$id %s does not resolve to an absolute URI (base is %s)", s.ID, baseURI)
+				return fmt.Errorf("$id %s does not resolve to an absolute URI (base is %q)", s.ID, baseInfo.uri)
 			}
 			rs.resolvedURIs[info.uri.String()] = s
 			base = s // needed for anchors
+			baseInfo = rs.resolvedInfo[base]
 		}
 		info.base = base
 
@@ -388,13 +413,13 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 		// We treat them as keys in a map stored within the schema.
 		setAnchor := func(anchor string, dynamic bool) error {
 			if anchor != "" {
-				if _, ok := base.anchors[anchor]; ok {
-					return fmt.Errorf("duplicate anchor %q in %s", anchor, baseURI)
+				if _, ok := baseInfo.anchors[anchor]; ok {
+					return fmt.Errorf("duplicate anchor %q in %s", anchor, baseInfo.uri)
 				}
-				if base.anchors == nil {
-					base.anchors = map[string]anchorInfo{}
+				if baseInfo.anchors == nil {
+					baseInfo.anchors = map[string]anchorInfo{}
 				}
-				base.anchors[anchor] = anchorInfo{s, dynamic}
+				baseInfo.anchors[anchor] = anchorInfo{s, dynamic}
 			}
 			return nil
 		}
@@ -411,11 +436,9 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 	}
 
 	// Set the root URI to the base for now. If the root has an $id, this will change.
-	rs.resolvedInfo = map[*Schema]*resolvedInfo{
-		rs.root: {s: rs.root, uri: baseURI},
-	}
+	rs.resolvedInfo[rs.root].uri = baseURI
 	// The original base, even if changed, is still a valid way to refer to the root.
-	rs.resolvedURIs = map[string]*Schema{baseURI.String(): rs.root}
+	rs.resolvedURIs[baseURI.String()] = rs.root
 
 	return resolve(rs.root, rs.root)
 }
@@ -508,7 +531,9 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 	// A JSON Pointer is either the empty string or begins with a '/',
 	// whereas anchors are always non-empty strings that don't contain slashes.
 	if frag != "" && !strings.HasPrefix(frag, "/") {
-		info, found := referencedSchema.anchors[frag]
+		resInfo := rs.resolvedInfo[referencedSchema]
+		info, found := resInfo.anchors[frag]
+
 		if !found {
 			return nil, "", fmt.Errorf("no anchor %q in %s", frag, s)
 		}
