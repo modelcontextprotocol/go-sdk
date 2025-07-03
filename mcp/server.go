@@ -407,6 +407,11 @@ func fileResourceHandler(dir string) ResourceHandler {
 //
 // Run blocks until the client terminates the connection or the provided
 // context is cancelled. If the context is cancelled, Run closes the connection.
+//
+// If tools have been added to the server before this call, then the server will
+// advertise the capability for tools, including the ability to send list-changed notifications.
+// If no tools have been added, the server will not have the tool capability.
+// The same goes for other features like prompts and resources.
 func (s *Server) Run(ctx context.Context, t Transport) error {
 	ss, err := s.Connect(ctx, t)
 	if err != nil {
@@ -655,24 +660,31 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		version = latestProtocolVersion
 	}
 
+	caps := &serverCapabilities{
+		Completions: &completionCapabilities{},
+		Logging:     &loggingCapabilities{},
+	}
+	ss.server.mu.Lock()
+	hasTools := ss.server.tools.len() > 0
+	hasPrompts := ss.server.prompts.len() > 0
+	hasResources := ss.server.resources.len() > 0
+	ss.server.mu.Unlock()
+	if hasTools {
+		caps.Tools = &toolCapabilities{ListChanged: true}
+	}
+	if hasPrompts {
+		caps.Prompts = &promptCapabilities{ListChanged: true}
+	}
+	if hasResources {
+		caps.Resources = &resourceCapabilities{ListChanged: true}
+	}
+
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
 		ProtocolVersion: version,
-		Capabilities: &serverCapabilities{
-			Completions: &completionCapabilities{},
-			Prompts: &promptCapabilities{
-				ListChanged: true,
-			},
-			Tools: &toolCapabilities{
-				ListChanged: true,
-			},
-			Resources: &resourceCapabilities{
-				ListChanged: true,
-			},
-			Logging: &loggingCapabilities{},
-		},
-		Instructions: ss.server.opts.Instructions,
+		Capabilities:    caps,
+		Instructions:    ss.server.opts.Instructions,
 		ServerInfo: &implementation{
 			Name:    ss.server.name,
 			Version: ss.server.version,
