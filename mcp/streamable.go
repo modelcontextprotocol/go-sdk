@@ -223,13 +223,13 @@ type StreamableServerTransport struct {
 	// TODO(rfindley): clean up once requests are handled.
 	requestStreams map[JSONRPCID]streamID
 
-	// outstandingRequests tracks the set of unanswered incoming RPCs for each logical
+	// streamRequests tracks the set of unanswered incoming RPCs for each logical
 	// stream.
 	//
 	// When the server has responded to each request, the stream should be
 	// closed.
 	//
-	// Lifecycle: outstandingRequests values persist as until the requests have been
+	// Lifecycle: streamRequests values persist as until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
 	streamRequests map[streamID]map[JSONRPCID]struct{}
