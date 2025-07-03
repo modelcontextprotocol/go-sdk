@@ -26,14 +26,14 @@ type Resolved struct {
 	// map from $ids to their schemas
 	resolvedURIs map[string]*Schema
 	// map from schemas to additional info computed during resolution
-	resolvedInfo map[*Schema]*resolvedInfo
+	resolvedInfos map[*Schema]*resolvedInfo
 }
 
 func newResolved(s *Schema) *Resolved {
 	return &Resolved{
-		root:         s,
-		resolvedURIs: map[string]*Schema{},
-		resolvedInfo: map[*Schema]*resolvedInfo{},
+		root:          s,
+		resolvedURIs:  map[string]*Schema{},
+		resolvedInfos: map[*Schema]*resolvedInfo{},
 	}
 }
 
@@ -89,7 +89,7 @@ func (r *Resolved) schemaString(s *Schema) string {
 	if s.ID != "" {
 		return s.ID
 	}
-	info := r.resolvedInfo[s]
+	info := r.resolvedInfos[s]
 	if info.path != "" {
 		return info.path
 	}
@@ -187,7 +187,7 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	}
 	rs := newResolved(s)
 
-	if err := s.check(rs.resolvedInfo); err != nil {
+	if err := s.check(rs.resolvedInfos); err != nil {
 		return nil, err
 	}
 
@@ -199,7 +199,7 @@ func (r *resolver) resolve(s *Schema, baseURI *url.URL) (*Resolved, error) {
 	// which may differ if the schema has an $id.
 	// We must set the map before calling resolveRefs, or ref cycles will cause unbounded recursion.
 	r.loaded[baseURI.String()] = rs
-	r.loaded[rs.resolvedInfo[s].uri.String()] = rs
+	r.loaded[rs.resolvedInfos[s].uri.String()] = rs
 
 	if err := r.resolveRefs(rs); err != nil {
 		return nil, err
@@ -385,8 +385,8 @@ func (s *Schema) checkLocal(report func(error), infos map[*Schema]*resolvedInfo)
 func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 	var resolve func(s, base *Schema) error
 	resolve = func(s, base *Schema) error {
-		info := rs.resolvedInfo[s]
-		baseInfo := rs.resolvedInfo[base]
+		info := rs.resolvedInfos[s]
+		baseInfo := rs.resolvedInfos[base]
 
 		// ids are scoped to the root.
 		if s.ID != "" {
@@ -405,7 +405,7 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 			}
 			rs.resolvedURIs[info.uri.String()] = s
 			base = s // needed for anchors
-			baseInfo = rs.resolvedInfo[base]
+			baseInfo = rs.resolvedInfos[base]
 		}
 		info.base = base
 
@@ -436,7 +436,7 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 	}
 
 	// Set the root URI to the base for now. If the root has an $id, this will change.
-	rs.resolvedInfo[rs.root].uri = baseURI
+	rs.resolvedInfos[rs.root].uri = baseURI
 	// The original base, even if changed, is still a valid way to refer to the root.
 	rs.resolvedURIs[baseURI.String()] = rs.root
 
@@ -448,7 +448,7 @@ func resolveURIs(rs *Resolved, baseURI *url.URL) error {
 // that needs to be loaded.
 func (r *resolver) resolveRefs(rs *Resolved) error {
 	for s := range rs.root.all() {
-		info := rs.resolvedInfo[s]
+		info := rs.resolvedInfos[s]
 		if s.Ref != "" {
 			refSchema, _, err := r.resolveRef(rs, s, s.Ref)
 			if err != nil {
@@ -484,8 +484,8 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 		return nil, "", err
 	}
 	// URI-resolve the ref against the current base URI to get a complete URI.
-	base := rs.resolvedInfo[s].base
-	refURI = rs.resolvedInfo[base].uri.ResolveReference(refURI)
+	base := rs.resolvedInfos[s].base
+	refURI = rs.resolvedInfos[base].uri.ResolveReference(refURI)
 	// The non-fragment part of a ref URI refers to the base URI of some schema.
 	// This part is the same for dynamic refs too: their non-fragment part resolves
 	// lexically.
@@ -517,9 +517,9 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 			assert(referencedSchema != nil, "nil referenced schema")
 			// Copy the resolvedInfos from lrs into rs, without overwriting
 			// (hence we can't use maps.Insert).
-			for s, i := range lrs.resolvedInfo {
-				if rs.resolvedInfo[s] == nil {
-					rs.resolvedInfo[s] = i
+			for s, i := range lrs.resolvedInfos {
+				if rs.resolvedInfos[s] == nil {
+					rs.resolvedInfos[s] = i
 				}
 			}
 		}
@@ -531,7 +531,7 @@ func (r *resolver) resolveRef(rs *Resolved, s *Schema, ref string) (_ *Schema, d
 	// A JSON Pointer is either the empty string or begins with a '/',
 	// whereas anchors are always non-empty strings that don't contain slashes.
 	if frag != "" && !strings.HasPrefix(frag, "/") {
-		resInfo := rs.resolvedInfo[referencedSchema]
+		resInfo := rs.resolvedInfos[referencedSchema]
 		info, found := resInfo.anchors[frag]
 
 		if !found {

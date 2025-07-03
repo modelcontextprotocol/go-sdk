@@ -90,7 +90,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 		instance = instance.Elem()
 	}
 
-	schemaInfo := st.rs.resolvedInfo[schema]
+	schemaInfo := st.rs.resolvedInfos[schema]
 
 	// type: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-01#section-6.1.1
 	if schema.Type != "" || schema.Types != nil {
@@ -214,8 +214,8 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 			// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 			var dynamicSchema *Schema
 			for _, s := range st.stack {
-				base := st.rs.resolvedInfo[s].base
-				info, ok := st.rs.resolvedInfo[base].anchors[schemaInfo.dynamicRefAnchor]
+				base := st.rs.resolvedInfos[s].base
+				info, ok := st.rs.resolvedInfos[base].anchors[schemaInfo.dynamicRefAnchor]
 				if ok && info.dynamic {
 					dynamicSchema = info.schema
 					break
@@ -557,7 +557,7 @@ func (st *state) resolveDynamicRef(schema *Schema) (*Schema, error) {
 	if schema.DynamicRef == "" {
 		return nil, nil
 	}
-	info := st.rs.resolvedInfo[schema]
+	info := st.rs.resolvedInfos[schema]
 	// The ref behaves lexically or dynamically, but not both.
 	assert((info.resolvedDynamicRef == nil) != (info.dynamicRefAnchor == ""),
 		"DynamicRef not statically resolved properly")
@@ -575,8 +575,8 @@ func (st *state) resolveDynamicRef(schema *Schema) (*Schema, error) {
 	// on the stack.
 	// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 	for _, s := range st.stack {
-		base := st.rs.resolvedInfo[s].base
-		info, ok := st.rs.resolvedInfo[base].anchors[info.dynamicRefAnchor]
+		base := st.rs.resolvedInfos[s].base
+		info, ok := st.rs.resolvedInfos[base].anchors[info.dynamicRefAnchor]
 		if ok && info.dynamic {
 			return info.schema, nil
 		}
@@ -615,7 +615,7 @@ func (rs *Resolved) ApplyDefaults(instancep any) error {
 func (st *state) applyDefaults(instancep reflect.Value, schema *Schema) (err error) {
 	defer util.Wrapf(&err, "applyDefaults: schema %s, instance %v", st.rs.schemaString(schema), instancep)
 
-	schemaInfo := st.rs.resolvedInfo[schema]
+	schemaInfo := st.rs.resolvedInfos[schema]
 	instance := instancep.Elem()
 	if instance.Kind() == reflect.Map || instance.Kind() == reflect.Struct {
 		if instance.Kind() == reflect.Map {

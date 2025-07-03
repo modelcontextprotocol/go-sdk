@@ -91,13 +91,13 @@ func TestPaths(t *testing.T) {
 		{root.PrefixItems[1].Items, "/prefixItems/1/items"},
 	}
 	rs := newResolved(root)
-	if err := root.checkStructure(rs.resolvedInfo); err != nil {
+	if err := root.checkStructure(rs.resolvedInfos); err != nil {
 		t.Fatal(err)
 	}
 
 	var got []item
 	for s := range root.all() {
-		got = append(got, item{s, rs.resolvedInfo[s].path})
+		got = append(got, item{s, rs.resolvedInfos[s].path})
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("\ngot  %v\nwant %v", got, want)
@@ -133,7 +133,7 @@ func TestResolveURIs(t *testing.T) {
 			}
 
 			rs := newResolved(root)
-			if err := root.check(rs.resolvedInfo); err != nil {
+			if err := root.check(rs.resolvedInfos); err != nil {
 				t.Fatal(err)
 			}
 			if err := resolveURIs(rs, base); err != nil {
@@ -170,7 +170,7 @@ func TestResolveURIs(t *testing.T) {
 				t.Errorf("IDs:\ngot  %+v\n\nwant %+v", got, wantIDs)
 			}
 			for s := range root.all() {
-				info := rs.resolvedInfo[s]
+				info := rs.resolvedInfos[s]
 				if want := wantAnchors[s]; want != nil {
 					if got := info.anchors; !maps.Equal(got, want) {
 						t.Errorf("anchors:\ngot  %+v\n\nwant %+v", got, want)
@@ -207,7 +207,7 @@ func TestRefCycle(t *testing.T) {
 
 	check := func(s *Schema, key string) {
 		t.Helper()
-		if rs.resolvedInfo[s].resolvedRef != schemas[key] {
+		if rs.resolvedInfos[s].resolvedRef != schemas[key] {
 			t.Errorf("%s resolvedRef != schemas[%q]", s.json(), key)
 		}
 	}
