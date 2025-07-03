@@ -204,6 +204,26 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
 }
 
+func (s *Server) capabilities() *serverCapabilities {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	caps := &serverCapabilities{
+		Completions: &completionCapabilities{},
+		Logging:     &loggingCapabilities{},
+	}
+	if s.tools.len() > 0 {
+		caps.Tools = &toolCapabilities{ListChanged: true}
+	}
+	if s.prompts.len() > 0 {
+		caps.Prompts = &promptCapabilities{ListChanged: true}
+	}
+	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
+		caps.Resources = &resourceCapabilities{ListChanged: true}
+	}
+	return caps
+}
+
 func (s *Server) complete(ctx context.Context, ss *ServerSession, params *CompleteParams) (Result, error) {
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
@@ -660,30 +680,11 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		version = latestProtocolVersion
 	}
 
-	caps := &serverCapabilities{
-		Completions: &completionCapabilities{},
-		Logging:     &loggingCapabilities{},
-	}
-	ss.server.mu.Lock()
-	hasTools := ss.server.tools.len() > 0
-	hasPrompts := ss.server.prompts.len() > 0
-	hasResources := ss.server.resources.len() > 0
-	ss.server.mu.Unlock()
-	if hasTools {
-		caps.Tools = &toolCapabilities{ListChanged: true}
-	}
-	if hasPrompts {
-		caps.Prompts = &promptCapabilities{ListChanged: true}
-	}
-	if hasResources {
-		caps.Resources = &resourceCapabilities{ListChanged: true}
-	}
-
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
 		ProtocolVersion: version,
-		Capabilities:    caps,
+		Capabilities:    ss.server.capabilities(),
 		Instructions:    ss.server.opts.Instructions,
 		ServerInfo: &implementation{
 			Name:    ss.server.name,
