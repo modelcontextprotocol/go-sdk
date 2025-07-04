@@ -176,3 +176,44 @@ func TestEmbeddedResource(t *testing.T) {
 		}
 	}
 }
+
+func TestContentMarshalErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		content mcp.Content
+		wantErr string
+	}{
+		{
+			name:    "ImageContent missing data",
+			content: &mcp.ImageContent{MIMEType: "image/png"},
+			wantErr: "json: error calling MarshalJSON for type *mcp.ImageContent: ImageContent missing data",
+		},
+		{
+			name:    "ImageContent missing mimeType",
+			content: &mcp.ImageContent{Data: []byte("test")},
+			wantErr: "json: error calling MarshalJSON for type *mcp.ImageContent: ImageContent missing mimeType",
+		},
+		{
+			name:    "AudioContent missing data",
+			content: &mcp.AudioContent{MIMEType: "audio/wav"},
+			wantErr: "json: error calling MarshalJSON for type *mcp.AudioContent: AudioContent missing data",
+		},
+		{
+			name:    "AudioContent missing mimeType",
+			content: &mcp.AudioContent{Data: []byte("test")},
+			wantErr: "json: error calling MarshalJSON for type *mcp.AudioContent: AudioContent missing mimeType",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := json.Marshal(tt.content)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if got := err.Error(); got != tt.wantErr {
+				t.Errorf("got error %q, want %q", got, tt.wantErr)
+			}
+		})
+	}
+}

@@ -58,6 +58,12 @@ type ImageContent struct {
 }
 
 func (c *ImageContent) MarshalJSON() ([]byte, error) {
+	if len(c.Data) == 0 {
+		return nil, errors.New("ImageContent missing data")
+	}
+	if c.MIMEType == "" {
+		return nil, errors.New("ImageContent missing mimeType")
+	}
 	return json.Marshal(&wireContent{
 		Type:        "image",
 		MIMEType:    c.MIMEType,
@@ -83,6 +89,12 @@ type AudioContent struct {
 }
 
 func (c AudioContent) MarshalJSON() ([]byte, error) {
+	if len(c.Data) == 0 {
+		return nil, errors.New("AudioContent missing data")
+	}
+	if c.MIMEType == "" {
+		return nil, errors.New("AudioContent missing mimeType")
+	}
 	return json.Marshal(&wireContent{
 		Type:        "audio",
 		MIMEType:    c.MIMEType,
@@ -169,7 +181,7 @@ type ResourceContents struct {
 }
 
 func (r ResourceContents) MarshalJSON() ([]byte, error) {
-	// If we could assume Go 1.24, we could use omitzero for Blob and avoid this method.
+	// URI is a required field, so we return an error when it is missing.
 	if r.URI == "" {
 		return nil, errors.New("ResourceContents missing URI")
 	}
