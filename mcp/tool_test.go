@@ -132,3 +132,49 @@ func TestUnmarshalSchema(t *testing.T) {
 
 	}
 }
+
+func TestSchemaFor(t *testing.T) {
+	type S1 struct {
+		G int `mcp:"gdesc"`
+	}
+	type S2 struct {
+		A int
+		B int `json:"b"`
+		C int `mcp:"cdesc"`
+		D int `json:"d" mcp:"ddesc"`
+		E int `json:"-"`
+		F S1  `json:"f"`
+		S1
+	}
+
+	got, err := SchemaFor[S2]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := "integer"
+	s1 := &jsonschema.Schema{
+		Type:                 "object",
+		Required:             []string{"G"},
+		AdditionalProperties: falseSchema(),
+		Properties: map[string]*jsonschema.Schema{
+			"G": {Type: i, Description: "gdesc"},
+		},
+	}
+	want := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"A":  {Type: i},
+			"b":  {Type: i},
+			"C":  {Type: i, Description: "cdesc"},
+			"d":  {Type: i, Description: "ddesc"},
+			"f":  s1,
+			"S1": s1,
+		},
+		Required:             []string{"A", "b", "C", "d", "f", "S1"},
+		AdditionalProperties: falseSchema(),
+	}
+	if diff := cmp.Diff(want, got, cmp.AllowUnexported(jsonschema.Schema{})); diff != "" {
+		t.Errorf("mismatch (-want, +got):\n%s", diff)
+		t.Log(schemaJSON(got))
+	}
+}

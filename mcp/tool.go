@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
@@ -89,7 +90,7 @@ func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool
 func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) error {
 	var err error
 	if *sfield == nil {
-		*sfield, err = jsonschema.For[T]()
+		*sfield, err = SchemaFor[T]()
 	}
 	if err != nil {
 		return err
@@ -121,6 +122,61 @@ func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any)
 		if err := resolved.Validate(v); err != nil {
 			return fmt.Errorf("validating\n\t%s\nagainst\n\t %s:\n %w", data, schemaJSON(resolved.Schema()), err)
 		}
+	}
+	return nil
+}
+
+// SchemaFor returns a JSON Schema for type T.
+// It is like [jsonschema.For], but also uses "mcp" struct field tags
+// for property descriptions.
+//
+// For example, the call
+//
+//	SchemaFor[struct{ B int `mcp:"desc"` }]()
+//
+// returns a schema with this value for "properties":
+//
+//	{"B": {"type": "integer", "description": "desc"}}
+func SchemaFor[T any]() (*jsonschema.Schema, error) {
+	// Infer the schema based on "json" tags alone.
+	s, err := jsonschema.For[T]()
+	if err != nil {
+		return nil, err
+	}
+
+	// Add descriptions from "mcp" tags.
+	if err := addDescriptions(reflect.TypeFor[T](), s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func addDescriptions(t reflect.Type, s *jsonschema.Schema) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+
+	for i := range t.NumField() {
+		f := t.Field(i)
+		info := util.FieldJSONInfo(f)
+		ps := s.Properties[info.Name]
+		if tag, ok := f.Tag.Lookup("mcp"); ok {
+			if ps == nil {
+				return fmt.Errorf("mcp tag on struct field %s.%s, which is not in schema", t, f.Name)
+			}
+			if tag == "" {
+				return fmt.Errorf("empty mcp tag on struct field %s.%s", t, f.Name)
+			}
+			ps.Description = tag
+		}
+		// Recurse on sub-schemas.
+		if ps != nil {
+			addDescriptions(f.Type, ps)
+		}
+
 	}
 	return nil
 }
