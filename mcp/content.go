@@ -58,13 +58,25 @@ type ImageContent struct {
 }
 
 func (c *ImageContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&wireContent{
+	// Custom wire format to ensure required fields are always included, even when empty.
+	data := c.Data
+	if data == nil {
+		data = []byte{}
+	}
+	wire := struct {
+		Type        string       `json:"type"`
+		MIMEType    string       `json:"mimeType"`
+		Data        []byte       `json:"data"`
+		Meta        Meta         `json:"_meta,omitempty"`
+		Annotations *Annotations `json:"annotations,omitempty"`
+	}{
 		Type:        "image",
 		MIMEType:    c.MIMEType,
-		Data:        c.Data,
+		Data:        data,
 		Meta:        c.Meta,
 		Annotations: c.Annotations,
-	})
+	}
+	return json.Marshal(wire)
 }
 
 func (c *ImageContent) fromWire(wire *wireContent) {
@@ -83,13 +95,25 @@ type AudioContent struct {
 }
 
 func (c AudioContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&wireContent{
+	// Custom wire format to ensure required fields are always included, even when empty.
+	data := c.Data
+	if data == nil {
+		data = []byte{}
+	}
+	wire := struct {
+		Type        string       `json:"type"`
+		MIMEType    string       `json:"mimeType"`
+		Data        []byte       `json:"data"`
+		Meta        Meta         `json:"_meta,omitempty"`
+		Annotations *Annotations `json:"annotations,omitempty"`
+	}{
 		Type:        "audio",
 		MIMEType:    c.MIMEType,
-		Data:        c.Data,
+		Data:        data,
 		Meta:        c.Meta,
 		Annotations: c.Annotations,
-	})
+	}
+	return json.Marshal(wire)
 }
 
 func (c *AudioContent) fromWire(wire *wireContent) {

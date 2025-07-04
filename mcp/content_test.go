@@ -46,6 +46,14 @@ func TestContent(t *testing.T) {
 			`{"type":"image","mimeType":"image/png","data":"YTFiMmMz"}`,
 		},
 		{
+			&mcp.ImageContent{MIMEType: "image/png", Data: []byte{}},
+			`{"type":"image","mimeType":"image/png","data":""}`,
+		},
+		{
+			&mcp.ImageContent{Data: []byte("test")},
+			`{"type":"image","mimeType":"","data":"dGVzdA=="}`,
+		},
+		{
 			&mcp.ImageContent{
 				Data:        []byte("a1b2c3"),
 				MIMEType:    "image/png",
@@ -60,6 +68,14 @@ func TestContent(t *testing.T) {
 				MIMEType: "audio/wav",
 			},
 			`{"type":"audio","mimeType":"audio/wav","data":"YTFiMmMz"}`,
+		},
+		{
+			&mcp.AudioContent{MIMEType: "audio/wav", Data: []byte{}},
+			`{"type":"audio","mimeType":"audio/wav","data":""}`,
+		},
+		{
+			&mcp.AudioContent{Data: []byte("test")},
+			`{"type":"audio","mimeType":"","data":"dGVzdA=="}`,
 		},
 		{
 			&mcp.AudioContent{
