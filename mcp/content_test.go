@@ -146,6 +146,10 @@ func TestEmbeddedResource(t *testing.T) {
 			&mcp.ResourceContents{URI: "u", Blob: []byte{1}},
 			`{"uri":"u","blob":"AQ=="}`,
 		},
+		{
+			&mcp.ResourceContents{URI: "u", MIMEType: "m", Blob: []byte{1}, Meta: mcp.Meta{"key": "value"}},
+			`{"uri":"u","mimeType":"m","blob":"AQ==","_meta":{"key":"value"}}`,
+		},
 	} {
 		data, err := json.Marshal(tt.rc)
 		if err != nil {

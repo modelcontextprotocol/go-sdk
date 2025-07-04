@@ -177,10 +177,12 @@ func (r ResourceContents) MarshalJSON() ([]byte, error) {
 		URI      string `json:"uri,omitempty"`
 		MIMEType string `json:"mimeType,omitempty"`
 		Blob     []byte `json:"blob"`
+		Meta     Meta   `json:"_meta,omitempty"`
 	}{
 		URI:      r.URI,
 		MIMEType: r.MIMEType,
 		Blob:     r.Blob,
+		Meta:     r.Meta,
 	}
 	return json.Marshal(br)
 }
