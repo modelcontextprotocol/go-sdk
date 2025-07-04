@@ -7,13 +7,17 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -90,7 +94,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	var session *StreamableServerTransport
 	if id := req.Header.Get("Mcp-Session-Id"); id != "" {
 		h.sessionsMu.Lock()
-		session, _ = h.sessions[id]
+		session = h.sessions[id]
 		h.sessionsMu.Unlock()
 		if session == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -594,6 +598,15 @@ type StreamableClientTransportOptions struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
+	// MaxRetries specifies the maximum number of retries for sending a message
+	// or re-establishing a hanging GET connection. If 0, no retries are performed
+	// beyond the initial attempt.
+	MaxRetries int
+
+	// InitialBackoff is the initial duration to wait before the first retry
+	// attempt. Subsequent retries use exponential backoff. If 0, a default
+	// of 1 second is used.
+	InitialBackoff time.Duration
 }
 
 // NewStreamableClientTransport returns a new client transport that connects to
@@ -602,6 +615,13 @@ func NewStreamableClientTransport(url string, opts *StreamableClientTransportOpt
 	t := &StreamableClientTransport{url: url}
 	if opts != nil {
 		t.opts = *opts
+	} else {
+		t.opts = StreamableClientTransportOptions{}
+	}
+
+	// Set default initial backoff if not specified.
+	if t.opts.InitialBackoff == 0 {
+		t.opts.InitialBackoff = time.Second
 	}
 	return t
 }
@@ -619,33 +639,60 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &streamableClientConn{
-		url:      t.url,
-		client:   client,
-		incoming: make(chan []byte, 100),
-		done:     make(chan struct{}),
-	}, nil
+	conn := &streamableClientConn{
+		url:             t.url,
+		client:          client,
+		incoming:        make(chan []byte, 100),
+		done:            make(chan struct{}),
+		pendingMessages: make(chan JSONRPCMessage, 100), // Buffer pending messages
+		maxRetries:      t.opts.MaxRetries,
+		initialBackoff:  t.opts.InitialBackoff,
+		randSource:      rand.New(rand.NewSource(time.Now().UnixNano())), // Seed for jitter
+	}
+	conn.sessionID.Store("")
+
+	// Start the goroutines that handle sending messages and receiving SSE events.
+	go conn.startMessageWriter()
+	go conn.startEventStreamReceiver()
+
+	return conn, nil
 }
 
 type streamableClientConn struct {
-	url      string
-	client   *http.Client
-	incoming chan []byte
-	done     chan struct{}
+	url string
+	// sessionID stores the current session ID.
+	sessionID atomic.Value
+	client    *http.Client
+	incoming  chan []byte
+	done      chan struct{}
 
 	closeOnce sync.Once
 	closeErr  error
 
-	mu         sync.Mutex
-	_sessionID string
+	mu sync.Mutex // Protects lastEventID and err
+	// lastEventID stores the ID of the last successfully processed SSE event,
+	// used for resuming the stream.
+	lastEventID string
 	// bodies map[*http.Response]io.Closer
+	// err stores the last error that caused the connection to be deemed unhealthy.
 	err error
+
+	// pendingMessages is a buffered channel for messages waiting to be sent.
+	pendingMessages chan JSONRPCMessage
+
+	// Retry configuration
+	maxRetries     int
+	initialBackoff time.Duration
+	randSource     *rand.Rand // For adding jitter to backoff
+
+	// cancelHangingGet is a context.CancelFunc for the currently active
+	// hanging GET request. Used to cancel the request if the connection needs
+	// to be closed or a new hanging GET is initiated.
+	cancelHangingGet context.CancelFunc
 }
 
 func (c *streamableClientConn) SessionID() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c._sessionID
+	return c.sessionID.Load().(string)
 }
 
 // Read implements the [Connection] interface.
@@ -654,120 +701,370 @@ func (s *streamableClientConn) Read(ctx context.Context) (JSONRPCMessage, error)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-s.done:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.err != nil {
+			return nil, s.err // Return explicit error if connection closed due to error
+		}
 		return nil, io.EOF
 	case data := <-s.incoming:
 		return jsonrpc2.DecodeMessage(data)
 	}
 }
 
-// Write implements the [Connection] interface.
+// Write implements the [Connection] interface by enqueuing the message
+// for an asynchronous send operation. The actual sending, including retries,
+// is handled by the startMessageWriter goroutine.
 func (s *streamableClientConn) Write(ctx context.Context, msg JSONRPCMessage) error {
-	s.mu.Lock()
-	if s.err != nil {
-		s.mu.Unlock()
-		return s.err
-	}
-
-	sessionID := s._sessionID
-	if sessionID == "" {
-		// Hold lock for the first request.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.done:
+		s.mu.Lock()
 		defer s.mu.Unlock()
-	} else {
-		s.mu.Unlock()
-	}
-
-	gotSessionID, err := s.postMessage(ctx, sessionID, msg)
-	if err != nil {
-		if sessionID != "" {
-			// unlocked; lock to set err
-			s.mu.Lock()
-			defer s.mu.Unlock()
-		}
 		if s.err != nil {
-			s.err = err
+			return s.err
 		}
-		return err
+		return io.EOF // Connection closed
+	case s.pendingMessages <- msg: // Enqueue the message for sending
+		return nil
 	}
-
-	if sessionID == "" {
-		// locked
-		s._sessionID = gotSessionID
-	}
-
-	return nil
 }
 
-func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg JSONRPCMessage) (string, error) {
+// startMessageWriter continuously sends messages from the pendingMessages channel,
+// applying retry logic for transient errors.
+func (s *streamableClientConn) startMessageWriter() {
+	for {
+		select {
+		case <-s.done:
+			return // Connection is closed
+		case msg := <-s.pendingMessages:
+			// Use a new context for each send attempt to allow individual retries to be cancelled
+			// if the overall connection context is cancelled.
+			// This context is cancelled by the inner goroutine once the send attempt (including retries) is done.
+			ctx, cancel := context.WithCancel(context.Background())
+
+			go func(msgToSend JSONRPCMessage) {
+				defer cancel() // Ensure context is cancelled when this goroutine finishes
+
+				currentSessionID := s.sessionID.Load().(string)
+				var lastErr error
+				for i := 0; i <= s.maxRetries; i++ {
+					// Check if the main connection has been closed during retries
+					select {
+					case <-s.done:
+						return
+					case <-ctx.Done(): // Check if the individual send context was cancelled
+						return
+					default:
+						// Continue
+					}
+
+					gotSessionID, sendErr := s.postMessage(ctx, currentSessionID, msgToSend)
+					if sendErr == nil {
+						// If sessionID was not set and we got one, update it.
+						if currentSessionID == "" && gotSessionID != "" {
+							s.sessionID.Store(gotSessionID)
+						}
+						// Undefined behavior when currentSessionID != gotSessionID
+						return
+					}
+
+					lastErr = sendErr // Store the latest error
+					if !isRetryable(sendErr) || i == s.maxRetries {
+						break // Not a retryable error or max retries reached
+					}
+
+					// Apply exponential backoff with jitter
+					backoffDuration := s.initialBackoff * time.Duration(1<<uint(i))
+					jitter := time.Duration(s.randSource.Int63n(int64(backoffDuration / 2))) // Jitter up to half of backoff
+					delay := backoffDuration + jitter
+
+					select {
+					case <-ctx.Done():
+						return // Context cancelled during backoff
+					case <-time.After(delay):
+						// Continue to next retry attempt
+					}
+				}
+				// If all retries fail, set the connection error and close it
+				s.mu.Lock()
+				s.err = fmt.Errorf("failed to send message after %d retries: %w", s.maxRetries, lastErr)
+				s.mu.Unlock()
+				s.Close() // Close the connection due to persistent send failure
+			}(msg)
+		}
+	}
+}
+
+// postMessage sends a single JSON-RPC message via an HTTP POST request.
+// It returns the session ID from the response header or an error.
+func (s *streamableClientConn) postMessage(ctx context.Context, currentSessionID string, msg JSONRPCMessage) (string, error) {
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to encode message: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(data))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create POST request: %w", err)
 	}
-	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+	if currentSessionID != "" {
+		req.Header.Set("Mcp-Session-Id", currentSessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("POST request failed: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// TODO: do a best effort read of the body here, and format it in the error.
+		bodyBytes, _ := io.ReadAll(resp.Body) // Try to read body for more context
 		resp.Body.Close()
-		return "", fmt.Errorf("broken session: %v", resp.Status)
+		// Wrap the error with httpStatusError for easier status code checking
+		return "", &httpStatusError{
+			StatusCode: resp.StatusCode,
+			Err:        fmt.Errorf("POST request returned unexpected status %d %s: %s", resp.StatusCode, resp.Status, strings.TrimSpace(string(bodyBytes))),
+		}
 	}
 
-	sessionID = resp.Header.Get("Mcp-Session-Id")
+	newSessionID := resp.Header.Get("Mcp-Session-Id")
+	if currentSessionID == "" && newSessionID == "" {
+		resp.Body.Close()
+		// This should ideally not happen if server correctly sets session ID on first POST.
+		return "", fmt.Errorf("initial POST request did not return an Mcp-Session-Id")
+	}
+	if newSessionID == "" {
+		// If the server didn't explicitly send a new one, assume the existing one is still valid.
+		newSessionID = currentSessionID
+	}
+
 	if resp.Header.Get("Content-Type") == "text/event-stream" {
 		go s.handleSSE(resp)
 	} else {
 		resp.Body.Close()
 	}
-	return sessionID, nil
+
+	return newSessionID, nil
 }
 
-func (s *streamableClientConn) handleSSE(resp *http.Response) {
-	defer resp.Body.Close()
+// startEventStreamReceiver continuously attempts to establish and maintain
+// the hanging GET connection for receiving Server-Sent Events (SSE).
+func (s *streamableClientConn) startEventStreamReceiver() {
+	backoffDuration := s.initialBackoff
+	retries := 0
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for evt, err := range scanEvents(resp.Body) {
-			if err != nil {
-				// TODO: surface this error; possibly break the stream
-				return
-			}
-			s.incoming <- evt.data
+	for {
+		select {
+		case <-s.done:
+			return // Connection is closed.
+		default:
+			// Continue
 		}
-	}()
 
-	select {
-	case <-s.done:
-	case <-done:
+		sessionID := s.sessionID.Load().(string)
+		if sessionID == "" {
+			// Session ID not yet established (first POST hasn't completed).
+			// Wait and retry.
+			time.Sleep(100 * time.Millisecond) // Avoid busy-waiting
+			continue
+		}
+
+		// Create a context for the current hanging GET request.
+		ctx, cancel := context.WithCancel(context.Background())
+		s.mu.Lock()
+		s.cancelHangingGet = cancel  // Store cancel function to allow external cancellation
+		lastEventID := s.lastEventID // Get the last processed event ID for replay
+		s.mu.Unlock()
+
+		// Perform the hanging GET request
+		err := s.performHangingGet(ctx, sessionID, lastEventID)
+
+		// Clean up after the hanging GET attempt
+		s.mu.Lock()
+		s.cancelHangingGet = nil // Clear the cancel function
+		s.mu.Unlock()
+		cancel() // Ensure the context for this specific GET is cancelled
+
+		if err == nil {
+			// Successful hanging GET, reset retry state
+			retries = 0
+			backoffDuration = s.initialBackoff
+			// Loop immediately to re-establish connection if it closed gracefully
+			continue
+		}
+
+		// Error occurred during hanging GET, check for retry
+		if retries >= s.maxRetries {
+			s.mu.Lock()
+			s.err = fmt.Errorf("failed to maintain SSE connection after %d retries: %w", s.maxRetries, err)
+			s.mu.Unlock()
+			s.Close() // Close the connection if persistent failure
+			return
+		}
+
+		// Apply exponential backoff with jitter
+		delay := backoffDuration + time.Duration(s.randSource.Int63n(int64(backoffDuration/2)))
+		select {
+		case <-s.done:
+			return // Connection closed during backoff
+		case <-time.After(delay):
+			retries++
+			backoffDuration *= 2                  // Exponential increase
+			if backoffDuration > 30*time.Second { // Cap backoff duration
+				backoffDuration = 30 * time.Second
+			}
+		}
 	}
 }
 
+// performHangingGet makes a single HTTP GET request for the SSE stream.
+// It returns nil on graceful stream termination or an error on failure.
+func (s *streamableClientConn) performHangingGet(ctx context.Context, sessionID, lastEventID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create GET request: %w", err)
+	}
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("Accept", "text/event-stream")
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID) // Replay from this event
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		// Wrap the error with httpStatusError for easier status code checking
+		return &httpStatusError{
+			StatusCode: resp.StatusCode,
+			Err:        fmt.Errorf("GET request returned unexpected status %d %s: %s", resp.StatusCode, resp.Status, strings.TrimSpace(string(bodyBytes))),
+		}
+	}
+
+	// Handle the SSE stream from the response body.
+	return s.handleSSE(resp)
+}
+
+// handleSSE processes Server-Sent Events from the provided HTTP response body.
+// It pushes decoded messages to the incoming channel and updates the lastEventID.
+func (s *streamableClientConn) handleSSE(resp *http.Response) error {
+	defer resp.Body.Close()
+	for evt, err := range scanEvents(resp.Body) {
+		if err != nil {
+			if err == io.EOF {
+				return nil // Stream ended gracefully
+			}
+			return fmt.Errorf("error scanning SSE events: %w", err)
+		}
+		// Update lastEventID on successful event receipt, crucial for replayability
+		if evt.id != "" {
+			s.mu.Lock()
+			s.lastEventID = evt.id
+			s.mu.Unlock()
+		}
+		select {
+		case s.incoming <- evt.data:
+			// Message successfully sent to incoming channel
+		case <-s.done:
+			// Connection closed while trying to send incoming message
+			return io.EOF
+		}
+	}
+	return nil // Stream finished without error
+}
+
+// isRetryable checks if a given error indicates a transient condition
+// that warrants a retry.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if the error is an httpStatusError and if its status code is retryable.
+	var httpErr *httpStatusError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusRequestTimeout, // 408
+			http.StatusTooEarly,            // 425
+			http.StatusTooManyRequests,     // 429
+			http.StatusInternalServerError, // 500
+			http.StatusBadGateway,          // 502
+			http.StatusServiceUnavailable,  // 503
+			http.StatusGatewayTimeout:      // 504
+			return true
+		default:
+			return false // Non-retryable HTTP status code
+		}
+	}
+
+	// Check for network-related errors
+	if netErr, ok := err.(net.Error); ok {
+		if netErr.Timeout() {
+			return true // Retry on timeout errors
+		}
+	}
+
+	// Context cancellation should be non-retryable if it's explicitly from the caller.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	return false // Default to not retry for unknown errors
+}
+
 // Close implements the [Connection] interface.
+// It ensures that all background goroutines are stopped and
+// sends a DELETE request to the server to terminate the logical session.
 func (s *streamableClientConn) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.done)
+		close(s.done) // Signal all goroutines to stop
 
-		req, err := http.NewRequest(http.MethodDelete, s.url, nil)
-		if err != nil {
-			s.closeErr = err
-		} else {
-			req.Header.Set("Mcp-Session-Id", s._sessionID)
-			if _, err := s.client.Do(req); err != nil {
-				s.closeErr = err
+		// Cancel any ongoing hanging GET request
+		s.mu.Lock()
+		if s.cancelHangingGet != nil {
+			s.cancelHangingGet()
+		}
+		s.mu.Unlock()
+		close(s.pendingMessages)
+
+		// Send DELETE request to terminate the session on the server
+		sessionID := s.sessionID.Load().(string)
+		if sessionID != "" {
+			req, err := http.NewRequest(http.MethodDelete, s.url, nil)
+			if err != nil {
+				s.closeErr = fmt.Errorf("failed to create DELETE request: %w", err)
+			} else {
+				req.Header.Set("Mcp-Session-Id", sessionID)
+				if _, err := s.client.Do(req); err != nil {
+					// Log the error but don't prevent close, as session termination is best effort.
+					s.closeErr = fmt.Errorf("failed to send DELETE request to terminate session: %w", err)
+				}
 			}
 		}
 	})
 	return s.closeErr
+}
+
+// httpStatusError wraps an error and includes an HTTP status code.
+type httpStatusError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *httpStatusError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("HTTP status %d: %v", e.StatusCode, e.Err)
+	}
+	return fmt.Sprintf("HTTP status %d", e.StatusCode)
+}
+
+func (e *httpStatusError) Unwrap() error {
+	return e.Err
 }

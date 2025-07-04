@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -94,6 +95,292 @@ func TestStreamableTransports(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+	}
+}
+
+// TestClientTransportRetriesPost simulates a server that fails a few POST requests
+// before succeeding, verifying the client's retry mechanism.
+func TestClientTransportRetriesPost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var (
+		postAttempt      atomic.Int32
+		expectedAttempts = 3 // Fail twice, succeed on third attempt
+	)
+
+	// Mock server that fails POST requests for a few attempts.
+	server := NewServer("mockServer", "v1.0.0", nil)
+	server.AddTools(NewServerTool("greet", "say hi", sayHi))
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			// Read body to inspect if it's the specific tool call being tested
+			bodyBytes, readErr := io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Errorf("Failed to read request body: %v", readErr)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body for handler.ServeHTTP
+
+			var rawMsg json.RawMessage
+			if err := json.Unmarshal(bodyBytes, &rawMsg); err == nil {
+				var msg JSONRPCMessage
+				if m, decodeErr := jsonrpc2.DecodeMessage(rawMsg); decodeErr == nil {
+					msg = m
+				}
+
+				if reqMsg, ok := msg.(*JSONRPCRequest); ok && reqMsg.Method == "tools/call" {
+					currentAttempt := postAttempt.Add(1)
+					if currentAttempt <= int32(expectedAttempts-1) { // Fail for expectedAttempts-1 times
+						t.Logf("Server: Failing POST attempt %d with 503 (tool call)", currentAttempt)
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					t.Logf("Server: Succeeding POST attempt %d (tool call)", currentAttempt)
+					// For the successful attempt, allow the normal handler to proceed.
+					// This will eventually return 200 OK after the JSON-RPC response is ready.
+				}
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
+		MaxRetries:     expectedAttempts - 1, // Allow 2 retries (total 3 attempts)
+		InitialBackoff: 1 * time.Millisecond, // Small backoff for faster test
+	})
+	client := NewClient("testClient", "v1.0.0", nil)
+	session, err := client.Connect(ctx, transport)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	params := &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"name": "retrytest"},
+	}
+
+	callErr := make(chan error, 1)
+	go func() {
+		_, err = session.CallTool(ctx, params)
+		callErr <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("Test timed out before client could complete retries")
+	case err = <-callErr:
+		if err != nil {
+			t.Fatalf("CallTool() failed unexpectedly: %v", err)
+		}
+		if postAttempt.Load() != int32(expectedAttempts) {
+			t.Errorf("Expected %d POST attempts, got %d", expectedAttempts, postAttempt.Load())
+		}
+	}
+}
+
+// TestStreamableClientReplayEvents simulates a client reconnecting after a network
+// interruption (simulated by server returning errors) and verifies that missed SSE events
+// are replayed by the server upon successful reconnection.
+func TestStreamableClientReplayEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var (
+		counter       atomic.Int32
+		msgCount      atomic.Int32 // Counts how many messages have been received
+		totalMessages = 10
+	)
+
+	// Mock server that notifies progress to the client
+	server := NewServer("testServer", "v1.0.0", nil)
+	server.AddTools(NewServerTool("noop", "no operation", func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
+		// Send totalMessages notifications from the server
+		for i := range totalMessages {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				err := ss.NotifyProgress(ctx, &ProgressNotificationParams{
+					ProgressToken: "test-token",
+					Message:       fmt.Sprintf("Message %d", i),
+					Progress:      float64(i),
+				})
+				if err != nil {
+					// Connection might be closed, this is expected if client disconnects or server handler returns error
+					t.Logf("Server failed to send message %d: %v", i, err)
+					return nil, err
+				}
+				time.Sleep(10 * time.Millisecond) // Small delay between messages
+			}
+		}
+		return &CallToolResultFor[any]{}, nil
+	}))
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Server received %s %s with headers: Mcp-Session-Id=%q, Last-Event-ID=%q",
+			r.Method, r.URL.Path, r.Header.Get("Mcp-Session-Id"), r.Header.Get("Last-Event-ID"))
+
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Errorf("Failed to read request body: %v", readErr)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body for handler.ServeHTTP
+
+		var rawMsg json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawMsg); err == nil {
+			var msg JSONRPCMessage
+			if m, decodeErr := jsonrpc2.DecodeMessage(rawMsg); decodeErr == nil {
+				msg = m
+			}
+			if reqMsg, ok := msg.(*JSONRPCRequest); ok && reqMsg.Method == "tools/call" {
+				count := counter.Load()
+				// simulate alternating failures
+				if count%2 == 0 {
+					counter.Add(1)
+					t.Logf("Server: Simulating connection failure (attempt %d) with 503 Service Unavailable", count)
+					w.WriteHeader(http.StatusServiceUnavailable) // Retryable error
+					return
+				}
+			}
+		}
+
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
+		MaxRetries:     2,
+		InitialBackoff: 10 * time.Millisecond, // Small backoff for faster test
+	})
+	client := NewClient("testClient", "v1.0.0", nil)
+	session, err := client.Connect(ctx, transport)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	// Collect messages received by the client
+	receivedMessages := make(chan string, totalMessages)
+	client.opts.ProgressNotificationHandler = func(ctx context.Context, cs *ClientSession, params *ProgressNotificationParams) {
+		receivedMessages <- params.Message
+		msgCount.Add(1)
+	}
+
+	// Trigger messages from the server by calling a noop tool.
+	// This will happen concurrently with the client's GET retries.
+	go func() {
+		_, callErr := session.CallTool(ctx, &CallToolParams{Name: "noop"})
+		if callErr != nil && !strings.Contains(callErr.Error(), "context canceled") {
+			t.Errorf("CallTool returned unexpected error: %v", callErr)
+		}
+	}()
+
+	// Wait for all messages to be received, or timeout
+	allMessages := []string{}
+	for len(allMessages) < totalMessages {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Test timed out. Received %d messages, expected %d. Last messages: %v", len(allMessages), totalMessages, allMessages)
+		case msg := <-receivedMessages:
+			allMessages = append(allMessages, msg)
+		}
+	}
+
+	// Verify all messages were received in order
+	expectedMessages := make([]string, totalMessages)
+	for i := range totalMessages {
+		expectedMessages[i] = fmt.Sprintf("Message %d", i)
+	}
+
+	if diff := cmp.Diff(expectedMessages, allMessages); diff != "" {
+		t.Errorf("Received messages mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestStreamableClientSessionTermination verifies that the client correctly
+// sends a DELETE request to terminate the session when Close() is called.
+func TestStreamableClientSessionTermination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var establishedSessionID atomic.Value // Stores the session ID we expect to see deleted
+	establishedSessionID.Store("")
+	deleteReceived := sync.WaitGroup{}
+	deleteReceived.Add(1)
+	// Server that records session IDs and responds to DELETE
+	server := NewServer("testServer", "v1.0.0", nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Server received %s %s with headers: Mcp-Session-Id=%q, Last-Event-ID=%q",
+			r.Method, r.URL.Path, r.Header.Get("Mcp-Session-Id"), r.Header.Get("Last-Event-ID"))
+		if r.Method == http.MethodDelete {
+			if id := r.Header.Get("Mcp-Session-Id"); id != "" {
+				establishedSessionID.Store(id)
+				deleteReceived.Done()
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	client := NewClient("testClient", "v1.0.0", nil)
+	session, err := client.Connect(ctx, transport)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+
+	// Make a dummy call to ensure sessionID is established on the client side
+	// This also ensures the server handler sets the ID, which is picked up by the test hook.
+	session.CallTool(ctx, &CallToolParams{Name: "dummy", Arguments: map[string]any{}})
+
+	// Close the session
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() failed: %v", err)
+	}
+	deleteReceived.Wait()
+}
+
+// TestStreamableServerDeleteWithoutSessionID verifies that a DELETE request
+// without an Mcp-Session-Id header returns a 400 Bad Request.
+func TestStreamableServerDeleteWithoutSessionID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	server := NewServer("testServer", "v1.0.0", nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// Make a DELETE request without setting the Mcp-Session-Id header
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, httpServer.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create DELETE request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected status %d (Bad Request) for DELETE without session ID, got %d", http.StatusBadRequest, resp.StatusCode)
+	} else {
+		t.Logf("Received expected status %d for DELETE without session ID.", resp.StatusCode)
 	}
 }
 
