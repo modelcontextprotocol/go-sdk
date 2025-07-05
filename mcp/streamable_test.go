@@ -32,8 +32,7 @@ func TestStreamableTransports(t *testing.T) {
 
 	// 1. Create a server with a simple "greet" tool.
 	server := NewServer("testServer", "v1.0.0", nil)
-	server.AddTools(NewServerTool("greet", "say hi", sayHi))
-
+	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 	// cookie-checking middleware.
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
@@ -323,13 +322,12 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer("testServer", "v1.0.0", nil)
-			tool := NewServerTool("tool", "test tool", func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
+			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
 				if test.tool != nil {
 					test.tool(t, ctx, ss)
 				}
 				return &CallToolResultFor[any]{}, nil
 			})
-			server.AddTools(tool)
 
 			// Start the streamable handler.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)

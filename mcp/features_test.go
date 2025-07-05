@@ -27,9 +27,9 @@ func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[Say
 }
 
 func TestFeatureSetOrder(t *testing.T) {
-	toolA := NewServerTool("apple", "apple tool", SayHi).Tool
-	toolB := NewServerTool("banana", "banana tool", SayHi).Tool
-	toolC := NewServerTool("cherry", "cherry tool", SayHi).Tool
+	toolA := &Tool{Name: "apple", Description: "apple tool"}
+	toolB := &Tool{Name: "banana", Description: "banana tool"}
+	toolC := &Tool{Name: "cherry", Description: "cherry tool"}
 
 	testCases := []struct {
 		tools []*Tool
@@ -52,9 +52,9 @@ func TestFeatureSetOrder(t *testing.T) {
 }
 
 func TestFeatureSetAbove(t *testing.T) {
-	toolA := NewServerTool("apple", "apple tool", SayHi).Tool
-	toolB := NewServerTool("banana", "banana tool", SayHi).Tool
-	toolC := NewServerTool("cherry", "cherry tool", SayHi).Tool
+	toolA := &Tool{Name: "apple", Description: "apple tool"}
+	toolB := &Tool{Name: "banana", Description: "banana tool"}
+	toolC := &Tool{Name: "cherry", Description: "cherry tool"}
 
 	testCases := []struct {
 		tools []*Tool

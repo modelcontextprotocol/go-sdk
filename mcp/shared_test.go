@@ -12,7 +12,7 @@ import (
 )
 
 // TODO(jba): this shouldn't be in this file, but tool_test.go doesn't have access to unexported symbols.
-func TestNewServerToolValidate(t *testing.T) {
+func TestToolValidate(t *testing.T) {
 	// Check that the tool returned from NewServerTool properly validates its input schema.
 
 	type req struct {
@@ -26,9 +26,10 @@ func TestNewServerToolValidate(t *testing.T) {
 		return nil, nil
 	}
 
-	tool := NewServerTool("test", "test", dummyHandler)
-	// Need to add the tool to a server to get resolved schemas.
-	// s := NewServer("", "", nil)
+	st, err := newServerTool(&Tool{Name: "test", Description: "test"}, dummyHandler)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tt := range []struct {
 		desc string
@@ -71,7 +72,7 @@ func TestNewServerToolValidate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = tool.rawHandler(context.Background(), nil,
+			_, err = st.handler(context.Background(), nil,
 				&CallToolParamsFor[json.RawMessage]{Arguments: json.RawMessage(raw)})
 			if err == nil && tt.want != "" {
 				t.Error("got success, wanted failure")

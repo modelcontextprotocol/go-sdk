@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
@@ -29,6 +28,9 @@ import (
 type hiParams struct {
 	Name string
 }
+
+// TODO(jba): after schemas are stateless (WIP), this can be a variable.
+func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
 func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
 	if err := ss.Ping(ctx, nil); err != nil {
@@ -63,9 +65,31 @@ func TestEndToEnd(t *testing.T) {
 		},
 	}
 	s := NewServer("testServer", "v1.0.0", sopts)
-	add(tools, s.AddTools, "greet", "fail")
-	add(prompts, s.AddPrompts, "code_review", "fail")
-	add(resources, s.AddResources, "info.txt", "fail.txt")
+	AddTool(s, &Tool{
+		Name:        "greet",
+		Description: "say hi",
+	}, sayHi)
+	s.AddTool(&Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
+		func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+			return nil, errTestFailure
+		})
+	s.AddPrompt(&Prompt{
+		Name:        "code_review",
+		Description: "do a code review",
+		Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
+	}, func(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			Description: "Code review prompt",
+			Messages: []*PromptMessage{
+				{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
+			},
+		}, nil
+	})
+	s.AddPrompt(&Prompt{Name: "fail"}, func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
+		return nil, errTestFailure
+	})
+	s.AddResource(resource1, readHandler)
+	s.AddResource(resource2, readHandler)
 
 	// Connect the server.
 	ss, err := s.Connect(ctx, st)
@@ -154,39 +178,14 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("fail returned unexpected error: got %v, want containing %v", err, errTestFailure)
 		}
 
-		s.AddPrompts(&ServerPrompt{Prompt: &Prompt{Name: "T"}})
+		s.AddPrompt(&Prompt{Name: "T"}, nil)
 		waitForNotification(t, "prompts")
 		s.RemovePrompts("T")
 		waitForNotification(t, "prompts")
 	})
 
 	t.Run("tools", func(t *testing.T) {
-		res, err := cs.ListTools(ctx, nil)
-		if err != nil {
-			t.Errorf("tools/list failed: %v", err)
-		}
-		wantTools := []*Tool{
-			{
-				Name:        "fail",
-				InputSchema: nil,
-			},
-			{
-				Name:        "greet",
-				Description: "say hi",
-				InputSchema: &jsonschema.Schema{
-					Type:     "object",
-					Required: []string{"Name"},
-					Properties: map[string]*jsonschema.Schema{
-						"Name": {Type: "string"},
-					},
-					AdditionalProperties: falseSchema(),
-				},
-			},
-		}
-		if diff := cmp.Diff(wantTools, res.Tools, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
-			t.Fatalf("tools/list mismatch (-want +got):\n%s", diff)
-		}
-
+		// ListTools is tested in client_list_test.go.
 		gotHi, err := cs.CallTool(ctx, &CallToolParams{
 			Name:      "greet",
 			Arguments: map[string]any{"name": "user"},
@@ -222,7 +221,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
-		s.AddTools(&ServerTool{Tool: &Tool{Name: "T"}, Handler: nopHandler})
+		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{}}, nopHandler)
 		waitForNotification(t, "tools")
 		s.RemoveTools("T")
 		waitForNotification(t, "tools")
@@ -246,8 +245,7 @@ func TestEndToEnd(t *testing.T) {
 			MIMEType:    "text/template",
 			URITemplate: "file:///{+filename}", // the '+' means that filename can contain '/'
 		}
-		st := &ServerResourceTemplate{ResourceTemplate: template, Handler: readHandler}
-		s.AddResourceTemplates(st)
+		s.AddResourceTemplate(template, readHandler)
 		tres, err := cs.ListResourceTemplates(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -292,7 +290,7 @@ func TestEndToEnd(t *testing.T) {
 			}
 		}
 
-		s.AddResources(&ServerResource{Resource: &Resource{URI: "http://U"}})
+		s.AddResource(&Resource{URI: "http://U"}, nil)
 		waitForNotification(t, "resources")
 		s.RemoveResources("http://U")
 		waitForNotification(t, "resources")
@@ -434,40 +432,6 @@ func TestEndToEnd(t *testing.T) {
 var (
 	errTestFailure = errors.New("mcp failure")
 
-	tools = map[string]*ServerTool{
-		"greet": NewServerTool("greet", "say hi", sayHi),
-		"fail": {
-			Tool: &Tool{Name: "fail"},
-			Handler: func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
-				return nil, errTestFailure
-			},
-		},
-	}
-
-	prompts = map[string]*ServerPrompt{
-		"code_review": {
-			Prompt: &Prompt{
-				Name:        "code_review",
-				Description: "do a code review",
-				Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
-			},
-			Handler: func(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
-				return &GetPromptResult{
-					Description: "Code review prompt",
-					Messages: []*PromptMessage{
-						{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
-					},
-				}, nil
-			},
-		},
-		"fail": {
-			Prompt: &Prompt{Name: "fail"},
-			Handler: func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
-				return nil, errTestFailure
-			},
-		},
-	}
-
 	resource1 = &Resource{
 		Name:     "public",
 		MIMEType: "text/plain",
@@ -484,11 +448,6 @@ var (
 		URI:      "embedded:info",
 	}
 	readHandler = fileResourceHandler("testdata/files")
-	resources   = map[string]*ServerResource{
-		"info.txt": {resource1, readHandler},
-		"fail.txt": {resource2, readHandler},
-		"info":     {resource3, handleEmbeddedResource},
-	}
 )
 
 var embeddedResources = map[string]string{
@@ -540,21 +499,21 @@ func errorCode(err error) int64 {
 	return -1
 }
 
-// basicConnection returns a new basic client-server connection configured with
-// the provided tools.
+// basicConnection returns a new basic client-server connection, with the server
+// configured via the provided function.
 //
 // The caller should cancel either the client connection or server connection
 // when the connections are no longer needed.
-func basicConnection(t *testing.T, tools ...*ServerTool) (*ServerSession, *ClientSession) {
+func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *ClientSession) {
 	t.Helper()
 
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer("testServer", "v1.0.0", nil)
-
-	// The 'greet' tool says hi.
-	s.AddTools(tools...)
+	if config != nil {
+		config(s)
+	}
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
 		t.Fatal(err)
@@ -569,7 +528,9 @@ func basicConnection(t *testing.T, tools ...*ServerTool) (*ServerSession, *Clien
 }
 
 func TestServerClosing(t *testing.T) {
-	cc, cs := basicConnection(t, NewServerTool("greet", "say hi", sayHi))
+	cc, cs := basicConnection(t, func(s *Server) {
+		AddTool(s, greetTool(), sayHi)
+	})
 	defer cs.Close()
 
 	ctx := context.Background()
@@ -651,11 +612,9 @@ func TestCancellation(t *testing.T) {
 		}
 		return nil, nil
 	}
-	st := &ServerTool{
-		Tool:    &Tool{Name: "slow"},
-		Handler: slowRequest,
-	}
-	_, cs := basicConnection(t, st)
+	_, cs := basicConnection(t, func(s *Server) {
+		s.AddTool(&Tool{Name: "slow"}, slowRequest)
+	})
 	defer cs.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -852,7 +811,7 @@ func TestKeepAlive(t *testing.T) {
 		KeepAlive: 100 * time.Millisecond,
 	}
 	s := NewServer("testServer", "v1.0.0", serverOpts)
-	s.AddTools(NewServerTool("greet", "say hi", sayHi))
+	AddTool(s, greetTool(), sayHi)
 
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
@@ -897,7 +856,7 @@ func TestKeepAliveFailure(t *testing.T) {
 
 	// Server without keepalive (to test one-sided keepalive)
 	s := NewServer("testServer", "v1.0.0", nil)
-	s.AddTools(NewServerTool("greet", "say hi", sayHi))
+	AddTool(s, greetTool(), sayHi)
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
 		t.Fatal(err)
