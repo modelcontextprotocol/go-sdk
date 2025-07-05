@@ -142,3 +142,17 @@ func TestForWithMutation(t *testing.T) {
 		t.Fatalf("ForWithMutation: expected Required[0] to not be mutated")
 	}
 }
+
+type s struct {
+	A t
+}
+type t struct {
+	B []s
+}
+
+func TestForWithCycle(t *testing.T) {
+	_, err := jsonschema.For[s]()
+	if err == nil {
+		t.Fatalf("ForWithCycle: expected error, got nil")
+	}
+}
