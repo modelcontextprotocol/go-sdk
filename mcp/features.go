@@ -66,6 +66,9 @@ func (s *featureSet[T]) get(uid string) (T, bool) {
 	return t, ok
 }
 
+// len returns the number of features in the set.
+func (s *featureSet[T]) len() int { return len(s.features) }
+
 // all returns an iterator over of all the features in the set
 // sorted by unique ID.
 func (s *featureSet[T]) all() iter.Seq[T] {
