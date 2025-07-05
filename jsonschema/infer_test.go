@@ -91,3 +91,54 @@ func TestForType(t *testing.T) {
 		})
 	}
 }
+
+func TestForWithMutation(t *testing.T) {
+	// This test ensures that the cached schema is not mutated when the caller
+	// mutates the returned schema.
+	type S struct {
+		A int
+	}
+	type T struct {
+		A int `json:"A"`
+		B map[string]int
+		C []S
+		D [3]S
+		E *bool
+	}
+	s, err := jsonschema.For[T]()
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	s.Required[0] = "mutated"
+	s.Properties["A"].Type = "mutated"
+	s.Properties["C"].Items.Type = "mutated"
+	s.Properties["D"].MaxItems = jsonschema.Ptr(10)
+	s.Properties["D"].MinItems = jsonschema.Ptr(10)
+	s.Properties["E"].Types[0] = "mutated"
+
+	s2, err := jsonschema.For[T]()
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if s2.Properties["A"].Type == "mutated" {
+		t.Fatalf("ForWithMutation: expected A.Type to not be mutated")
+	}
+	if s2.Properties["B"].AdditionalProperties.Type == "mutated" {
+		t.Fatalf("ForWithMutation: expected B.AdditionalProperties.Type to not be mutated")
+	}
+	if s2.Properties["C"].Items.Type == "mutated" {
+		t.Fatalf("ForWithMutation: expected C.Items.Type to not be mutated")
+	}
+	if *s2.Properties["D"].MaxItems == 10 {
+		t.Fatalf("ForWithMutation: expected D.MaxItems to not be mutated")
+	}
+	if *s2.Properties["D"].MinItems == 10 {
+		t.Fatalf("ForWithMutation: expected D.MinItems to not be mutated")
+	}
+	if s2.Properties["E"].Types[0] == "mutated" {
+		t.Fatalf("ForWithMutation: expected E.Types[0] to not be mutated")
+	}
+	if s2.Required[0] == "mutated" {
+		t.Fatalf("ForWithMutation: expected Required[0] to not be mutated")
+	}
+}
