@@ -1,5 +1,20 @@
 # MCP Go SDK
 
+***BREAKING CHANGES***
+
+The latest version contains breaking changes:
+
+- Server.AddTools is replaced by Server.AddTool.
+
+- NewServerTool is replaced by AddTool. AddTool takes a Tool rather than a name and description, so you can 
+  set any field on the Tool that you want before associating it with a handler.
+
+- Tool options have been removed. If you don't want AddTool to infer a JSON Schema for you, you can construct one
+  as a struct literal, or using any other code that suits you.
+
+- AddPrompts, AddResources and AddResourceTemplates are similarly replaced by singular methods which pair the
+  feature with a handler. The ServerXXX types have been removed.
+
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an unreleased implementation of the official Go

@@ -28,7 +28,7 @@ func Add(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsF
 
 func ExampleSSEHandler() {
 	server := mcp.NewServer("adder", "v0.0.1", nil)
-	server.AddTools(mcp.NewServerTool("add", "add two numbers", Add))
+	mcp.AddTool(server, &mcp.Tool{Name: "add", Description: "add two numbers"}, Add)
 
 	handler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return server })
 	httpServer := httptest.NewServer(handler)

@@ -22,12 +22,12 @@ func TestList(t *testing.T) {
 	defer serverSession.Close()
 
 	t.Run("tools", func(t *testing.T) {
-		toolA := mcp.NewServerTool("apple", "apple tool", SayHi)
-		toolB := mcp.NewServerTool("banana", "banana tool", SayHi)
-		toolC := mcp.NewServerTool("cherry", "cherry tool", SayHi)
-		tools := []*mcp.ServerTool{toolA, toolB, toolC}
-		wantTools := []*mcp.Tool{toolA.Tool, toolB.Tool, toolC.Tool}
-		server.AddTools(tools...)
+		var wantTools []*mcp.Tool
+		for _, name := range []string{"apple", "banana", "cherry"} {
+			t := &mcp.Tool{Name: name, Description: name + " tool"}
+			wantTools = append(wantTools, t)
+			mcp.AddTool(server, t, SayHi)
+		}
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListTools(ctx, nil)
 			if err != nil {
@@ -43,12 +43,13 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("resources", func(t *testing.T) {
-		resourceA := &mcp.ServerResource{Resource: &mcp.Resource{URI: "http://apple"}}
-		resourceB := &mcp.ServerResource{Resource: &mcp.Resource{URI: "http://banana"}}
-		resourceC := &mcp.ServerResource{Resource: &mcp.Resource{URI: "http://cherry"}}
-		wantResources := []*mcp.Resource{resourceA.Resource, resourceB.Resource, resourceC.Resource}
-		resources := []*mcp.ServerResource{resourceA, resourceB, resourceC}
-		server.AddResources(resources...)
+		var wantResources []*mcp.Resource
+		for _, name := range []string{"apple", "banana", "cherry"} {
+			r := &mcp.Resource{URI: "http://" + name}
+			wantResources = append(wantResources, r)
+			server.AddResource(r, nil)
+		}
+
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListResources(ctx, nil)
 			if err != nil {
@@ -64,15 +65,12 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("templates", func(t *testing.T) {
-		resourceTmplA := &mcp.ServerResourceTemplate{ResourceTemplate: &mcp.ResourceTemplate{URITemplate: "http://apple/{x}"}}
-		resourceTmplB := &mcp.ServerResourceTemplate{ResourceTemplate: &mcp.ResourceTemplate{URITemplate: "http://banana/{x}"}}
-		resourceTmplC := &mcp.ServerResourceTemplate{ResourceTemplate: &mcp.ResourceTemplate{URITemplate: "http://cherry/{x}"}}
-		wantResourceTemplates := []*mcp.ResourceTemplate{
-			resourceTmplA.ResourceTemplate, resourceTmplB.ResourceTemplate,
-			resourceTmplC.ResourceTemplate,
+		var wantResourceTemplates []*mcp.ResourceTemplate
+		for _, name := range []string{"apple", "banana", "cherry"} {
+			rt := &mcp.ResourceTemplate{URITemplate: "http://" + name + "/{x}"}
+			wantResourceTemplates = append(wantResourceTemplates, rt)
+			server.AddResourceTemplate(rt, nil)
 		}
-		resourceTemplates := []*mcp.ServerResourceTemplate{resourceTmplA, resourceTmplB, resourceTmplC}
-		server.AddResourceTemplates(resourceTemplates...)
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListResourceTemplates(ctx, nil)
 			if err != nil {
@@ -88,12 +86,12 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("prompts", func(t *testing.T) {
-		promptA := newServerPrompt("apple", "apple prompt")
-		promptB := newServerPrompt("banana", "banana prompt")
-		promptC := newServerPrompt("cherry", "cherry prompt")
-		wantPrompts := []*mcp.Prompt{promptA.Prompt, promptB.Prompt, promptC.Prompt}
-		prompts := []*mcp.ServerPrompt{promptA, promptB, promptC}
-		server.AddPrompts(prompts...)
+		var wantPrompts []*mcp.Prompt
+		for _, name := range []string{"apple", "banana", "cherry"} {
+			p := &mcp.Prompt{Name: name, Description: name + " prompt"}
+			wantPrompts = append(wantPrompts, p)
+			server.AddPrompt(p, testPromptHandler)
+		}
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListPrompts(ctx, nil)
 			if err != nil {
@@ -123,14 +121,6 @@ func testIterator[T any](ctx context.Context, t *testing.T, seq iter.Seq2[*T, er
 	}
 }
 
-// testPromptHandler is used for type inference newServerPrompt.
 func testPromptHandler(context.Context, *mcp.ServerSession, *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
 	panic("not implemented")
-}
-
-func newServerPrompt(name, desc string) *mcp.ServerPrompt {
-	return &mcp.ServerPrompt{
-		Prompt:  &mcp.Prompt{Name: name, Description: desc},
-		Handler: testPromptHandler,
-	}
 }
