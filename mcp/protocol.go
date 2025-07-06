@@ -12,6 +12,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
@@ -39,70 +40,18 @@ type Annotations struct {
 	Priority float64 `json:"priority,omitempty"`
 }
 
-type CallToolParams struct {
-	// This property is reserved by the protocol to allow clients and servers to
-	// attach additional metadata to their responses.
-	Meta      `json:"_meta,omitempty"`
-	Arguments any    `json:"arguments,omitempty"`
-	Name      string `json:"name"`
-}
-
-func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
-func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
+type CallToolParams = CallToolParamsFor[any]
 
 type CallToolParamsFor[In any] struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta      `json:"_meta,omitempty"`
-	Arguments In     `json:"arguments,omitempty"`
 	Name      string `json:"name"`
+	Arguments In     `json:"arguments,omitempty"`
 }
 
 // The server's response to a tool call.
-type CallToolResult struct {
-	// This property is reserved by the protocol to allow clients and servers to
-	// attach additional metadata to their responses.
-	Meta `json:"_meta,omitempty"`
-	// A list of content objects that represent the unstructured result of the tool
-	// call.
-	Content []Content `json:"content"`
-	// Whether the tool call ended in an error.
-	//
-	// If not set, this is assumed to be false (the call was successful).
-	//
-	// Any errors that originate from the tool should be reported inside the result
-	// object, with isError set to true, not as an MCP protocol-level error
-	// response. Otherwise, the LLM would not be able to see that an error occurred
-	// and self-correct.
-	//
-	// However, any errors in finding the tool, an error indicating that the
-	// server does not support tool calls, or any other exceptional conditions,
-	// should be reported as an MCP error response.
-	IsError bool `json:"isError,omitempty"`
-	// An optional JSON object that represents the structured result of the tool
-	// call.
-	// TODO(jba,rfindley): should this be any?
-	StructuredContent map[string]any `json:"structuredContent,omitempty"`
-}
-
-// UnmarshalJSON handles the unmarshalling of content into the Content
-// interface.
-func (x *CallToolResult) UnmarshalJSON(data []byte) error {
-	type res CallToolResult // avoid recursion
-	var wire struct {
-		res
-		Content []*wireContent `json:"content"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-	var err error
-	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
-		return err
-	}
-	*x = CallToolResult(wire.res)
-	return nil
-}
+type CallToolResult = CallToolResultFor[any]
 
 type CallToolResultFor[Out any] struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -111,6 +60,9 @@ type CallToolResultFor[Out any] struct {
 	// A list of content objects that represent the unstructured result of the tool
 	// call.
 	Content []Content `json:"content"`
+	// An optional JSON object that represents the structured result of the tool
+	// call.
+	StructuredContent Out `json:"structuredContent,omitempty"`
 	// Whether the tool call ended in an error.
 	//
 	// If not set, this is assumed to be false (the call was successful).
@@ -124,9 +76,6 @@ type CallToolResultFor[Out any] struct {
 	// server does not support tool calls, or any other exceptional conditions,
 	// should be reported as an MCP error response.
 	IsError bool `json:"isError,omitempty"`
-	// An optional JSON object that represents the structured result of the tool
-	// call.
-	StructuredContent Out `json:"structuredContent,omitempty"`
 }
 
 // UnmarshalJSON handles the unmarshalling of content into the Content
@@ -147,6 +96,9 @@ func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
 	*x = CallToolResultFor[Out](wire.res)
 	return nil
 }
+
+func (x *CallToolParamsFor[Out]) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CallToolParamsFor[Out]) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -180,6 +132,93 @@ type ClientCapabilities struct {
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+type CompleteParamsArgument struct {
+	// The name of the argument
+	Name string `json:"name"`
+	// The value of the argument to use for completion matching.
+	Value string `json:"value"`
+}
+
+// CompleteContext represents additional, optional context for completions.
+type CompleteContext struct {
+	// Previously-resolved variables in a URI template or prompt.
+	Arguments map[string]string `json:"arguments,omitempty"`
+}
+
+// CompleteReference represents a completion reference type (ref/prompt ref/resource).
+// The Type field determines which other fields are relevant.
+type CompleteReference struct {
+	Type string `json:"type"`
+	// Name is relevant when Type is "ref/prompt".
+	Name string `json:"name,omitempty"`
+	// URI is relevant when Type is "ref/resource".
+	URI string `json:"uri,omitempty"`
+}
+
+func (r *CompleteReference) UnmarshalJSON(data []byte) error {
+	type wireCompleteReference CompleteReference // for naive unmarshaling
+	var r2 wireCompleteReference
+	if err := json.Unmarshal(data, &r2); err != nil {
+		return err
+	}
+	switch r2.Type {
+	case "ref/prompt", "ref/resource":
+		if r2.Type == "ref/prompt" && r2.URI != "" {
+			return fmt.Errorf("reference of type %q must not have a URI set", r2.Type)
+		}
+		if r2.Type == "ref/resource" && r2.Name != "" {
+			return fmt.Errorf("reference of type %q must not have a Name set", r2.Type)
+		}
+	default:
+		return fmt.Errorf("unrecognized content type %q", r2.Type)
+	}
+	*r = CompleteReference(r2)
+	return nil
+}
+
+func (r *CompleteReference) MarshalJSON() ([]byte, error) {
+	// Validation for marshalling: ensure consistency before converting to JSON.
+	switch r.Type {
+	case "ref/prompt":
+		if r.URI != "" {
+			return nil, fmt.Errorf("reference of type %q must not have a URI set for marshalling", r.Type)
+		}
+	case "ref/resource":
+		if r.Name != "" {
+			return nil, fmt.Errorf("reference of type %q must not have a Name set for marshalling", r.Type)
+		}
+	default:
+		return nil, fmt.Errorf("unrecognized reference type %q for marshalling", r.Type)
+	}
+
+	type wireReference CompleteReference
+	return json.Marshal(wireReference(*r))
+}
+
+type CompleteParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The argument's information
+	Argument CompleteParamsArgument `json:"argument"`
+	Context  *CompleteContext       `json:"context,omitempty"`
+	Ref      *CompleteReference     `json:"ref"`
+}
+
+type CompletionResultDetails struct {
+	HasMore bool     `json:"hasMore,omitempty"`
+	Total   int      `json:"total,omitempty"`
+	Values  []string `json:"values"`
+}
+
+// The server's response to a completion/complete request
+type CompleteResult struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta       `json:"_meta,omitempty"`
+	Completion CompletionResultDetails `json:"completion"`
 }
 
 type CreateMessageParams struct {
@@ -836,6 +875,9 @@ type implementation struct {
 	Version string `json:"version"`
 }
 
+// Present if the server supports argument autocompletion suggestions.
+type completionCapabilities struct{}
+
 // Present if the server supports sending log messages to the client.
 type loggingCapabilities struct{}
 
@@ -858,7 +900,7 @@ type resourceCapabilities struct {
 // additional capabilities.
 type serverCapabilities struct {
 	// Present if the server supports argument autocompletion suggestions.
-	Completions struct{} `json:"completions,omitempty"`
+	Completions *completionCapabilities `json:"completions,omitempty"`
 	// Experimental, non-standard capabilities that the server supports.
 	Experimental map[string]struct{} `json:"experimental,omitempty"`
 	// Present if the server supports sending log messages to the client.

@@ -26,6 +26,7 @@ func TestGoRoundTrip(t *testing.T) {
 		{Const: Ptr(any(map[string]any{}))},
 		{Default: mustMarshal(1)},
 		{Default: mustMarshal(nil)},
+		{Extra: map[string]any{"test": "value"}},
 	} {
 		data, err := json.Marshal(s)
 		if err != nil {
@@ -64,11 +65,19 @@ func TestJSONRoundTrip(t *testing.T) {
 			`{"$vocabulary":{"b":true, "a":false}}`,
 			`{"$vocabulary":{"a":false,"b":true}}`,
 		},
-		{`{"unk":0}`, `{}`}, // unknown fields are dropped, unfortunately
+		{`{"unk":0}`, `{"unk":0}`}, // unknown fields are not dropped
+		{
+			// known and unknown fields are not dropped
+			// note that the order will be by the declaration order in the anonymous struct inside MarshalJSON
+			`{"comment":"test","type":"example","unk":0}`,
+			`{"type":"example","comment":"test","unk":0}`,
+		},
+		{`{"extra":0}`, `{"extra":0}`}, // extra is not a special keyword and should not be dropped
+		{`{"Extra":0}`, `{"Extra":0}`}, // Extra is not a special keyword and should not be dropped
 	} {
 		var s Schema
 		mustUnmarshal(t, []byte(tt.in), &s)
-		data, err := json.Marshal(s)
+		data, err := json.Marshal(&s)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"hash/maphash"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestEqual(t *testing.T) {
@@ -124,4 +128,59 @@ func TestHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = hash(null)
+}
+
+func TestMarshalStructWithMap(t *testing.T) {
+	type S struct {
+		A int
+		B string `json:"b,omitempty"`
+		u bool
+		M map[string]any `json:"-"`
+	}
+	t.Run("basic", func(t *testing.T) {
+		s := S{A: 1, B: "two", M: map[string]any{"!@#": true}}
+		got, err := marshalStructWithMap(&s, "M")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"A":1,"b":"two","!@#":true}`
+		if g := string(got); g != want {
+			t.Errorf("\ngot  %s\nwant %s", g, want)
+		}
+
+		var un S
+		if err := unmarshalStructWithMap(got, &un, "M"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(s, un, cmpopts.IgnoreUnexported(S{})); diff != "" {
+			t.Errorf("mismatch (-want, +got):\n%s", diff)
+		}
+	})
+	t.Run("duplicate", func(t *testing.T) {
+		s := S{A: 1, B: "two", M: map[string]any{"b": "dup"}}
+		_, err := marshalStructWithMap(&s, "M")
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Errorf("got %v, want error with 'duplicate'", err)
+		}
+	})
+	t.Run("embedded", func(t *testing.T) {
+		type Embedded struct {
+			A     int
+			B     int
+			Extra map[string]any `json:"-"`
+		}
+		type S struct {
+			C int
+			Embedded
+		}
+		s := S{C: 1, Embedded: Embedded{A: 2, B: 3, Extra: map[string]any{"d": 4, "e": 5}}}
+		got, err := marshalStructWithMap(&s, "Extra")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"C":1,"A":2,"B":3,"d":4,"e":5}`
+		if g := string(got); g != want {
+			t.Errorf("got %v, want %v", g, want)
+		}
+	})
 }

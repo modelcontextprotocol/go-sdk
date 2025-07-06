@@ -142,6 +142,18 @@ type ClientSession struct {
 	client           *Client
 	initializeResult *InitializeResult
 	keepaliveCancel  context.CancelFunc
+	mcpConn          Connection
+}
+
+func (cs *ClientSession) setConn(c Connection) {
+	cs.mcpConn = c
+}
+
+func (cs *ClientSession) ID() string {
+	if cs.mcpConn == nil {
+		return ""
+	}
+	return cs.mcpConn.SessionID()
 }
 
 // Close performs a graceful close of the connection, preventing new requests
@@ -191,7 +203,7 @@ func (c *Client) RemoveRoots(uris ...string) {
 		func() bool { return c.roots.remove(uris...) })
 }
 
-// changeAndNotifyClient is called when a feature is added or removed.
+// changeAndNotify is called when a feature is added or removed.
 // It calls change, which should do the work and report whether a change actually occurred.
 // If there was a change, it notifies a snapshot of the sessions.
 func (c *Client) changeAndNotify(notification string, params Params, change func() bool) {
@@ -257,6 +269,7 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 var clientMethodInfos = map[string]methodInfo{
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete)),
 	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping)),
 	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots)),
 	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage)),
@@ -347,9 +360,13 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 	return handleSend[*ListResourceTemplatesResult](ctx, cs, methodListResourceTemplates, orZero[Params](params))
 }
 
-// ReadResource ask the server to read a resource and return its contents.
+// ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
 	return handleSend[*ReadResourceResult](ctx, cs, methodReadResource, orZero[Params](params))
+}
+
+func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
+	return handleSend[*CompleteResult](ctx, cs, methodComplete, orZero[Params](params))
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, s *ClientSession, params *ToolListChangedParams) (Result, error) {
