@@ -25,9 +25,12 @@ func TestSSEServer(t *testing.T) {
 			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server })
 
 			conns := make(chan *ServerSession, 1)
-			sseHandler.onConnection = func(cc *ServerSession) {
+			sseHandler.onConnection = func(ss *ServerSession) {
+				if ss.ID() == "" {
+					t.Error("ServerSession has empty session ID")
+				}
 				select {
-				case conns <- cc:
+				case conns <- ss:
 				default:
 				}
 			}
@@ -41,6 +44,10 @@ func TestSSEServer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if cs.ID() == "" {
+				t.Error("ClientSession has empty ID")
+			}
+
 			if err := cs.Ping(ctx, nil); err != nil {
 				t.Fatal(err)
 			}
