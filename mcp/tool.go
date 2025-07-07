@@ -151,36 +151,6 @@ func SchemaFor[T any]() (*jsonschema.Schema, error) {
 	return s, nil
 }
 
-func addDescriptions(t reflect.Type, s *jsonschema.Schema) error {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Struct {
-		return nil
-	}
-
-	for i := range t.NumField() {
-		f := t.Field(i)
-		info := util.FieldJSONInfo(f)
-		ps := s.Properties[info.Name]
-		if tag, ok := f.Tag.Lookup("mcp"); ok {
-			if ps == nil {
-				return fmt.Errorf("mcp tag on struct field %s.%s, which is not in schema", t, f.Name)
-			}
-			if tag == "" {
-				return fmt.Errorf("empty mcp tag on struct field %s.%s", t, f.Name)
-			}
-			ps.Description = tag
-		}
-		// Recurse on sub-schemas.
-		if ps != nil {
-			addDescriptions(f.Type, ps)
-		}
-
-	}
-	return nil
-}
-
 // schemaJSON returns the JSON value for s as a string, or a string indicating an error.
 func schemaJSON(s *jsonschema.Schema) string {
 	m, err := json.Marshal(s)

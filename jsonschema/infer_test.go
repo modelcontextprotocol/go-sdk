@@ -22,6 +22,11 @@ func forType[T any]() *jsonschema.Schema {
 
 func TestForType(t *testing.T) {
 	type schema = jsonschema.Schema
+
+	type S struct {
+		B int `jsonschema:"bdesc"`
+	}
+
 	tests := []struct {
 		name string
 		got  *jsonschema.Schema
@@ -44,9 +49,9 @@ func TestForType(t *testing.T) {
 		{
 			"struct",
 			forType[struct {
-				F           int `json:"f"`
+				F           int `json:"f" jsonschema:"fdesc"`
 				G           []float64
-				P           *bool
+				P           *bool  `jsonschema:"pdesc"`
 				Skip        string `json:"-"`
 				NoSkip      string `json:",omitempty"`
 				unexported  float64
@@ -55,13 +60,13 @@ func TestForType(t *testing.T) {
 			&schema{
 				Type: "object",
 				Properties: map[string]*schema{
-					"f":      {Type: "integer"},
+					"f":      {Type: "integer", Description: "fdesc"},
 					"G":      {Type: "array", Items: &schema{Type: "number"}},
-					"P":      {Types: []string{"null", "boolean"}},
+					"P":      {Types: []string{"null", "boolean"}, Description: "pdesc"},
 					"NoSkip": {Type: "string"},
 				},
 				Required:             []string{"f", "G", "P"},
-				AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
+				AdditionalProperties: falseSchema(),
 			},
 		},
 		{
@@ -74,7 +79,37 @@ func TestForType(t *testing.T) {
 					"Y": {Type: "integer"},
 				},
 				Required:             []string{"X", "Y"},
-				AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
+				AdditionalProperties: falseSchema(),
+			},
+		},
+		{
+			"nested and embedded",
+			forType[struct {
+				A S
+				S
+			}](),
+			&schema{
+				Type: "object",
+				Properties: map[string]*schema{
+					"A": {
+						Type: "object",
+						Properties: map[string]*schema{
+							"B": {Type: "integer", Description: "bdesc"},
+						},
+						Required:             []string{"B"},
+						AdditionalProperties: falseSchema(),
+					},
+					"S": {
+						Type: "object",
+						Properties: map[string]*schema{
+							"B": {Type: "integer", Description: "bdesc"},
+						},
+						Required:             []string{"B"},
+						AdditionalProperties: falseSchema(),
+					},
+				},
+				Required:             []string{"A", "S"},
+				AdditionalProperties: falseSchema(),
 			},
 		},
 	}
@@ -90,4 +125,8 @@ func TestForType(t *testing.T) {
 			}
 		})
 	}
+}
+
+func falseSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Not: &jsonschema.Schema{}}
 }

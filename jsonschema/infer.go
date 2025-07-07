@@ -9,6 +9,7 @@ package jsonschema
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
@@ -37,6 +38,11 @@ import (
 //   - unsafe pointers
 //
 // The types must not have cycles.
+//
+// For recognizes struct field tags named "jsonschema".
+// A jsonschema tag on a field is used as the description for the corresponding property.
+// For future compatibility, descriptions must not start with "WORD=", where WORD is a
+// sequence of non-whitespace characters.
 func For[T any]() (*Schema, error) {
 	// TODO: consider skipping incompatible fields, instead of failing.
 	s, err := forType(reflect.TypeFor[T]())
@@ -114,7 +120,20 @@ func forType(t reflect.Type) (*Schema, error) {
 			if s.Properties == nil {
 				s.Properties = make(map[string]*Schema)
 			}
-			s.Properties[info.Name], err = forType(field.Type)
+			fs, err := forType(field.Type)
+			if err != nil {
+				return nil, err
+			}
+			if tag, ok := field.Tag.Lookup("jsonschema"); ok {
+				if tag == "" {
+					return nil, fmt.Errorf("empty jsonschema tag on struct field %s.%s", t, field.Name)
+				}
+				if disallowedPrefixRegexp.MatchString(tag) {
+					return nil, fmt.Errorf("tag must not begin with 'WORD=': %q", tag)
+				}
+				fs.Description = tag
+			}
+			s.Properties[info.Name] = fs
 			if err != nil {
 				return nil, err
 			}
@@ -132,3 +151,6 @@ func forType(t reflect.Type) (*Schema, error) {
 	}
 	return s, nil
 }
+
+// Disallow jsonschema tag values beginning "WORD=", for future expansion.
+var disallowedPrefixRegexp = regexp.MustCompile("^[^ \t\n]*=")
