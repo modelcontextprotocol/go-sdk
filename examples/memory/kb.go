@@ -315,7 +315,6 @@ func (k knowledgeBase) deleteRelations(relations []Relation) error {
 	return k.saveGraph(graph)
 }
 
-
 // searchNodes filters entities and relations matching the query string.
 func (k knowledgeBase) searchNodes(query string) (KnowledgeGraph, error) {
 	graph, err := k.loadGraph()
