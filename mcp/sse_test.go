@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -34,7 +35,19 @@ func TestSSEServer(t *testing.T) {
 			httpServer := httptest.NewServer(sseHandler)
 			defer httpServer.Close()
 
-			clientTransport := NewSSEClientTransport(httpServer.URL, nil)
+			var customClientUsed int64
+			customClient := &http.Client{
+				Transport: &roundTripperFunc{
+					fn: func(req *http.Request) (*http.Response, error) {
+						atomic.AddInt64(&customClientUsed, 1)
+						return http.DefaultTransport.RoundTrip(req)
+					},
+				},
+			}
+
+			clientTransport := NewSSEClientTransport(httpServer.URL, &SSEClientTransportOptions{
+				HTTPClient: customClient,
+			})
 
 			c := NewClient("testClient", "v1.0.0", nil)
 			cs, err := c.Connect(ctx, clientTransport)
@@ -59,6 +72,11 @@ func TestSSEServer(t *testing.T) {
 			}
 			if diff := cmp.Diff(wantHi, gotHi); diff != "" {
 				t.Errorf("tools/call 'greet' mismatch (-want +got):\n%s", diff)
+			}
+
+			// Verify that customClient was used
+			if atomic.LoadInt64(&customClientUsed) == 0 {
+				t.Error("Expected custom HTTP client to be used, but it wasn't")
 			}
 
 			// Test that closing either end of the connection terminates the other
@@ -161,4 +179,13 @@ func TestScanEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+// roundTripperFunc is a helper to create a custom RoundTripper
+type roundTripperFunc struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (f *roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f.fn(req)
 }

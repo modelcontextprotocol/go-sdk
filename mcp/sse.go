@@ -391,6 +391,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 
 	// From here on, the stream takes ownership of resp.Body.
 	s := &sseClientConn{
+		client:      httpClient,
 		sseEndpoint: c.sseEndpoint,
 		msgEndpoint: msgEndpoint,
 		incoming:    make(chan []byte, 100),
@@ -511,9 +512,10 @@ func scanEvents(r io.Reader) iter.Seq2[event, error] {
 //   - Reads are SSE 'message' events, and pushes them onto a buffered channel.
 //   - Close terminates the GET request.
 type sseClientConn struct {
-	sseEndpoint *url.URL    // SSE endpoint for the GET
-	msgEndpoint *url.URL    // session endpoint for POSTs
-	incoming    chan []byte // queue of incoming messages
+	client      *http.Client // HTTP client to use for requests
+	sseEndpoint *url.URL     // SSE endpoint for the GET
+	msgEndpoint *url.URL     // session endpoint for POSTs
+	incoming    chan []byte  // queue of incoming messages
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -564,7 +566,7 @@ func (c *sseClientConn) Write(ctx context.Context, msg JSONRPCMessage) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
