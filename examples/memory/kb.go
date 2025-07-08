@@ -15,6 +15,34 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Entity represents a knowledge graph node with observations.
+type Entity struct {
+	Name         string   `json:"name"`
+	EntityType   string   `json:"entityType"`
+	Observations []string `json:"observations"`
+}
+
+// Relation represents a directed edge between two entities.
+type Relation struct {
+	From         string `json:"from"`
+	To           string `json:"to"`
+	RelationType string `json:"relationType"`
+}
+
+// Observation contains facts about an entity.
+type Observation struct {
+	EntityName string   `json:"entityName"`
+	Contents   []string `json:"contents"`
+
+	Observations []string `json:"observations,omitempty"` // Used for deletion operations
+}
+
+// KnowledgeGraph represents the complete graph structure.
+type KnowledgeGraph struct {
+	Entities  []Entity   `json:"entities"`
+	Relations []Relation `json:"relations"`
+}
+
 // store provides persistence interface for knowledge base data.
 type store interface {
 	Read() ([]byte, error)
@@ -154,7 +182,7 @@ func (k knowledgeBase) saveGraph(graph KnowledgeGraph) error {
 }
 
 // createEntities adds new entities to the graph, skipping duplicates by name.
-// Returns the new entities that were actually added.
+// It returns the new entities that were actually added.
 func (k knowledgeBase) createEntities(entities []Entity) ([]Entity, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -177,7 +205,7 @@ func (k knowledgeBase) createEntities(entities []Entity) ([]Entity, error) {
 }
 
 // createRelations adds new relations to the graph, skipping exact duplicates.
-// Returns the new relations that were actually added.
+// It returns the new relations that were actually added.
 func (k knowledgeBase) createRelations(relations []Relation) ([]Relation, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -205,7 +233,7 @@ func (k knowledgeBase) createRelations(relations []Relation) ([]Relation, error)
 }
 
 // addObservations appends new observations to existing entities.
-// Returns the new observations that were actually added.
+// It returns the new observations that were actually added.
 func (k knowledgeBase) addObservations(observations []Observation) ([]Observation, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -408,11 +436,7 @@ func (k knowledgeBase) CreateEntities(ctx context.Context, ss *mcp.ServerSession
 
 	entities, err := k.createEntities(params.Arguments.Entities)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -431,11 +455,7 @@ func (k knowledgeBase) CreateRelations(ctx context.Context, ss *mcp.ServerSessio
 
 	relations, err := k.createRelations(params.Arguments.Relations)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -454,11 +474,7 @@ func (k knowledgeBase) AddObservations(ctx context.Context, ss *mcp.ServerSessio
 
 	observations, err := k.addObservations(params.Arguments.Observations)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -477,11 +493,7 @@ func (k knowledgeBase) DeleteEntities(ctx context.Context, ss *mcp.ServerSession
 
 	err := k.deleteEntities(params.Arguments.EntityNames)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -496,11 +508,7 @@ func (k knowledgeBase) DeleteObservations(ctx context.Context, ss *mcp.ServerSes
 
 	err := k.deleteObservations(params.Arguments.Deletions)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -515,11 +523,7 @@ func (k knowledgeBase) DeleteRelations(ctx context.Context, ss *mcp.ServerSessio
 
 	err := k.deleteRelations(params.Arguments.Relations)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -534,11 +538,7 @@ func (k knowledgeBase) ReadGraph(ctx context.Context, ss *mcp.ServerSession, par
 
 	graph, err := k.loadGraph()
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -554,11 +554,7 @@ func (k knowledgeBase) SearchNodes(ctx context.Context, ss *mcp.ServerSession, p
 
 	graph, err := k.searchNodes(params.Arguments.Query)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{
@@ -574,11 +570,7 @@ func (k knowledgeBase) OpenNodes(ctx context.Context, ss *mcp.ServerSession, par
 
 	graph, err := k.openNodes(params.Arguments.Names)
 	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
+		return nil, err
 	}
 
 	res.Content = []mcp.Content{

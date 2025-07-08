@@ -11,13 +11,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// getStoreFactories provides test factories for both storage implementations.
-func getStoreFactories() map[string]func(t *testing.T) store {
+// stores provides test factories for both storage implementations.
+func stores() map[string]func(t *testing.T) store {
 	return map[string]func(t *testing.T) store{
 		"file": func(t *testing.T) store {
 			tempDir, err := os.MkdirTemp("", "kb-test-file-*")
@@ -35,11 +37,9 @@ func getStoreFactories() map[string]func(t *testing.T) store {
 
 // TestKnowledgeBaseOperations verifies CRUD operations work correctly.
 func TestKnowledgeBaseOperations(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Verify empty graph loads correctly
@@ -147,19 +147,16 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 
 			// Confirm observation removal
 			graph, _ = kb.loadGraph()
-			aliceFound := false
-			for _, e := range graph.Entities {
-				if e.Name == "Alice" {
-					aliceFound = true
-					for _, obs := range e.Observations {
-						if obs == "Works as developer" {
-							t.Errorf("observation 'Works as developer' should have been deleted")
-						}
-					}
-				}
-			}
-			if !aliceFound {
+			aliceIndex := slices.IndexFunc(graph.Entities, func(e Entity) bool {
+				return e.Name == "Alice"
+			})
+			if aliceIndex == -1 {
 				t.Errorf("entity 'Alice' not found after deleting observation")
+			} else {
+				alice := graph.Entities[aliceIndex]
+				if slices.Contains(alice.Observations, "Works as developer") {
+					t.Errorf("observation 'Works as developer' should have been deleted")
+				}
 			}
 
 			// Remove relations
@@ -191,11 +188,9 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 
 // TestSaveAndLoadGraph ensures data persists correctly across save/load cycles.
 func TestSaveAndLoadGraph(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Setup test data
@@ -251,11 +246,9 @@ func TestSaveAndLoadGraph(t *testing.T) {
 
 // TestDuplicateEntitiesAndRelations verifies duplicate prevention logic.
 func TestDuplicateEntitiesAndRelations(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Setup initial state
@@ -355,10 +348,9 @@ func TestErrorHandling(t *testing.T) {
 		}
 	})
 
-	factories := getStoreFactories()
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(fmt.Sprintf("AddObservationToNonExistentEntity_%s", name), func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Setup valid entity for comparison
@@ -385,11 +377,9 @@ func TestErrorHandling(t *testing.T) {
 
 // TestFileFormatting verifies the JSON storage format structure.
 func TestFileFormatting(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Setup test entity
@@ -438,11 +428,9 @@ func TestFileFormatting(t *testing.T) {
 
 // TestMCPServerIntegration tests the knowledge base through MCP server layer.
 func TestMCPServerIntegration(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			// Create mock server session
@@ -639,11 +627,9 @@ func TestMCPServerIntegration(t *testing.T) {
 
 // TestMCPErrorHandling tests error scenarios through MCP layer.
 func TestMCPErrorHandling(t *testing.T) {
-	factories := getStoreFactories()
-
-	for name, factory := range factories {
+	for name, newStore := range stores() {
 		t.Run(name, func(t *testing.T) {
-			s := factory(t)
+			s := newStore(t)
 			kb := knowledgeBase{s: s}
 
 			ctx := context.Background()
@@ -661,15 +647,15 @@ func TestMCPErrorHandling(t *testing.T) {
 				},
 			}
 
-			obsResult, err := kb.AddObservations(ctx, serverSession, addObsParams)
-			if err != nil {
-				t.Fatalf("MCP AddObservations call failed: %v", err)
-			}
-			if !obsResult.IsError {
+			_, err := kb.AddObservations(ctx, serverSession, addObsParams)
+			if err == nil {
 				t.Errorf("expected MCP AddObservations to return error for non-existent entity")
-			}
-			if len(obsResult.Content) == 0 {
-				t.Errorf("expected error content in MCP response")
+			} else {
+				// Verify the error message contains expected text
+				expectedErrorMsg := "entity with name NonExistentEntity not found"
+				if !strings.Contains(err.Error(), expectedErrorMsg) {
+					t.Errorf("expected error message to contain '%s', got: %v", expectedErrorMsg, err)
+				}
 			}
 		})
 	}

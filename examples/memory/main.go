@@ -24,34 +24,6 @@ type HiArgs struct {
 	Name string `json:"name"`
 }
 
-// Entity represents a knowledge graph node with observations.
-type Entity struct {
-	Name         string   `json:"name"`
-	EntityType   string   `json:"entityType"`
-	Observations []string `json:"observations"`
-}
-
-// Relation represents a directed edge between two entities.
-type Relation struct {
-	From         string `json:"from"`
-	To           string `json:"to"`
-	RelationType string `json:"relationType"`
-}
-
-// Observation contains facts about an entity.
-type Observation struct {
-	EntityName string   `json:"entityName"`
-	Contents   []string `json:"contents"`
-
-	Observations []string `json:"observations,omitempty"` // Used for deletion operations
-}
-
-// KnowledgeGraph represents the complete graph structure.
-type KnowledgeGraph struct {
-	Entities  []Entity   `json:"entities"`
-	Relations []Relation `json:"relations"`
-}
-
 // CreateEntitiesArgs defines the create entities tool parameters.
 type CreateEntitiesArgs struct {
 	Entities []Entity `json:"entities" mcp:"entities to create"`
