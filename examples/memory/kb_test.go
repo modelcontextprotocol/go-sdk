@@ -652,9 +652,9 @@ func TestMCPErrorHandling(t *testing.T) {
 				t.Errorf("expected MCP AddObservations to return error for non-existent entity")
 			} else {
 				// Verify the error message contains expected text
-				expectedErrorMsg := "entity with name NonExistentEntity not found"
-				if !strings.Contains(err.Error(), expectedErrorMsg) {
-					t.Errorf("expected error message to contain '%s', got: %v", expectedErrorMsg, err)
+				want := "entity with name NonExistentEntity not found"
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected error message to contain '%s', got: %v", want, err)
 				}
 			}
 		})
