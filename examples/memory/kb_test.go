@@ -74,7 +74,7 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 			}
 
 			// Verify entities persist
-			graph, err = kb.readGraph()
+			graph, err = kb.loadGraph()
 			if err != nil {
 				t.Fatalf("failed to read graph: %v", err)
 			}
@@ -146,7 +146,7 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 			}
 
 			// Confirm observation removal
-			graph, _ = kb.readGraph()
+			graph, _ = kb.loadGraph()
 			aliceFound := false
 			for _, e := range graph.Entities {
 				if e.Name == "Alice" {
@@ -169,7 +169,7 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 			}
 
 			// Confirm relation removal
-			graph, _ = kb.readGraph()
+			graph, _ = kb.loadGraph()
 			if len(graph.Relations) != 0 {
 				t.Errorf("expected 0 relations after deletion, got %d", len(graph.Relations))
 			}
@@ -181,7 +181,7 @@ func TestKnowledgeBaseOperations(t *testing.T) {
 			}
 
 			// Confirm entity removal
-			graph, _ = kb.readGraph()
+			graph, _ = kb.loadGraph()
 			if len(graph.Entities) != 1 || graph.Entities[0].Name != "Bob" {
 				t.Errorf("expected only Bob to remain after deleting Alice, got %+v", graph.Entities)
 			}

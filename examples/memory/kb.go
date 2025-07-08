@@ -315,10 +315,6 @@ func (k knowledgeBase) deleteRelations(relations []Relation) error {
 	return k.saveGraph(graph)
 }
 
-// readGraph returns the complete knowledge graph.
-func (k knowledgeBase) readGraph() (KnowledgeGraph, error) {
-	return k.loadGraph()
-}
 
 // searchNodes filters entities and relations matching the query string.
 func (k knowledgeBase) searchNodes(query string) (KnowledgeGraph, error) {
@@ -537,7 +533,7 @@ func (k knowledgeBase) DeleteRelations(ctx context.Context, ss *mcp.ServerSessio
 func (k knowledgeBase) ReadGraph(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[struct{}]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
-	graph, err := k.readGraph()
+	graph, err := k.loadGraph()
 	if err != nil {
 		res.IsError = true
 		res.Content = []mcp.Content{
