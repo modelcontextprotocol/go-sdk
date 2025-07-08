@@ -20,16 +20,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
-// A ServerResource associates a Resource with its handler.
-type ServerResource struct {
-	Resource *Resource
-	Handler  ResourceHandler
+// A serverResource associates a Resource with its handler.
+type serverResource struct {
+	resource *Resource
+	handler  ResourceHandler
 }
 
-// A ServerResourceTemplate associates a ResourceTemplate with its handler.
-type ServerResourceTemplate struct {
-	ResourceTemplate *ResourceTemplate
-	Handler          ResourceHandler
+// A serverResourceTemplate associates a ResourceTemplate with its handler.
+type serverResourceTemplate struct {
+	resourceTemplate *ResourceTemplate
+	handler          ResourceHandler
 }
 
 // A ResourceHandler is a function that reads a resource.
@@ -156,8 +156,8 @@ func fileRoot(root *Root) (_ string, err error) {
 
 // Matches reports whether the receiver's uri template matches the uri.
 // TODO: use "github.com/yosida95/uritemplate/v3"
-func (sr *ServerResourceTemplate) Matches(uri string) bool {
-	re, err := uriTemplateToRegexp(sr.ResourceTemplate.URITemplate)
+func (sr *serverResourceTemplate) Matches(uri string) bool {
+	re, err := uriTemplateToRegexp(sr.resourceTemplate.URITemplate)
 	if err != nil {
 		return false
 	}

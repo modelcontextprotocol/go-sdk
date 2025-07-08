@@ -19,7 +19,7 @@ import (
 var httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
 
 type HiArgs struct {
-	Name string `json:"name"`
+	Name string `json:"name" mcp:"the name to say hi to"`
 }
 
 func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {
@@ -43,21 +43,13 @@ func main() {
 	flag.Parse()
 
 	server := mcp.NewServer("greeter", "v0.0.1", nil)
-	server.AddTools(mcp.NewServerTool("greet", "say hi", SayHi, mcp.Input(
-		mcp.Property("name", mcp.Description("the name to say hi to")),
-	)))
-	server.AddPrompts(&mcp.ServerPrompt{
-		Prompt:  &mcp.Prompt{Name: "greet"},
-		Handler: PromptHi,
-	})
-	server.AddResources(&mcp.ServerResource{
-		Resource: &mcp.Resource{
-			Name:     "info",
-			MIMEType: "text/plain",
-			URI:      "embedded:info",
-		},
-		Handler: handleEmbeddedResource,
-	})
+	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
+	server.AddPrompt(&mcp.Prompt{Name: "greet"}, PromptHi)
+	server.AddResource(&mcp.Resource{
+		Name:     "info",
+		MIMEType: "text/plain",
+		URI:      "embedded:info",
+	}, handleEmbeddedResource)
 
 	if *httpAddr != "" {
 		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
