@@ -37,12 +37,10 @@ func TestSSEServer(t *testing.T) {
 
 			var customClientUsed int64
 			customClient := &http.Client{
-				Transport: &roundTripperFunc{
-					fn: func(req *http.Request) (*http.Response, error) {
-						atomic.AddInt64(&customClientUsed, 1)
-						return http.DefaultTransport.RoundTrip(req)
-					},
-				},
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					atomic.AddInt64(&customClientUsed, 1)
+					return http.DefaultTransport.RoundTrip(req)
+				}),
 			}
 
 			clientTransport := NewSSEClientTransport(httpServer.URL, &SSEClientTransportOptions{
@@ -182,10 +180,8 @@ func TestScanEvents(t *testing.T) {
 }
 
 // roundTripperFunc is a helper to create a custom RoundTripper
-type roundTripperFunc struct {
-	fn func(*http.Request) (*http.Response, error)
-}
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-func (f *roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f.fn(req)
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
