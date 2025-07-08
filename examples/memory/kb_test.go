@@ -705,11 +705,11 @@ func TestMCPResponseFormat(t *testing.T) {
 		t.Errorf("expected StructuredContent.Entities to be populated")
 	}
 
-	// Verify Content contains valid JSON
+	// Verify Content contains simple success message
 	if textContent, ok := result.Content[0].(*mcp.TextContent); ok {
-		var entities []Entity
-		if err := json.Unmarshal([]byte(textContent.Text), &entities); err != nil {
-			t.Errorf("Content field should contain valid JSON: %v", err)
+		expectedMessage := "Entities created successfully"
+		if textContent.Text != expectedMessage {
+			t.Errorf("expected Content field to contain '%s', got '%s'", expectedMessage, textContent.Text)
 		}
 	} else {
 		t.Errorf("expected Content[0] to be TextContent")

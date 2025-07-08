@@ -464,18 +464,8 @@ func (k knowledgeBase) CreateEntities(ctx context.Context, ss *mcp.ServerSession
 		return &res, nil
 	}
 
-	// I think marshalling the entities and pass it as a content should not be necessary, but as for now, it looks like
-	// the StructuredContent is not being unmarshalled in CallToolResultFor.
-	entitiesJSON, err := json.Marshal(entities)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(entitiesJSON)},
+		&mcp.TextContent{Text: "Entities created successfully"},
 	}
 
 	res.StructuredContent = CreateEntitiesResult{
@@ -497,16 +487,8 @@ func (k knowledgeBase) CreateRelations(ctx context.Context, ss *mcp.ServerSessio
 		return &res, nil
 	}
 
-	relationsJSON, err := json.Marshal(relations)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(relationsJSON)},
+		&mcp.TextContent{Text: "Relations created successfully"},
 	}
 
 	res.StructuredContent = CreateRelationsResult{
@@ -528,16 +510,8 @@ func (k knowledgeBase) AddObservations(ctx context.Context, ss *mcp.ServerSessio
 		return &res, nil
 	}
 
-	observationsJSON, err := json.Marshal(observations)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(observationsJSON)},
+		&mcp.TextContent{Text: "Observations added successfully"},
 	}
 
 	res.StructuredContent = AddObservationsResult{
@@ -616,16 +590,8 @@ func (k knowledgeBase) ReadGraph(ctx context.Context, ss *mcp.ServerSession, par
 		return &res, nil
 	}
 
-	graphJSON, err := json.Marshal(graph)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(graphJSON)},
+		&mcp.TextContent{Text: "Graph read successfully"},
 	}
 
 	res.StructuredContent = graph
@@ -644,16 +610,8 @@ func (k knowledgeBase) SearchNodes(ctx context.Context, ss *mcp.ServerSession, p
 		return &res, nil
 	}
 
-	graphJSON, err := json.Marshal(graph)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(graphJSON)},
+		&mcp.TextContent{Text: "Nodes searched successfully"},
 	}
 
 	res.StructuredContent = graph
@@ -672,16 +630,8 @@ func (k knowledgeBase) OpenNodes(ctx context.Context, ss *mcp.ServerSession, par
 		return &res, nil
 	}
 
-	graphJSON, err := json.Marshal(graph)
-	if err != nil {
-		res.IsError = true
-		res.Content = []mcp.Content{
-			&mcp.TextContent{Text: err.Error()},
-		}
-		return &res, nil
-	}
 	res.Content = []mcp.Content{
-		&mcp.TextContent{Text: string(graphJSON)},
+		&mcp.TextContent{Text: "Nodes opened successfully"},
 	}
 
 	res.StructuredContent = graph

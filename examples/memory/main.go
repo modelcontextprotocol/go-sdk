@@ -54,7 +54,7 @@ type KnowledgeGraph struct {
 
 // CreateEntitiesArgs defines the create entities tool parameters.
 type CreateEntitiesArgs struct {
-	Entities []Entity `json:"entities"`
+	Entities []Entity `json:"entities" mcp:"entities to create"`
 }
 
 // CreateEntitiesResult returns newly created entities.
@@ -64,7 +64,7 @@ type CreateEntitiesResult struct {
 
 // CreateRelationsArgs defines the create relations tool parameters.
 type CreateRelationsArgs struct {
-	Relations []Relation `json:"relations"`
+	Relations []Relation `json:"relations" mcp:"relations to create"`
 }
 
 // CreateRelationsResult returns newly created relations.
@@ -74,7 +74,7 @@ type CreateRelationsResult struct {
 
 // AddObservationsArgs defines the add observations tool parameters.
 type AddObservationsArgs struct {
-	Observations []Observation `json:"observations"`
+	Observations []Observation `json:"observations" mcp:"observations to add"`
 }
 
 // AddObservationsResult returns newly added observations.
@@ -84,27 +84,27 @@ type AddObservationsResult struct {
 
 // DeleteEntitiesArgs defines the delete entities tool parameters.
 type DeleteEntitiesArgs struct {
-	EntityNames []string `json:"entityNames"`
+	EntityNames []string `json:"entityNames" mcp:"entities to delete"`
 }
 
 // DeleteObservationsArgs defines the delete observations tool parameters.
 type DeleteObservationsArgs struct {
-	Deletions []Observation `json:"deletions"`
+	Deletions []Observation `json:"deletions" mcp:"obeservations to delete"`
 }
 
 // DeleteRelationsArgs defines the delete relations tool parameters.
 type DeleteRelationsArgs struct {
-	Relations []Relation `json:"relations"`
+	Relations []Relation `json:"relations" mcp:"relations to delete"`
 }
 
 // SearchNodesArgs defines the search nodes tool parameters.
 type SearchNodesArgs struct {
-	Query string `json:"query"`
+	Query string `json:"query" mcp:"query string"`
 }
 
 // OpenNodesArgs defines the open nodes tool parameters.
 type OpenNodesArgs struct {
-	Names []string `json:"names"`
+	Names []string `json:"names" mcp:"names of nodes to open"`
 }
 
 func main() {
@@ -120,31 +120,42 @@ func main() {
 
 	// Setup MCP server with knowledge base tools
 	server := mcp.NewServer("memory", "v0.0.1", nil)
-	server.AddTools(mcp.NewServerTool("create_entities", "Create multiple new entities in the knowledge graph", kb.CreateEntities, mcp.Input(
-		mcp.Property("entities", mcp.Description("Entities to create")),
-	)))
-	server.AddTools(mcp.NewServerTool("create_relations", "Create multiple new relations between entities", kb.CreateRelations, mcp.Input(
-		mcp.Property("relations", mcp.Description("Relations to create")),
-	)))
-	server.AddTools(mcp.NewServerTool("add_observations", "Add new observations to existing entities", kb.AddObservations, mcp.Input(
-		mcp.Property("observations", mcp.Description("Observations to add")),
-	)))
-	server.AddTools(mcp.NewServerTool("delete_entities", "Remove entities and their relations", kb.DeleteEntities, mcp.Input(
-		mcp.Property("entityNames", mcp.Description("Names of entities to delete")),
-	)))
-	server.AddTools(mcp.NewServerTool("delete_observations", "Remove specific observations from entities", kb.DeleteObservations, mcp.Input(
-		mcp.Property("deletions", mcp.Description("Observations to delete")),
-	)))
-	server.AddTools(mcp.NewServerTool("delete_relations", "Remove specific relations from the graph", kb.DeleteRelations, mcp.Input(
-		mcp.Property("relations", mcp.Description("Relations to delete")),
-	)))
-	server.AddTools(mcp.NewServerTool("read_graph", "Read the entire knowledge graph", kb.ReadGraph))
-	server.AddTools(mcp.NewServerTool("search_nodes", "Search for nodes based on query", kb.SearchNodes, mcp.Input(
-		mcp.Property("query", mcp.Description("Query string")),
-	)))
-	server.AddTools(mcp.NewServerTool("open_nodes", "Retrieve specific nodes by name", kb.OpenNodes, mcp.Input(
-		mcp.Property("names", mcp.Description("Names of nodes to open")),
-	)))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "create_entities",
+		Description: "Create multiple new entities in the knowledge graph",
+	}, kb.CreateEntities)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "create_relations",
+		Description: "Create multiple new relations between entities",
+	}, kb.CreateRelations)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "add_observations",
+		Description: "Add new observations to existing entities",
+	}, kb.AddObservations)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_entities",
+		Description: "Remove entities and their relations",
+	}, kb.DeleteEntities)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_observations",
+		Description: "Remove specific observations from entities",
+	}, kb.DeleteObservations)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_relations",
+		Description: "Remove specific relations from the graph",
+	}, kb.DeleteRelations)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "read_graph",
+		Description: "Read the entire knowledge graph",
+	}, kb.ReadGraph)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "search_nodes",
+		Description: "Search for nodes based on query",
+	}, kb.SearchNodes)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "open_nodes",
+		Description: "Retrieve specific nodes by name",
+	}, kb.OpenNodes)
 
 	// Start server with appropriate transport
 	if *httpAddr != "" {
