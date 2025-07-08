@@ -47,7 +47,7 @@ func (fs *fileStore) Read() ([]byte, error) {
 	data, err := os.ReadFile(fs.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []byte{}, nil
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read file %s: %w", fs.path, err)
 	}
@@ -98,10 +98,7 @@ func (k knowledgeBase) loadGraph() (KnowledgeGraph, error) {
 		return KnowledgeGraph{}, fmt.Errorf("failed to unmarshal from store: %w", err)
 	}
 
-	graph := KnowledgeGraph{
-		Entities:  []Entity{},
-		Relations: []Relation{},
-	}
+	graph := KnowledgeGraph{}
 
 	for _, item := range items {
 		switch item.Type {
@@ -157,6 +154,7 @@ func (k knowledgeBase) saveGraph(graph KnowledgeGraph) error {
 }
 
 // createEntities adds new entities to the graph, skipping duplicates by name.
+// Returns the new entities that were actually added.
 func (k knowledgeBase) createEntities(entities []Entity) ([]Entity, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -165,15 +163,7 @@ func (k knowledgeBase) createEntities(entities []Entity) ([]Entity, error) {
 
 	var newEntities []Entity
 	for _, entity := range entities {
-		exists := false
-		for _, existingEntity := range graph.Entities {
-			if existingEntity.Name == entity.Name {
-				exists = true
-				break
-			}
-		}
-
-		if !exists {
+		if !slices.ContainsFunc(graph.Entities, func(e Entity) bool { return e.Name == entity.Name }) {
 			newEntities = append(newEntities, entity)
 			graph.Entities = append(graph.Entities, entity)
 		}
@@ -187,6 +177,7 @@ func (k knowledgeBase) createEntities(entities []Entity) ([]Entity, error) {
 }
 
 // createRelations adds new relations to the graph, skipping exact duplicates.
+// Returns the new relations that were actually added.
 func (k knowledgeBase) createRelations(relations []Relation) ([]Relation, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -195,16 +186,11 @@ func (k knowledgeBase) createRelations(relations []Relation) ([]Relation, error)
 
 	var newRelations []Relation
 	for _, relation := range relations {
-		exists := false
-		for _, existingRelation := range graph.Relations {
-			if existingRelation.From == relation.From &&
-				existingRelation.To == relation.To &&
-				existingRelation.RelationType == relation.RelationType {
-				exists = true
-				break
-			}
-		}
-
+		exists := slices.ContainsFunc(graph.Relations, func(r Relation) bool {
+			return r.From == relation.From &&
+				r.To == relation.To &&
+				r.RelationType == relation.RelationType
+		})
 		if !exists {
 			newRelations = append(newRelations, relation)
 			graph.Relations = append(graph.Relations, relation)
@@ -219,6 +205,7 @@ func (k knowledgeBase) createRelations(relations []Relation) ([]Relation, error)
 }
 
 // addObservations appends new observations to existing entities.
+// Returns the new observations that were actually added.
 func (k knowledgeBase) addObservations(observations []Observation) ([]Observation, error) {
 	graph, err := k.loadGraph()
 	if err != nil {
@@ -228,23 +215,14 @@ func (k knowledgeBase) addObservations(observations []Observation) ([]Observatio
 	var results []Observation
 
 	for _, obs := range observations {
-		entityIndex := -1
-		for i, entity := range graph.Entities {
-			if entity.Name == obs.EntityName {
-				entityIndex = i
-				break
-			}
-		}
-
+		entityIndex := slices.IndexFunc(graph.Entities, func(e Entity) bool { return e.Name == obs.EntityName })
 		if entityIndex == -1 {
 			return nil, fmt.Errorf("entity with name %s not found", obs.EntityName)
 		}
 
 		var newObservations []string
 		for _, content := range obs.Contents {
-			exists := slices.Contains(graph.Entities[entityIndex].Observations, content)
-
-			if !exists {
+			if !slices.Contains(graph.Entities[entityIndex].Observations, content) {
 				newObservations = append(newObservations, content)
 				graph.Entities[entityIndex].Observations = append(graph.Entities[entityIndex].Observations, content)
 			}
@@ -276,23 +254,15 @@ func (k knowledgeBase) deleteEntities(entityNames []string) error {
 		entitiesToDelete[name] = true
 	}
 
-	// Filter entities
-	var filteredEntities []Entity
-	for _, entity := range graph.Entities {
-		if !entitiesToDelete[entity.Name] {
-			filteredEntities = append(filteredEntities, entity)
-		}
-	}
-	graph.Entities = filteredEntities
+	// Filter entities using slices.DeleteFunc
+	graph.Entities = slices.DeleteFunc(graph.Entities, func(entity Entity) bool {
+		return entitiesToDelete[entity.Name]
+	})
 
-	// Filter relations
-	var filteredRelations []Relation
-	for _, relation := range graph.Relations {
-		if !entitiesToDelete[relation.From] && !entitiesToDelete[relation.To] {
-			filteredRelations = append(filteredRelations, relation)
-		}
-	}
-	graph.Relations = filteredRelations
+	// Filter relations using slices.DeleteFunc
+	graph.Relations = slices.DeleteFunc(graph.Relations, func(relation Relation) bool {
+		return entitiesToDelete[relation.From] || entitiesToDelete[relation.To]
+	})
 
 	return k.saveGraph(graph)
 }
@@ -305,26 +275,23 @@ func (k knowledgeBase) deleteObservations(deletions []Observation) error {
 	}
 
 	for _, deletion := range deletions {
-		for i, entity := range graph.Entities {
-			if entity.Name == deletion.EntityName {
-				// Create a map for quick lookup
-				observationsToDelete := make(map[string]bool)
-				for _, observation := range deletion.Observations {
-					observationsToDelete[observation] = true
-				}
-
-				// Filter observations
-				var filteredObservations []string
-				for _, observation := range entity.Observations {
-					if !observationsToDelete[observation] {
-						filteredObservations = append(filteredObservations, observation)
-					}
-				}
-
-				graph.Entities[i].Observations = filteredObservations
-				break
-			}
+		entityIndex := slices.IndexFunc(graph.Entities, func(e Entity) bool {
+			return e.Name == deletion.EntityName
+		})
+		if entityIndex == -1 {
+			continue
 		}
+
+		// Create a map for quick lookup
+		observationsToDelete := make(map[string]bool)
+		for _, observation := range deletion.Observations {
+			observationsToDelete[observation] = true
+		}
+
+		// Filter observations using slices.DeleteFunc
+		graph.Entities[entityIndex].Observations = slices.DeleteFunc(graph.Entities[entityIndex].Observations, func(observation string) bool {
+			return observationsToDelete[observation]
+		})
 	}
 
 	return k.saveGraph(graph)
@@ -337,25 +304,14 @@ func (k knowledgeBase) deleteRelations(relations []Relation) error {
 		return err
 	}
 
-	var filteredRelations []Relation
-	for _, existingRelation := range graph.Relations {
-		shouldKeep := true
-
-		for _, relationToDelete := range relations {
-			if existingRelation.From == relationToDelete.From &&
+	// Filter relations using slices.DeleteFunc and slices.ContainsFunc
+	graph.Relations = slices.DeleteFunc(graph.Relations, func(existingRelation Relation) bool {
+		return slices.ContainsFunc(relations, func(relationToDelete Relation) bool {
+			return existingRelation.From == relationToDelete.From &&
 				existingRelation.To == relationToDelete.To &&
-				existingRelation.RelationType == relationToDelete.RelationType {
-				shouldKeep = false
-				break
-			}
-		}
-
-		if shouldKeep {
-			filteredRelations = append(filteredRelations, existingRelation)
-		}
-	}
-
-	graph.Relations = filteredRelations
+				existingRelation.RelationType == relationToDelete.RelationType
+		})
+	})
 	return k.saveGraph(graph)
 }
 
