@@ -404,13 +404,26 @@ func fileResourceHandler(dir string) ResourceHandler {
 
 // Run runs the server over the given transport, which must be persistent.
 //
-// Run blocks until the client terminates the connection.
+// Run blocks until the client terminates the connection or the provided
+// context is cancelled. If the context is cancelled, Run closes the connection.
 func (s *Server) Run(ctx context.Context, t Transport) error {
 	ss, err := s.Connect(ctx, t)
 	if err != nil {
 		return err
 	}
-	return ss.Wait()
+
+	ssClosed := make(chan error)
+	go func() {
+		ssClosed <- ss.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		ss.Close()
+		return ctx.Err()
+	case err := <-ssClosed:
+		return err
+	}
 }
 
 // bind implements the binder[*ServerSession] interface, so that Servers can
