@@ -10,14 +10,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -103,6 +106,156 @@ func TestStreamableTransports(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
 	}
+}
+
+// TestClientReplayAfterProxyBreak verifies that the client can recover from a
+// mid-stream network failure and receive replayed messages. It uses a proxy
+// that is killed and restarted to simulate a recoverable network outage.
+func TestClientReplayAfterProxyBreak(t *testing.T) {
+	// 1. Configure the real MCP server.
+	server := NewServer(testImpl, nil)
+
+	// Use a channel to synchronize the server's message sending with the test's
+	// proxy-killing action.
+	serverReadyToKillProxy := make(chan struct{})
+	var serverClosed sync.WaitGroup
+	AddTool(server, &Tool{Name: "multiMessageTool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
+		go func() {
+			bgCtx := context.Background()
+			// Send the first two messages immediately.
+			_ = ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg1"})
+			_ = ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
+
+			// Signal the test that it can now kill the proxy.
+			serverClosed.Add(1)
+			close(serverReadyToKillProxy)
+			// Wait for the test to kill the proxy before sending the rest.
+			serverClosed.Wait()
+
+			// These messages should be queued for replay by the server after
+			// the client's connection drops.
+			_ = ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg3"})
+			_ = ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
+		}()
+		return &CallToolResultFor[any]{}, nil
+	})
+	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	defer realServer.Close()
+	realServerURL, err := url.Parse(realServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse real server URL: %v", err)
+	}
+
+	// 2. Configure a proxy that sits between the client and the real server.
+	proxyHandler := httputil.NewSingleHostReverseProxy(realServerURL)
+	proxy := httptest.NewServer(proxyHandler)
+	proxyAddr := proxy.Listener.Addr().String() // Get the address to restart it later.
+
+	// 3. Configure the client to connect to the proxy with default options.
+	clientTransport := NewStreamableClientTransport(proxy.URL, &StreamableClientTransportOptions{
+		ReconnectOptions: &StreamableReconnectOptions{
+			maxDelay:     50 * time.Millisecond,
+			MaxRetries:   5,
+			growFactor:   1.0,
+			initialDelay: 10 * time.Millisecond,
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 4. Connect, perform handshake, and trigger the tool.
+	conn, err := clientTransport.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Connect() failed: %v", err)
+	}
+
+	// Perform handshake.
+	initReq := &jsonrpc.Request{ID: jsonrpc2.Int64ID(100), Method: "initialize", Params: mustMarshal(t, &InitializeParams{})}
+	if err := conn.Write(ctx, initReq); err != nil {
+		t.Fatalf("Write(initialize) failed: %v", err)
+	}
+	if _, err := conn.Read(ctx); err != nil {
+		t.Fatalf("Read(initialize resp) failed: %v", err)
+	}
+	if err := conn.Write(ctx, &jsonrpc.Request{Method: "initialized", Params: mustMarshal(t, &InitializedParams{})}); err != nil {
+		t.Fatalf("Write(initialized) failed: %v", err)
+	}
+
+	callReq := &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "tools/call", Params: mustMarshal(t, &CallToolParams{Name: "multiMessageTool"})}
+	if err := conn.Write(ctx, callReq); err != nil {
+		t.Fatalf("Write(tool/call) failed: %v", err)
+	}
+
+	// 5. Read and verify messages until the server signals it's ready for the proxy kill.
+	receivedNotifications := readProgressNotifications(t, ctx, conn, 2)
+
+	wantReceived := []jsonrpc.Message{
+		&jsonrpc.Request{Method: "notifications/progress", Params: mustMarshal(t, &ProgressNotificationParams{Message: "msg1"})},
+		&jsonrpc.Request{Method: "notifications/progress", Params: mustMarshal(t, &ProgressNotificationParams{Message: "msg2"})},
+	}
+	transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
+
+	if diff := cmp.Diff(wantReceived, receivedNotifications, transform); diff != "" {
+		t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+	}
+
+	select {
+	case <-serverReadyToKillProxy:
+		// Server has sent the first two messages and is paused.
+	case <-ctx.Done():
+		t.Fatalf("Context timed out before server was ready to kill proxy")
+	}
+
+	// 6. Simulate a total network failure by closing the proxy.
+	t.Log("--- Killing proxy to simulate network failure ---")
+	proxy.CloseClientConnections()
+	proxy.Close()
+	serverClosed.Done()
+
+	// 7. Simulate network recovery by restarting the proxy on the same address.
+	t.Logf("--- Restarting proxy on %s ---", proxyAddr)
+	listener, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("Failed to listen on proxy address: %v", err)
+	}
+	restartedProxy := &http.Server{Handler: proxyHandler}
+	go restartedProxy.Serve(listener)
+	defer restartedProxy.Close()
+
+	// 8. Continue reading from the same connection object.
+	// Its internal logic should successfully retry, reconnect to the new proxy,
+	// and receive the replayed messages.
+	recoveredNotifications := readProgressNotifications(t, ctx, conn, 2)
+
+	// 9. Verify the correct messages were received on the recovered connection.
+	wantRecovered := []jsonrpc.Message{
+		&jsonrpc.Request{Method: "notifications/progress", Params: mustMarshal(t, &ProgressNotificationParams{Message: "msg3"})},
+		&jsonrpc.Request{Method: "notifications/progress", Params: mustMarshal(t, &ProgressNotificationParams{Message: "msg4"})},
+	}
+
+	if diff := cmp.Diff(wantRecovered, recoveredNotifications, transform); diff != "" {
+		t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Helper to read a specific number of progress notifications.
+func readProgressNotifications(t *testing.T, ctx context.Context, conn Connection, count int) []jsonrpc.Message {
+	t.Helper()
+	var notifications []jsonrpc.Message
+	for len(notifications) < count && ctx.Err() == nil {
+		msg, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("Failed to read notification: %v", err)
+		}
+		if req, ok := msg.(*jsonrpc.Request); ok && req.Method == "notifications/progress" {
+			notifications = append(notifications, req)
+		}
+	}
+	if len(notifications) != count {
+		t.Fatalf("Expected to read %d notifications, but got %d", count, len(notifications))
+	}
+	return notifications
 }
 
 func TestStreamableServerTransport(t *testing.T) {
