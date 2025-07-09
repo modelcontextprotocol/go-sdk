@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 func runServer() {
 	ctx := context.Background()
 
-	server := mcp.NewServer("greeter", "v0.0.1", nil)
+	server := mcp.NewServer(nil, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
 		log.Fatal(err)
@@ -87,7 +87,7 @@ func TestServerInterrupt(t *testing.T) {
 
 	cmd := createServerCommand(t)
 
-	client := mcp.NewClient("client", "v0.0.1", nil)
+	client := mcp.NewClient(nil, nil)
 	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
 	if err != nil {
 		t.Fatal(err)

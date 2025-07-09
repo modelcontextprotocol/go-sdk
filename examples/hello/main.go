@@ -42,7 +42,7 @@ func PromptHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.GetPromptP
 func main() {
 	flag.Parse()
 
-	server := mcp.NewServer("greeter", "v0.0.1", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "greeter"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	server.AddPrompt(&mcp.Prompt{Name: "greet"}, PromptHi)
 	server.AddResource(&mcp.Resource{

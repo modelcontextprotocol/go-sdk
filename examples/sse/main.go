@@ -34,10 +34,10 @@ func main() {
 		log.Fatal("http address not set")
 	}
 
-	server1 := mcp.NewServer("greeter1", "v0.0.1", nil)
+	server1 := mcp.NewServer(&mcp.Implementation{Name: "greeter1"}, nil)
 	mcp.AddTool(server1, &mcp.Tool{Name: "greet1", Description: "say hi"}, SayHi)
 
-	server2 := mcp.NewServer("greeter2", "v0.0.1", nil)
+	server2 := mcp.NewServer(&mcp.Implementation{Name: "greeter2"}, nil)
 	mcp.AddTool(server2, &mcp.Tool{Name: "greet2", Description: "say hello"}, SayHi)
 
 	log.Printf("MCP servers serving at %s", *httpAddr)

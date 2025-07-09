@@ -64,7 +64,7 @@ func TestEndToEnd(t *testing.T) {
 			notificationChans["progress_server"] <- 0
 		},
 	}
-	s := NewServer("testServer", "v1.0.0", sopts)
+	s := NewServer(nil, sopts)
 	AddTool(s, &Tool{
 		Name:        "greet",
 		Description: "say hi",
@@ -125,7 +125,7 @@ func TestEndToEnd(t *testing.T) {
 			notificationChans["progress_client"] <- 0
 		},
 	}
-	c := NewClient("testClient", "v1.0.0", opts)
+	c := NewClient(nil, opts)
 	rootAbs, err := filepath.Abs(filepath.FromSlash("testdata/files"))
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +510,7 @@ func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *Clien
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
-	s := NewServer("testServer", "v1.0.0", nil)
+	s := NewServer(nil, nil)
 	if config != nil {
 		config(s)
 	}
@@ -519,7 +519,7 @@ func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *Clien
 		t.Fatal(err)
 	}
 
-	c := NewClient("testClient", "v1.0.0", nil)
+	c := NewClient(nil, nil)
 	cs, err := c.Connect(ctx, ct)
 	if err != nil {
 		t.Fatal(err)
@@ -562,13 +562,13 @@ func TestBatching(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
-	s := NewServer("testServer", "v1.0.0", nil)
+	s := NewServer(nil, nil)
 	_, err := s.Connect(ctx, st)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c := NewClient("testClient", "v1.0.0", nil)
+	c := NewClient(nil, nil)
 	// TODO: this test is broken, because increasing the batch size here causes
 	// 'initialize' to block. Therefore, we can only test with a size of 1.
 	// Since batching is being removed, we can probably just delete this.
@@ -632,7 +632,7 @@ func TestMiddleware(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
-	s := NewServer("testServer", "v1.0.0", nil)
+	s := NewServer(nil, nil)
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
 		t.Fatal(err)
@@ -656,7 +656,7 @@ func TestMiddleware(t *testing.T) {
 	s.AddSendingMiddleware(traceCalls[*ServerSession](&sbuf, "S1"), traceCalls[*ServerSession](&sbuf, "S2"))
 	s.AddReceivingMiddleware(traceCalls[*ServerSession](&sbuf, "R1"), traceCalls[*ServerSession](&sbuf, "R2"))
 
-	c := NewClient("testClient", "v1.0.0", nil)
+	c := NewClient(nil, nil)
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
@@ -741,13 +741,13 @@ func TestNoJSONNull(t *testing.T) {
 	var logbuf safeBuffer
 	ct = NewLoggingTransport(ct, &logbuf)
 
-	s := NewServer("testServer", "v1.0.0", nil)
+	s := NewServer(nil, nil)
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c := NewClient("testClient", "v1.0.0", nil)
+	c := NewClient(nil, nil)
 	cs, err := c.Connect(ctx, ct)
 	if err != nil {
 		t.Fatal(err)
@@ -810,7 +810,7 @@ func TestKeepAlive(t *testing.T) {
 	serverOpts := &ServerOptions{
 		KeepAlive: 100 * time.Millisecond,
 	}
-	s := NewServer("testServer", "v1.0.0", serverOpts)
+	s := NewServer(nil, serverOpts)
 	AddTool(s, greetTool(), sayHi)
 
 	ss, err := s.Connect(ctx, st)
@@ -822,7 +822,7 @@ func TestKeepAlive(t *testing.T) {
 	clientOpts := &ClientOptions{
 		KeepAlive: 100 * time.Millisecond,
 	}
-	c := NewClient("testClient", "v1.0.0", clientOpts)
+	c := NewClient(nil, clientOpts)
 	cs, err := c.Connect(ctx, ct)
 	if err != nil {
 		t.Fatal(err)
@@ -855,7 +855,7 @@ func TestKeepAliveFailure(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	// Server without keepalive (to test one-sided keepalive)
-	s := NewServer("testServer", "v1.0.0", nil)
+	s := NewServer(nil, nil)
 	AddTool(s, greetTool(), sayHi)
 	ss, err := s.Connect(ctx, st)
 	if err != nil {
@@ -866,7 +866,7 @@ func TestKeepAliveFailure(t *testing.T) {
 	clientOpts := &ClientOptions{
 		KeepAlive: 50 * time.Millisecond,
 	}
-	c := NewClient("testClient", "v1.0.0", clientOpts)
+	c := NewClient(nil, clientOpts)
 	cs, err := c.Connect(ctx, ct)
 	if err != nil {
 		t.Fatal(err)
