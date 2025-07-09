@@ -18,6 +18,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
+const (
+	protocolVersionHeader = "Mcp-Protocol-Version"
+	sessionIDHeader       = "Mcp-Session-Id"
+)
+
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
 // sessions, as defined by the [MCP spec].
 //
@@ -88,7 +93,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	var session *StreamableServerTransport
-	if id := req.Header.Get("Mcp-Session-Id"); id != "" {
+	if id := req.Header.Get(sessionIDHeader); id != "" {
 		h.sessionsMu.Lock()
 		session, _ = h.sessions[id]
 		h.sessionsMu.Unlock()
@@ -386,7 +391,7 @@ func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *h
 		t.mu.Unlock()
 	}
 
-	w.Header().Set("Mcp-Session-Id", t.id)
+	w.Header().Set(sessionIDHeader, t.id)
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
@@ -636,10 +641,17 @@ type streamableClientConn struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	mu         sync.Mutex
-	_sessionID string
+	mu              sync.Mutex
+	protocolVersion string
+	_sessionID      string
 	// bodies map[*http.Response]io.Closer
 	err error
+}
+
+func (c *streamableClientConn) SetProtocolVersion(s string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.protocolVersion = s
 }
 
 func (c *streamableClientConn) SessionID() string {
@@ -707,8 +719,11 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	if err != nil {
 		return "", err
 	}
+	if s.protocolVersion != "" {
+		req.Header.Set(protocolVersionHeader, s.protocolVersion)
+	}
 	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+		req.Header.Set(sessionIDHeader, sessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -724,7 +739,7 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 		return "", fmt.Errorf("broken session: %v", resp.Status)
 	}
 
-	sessionID = resp.Header.Get("Mcp-Session-Id")
+	sessionID = resp.Header.Get(sessionIDHeader)
 	if resp.Header.Get("Content-Type") == "text/event-stream" {
 		go s.handleSSE(resp)
 	} else {
@@ -763,7 +778,11 @@ func (s *streamableClientConn) Close() error {
 		if err != nil {
 			s.closeErr = err
 		} else {
-			req.Header.Set("Mcp-Session-Id", s._sessionID)
+			// TODO(jba): confirm that we don't need a lock here, or add locking.
+			if s.protocolVersion != "" {
+				req.Header.Set(protocolVersionHeader, s.protocolVersion)
+			}
+			req.Header.Set(sessionIDHeader, s._sessionID)
 			if _, err := s.client.Do(req); err != nil {
 				s.closeErr = err
 			}

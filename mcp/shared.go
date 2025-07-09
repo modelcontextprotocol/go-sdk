@@ -22,6 +22,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
+// latestProtocolVersion is the latest protocol version that this version of the SDK supports.
+// It is the version that the client sends in the initialization request.
+const latestProtocolVersion = "2025-06-18"
+
+var supportedProtocolVersions = []string{latestProtocolVersion, "2025-03-26"}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.

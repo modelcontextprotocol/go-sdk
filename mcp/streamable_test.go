@@ -36,7 +36,9 @@ func TestStreamableTransports(t *testing.T) {
 	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 	// cookie-checking middleware.
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	var header http.Header
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header = r.Header
 		cookie, err := r.Cookie("test-cookie")
 		if err != nil {
 			t.Errorf("missing cookie: %v", err)
@@ -72,6 +74,9 @@ func TestStreamableTransports(t *testing.T) {
 	if sid == "" {
 		t.Error("empty session ID")
 	}
+	if g, w := session.mcpConn.(*streamableClientConn).protocolVersion, latestProtocolVersion; g != w {
+		t.Fatalf("got protocol version %q, want %q", g, w)
+	}
 	// 4. The client calls the "greet" tool.
 	params := &CallToolParams{
 		Name:      "greet",
@@ -83,6 +88,9 @@ func TestStreamableTransports(t *testing.T) {
 	}
 	if g := session.ID(); g != sid {
 		t.Errorf("session ID: got %q, want %q", g, sid)
+	}
+	if g, w := header.Get(protocolVersionHeader), latestProtocolVersion; g != w {
+		t.Errorf("got protocol version header %q, want %q", g, w)
 	}
 
 	// 5. Verify that the correct response is received.
@@ -154,7 +162,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			Resources:   &resourceCapabilities{ListChanged: true},
 			Tools:       &toolCapabilities{ListChanged: true},
 		},
-		ProtocolVersion: "2025-03-26",
+		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 	initializedMsg := req(0, "initialized", &InitializedParams{})

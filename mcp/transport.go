@@ -53,6 +53,12 @@ type Connection interface {
 	SessionID() string
 }
 
+// An HTTPConnection is a [Connection] that runs over HTTP.
+type HTTPConnection interface {
+	Connection
+	SetProtocolVersion(string)
+}
+
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
 type StdioTransport struct {

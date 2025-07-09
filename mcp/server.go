@@ -634,10 +634,11 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		ss.mu.Unlock()
 	}()
 
-	version := "2025-03-26" // preferred version
-	switch v := params.ProtocolVersion; v {
-	case "2024-11-05", "2025-03-26":
-		version = v
+	// If we support the client's version, reply with it. Otherwise, reply with our
+	// latest version.
+	version := params.ProtocolVersion
+	if !slices.Contains(supportedProtocolVersions, params.ProtocolVersion) {
+		version = latestProtocolVersion
 	}
 
 	return &InitializeResult{

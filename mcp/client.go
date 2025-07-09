@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"slices"
 	"sync"
@@ -86,6 +87,15 @@ func (c *Client) disconnect(cs *ClientSession) {
 	})
 }
 
+// TODO: Consider exporting this type and its field.
+type unsupportedProtocolVersionError struct {
+	version string
+}
+
+func (e unsupportedProtocolVersionError) Error() string {
+	return fmt.Sprintf("unsupported protocol version: %q", e.version)
+}
+
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
 //
@@ -106,19 +116,22 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 	}
 
 	params := &InitializeParams{
+		ProtocolVersion: latestProtocolVersion,
 		ClientInfo:      &implementation{Name: c.name, Version: c.version},
 		Capabilities:    caps,
-		ProtocolVersion: "2025-03-26",
 	}
-	// TODO(rfindley): handle protocol negotiation gracefully. If the server
-	// responds with 2024-11-05, surface that failure to the caller of connect,
-	// so that they can choose a different transport.
 	res, err := handleSend[*InitializeResult](ctx, cs, methodInitialize, params)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
 	}
+	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
+		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
+	}
 	cs.initializeResult = res
+	if hc, ok := cs.mcpConn.(HTTPConnection); ok {
+		hc.SetProtocolVersion(res.ProtocolVersion)
+	}
 	if err := handleNotify(ctx, cs, notificationInitialized, &InitializedParams{}); err != nil {
 		_ = cs.Close()
 		return nil, err
