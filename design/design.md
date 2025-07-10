@@ -323,7 +323,7 @@ Sessions are created from either `Client` or `Server` using the `Connect` method
 
 ```go
 type Client struct { /* ... */ }
-func NewClient(name, version string, opts *ClientOptions) *Client
+func NewClient(impl *Implementation, opts *ClientOptions) *Client
 func (*Client) Connect(context.Context, Transport) (*ClientSession, error)
 func (*Client) Sessions() iter.Seq[*ClientSession]
 // Methods for adding/removing client features are described below.
@@ -338,7 +338,7 @@ func (*ClientSession) Wait() error
 // For example: ClientSession.ListTools.
 
 type Server struct { /* ... */ }
-func NewServer(name, version string, opts *ServerOptions) *Server
+func NewServer(impl *Implementation, opts *ServerOptions) *Server
 func (*Server) Connect(context.Context, Transport) (*ServerSession, error)
 func (*Server) Sessions() iter.Seq[*ServerSession]
 // Methods for adding/removing server features are described below.
@@ -356,7 +356,7 @@ func (*ServerSession) Wait() error
 Here's an example of these APIs from the client side:
 
 ```go
-client := mcp.NewClient("mcp-client", "v1.0.0", nil)
+client := mcp.NewClient(&mcp.Implementation{Name:"mcp-client", Version:"v1.0.0"}, nil)
 // Connect to a server over stdin/stdout
 transport := mcp.NewCommandTransport(exec.Command("myserver"))
 session, err := client.Connect(ctx, transport)
@@ -371,7 +371,7 @@ A server that can handle that client call would look like this:
 
 ```go
 // Create a server with a single tool.
-server := mcp.NewServer("greeter", "v1.0.0", nil)
+server := mcp.NewServer(&mcp.Implementation{Name:"greeter", Version:"v1.0.0"}, nil)
 mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 // Run the server over stdin/stdout, until the client disconnects.
 if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {

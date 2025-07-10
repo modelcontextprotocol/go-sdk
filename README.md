@@ -72,7 +72,7 @@ func main() {
 	ctx := context.Background()
 
 	// Create a new client, with no features.
-	client := mcp.NewClient("mcp-client", "v1.0.0", nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 
 	// Connect to a server over stdin/stdout
 	transport := mcp.NewCommandTransport(exec.Command("myserver"))
@@ -125,7 +125,7 @@ func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParam
 
 func main() {
 	// Create a server with a single tool.
-	server := mcp.NewServer("greeter", "v1.0.0", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v1.0.0"}, nil)
 
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	// Run the server over stdin/stdout, until the client disconnects

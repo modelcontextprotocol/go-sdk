@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 func runServer() {
 	ctx := context.Background()
 
-	server := mcp.NewServer("greeter", "v0.0.1", nil)
+	server := mcp.NewServer(testImpl, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
 		log.Fatal(err)
@@ -40,7 +40,7 @@ func runServer() {
 }
 
 func TestServerRunContextCancel(t *testing.T) {
-	server := mcp.NewServer("greeter", "v0.0.1", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,7 +55,7 @@ func TestServerRunContextCancel(t *testing.T) {
 	}()
 
 	// send a ping to the server to ensure it's running
-	client := mcp.NewClient("client", "v0.0.1", nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 	session, err := client.Connect(ctx, clientTransport)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestServerInterrupt(t *testing.T) {
 
 	cmd := createServerCommand(t)
 
-	client := mcp.NewClient("client", "v0.0.1", nil)
+	client := mcp.NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestCmdTransport(t *testing.T) {
 
 	cmd := createServerCommand(t)
 
-	client := mcp.NewClient("client", "v0.0.1", nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
 	if err != nil {
 		t.Fatal(err)
@@ -174,3 +174,5 @@ func requireExec(t *testing.T) {
 		t.Skip("unsupported OS")
 	}
 }
+
+var testImpl = &mcp.Implementation{Name: "test", Version: "v1.0.0"}

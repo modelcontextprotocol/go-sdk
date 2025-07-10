@@ -32,9 +32,8 @@ const DefaultPageSize = 1000
 // sessions by using [Server.Start] or [Server.Run].
 type Server struct {
 	// fixed at creation
-	name    string
-	version string
-	opts    ServerOptions
+	impl *Implementation
+	opts ServerOptions
 
 	mu                      sync.Mutex
 	prompts                 *featureSet[*serverPrompt]
@@ -68,13 +67,18 @@ type ServerOptions struct {
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
-// add features using [Server.AddTools], [Server.AddPrompts] and [Server.AddResources].
+// add features using the various Server.AddXXX methods, and the [AddTool] function.
 //
 // The server can be connected to one or more MCP clients using [Server.Start]
 // or [Server.Run].
 //
-// If non-nil, the provided options is used to configure the server.
-func NewServer(name, version string, opts *ServerOptions) *Server {
+// The first argument must not be nil.
+//
+// If non-nil, the provided options are used to configure the server.
+func NewServer(impl *Implementation, opts *ServerOptions) *Server {
+	if impl == nil {
+		panic("nil Implementation")
+	}
 	if opts == nil {
 		opts = new(ServerOptions)
 	}
@@ -85,8 +89,7 @@ func NewServer(name, version string, opts *ServerOptions) *Server {
 		opts.PageSize = DefaultPageSize
 	}
 	return &Server{
-		name:                    name,
-		version:                 version,
+		impl:                    impl,
 		opts:                    *opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
@@ -686,10 +689,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		ProtocolVersion: version,
 		Capabilities:    ss.server.capabilities(),
 		Instructions:    ss.server.opts.Instructions,
-		ServerInfo: &implementation{
-			Name:    ss.server.name,
-			Version: ss.server.version,
-		},
+		ServerInfo:      ss.server.impl,
 	}, nil
 }
 

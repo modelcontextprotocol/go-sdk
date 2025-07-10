@@ -19,8 +19,7 @@ import (
 // A Client is an MCP client, which may be connected to an MCP server
 // using the [Client.Connect] method.
 type Client struct {
-	name                    string
-	version                 string
+	impl                    *Implementation
 	opts                    ClientOptions
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
@@ -29,15 +28,19 @@ type Client struct {
 	receivingMethodHandler_ MethodHandler[*ClientSession]
 }
 
-// NewClient creates a new Client.
+// NewClient creates a new [Client].
 //
 // Use [Client.Connect] to connect it to an MCP server.
 //
+// The first argument must not be nil.
+//
 // If non-nil, the provided options configure the Client.
-func NewClient(name, version string, opts *ClientOptions) *Client {
+func NewClient(impl *Implementation, opts *ClientOptions) *Client {
+	if impl == nil {
+		panic("nil Implementation")
+	}
 	c := &Client{
-		name:                    name,
-		version:                 version,
+		impl:                    impl,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ClientSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
@@ -118,7 +121,7 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 
 	params := &InitializeParams{
 		ProtocolVersion: latestProtocolVersion,
-		ClientInfo:      &implementation{Name: c.name, Version: c.version},
+		ClientInfo:      c.impl,
 		Capabilities:    caps,
 	}
 	res, err := handleSend[*InitializeResult](ctx, cs, methodInitialize, params)

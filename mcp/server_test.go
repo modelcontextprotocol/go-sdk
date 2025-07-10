@@ -306,7 +306,7 @@ func TestServerCapabilities(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer("", "", nil)
+			server := NewServer(testImpl, nil)
 			tc.configureServer(server)
 			gotCapabilities := server.capabilities()
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {

@@ -16,7 +16,7 @@ var nextProgressToken atomic.Int64
 // This middleware function adds a progress token to every outgoing request
 // from the client.
 func Example_progressMiddleware() {
-	c := mcp.NewClient("test", "v1", nil)
+	c := mcp.NewClient(testImpl, nil)
 	c.AddSendingMiddleware(addProgressToken[*mcp.ClientSession])
 	_ = c
 }

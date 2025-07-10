@@ -91,7 +91,7 @@ func main() {
 	kb := knowledgeBase{s: kbStore}
 
 	// Setup MCP server with knowledge base tools
-	server := mcp.NewServer("memory", "v0.0.1", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "memory"}, nil)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "create_entities",
 		Description: "Create multiple new entities in the knowledge graph",

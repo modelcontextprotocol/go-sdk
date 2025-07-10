@@ -20,7 +20,7 @@ func TestSSEServer(t *testing.T) {
 	for _, closeServerFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("closeServerFirst=%t", closeServerFirst), func(t *testing.T) {
 			ctx := context.Background()
-			server := NewServer("testServer", "v1.0.0", nil)
+			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet"}, sayHi)
 
 			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server })
@@ -47,7 +47,7 @@ func TestSSEServer(t *testing.T) {
 				HTTPClient: customClient,
 			})
 
-			c := NewClient("testClient", "v1.0.0", nil)
+			c := NewClient(testImpl, nil)
 			cs, err := c.Connect(ctx, clientTransport)
 			if err != nil {
 				t.Fatal(err)

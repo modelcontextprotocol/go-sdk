@@ -32,7 +32,7 @@ func TestStreamableTransports(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create a server with a simple "greet" tool.
-	server := NewServer("testServer", "v1.0.0", nil)
+	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 	// cookie-checking middleware.
@@ -65,7 +65,7 @@ func TestStreamableTransports(t *testing.T) {
 	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
 		HTTPClient: httpClient,
 	})
-	client := NewClient("testClient", "v1.0.0", nil)
+	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
@@ -162,7 +162,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			Tools:       &toolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
-		ServerInfo:      &implementation{Name: "testServer", Version: "v1.0.0"},
+		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 	initializedMsg := req(0, "initialized", &InitializedParams{})
 	initialize := step{
@@ -328,7 +328,7 @@ func TestStreamableServerTransport(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
-			server := NewServer("testServer", "v1.0.0", nil)
+			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
 				if test.tool != nil {
 					test.tool(t, ctx, ss)
