@@ -65,6 +65,11 @@ func (t *ioTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(t.rwc), nil
 }
 
+// NewIOTransport constructs a transport that communicates over an io.ReadWriteCloser.
+func NewIOTransport(rwc io.ReadWriteCloser) Transport {
+	return &ioTransport{rwc}
+}
+
 // NewStdioTransport constructs a transport that communicates over
 // stdin/stdout.
 func NewStdioTransport() *StdioTransport {
