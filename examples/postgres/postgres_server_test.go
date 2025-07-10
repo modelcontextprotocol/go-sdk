@@ -39,6 +39,109 @@ func createMockPostgresServer(t *testing.T) (*PostgresServer, sqlmock.Sqlmock, f
 	return server, mock, cleanup
 }
 
+func TestParseResourceURI(t *testing.T) {
+	tests := []struct {
+		name          string
+		resourceURI   string
+		expectedTable string
+		wantError     bool
+		errorContains string
+	}{
+		{
+			name:          "valid URI with users table",
+			resourceURI:   "postgres://localhost:5432/testdb/users/schema",
+			expectedTable: "users",
+			wantError:     false,
+		},
+		{
+			name:          "valid URI with underscore table name",
+			resourceURI:   "postgres://localhost:5432/testdb/user_profiles/schema",
+			expectedTable: "user_profiles",
+			wantError:     false,
+		},
+		{
+			name:          "valid URI with numeric table name",
+			resourceURI:   "postgres://localhost:5432/testdb/orders123/schema",
+			expectedTable: "orders123",
+			wantError:     false,
+		},
+		{
+			name:          "valid URI with multiple path segments in database",
+			resourceURI:   "postgres://localhost:5432/path/to/db/products/schema",
+			expectedTable: "products",
+			wantError:     false,
+		},
+		{
+			name:          "invalid URI - malformed URL",
+			resourceURI:   "not-a-url",
+			wantError:     true,
+			errorContains: "invalid resource URI",
+		},
+		{
+			name:          "invalid URI - empty path",
+			resourceURI:   "postgres://localhost:5432",
+			wantError:     true,
+			errorContains: "empty URI path",
+		},
+		{
+			name:          "invalid URI - missing schema path",
+			resourceURI:   "postgres://localhost:5432/testdb/users",
+			wantError:     true,
+			errorContains: "invalid resource URI: expected schema path 'schema', got 'users'",
+		},
+		{
+			name:          "invalid URI - only table name, no schema",
+			resourceURI:   "postgres://localhost:5432/testdb/users/",
+			wantError:     true,
+			errorContains: "invalid resource URI: expected schema path 'schema', got 'users'",
+		},
+		{
+			name:          "invalid URI - wrong schema path",
+			resourceURI:   "postgres://localhost:5432/testdb/users/wrong",
+			wantError:     true,
+			errorContains: "invalid resource URI: expected schema path 'schema', got 'wrong'",
+		},
+		{
+			name:          "invalid URI - only one path component",
+			resourceURI:   "postgres://localhost:5432/users",
+			wantError:     true,
+			errorContains: "invalid resource URI format: expected /tableName/schema, got: /users",
+		},
+		{
+			name:          "invalid URI - empty path after slash",
+			resourceURI:   "postgres://localhost:5432/",
+			wantError:     true,
+			errorContains: "invalid resource URI format: expected /tableName/schema",
+		},
+		{
+			name:          "edge case - table name with special characters",
+			resourceURI:   "postgres://localhost:5432/testdb/test-table_123/schema",
+			expectedTable: "test-table_123",
+			wantError:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tableName, err := parseResourceURI(tt.resourceURI)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("parseResourceURI() expected error, got nil")
+				} else if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("parseResourceURI() error = %v, want error containing %v", err, tt.errorContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("parseResourceURI() unexpected error = %v", err)
+				} else if tableName != tt.expectedTable {
+					t.Errorf("parseResourceURI() tableName = %v, want %v", tableName, tt.expectedTable)
+				}
+			}
+		})
+	}
+}
+
 func TestNewPostgresServer(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -414,21 +517,16 @@ func TestPostgresServer_QueryTool(t *testing.T) {
 		}
 
 		result, err := server.QueryTool(ctx, nil, params)
-		if err != nil {
-			t.Fatalf("QueryTool() error = %v", err)
+		if err == nil {
+			t.Fatal("Expected error, got nil")
 		}
 
-		if !result.IsError {
-			t.Error("Expected error result")
+		if result != nil {
+			t.Error("Expected nil result when error is returned")
 		}
 
-		textContent, ok := result.Content[0].(*mcp.TextContent)
-		if !ok {
-			t.Fatal("Expected TextContent")
-		}
-
-		if !strings.Contains(textContent.Text, "Failed to start transaction") {
-			t.Errorf("Expected error message about transaction, got %s", textContent.Text)
+		if !strings.Contains(err.Error(), "failed to start transaction") {
+			t.Errorf("Expected error message about transaction, got %s", err.Error())
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
@@ -453,21 +551,16 @@ func TestPostgresServer_QueryTool(t *testing.T) {
 		}
 
 		result, err := server.QueryTool(ctx, nil, params)
-		if err != nil {
-			t.Fatalf("QueryTool() error = %v", err)
+		if err == nil {
+			t.Fatal("Expected error, got nil")
 		}
 
-		if !result.IsError {
-			t.Error("Expected error result")
+		if result != nil {
+			t.Error("Expected nil result when error is returned")
 		}
 
-		textContent, ok := result.Content[0].(*mcp.TextContent)
-		if !ok {
-			t.Fatal("Expected TextContent")
-		}
-
-		if !strings.Contains(textContent.Text, "Query execution failed") {
-			t.Errorf("Expected query execution error message, got %s", textContent.Text)
+		if !strings.Contains(err.Error(), "query execution failed") {
+			t.Errorf("Expected query execution error message, got %s", err.Error())
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
@@ -717,22 +810,17 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		result, err := server.QueryTool(ctx, nil, params)
-		if err != nil {
-			t.Fatalf("QueryTool() error = %v", err)
+		if err == nil {
+			t.Fatal("Expected error, got nil")
 		}
 
-		if !result.IsError {
-			t.Error("Expected error result")
-		}
-
-		textContent, ok := result.Content[0].(*mcp.TextContent)
-		if !ok {
-			t.Fatal("Expected TextContent")
+		if result != nil {
+			t.Error("Expected nil result when error is returned")
 		}
 
 		// CloseError actually affects rows.Err(), not Columns()
-		if !strings.Contains(textContent.Text, "Error iterating rows") {
-			t.Errorf("Expected row error message, got %s", textContent.Text)
+		if !strings.Contains(err.Error(), "error iterating rows") {
+			t.Errorf("Expected row error message, got %s", err.Error())
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
@@ -763,21 +851,16 @@ func TestEdgeCases(t *testing.T) {
 		}
 
 		result, err := server.QueryTool(ctx, nil, params)
-		if err != nil {
-			t.Fatalf("QueryTool() error = %v", err)
+		if err == nil {
+			t.Fatal("Expected error, got nil")
 		}
 
-		if !result.IsError {
-			t.Error("Expected error result")
+		if result != nil {
+			t.Error("Expected nil result when error is returned")
 		}
 
-		textContent, ok := result.Content[0].(*mcp.TextContent)
-		if !ok {
-			t.Fatal("Expected TextContent")
-		}
-
-		if !strings.Contains(textContent.Text, "Error iterating rows") {
-			t.Errorf("Expected row iteration error message, got %s", textContent.Text)
+		if !strings.Contains(err.Error(), "error iterating rows") {
+			t.Errorf("Expected row iteration error message, got %s", err.Error())
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
