@@ -5,6 +5,7 @@
 package jsonschema_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -20,7 +21,7 @@ func forType[T any]() *jsonschema.Schema {
 	return s
 }
 
-func TestForType(t *testing.T) {
+func TestFor(t *testing.T) {
 	type schema = jsonschema.Schema
 	tests := []struct {
 		name string
@@ -89,6 +90,38 @@ func TestForType(t *testing.T) {
 				t.Fatalf("Resolving: %v", err)
 			}
 		})
+	}
+}
+
+func forErr[T any]() error {
+	_, err := jsonschema.For[T]()
+	return err
+}
+
+func TestForErrors(t *testing.T) {
+	type (
+		s1 struct {
+			Empty int `jsonschema:""`
+		}
+		s2 struct {
+			Bad int `jsonschema:"$foo=1,bar"`
+		}
+	)
+
+	for _, tt := range []struct {
+		got  error
+		want string
+	}{
+		{forErr[map[int]int](), "unsupported map key type"},
+		{forErr[s1](), "empty jsonschema tag"},
+		{forErr[s2](), "must not begin with"},
+		{forErr[func()](), "unsupported"},
+	} {
+		if tt.got == nil {
+			t.Errorf("got nil, want error containing %q", tt.want)
+		} else if !strings.Contains(tt.got.Error(), tt.want) {
+			t.Errorf("got %q\nwant it to contain %q", tt.got, tt.want)
+		}
 	}
 }
 
@@ -183,4 +216,8 @@ func TestForWithCycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func falseSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Not: &jsonschema.Schema{}}
 }
