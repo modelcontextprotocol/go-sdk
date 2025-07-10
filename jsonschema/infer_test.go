@@ -143,16 +143,44 @@ func TestForWithMutation(t *testing.T) {
 	}
 }
 
-type s struct {
-	A t
+type x struct {
+	Y y
 }
-type t struct {
-	B []s
+type y struct {
+	X []x
 }
 
 func TestForWithCycle(t *testing.T) {
-	_, err := jsonschema.For[s]()
-	if err == nil {
-		t.Fatalf("ForWithCycle: expected error, got nil")
+	type a []*a
+	type b1 struct{ b *b1 } // unexported field should be skipped
+	type b2 struct{ B *b2 }
+	type c1 struct{ c map[string]*c1 } // unexported field should be skipped
+	type c2 struct{ C map[string]*c2 }
+
+	tests := []struct {
+		name      string
+		shouldErr bool
+		fn        func() error
+	}{
+		{"slice alias (a)", true, func() error { _, err := jsonschema.For[a](); return err }},
+		{"unexported self cycle (b1)", false, func() error { _, err := jsonschema.For[b1](); return err }},
+		{"exported self cycle (b2)", true, func() error { _, err := jsonschema.For[b2](); return err }},
+		{"unexported map self cycle (c1)", false, func() error { _, err := jsonschema.For[c1](); return err }},
+		{"exported map self cycle (c2)", true, func() error { _, err := jsonschema.For[c2](); return err }},
+		{"cross-cycle x -> y -> x", true, func() error { _, err := jsonschema.For[x](); return err }},
+		{"cross-cycle y -> x -> y", true, func() error { _, err := jsonschema.For[y](); return err }},
+	}
+
+	for _, test := range tests {
+		test := test // prevent loop shadowing
+		t.Run(test.name, func(t *testing.T) {
+			err := test.fn()
+			if test.shouldErr && err == nil {
+				t.Errorf("expected cycle error, got nil")
+			}
+			if !test.shouldErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

@@ -9,7 +9,6 @@ package jsonschema
 import (
 	"fmt"
 	"reflect"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
@@ -38,6 +37,7 @@ import (
 //   - unsafe pointers
 //
 // The types must not have cycles.
+// It will return an error if there is a cycle in the types.
 func For[T any]() (*Schema, error) {
 	// TODO: consider skipping incompatible fields, instead of failing.
 	seen := make(map[reflect.Type]bool)
@@ -49,8 +49,6 @@ func For[T any]() (*Schema, error) {
 	return s, nil
 }
 
-var typeSchema sync.Map // map[reflect.Type]*Schema
-
 func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 	// Follow pointers: the schema for *T is almost the same as for T, except that
 	// an explicit JSON "null" is allowed for the pointer.
@@ -60,22 +58,20 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 		t = t.Elem()
 	}
 
-	if cachedS, ok := typeSchema.Load(t); ok {
-		s := deepCopySchema(cachedS.(*Schema))
-		adjustTypesForPointer(s, allowNull)
-		return s, nil
+	// Check for cycles
+	// User defined types have a name, so we can skip those that are natively defined
+	if t.Name() != "" {
+		if seen[t] {
+			return nil, fmt.Errorf("cycle detected for type %v", t)
+		}
+		seen[t] = true
+		defer delete(seen, t)
 	}
 
 	var (
 		s   = new(Schema)
 		err error
 	)
-
-	if seen[t] {
-		return nil, fmt.Errorf("cycle detected for type %v", t)
-	}
-	seen[t] = true
-	defer delete(seen, t)
 
 	switch t.Kind() {
 	case reflect.Bool:
@@ -142,56 +138,9 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 	default:
 		return nil, fmt.Errorf("type %v is unsupported by jsonschema", t)
 	}
-	typeSchema.Store(t, deepCopySchema(s))
-	adjustTypesForPointer(s, allowNull)
-	return s, nil
-}
-
-func adjustTypesForPointer(s *Schema, allowNull bool) {
 	if allowNull && s.Type != "" {
 		s.Types = []string{"null", s.Type}
 		s.Type = ""
 	}
-}
-
-// deepCopySchema makes a deep copy of a Schema.
-// Only fields that are modified by forType are cloned.
-func deepCopySchema(s *Schema) *Schema {
-	if s == nil {
-		return nil
-	}
-
-	clone := new(Schema)
-	clone.Type = s.Type
-
-	if s.Items != nil {
-		clone.Items = deepCopySchema(s.Items)
-	}
-	if s.AdditionalProperties != nil {
-		clone.AdditionalProperties = deepCopySchema(s.AdditionalProperties)
-	}
-	if s.MinItems != nil {
-		minItems := *s.MinItems
-		clone.MinItems = &minItems
-	}
-	if s.MaxItems != nil {
-		maxItems := *s.MaxItems
-		clone.MaxItems = &maxItems
-	}
-	if s.Types != nil {
-		clone.Types = make([]string, len(s.Types))
-		copy(clone.Types, s.Types)
-	}
-	if s.Required != nil {
-		clone.Required = make([]string, len(s.Required))
-		copy(clone.Required, s.Required)
-	}
-	if s.Properties != nil {
-		clone.Properties = make(map[string]*Schema)
-		for k, v := range s.Properties {
-			clone.Properties[k] = deepCopySchema(v)
-		}
-	}
-
-	return clone
+	return s, nil
 }
