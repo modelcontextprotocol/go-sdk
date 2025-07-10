@@ -648,7 +648,7 @@ type streamableClientConn struct {
 	err error
 }
 
-func (c *streamableClientConn) SetProtocolVersion(s string) {
+func (c *streamableClientConn) setProtocolVersion(s string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.protocolVersion = s

@@ -53,10 +53,10 @@ type Connection interface {
 	SessionID() string
 }
 
-// An HTTPConnection is a [Connection] that runs over HTTP.
-type HTTPConnection interface {
+// An httpConnection is a [Connection] that runs over HTTP.
+type httpConnection interface {
 	Connection
-	SetProtocolVersion(string)
+	setProtocolVersion(string)
 }
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
