@@ -119,7 +119,7 @@ func parseResourceURI(resourceURI string) (tableName string, err error) {
 
 	// Remove leading slash and split by '/'
 	trimmedPath := strings.TrimPrefix(urlPath, "/")
-	
+
 	// Split path into components using strings.Split for better performance (O(n) vs O(n²))
 	var pathParts []string
 	if trimmedPath != "" {
