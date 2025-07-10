@@ -1,19 +1,10 @@
-# MCP Go SDK
+# MCP Go SDK v0.2.0
 
 ***BREAKING CHANGES***
 
-The latest version contains breaking changes:
-
-- Server.AddTools is replaced by Server.AddTool.
-
-- NewServerTool is replaced by AddTool. AddTool takes a Tool rather than a name and description, so you can 
-  set any field on the Tool that you want before associating it with a handler.
-
-- Tool options have been removed. If you don't want AddTool to infer a JSON Schema for you, you can construct one
-  as a struct literal, or using any other code that suits you.
-
-- AddPrompts, AddResources and AddResourceTemplates are similarly replaced by singular methods which pair the
-  feature with a handler. The ServerXXX types have been removed.
+This version contains breaking changes.
+See the [release notes](
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.2.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
@@ -40,7 +31,7 @@ open-ended discussion. See CONTRIBUTING.md for details.
 
 ## Package documentation
 
-The SDK consists of two importable packages:
+The SDK consists of three importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
@@ -50,6 +41,10 @@ The SDK consists of two importable packages:
   [`github.com/modelcontextprotocol/go-sdk/jsonschema`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
   package provides an implementation of [JSON
   Schema](https://json-schema.org/), used for MCP tool input and output schema.
+- The
+  [`github.com/modelcontextprotocol/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema) package is for users implementing
+  their own transports.
+   
 
 ## Example
 
