@@ -388,7 +388,7 @@ func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, boo
 // The dir argument should be a filesystem path. It need not be absolute, but
 // that is recommended to avoid a dependency on the current working directory (the
 // check against client roots is done with an absolute path). If dir is not absolute
-// and the current working directory is unavailable, FileResourceHandler panics.
+// and the current working directory is unavailable, fileResourceHandler panics.
 //
 // Lexical path traversal attacks, where the path has ".." elements that escape dir,
 // are always caught. Go 1.24 and above also protects against symlink-based attacks,

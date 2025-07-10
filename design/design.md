@@ -692,13 +692,9 @@ func (cs *ClientSession) CallTool(context.Context, *CallToolParams[json.RawMessa
 func CallTool[TArgs any](context.Context, *ClientSession, *CallToolParams[TArgs]) (*CallToolResult, error)
 ```
 
-**Differences from mcp-go**: using variadic options to configure tools was significantly inspired by mcp-go. However, the distinction between `ToolOption` and `SchemaOption` allows for recursive application of schema options. For example, that limitation is visible in [this code](https://github.com/DCjanus/dida365-mcp-server/blob/master/cmd/mcp/tools.go#L315), which must resort to untyped maps to express a nested schema.
+**Differences from mcp-go**: We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want. The `jsonschema.For[T]` function can infer a schema from a Go struct. These combined features eliminate the need for variadic arguments to construct tool schemas.
 
-Additionally, the `NewServerTool` helper provides a means for building a tool from a Go function using reflection, that automatically handles parsing and validation of inputs.
-
-We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want, so there is no need to provide options for all of them. When combined with schema inference from input structs, we found that we needed only three options to cover the common cases, instead of mcp-go's 23. For example, we will provide `Enum`, which occurs 125 times in open source code, but not MinItems, MinLength or MinProperties, which each occur only once (and in an SDK that wraps mcp-go).
-
-For registering tools, we provide only `AddTools`; mcp-go's `SetTools`, `AddTool`, `AddSessionTool`, and `AddSessionTools` are deemed unnecessary. (Similarly for Delete/Remove).
+For registering tools, we provide only a `Server.AddTool` method; mcp-go's `SetTools`, `AddTool`, `AddSessionTool`, and `AddSessionTools` are deemed unnecessary. (Similarly for Delete/Remove). The `AddTool` generic function combines schema inference with registration, providing a easy way to register many tools.
 
 ### Prompts
 
@@ -722,7 +718,7 @@ server.RemovePrompts("code_review")
 
 Client sessions can call the spec method `ListPrompts` or the iterator method `Prompts` to list the available prompts, and the spec method `GetPrompt` to get one.
 
-**Differences from mcp-go**: We provide a `NewServerPrompt` helper to bind a prompt handler to a Go function using reflection to derive its arguments. We provide `RemovePrompts` to remove prompts from the server.
+**Differences from mcp-go**: We provide `RemovePrompts` to remove prompts from the server.
 
 ### Resources and resource templates
 
@@ -746,25 +742,9 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string)
 
 The `ReadResource` method finds a resource or resource template matching the argument URI and calls its associated handler.
 
-To read files from the local filesystem, we recommend using `FileResourceHandler` to construct a handler:
-
-```go
-// FileResourceHandler returns a ResourceHandler that reads paths using dir as a root directory.
-// It protects against path traversal attacks.
-// It will not read any file that is not in the root set of the client requesting the resource.
-func (*Server) FileResourceHandler(dir string) ResourceHandler
-```
-
-Here is an example:
-
-```go
-// Safely read "/public/puppies.txt".
-s.AddResource(&mcp.Resource{URI: "file:///puppies.txt"}, s.FileReadResourceHandler("/public"))
-```
-
 Server sessions also support the spec methods `ListResources` and `ListResourceTemplates`, and the corresponding iterator methods `Resources` and `ResourceTemplates`.
 
-**Differences from mcp-go**: for symmetry with tools and prompts, we use `AddResources` rather than `AddResource`. Additionally, the `ResourceHandler` returns a `ReadResourceResult`, rather than just its content, for compatibility with future evolution of the spec.
+**Differences from mcp-go**: The `ResourceHandler` returns a `ReadResourceResult`, rather than just its content, for compatibility with future evolution of the spec.
 
 #### Subscriptions
 
