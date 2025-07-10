@@ -229,11 +229,6 @@ func TestServerPaginateVariousPageSizes(t *testing.T) {
 }
 
 func TestServerCapabilities(t *testing.T) {
-	// An empty handler that can be used for tools, prompts, and resources.
-	emptyHandler := func(context.Context, *ServerSession, any) (any, error) {
-		return &emptyResult{}, nil
-	}
-
 	testCases := []struct {
 		name             string
 		configureServer  func(s *Server)
@@ -250,7 +245,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With prompts",
 			configureServer: func(s *Server) {
-				s.AddPrompts(NewServerPrompt(&Prompt{Name: "p"}, emptyHandler))
+				s.AddPrompt(&Prompt{Name: "p"}, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -261,7 +256,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With resources",
 			configureServer: func(s *Server) {
-				s.AddResources(NewServerResource(&Resource{URI: "file:///r"}, emptyHandler))
+				s.AddResource(&Resource{URI: "file:///r"}, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -272,7 +267,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With resource templates",
 			configureServer: func(s *Server) {
-				s.AddResourceTemplates(NewServerResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, emptyHandler))
+				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -283,7 +278,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With tools",
 			configureServer: func(s *Server) {
-				s.AddTools(NewServerTool(&Tool{Name: "t"}, emptyHandler))
+				s.AddTool(&Tool{Name: "t"}, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -294,10 +289,10 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With all capabilities",
 			configureServer: func(s *Server) {
-				s.AddPrompts(NewServerPrompt(&Prompt{Name: "p"}, emptyHandler))
-				s.AddResources(NewServerResource(&Resource{URI: "file:///r"}, emptyHandler))
-				s.AddResourceTemplates(NewServerResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, emptyHandler))
-				s.AddTools(NewServerTool(&Tool{Name: "t"}, emptyHandler))
+				s.AddPrompt(&Prompt{Name: "p"}, nil)
+				s.AddResource(&Resource{URI: "file:///r"}, nil)
+				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
+				s.AddTool(&Tool{Name: "t"}, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -311,7 +306,7 @@ func TestServerCapabilities(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(nil, nil, nil)
+			server := NewServer("", "", nil)
 			tc.configureServer(server)
 			gotCapabilities := server.capabilities()
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
