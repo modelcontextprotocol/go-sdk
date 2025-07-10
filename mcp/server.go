@@ -72,11 +72,12 @@ type ServerOptions struct {
 // The server can be connected to one or more MCP clients using [Server.Start]
 // or [Server.Run].
 //
-// If impl is nil, a default name and version are used, and the title is left empty.
-// If non-nil, the provided options is used to configure the server.
+// The first argument must not be nil.
+//
+// If non-nil, the provided options are used to configure the server.
 func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 	if impl == nil {
-		impl = &Implementation{Name: "Go MCP SDK Server", Version: "v0.1.0"}
+		panic("nil Implementation")
 	}
 	if opts == nil {
 		opts = new(ServerOptions)

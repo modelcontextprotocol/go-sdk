@@ -36,7 +36,7 @@ func ExampleServer() {
 		log.Fatal(err)
 	}
 
-	client := mcp.NewClient(nil, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "client"}, nil)
 	clientSession, err := client.Connect(ctx, clientTransport)
 	if err != nil {
 		log.Fatal(err)
@@ -59,8 +59,8 @@ func ExampleServer() {
 
 // createSessions creates and connects an in-memory client and server session for testing purposes.
 func createSessions(ctx context.Context) (*mcp.ClientSession, *mcp.ServerSession, *mcp.Server) {
-	server := mcp.NewServer(nil, nil)
-	client := mcp.NewClient(nil, nil)
+	server := mcp.NewServer(testImpl, nil)
+	client := mcp.NewClient(testImpl, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport)
 	if err != nil {

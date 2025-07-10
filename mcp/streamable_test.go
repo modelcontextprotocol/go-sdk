@@ -32,7 +32,7 @@ func TestStreamableTransports(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create a server with a simple "greet" tool.
-	server := NewServer(nil, nil)
+	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 	// cookie-checking middleware.
@@ -65,7 +65,7 @@ func TestStreamableTransports(t *testing.T) {
 	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
 		HTTPClient: httpClient,
 	})
-	client := NewClient(nil, nil)
+	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)

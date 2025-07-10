@@ -32,11 +32,12 @@ type Client struct {
 //
 // Use [Client.Connect] to connect it to an MCP server.
 //
-// If impl is nil, a default name and version are used, and the title is left empty.
+// The first argument must not be nil.
+//
 // If non-nil, the provided options configure the Client.
 func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 	if impl == nil {
-		impl = &Implementation{Name: "Go MCP SDK Client", Version: "v0.1.0"}
+		panic("nil Implementation")
 	}
 	c := &Client{
 		impl:                    impl,

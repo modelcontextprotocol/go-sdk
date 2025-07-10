@@ -40,7 +40,7 @@ func main() {
 
 	// Create the MCP Server instance and assign the handler.
 	// No server running, just showing the configuration.
-	_ = mcp.NewServer(nil, &mcp.ServerOptions{
+	_ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
 		CompletionHandler: myCompletionHandler,
 	})
 
