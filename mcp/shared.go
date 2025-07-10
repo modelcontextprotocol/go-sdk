@@ -26,7 +26,11 @@ import (
 // It is the version that the client sends in the initialization request.
 const latestProtocolVersion = "2025-06-18"
 
-var supportedProtocolVersions = []string{latestProtocolVersion, "2025-03-26"}
+var supportedProtocolVersions = []string{
+	latestProtocolVersion,
+	"2025-03-26",
+	"2024-11-05",
+}
 
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
