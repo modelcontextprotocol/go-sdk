@@ -18,3 +18,15 @@ type (
 	// Response is a JSON-RPC response.
 	Response = jsonrpc2.Response
 )
+
+func MakeID(v any) (ID, error) {
+	return jsonrpc2.MakeID(v)
+}
+
+func EncodeMessage(msg Message) ([]byte, error) {
+	return jsonrpc2.EncodeMessage(msg)
+}
+
+func DecodeMessage(data []byte) (Message, error) {
+	return jsonrpc2.DecodeMessage(data)
+}
