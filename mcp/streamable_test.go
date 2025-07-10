@@ -22,6 +22,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 func TestStreamableTransports(t *testing.T) {
@@ -126,16 +127,16 @@ func TestStreamableServerTransport(t *testing.T) {
 		// Redundant with OnRequest: all OnRequest steps are asynchronous.
 		Async bool
 
-		Method     string           // HTTP request method
-		Send       []JSONRPCMessage // messages to send
-		CloseAfter int              // if nonzero, close after receiving this many messages
-		StatusCode int              // expected status code
-		Recv       []JSONRPCMessage // expected messages to receive
+		Method     string            // HTTP request method
+		Send       []jsonrpc.Message // messages to send
+		CloseAfter int               // if nonzero, close after receiving this many messages
+		StatusCode int               // expected status code
+		Recv       []jsonrpc.Message // expected messages to receive
 	}
 
 	// JSON-RPC message constructors.
-	req := func(id int64, method string, params any) *JSONRPCRequest {
-		r := &JSONRPCRequest{
+	req := func(id int64, method string, params any) *jsonrpc.Request {
+		r := &jsonrpc.Request{
 			Method: method,
 			Params: mustMarshal(t, params),
 		}
@@ -144,8 +145,8 @@ func TestStreamableServerTransport(t *testing.T) {
 		}
 		return r
 	}
-	resp := func(id int64, result any, err error) *JSONRPCResponse {
-		return &JSONRPCResponse{
+	resp := func(id int64, result any, err error) *jsonrpc.Response {
+		return &jsonrpc.Response{
 			ID:     jsonrpc2.Int64ID(id),
 			Result: mustMarshal(t, result),
 			Error:  err,
@@ -168,13 +169,13 @@ func TestStreamableServerTransport(t *testing.T) {
 	initializedMsg := req(0, "initialized", &InitializedParams{})
 	initialize := step{
 		Method:     "POST",
-		Send:       []JSONRPCMessage{initReq},
+		Send:       []jsonrpc.Message{initReq},
 		StatusCode: http.StatusOK,
-		Recv:       []JSONRPCMessage{initResp},
+		Recv:       []jsonrpc.Message{initResp},
 	}
 	initialized := step{
 		Method:     "POST",
-		Send:       []JSONRPCMessage{initializedMsg},
+		Send:       []jsonrpc.Message{initializedMsg},
 		StatusCode: http.StatusAccepted,
 	}
 
@@ -190,9 +191,9 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialized,
 				{
 					Method:     "POST",
-					Send:       []JSONRPCMessage{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					Send:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					StatusCode: http.StatusOK,
-					Recv:       []JSONRPCMessage{resp(2, &CallToolResult{}, nil)},
+					Recv:       []jsonrpc.Message{resp(2, &CallToolResult{}, nil)},
 				},
 			},
 		},
@@ -209,11 +210,11 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialized,
 				{
 					Method: "POST",
-					Send: []JSONRPCMessage{
+					Send: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
 					StatusCode: http.StatusOK,
-					Recv: []JSONRPCMessage{
+					Recv: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
@@ -234,18 +235,18 @@ func TestStreamableServerTransport(t *testing.T) {
 				{
 					Method:    "POST",
 					OnRequest: 1,
-					Send: []JSONRPCMessage{
+					Send: []jsonrpc.Message{
 						resp(1, &ListRootsResult{}, nil),
 					},
 					StatusCode: http.StatusAccepted,
 				},
 				{
 					Method: "POST",
-					Send: []JSONRPCMessage{
+					Send: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
 					StatusCode: http.StatusOK,
-					Recv: []JSONRPCMessage{
+					Recv: []jsonrpc.Message{
 						req(1, "roots/list", &ListRootsParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
@@ -275,7 +276,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				{
 					Method:    "POST",
 					OnRequest: 1,
-					Send: []JSONRPCMessage{
+					Send: []jsonrpc.Message{
 						resp(1, &ListRootsResult{}, nil),
 					},
 					StatusCode: http.StatusAccepted,
@@ -285,18 +286,18 @@ func TestStreamableServerTransport(t *testing.T) {
 					Async:      true,
 					StatusCode: http.StatusOK,
 					CloseAfter: 2,
-					Recv: []JSONRPCMessage{
+					Recv: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						req(1, "roots/list", &ListRootsParams{}),
 					},
 				},
 				{
 					Method: "POST",
-					Send: []JSONRPCMessage{
+					Send: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
 					StatusCode: http.StatusOK,
-					Recv: []JSONRPCMessage{
+					Recv: []jsonrpc.Message{
 						resp(2, &CallToolResult{}, nil),
 					},
 				},
@@ -315,9 +316,9 @@ func TestStreamableServerTransport(t *testing.T) {
 				},
 				{
 					Method:     "POST",
-					Send:       []JSONRPCMessage{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					Send:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					StatusCode: http.StatusOK,
-					Recv: []JSONRPCMessage{resp(2, nil, &jsonrpc2.WireError{
+					Recv: []jsonrpc.Message{resp(2, nil, &jsonrpc2.WireError{
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
 				},
@@ -344,7 +345,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			httpServer := httptest.NewServer(handler)
 			defer httpServer.Close()
 
-			// blocks records request blocks by JSONRPC ID.
+			// blocks records request blocks by jsonrpc. ID.
 			//
 			// When an OnRequest step is encountered, it waits on the corresponding
 			// block. When a request with that ID is received, the block is closed.
@@ -382,8 +383,8 @@ func TestStreamableServerTransport(t *testing.T) {
 
 				// Collect messages received during this request, unblock other steps
 				// when requests are received.
-				var got []JSONRPCMessage
-				out := make(chan JSONRPCMessage)
+				var got []jsonrpc.Message
+				out := make(chan jsonrpc.Message)
 				// Cancel the step if we encounter a request that isn't going to be
 				// handled.
 				ctx, cancel := context.WithCancel(context.Background())
@@ -394,7 +395,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					defer wg.Done()
 
 					for m := range out {
-						if req, ok := m.(*JSONRPCRequest); ok && req.ID.IsValid() {
+						if req, ok := m.(*jsonrpc.Request); ok && req.ID.IsValid() {
 							// Encountered a server->client request. We should have a
 							// response queued. Otherwise, we may deadlock.
 							mu.Lock()
@@ -427,7 +428,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				}
 				wg.Wait()
 
-				transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id JSONRPCID) any { return id.Raw() })
+				transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
 				if diff := cmp.Diff(step.Recv, got, transform); diff != "" {
 					t.Errorf("received unexpected messages (-want +got):\n%s", diff)
 				}
@@ -469,7 +470,7 @@ func TestStreamableServerTransport(t *testing.T) {
 // Returns the sessionID and http status code from the response. If an error is
 // returned, sessionID and status code may still be set if the error occurs
 // after the response headers have been received.
-func streamingRequest(ctx context.Context, serverURL, sessionID, method string, in []JSONRPCMessage, out chan<- JSONRPCMessage) (string, int, error) {
+func streamingRequest(ctx context.Context, serverURL, sessionID, method string, in []jsonrpc.Message, out chan<- jsonrpc.Message) (string, int, error) {
 	defer close(out)
 
 	var body []byte

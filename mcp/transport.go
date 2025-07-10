@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // ErrConnectionClosed is returned when sending a message to a connection that
@@ -34,21 +35,10 @@ type Transport interface {
 	Connect(ctx context.Context) (Connection, error)
 }
 
-type (
-	// JSONRPCID is a JSON-RPC request ID.
-	JSONRPCID = jsonrpc2.ID
-	// JSONRPCMessage is a JSON-RPC message.
-	JSONRPCMessage = jsonrpc2.Message
-	// JSONRPCRequest is a JSON-RPC request.
-	JSONRPCRequest = jsonrpc2.Request
-	// JSONRPCResponse is a JSON-RPC response.
-	JSONRPCResponse = jsonrpc2.Response
-)
-
 // A Connection is a logical bidirectional JSON-RPC connection.
 type Connection interface {
-	Read(context.Context) (JSONRPCMessage, error)
-	Write(context.Context, JSONRPCMessage) error
+	Read(context.Context) (jsonrpc.Message, error)
+	Write(context.Context, jsonrpc.Message) error
 	Close() error // may be called concurrently by both peers
 	SessionID() string
 }
@@ -100,7 +90,7 @@ type binder[T handler] interface {
 }
 
 type handler interface {
-	handle(ctx context.Context, req *JSONRPCRequest) (any, error)
+	handle(ctx context.Context, req *jsonrpc.Request) (any, error)
 	setConn(Connection)
 }
 
@@ -143,7 +133,7 @@ type canceller struct {
 }
 
 // Preempt implements jsonrpc2.Preempter.
-func (c *canceller) Preempt(ctx context.Context, req *JSONRPCRequest) (result any, err error) {
+func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == "notifications/cancelled" {
 		var params CancelledParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -212,7 +202,7 @@ type loggingConn struct {
 func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
 
 // loggingReader is a stream middleware that logs incoming messages.
-func (s *loggingConn) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	msg, err := s.delegate.Read(ctx)
 	if err != nil {
 		fmt.Fprintf(s.w, "read error: %v", err)
@@ -227,7 +217,7 @@ func (s *loggingConn) Read(ctx context.Context) (JSONRPCMessage, error) {
 }
 
 // loggingWriter is a stream middleware that logs outgoing messages.
-func (s *loggingConn) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	err := s.delegate.Write(ctx, msg)
 	if err != nil {
 		fmt.Fprintf(s.w, "write error: %v", err)
@@ -265,7 +255,7 @@ func (r rwc) Close() error {
 }
 
 // An ioConn is a transport that delimits messages with newlines across
-// a bidirectional stream, and supports JSONRPC2 message batching.
+// a bidirectional stream, and supports jsonrpc.2 message batching.
 //
 // See https://github.com/ndjson/ndjson-spec for discussion of newline
 // delimited JSON.
@@ -277,11 +267,11 @@ type ioConn struct {
 
 	// If outgoiBatch has a positive capacity, it will be used to batch requests
 	// and notifications before sending.
-	outgoingBatch []JSONRPCMessage
+	outgoingBatch []jsonrpc.Message
 
 	// Unread messages in the last batch. Since reads are serialized, there is no
 	// need to guard here.
-	queue []JSONRPCMessage
+	queue []jsonrpc.Message
 
 	// batches correlate incoming requests to the batch in which they arrived.
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
@@ -325,7 +315,7 @@ func (t *ioConn) addBatch(batch *msgBatch) error {
 // The second result reports whether resp was part of a batch. If this is true,
 // the first result is nil if the batch is still incomplete, or the full set of
 // batch responses if resp completed the batch.
-func (t *ioConn) updateBatch(resp *JSONRPCResponse) ([]*JSONRPCResponse, bool) {
+func (t *ioConn) updateBatch(resp *jsonrpc.Response) ([]*jsonrpc.Response, bool) {
 	t.batchMu.Lock()
 	defer t.batchMu.Unlock()
 
@@ -345,9 +335,9 @@ func (t *ioConn) updateBatch(resp *JSONRPCResponse) ([]*JSONRPCResponse, bool) {
 	return nil, false
 }
 
-// A msgBatch records information about an incoming batch of JSONRPC2 calls.
+// A msgBatch records information about an incoming batch of jsonrpc.2 calls.
 //
-// The JSONRPC2 spec (https://www.jsonrpc.org/specification#batch) says:
+// The jsonrpc.2 spec (https://www.jsonrpc.org/specification#batch) says:
 //
 // "The Server should respond with an Array containing the corresponding
 // Response objects, after all of the batch Request objects have been
@@ -360,14 +350,14 @@ func (t *ioConn) updateBatch(resp *JSONRPCResponse) ([]*JSONRPCResponse, bool) {
 // When there are no unresolved calls, the response payload is sent.
 type msgBatch struct {
 	unresolved map[jsonrpc2.ID]int
-	responses  []*JSONRPCResponse
+	responses  []*jsonrpc.Response
 }
 
-func (t *ioConn) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	return t.read(ctx, t.in)
 }
 
-func (t *ioConn) read(ctx context.Context, in *json.Decoder) (JSONRPCMessage, error) {
+func (t *ioConn) read(ctx context.Context, in *json.Decoder) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -392,7 +382,7 @@ func (t *ioConn) read(ctx context.Context, in *json.Decoder) (JSONRPCMessage, er
 	if batch {
 		var respBatch *msgBatch // track incoming requests in the batch
 		for _, msg := range msgs {
-			if req, ok := msg.(*JSONRPCRequest); ok {
+			if req, ok := msg.(*jsonrpc.Request); ok {
 				if respBatch == nil {
 					respBatch = &msgBatch{
 						unresolved: make(map[jsonrpc2.ID]int),
@@ -417,7 +407,7 @@ func (t *ioConn) read(ctx context.Context, in *json.Decoder) (JSONRPCMessage, er
 
 // readBatch reads batch data, which may be either a single JSON-RPC message,
 // or an array of JSON-RPC messages.
-func readBatch(data []byte) (msgs []JSONRPCMessage, isBatch bool, _ error) {
+func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 	// Try to read an array of messages first.
 	var rawBatch []json.RawMessage
 	if err := json.Unmarshal(data, &rawBatch); err == nil {
@@ -435,10 +425,10 @@ func readBatch(data []byte) (msgs []JSONRPCMessage, isBatch bool, _ error) {
 	}
 	// Try again with a single message.
 	msg, err := jsonrpc2.DecodeMessage(data)
-	return []JSONRPCMessage{msg}, false, err
+	return []jsonrpc.Message{msg}, false, err
 }
 
-func (t *ioConn) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -449,7 +439,7 @@ func (t *ioConn) Write(ctx context.Context, msg JSONRPCMessage) error {
 	// check that first. Otherwise, it is a request or notification, and we may
 	// want to collect it into a batch before sending, if we're configured to use
 	// outgoing batches.
-	if resp, ok := msg.(*JSONRPCResponse); ok {
+	if resp, ok := msg.(*jsonrpc.Response); ok {
 		if batch, ok := t.updateBatch(resp); ok {
 			if len(batch) > 0 {
 				data, err := marshalMessages(batch)
@@ -489,7 +479,7 @@ func (t *ioConn) Close() error {
 	return t.rwc.Close()
 }
 
-func marshalMessages[T JSONRPCMessage](msgs []T) ([]byte, error) {
+func marshalMessages[T jsonrpc.Message](msgs []T) ([]byte, error) {
 	var rawMsgs []json.RawMessage
 	for _, msg := range msgs {
 		raw, err := jsonrpc2.EncodeMessage(msg)

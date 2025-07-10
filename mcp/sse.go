@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // This file implements support for SSE (HTTP with server-sent events)
@@ -111,7 +112,7 @@ func NewSSEHandler(getServer func(request *http.Request) *Server) *SSEHandler {
 //   - Close terminates the hanging GET.
 type SSEServerTransport struct {
 	endpoint string
-	incoming chan JSONRPCMessage // queue of incoming messages; never closed
+	incoming chan jsonrpc.Message // queue of incoming messages; never closed
 
 	// We must guard both pushes to the incoming queue and writes to the response
 	// writer, because incoming POST requests are arbitrarily concurrent and we
@@ -138,7 +139,7 @@ func NewSSEServerTransport(endpoint string, w http.ResponseWriter) *SSEServerTra
 	return &SSEServerTransport{
 		endpoint: endpoint,
 		w:        w,
-		incoming: make(chan JSONRPCMessage, 100),
+		incoming: make(chan jsonrpc.Message, 100),
 		done:     make(chan struct{}),
 	}
 }
@@ -267,7 +268,7 @@ type sseServerConn struct {
 func (s sseServerConn) SessionID() string { return "" }
 
 // Read implements jsonrpc2.Reader.
-func (s sseServerConn) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (s sseServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -279,7 +280,7 @@ func (s sseServerConn) Read(ctx context.Context) (JSONRPCMessage, error) {
 }
 
 // Write implements jsonrpc2.Writer.
-func (s sseServerConn) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (s sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -532,7 +533,7 @@ func (c *sseClientConn) isDone() bool {
 	return c.closed
 }
 
-func (c *sseClientConn) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (c *sseClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -553,7 +554,7 @@ func (c *sseClientConn) Read(ctx context.Context) (JSONRPCMessage, error) {
 	}
 }
 
-func (c *sseClientConn) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (c *sseClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
 		return err

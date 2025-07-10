@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // latestProtocolVersion is the latest protocol version that this version of the SDK supports.
@@ -121,7 +122,7 @@ func defaultReceivingMethodHandler[S Session](ctx context.Context, session S, me
 	return info.handleMethod.(MethodHandler[S])(ctx, session, method, params)
 }
 
-func handleReceive[S Session](ctx context.Context, session S, req *JSONRPCRequest) (Result, error) {
+func handleReceive[S Session](ctx context.Context, session S, req *jsonrpc.Request) (Result, error) {
 	info, ok := session.receivingMethodInfos()[req.Method]
 	if !ok {
 		return nil, jsonrpc2.ErrNotHandled

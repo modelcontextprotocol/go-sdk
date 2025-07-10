@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const (
@@ -157,12 +158,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 func NewStreamableServerTransport(sessionID string) *StreamableServerTransport {
 	return &StreamableServerTransport{
 		id:               sessionID,
-		incoming:         make(chan JSONRPCMessage, 10),
+		incoming:         make(chan jsonrpc.Message, 10),
 		done:             make(chan struct{}),
 		outgoingMessages: make(map[streamID][]*streamableMsg),
 		signals:          make(map[streamID]chan struct{}),
-		requestStreams:   make(map[JSONRPCID]streamID),
-		streamRequests:   make(map[streamID]map[JSONRPCID]struct{}),
+		requestStreams:   make(map[jsonrpc.ID]streamID),
+		streamRequests:   make(map[streamID]map[jsonrpc.ID]struct{}),
 	}
 }
 
@@ -176,7 +177,7 @@ type StreamableServerTransport struct {
 	nextStreamID atomic.Int64 // incrementing next stream ID
 
 	id       string
-	incoming chan JSONRPCMessage // messages from the client to the server
+	incoming chan jsonrpc.Message // messages from the client to the server
 
 	mu sync.Mutex
 
@@ -226,7 +227,7 @@ type StreamableServerTransport struct {
 	// Lifecycle: requestStreams persists for the duration of the session.
 	//
 	// TODO(rfindley): clean up once requests are handled.
-	requestStreams map[JSONRPCID]streamID
+	requestStreams map[jsonrpc.ID]streamID
 
 	// streamRequests tracks the set of unanswered incoming RPCs for each logical
 	// stream.
@@ -237,7 +238,7 @@ type StreamableServerTransport struct {
 	// Lifecycle: streamRequests values persist as until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
-	streamRequests map[streamID]map[JSONRPCID]struct{}
+	streamRequests map[streamID]map[jsonrpc.ID]struct{}
 }
 
 type streamID int64
@@ -271,7 +272,7 @@ func (s *StreamableServerTransport) Connect(context.Context) (Connection, error)
 //  2. Expose a 'HandlerTransport' interface that allows transports to provide
 //     a handler middleware, so that we don't hard-code this behavior in
 //     ServerSession.handle.
-//  3. Add a `func ForRequest(context.Context) JSONRPCID` accessor that lets
+//  3. Add a `func ForRequest(context.Context) jsonrpc.ID` accessor that lets
 //     any transport access the incoming request ID.
 //
 // For now, by giving only the StreamableServerTransport access to the request
@@ -340,9 +341,9 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
-	requests := make(map[JSONRPCID]struct{})
+	requests := make(map[jsonrpc.ID]struct{})
 	for _, msg := range incoming {
-		if req, ok := msg.(*JSONRPCRequest); ok && req.ID.IsValid() {
+		if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() {
 			requests[req.ID] = struct{}{}
 		}
 	}
@@ -352,7 +353,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	signal := make(chan struct{}, 1)
 	t.mu.Lock()
 	if len(requests) > 0 {
-		t.streamRequests[id] = make(map[JSONRPCID]struct{})
+		t.streamRequests[id] = make(map[jsonrpc.ID]struct{})
 	}
 	for reqID := range requests {
 		t.requestStreams[reqID] = id
@@ -484,7 +485,7 @@ func parseEventID(eventID string) (sid streamID, idx int, ok bool) {
 }
 
 // Read implements the [Connection] interface.
-func (t *StreamableServerTransport) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (t *StreamableServerTransport) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -499,10 +500,10 @@ func (t *StreamableServerTransport) Read(ctx context.Context) (JSONRPCMessage, e
 }
 
 // Write implements the [Connection] interface.
-func (t *StreamableServerTransport) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// Find the incoming request that this write relates to, if any.
-	var forRequest, replyTo JSONRPCID
-	if resp, ok := msg.(*JSONRPCResponse); ok {
+	var forRequest, replyTo jsonrpc.ID
+	if resp, ok := msg.(*jsonrpc.Response); ok {
 		// If the message is a response, it relates to its request (of course).
 		forRequest = resp.ID
 		replyTo = resp.ID
@@ -511,7 +512,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg JSONRPCMessag
 		// ongoing request. This may not be the case if the request way made with
 		// an unrelated context.
 		if v := ctx.Value(idContextKey{}); v != nil {
-			forRequest = v.(JSONRPCID)
+			forRequest = v.(jsonrpc.ID)
 		}
 	}
 
@@ -661,7 +662,7 @@ func (c *streamableClientConn) SessionID() string {
 }
 
 // Read implements the [Connection] interface.
-func (s *streamableClientConn) Read(ctx context.Context) (JSONRPCMessage, error) {
+func (s *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -673,7 +674,7 @@ func (s *streamableClientConn) Read(ctx context.Context) (JSONRPCMessage, error)
 }
 
 // Write implements the [Connection] interface.
-func (s *streamableClientConn) Write(ctx context.Context, msg JSONRPCMessage) error {
+func (s *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	s.mu.Lock()
 	if s.err != nil {
 		s.mu.Unlock()
@@ -709,7 +710,7 @@ func (s *streamableClientConn) Write(ctx context.Context, msg JSONRPCMessage) er
 	return nil
 }
 
-func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg JSONRPCMessage) (string, error) {
+func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg jsonrpc.Message) (string, error) {
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
 		return "", err

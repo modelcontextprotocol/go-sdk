@@ -21,6 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const DefaultPageSize = 1000
@@ -610,7 +611,7 @@ func (ss *ServerSession) receivingMethodHandler() methodHandler {
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 
 // handle invokes the method described by the given JSON RPC request.
-func (ss *ServerSession) handle(ctx context.Context, req *JSONRPCRequest) (any, error) {
+func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
 	initialized := ss.initialized
 	ss.mu.Unlock()

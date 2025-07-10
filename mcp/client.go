@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // A Client is an MCP client, which may be connected to an MCP server
@@ -301,7 +302,7 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 	return clientMethodInfos
 }
 
-func (cs *ClientSession) handle(ctx context.Context, req *JSONRPCRequest) (any, error) {
+func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	return handleReceive(ctx, cs, req)
 }
 
