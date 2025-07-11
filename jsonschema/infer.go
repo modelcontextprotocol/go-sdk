@@ -34,12 +34,13 @@ import (
 // types, as they are incompatible with the JSON schema spec.
 //   - maps with key other than 'string'
 //   - function types
+//   - channel types
 //   - complex numbers
 //   - unsafe pointers
 //
 // It will return an error if there is a cycle in the types.
 //
-// For recognizes struct field tags named "jsonschema".
+// This function recognizes struct field tags named "jsonschema".
 // A jsonschema tag on a field is used as the description for the corresponding property.
 // For future compatibility, descriptions must not start with "WORD=", where WORD is a
 // sequence of non-whitespace characters.
