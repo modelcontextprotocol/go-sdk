@@ -94,8 +94,8 @@ are recorded in the schema, but ignored during validation.
 [JSON Schema specification]: https://json-schema.org
 [section 7 of the validation spec]: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.7
 [section 8 of the validation spec]: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.8
-[learnjsonschema.org]: https://www.learnjsonschema.com/2020-12/format-annotation/format/
-[this table of differences] https://github.com/dlclark/regexp2?tab=readme-ov-file#compare-regexp-and-regexp2
+[learnjsonschema.com]: https://www.learnjsonschema.com/2020-12/format-annotation/format/
+[this table of differences]: https://github.com/dlclark/regexp2?tab=readme-ov-file#compare-regexp-and-regexp2
 [annotations]: https://json-schema.org/draft/2020-12/json-schema-core#name-annotations
 */
 package jsonschema
