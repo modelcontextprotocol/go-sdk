@@ -19,7 +19,7 @@ import (
 var httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
 
 type HiArgs struct {
-	Name string `json:"name" mcp:"the name to say hi to"`
+	Name string `json:"name" jsonschema:"the name to say hi to"`
 }
 
 func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {

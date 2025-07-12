@@ -13,7 +13,7 @@ import (
 )
 
 type HiParams struct {
-	Name string `json:"name", mcp:"the name of the person to greet"`
+	Name string `json:"name" jsonschema:"the name of the person to greet"`
 }
 
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
