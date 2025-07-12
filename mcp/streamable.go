@@ -760,7 +760,12 @@ func (s *streamableClientConn) handleSSE(resp *http.Response) {
 				// TODO: surface this error; possibly break the stream
 				return
 			}
-			s.incoming <- evt.data
+
+			select {
+			case s.incoming <- evt.data:
+			case <-s.done:
+				return
+			}
 		}
 	}()
 
