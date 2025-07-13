@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -78,7 +77,7 @@ func (s *ThinkingSession) clone() *ThinkingSession {
 // The SessionStore uses a RWMutex to protect the sessions map from concurrent access.
 // All ThinkingSession modifications happen on deep copies, never on shared instances.
 // This means:
-// - Read locks protect map access (reading from a Go map during writes causes panics)
+// - Read locks protect map access.
 // - Write locks protect map modifications (adding/removing/replacing sessions)
 // - Session field modifications always happen on local copies via CompareAndSwap
 // - No shared ThinkingSession state is ever modified directly
@@ -171,15 +170,15 @@ func (s *SessionStore) SessionsSnapshot() []*ThinkingSession {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	sessions := make([]*ThinkingSession, 0, len(s.sessions))
+	var sessions []*ThinkingSession
 	for _, session := range s.sessions {
-		// Create a deep copy of each session
 		sessions = append(sessions, session.clone())
 	}
 	return sessions
 }
 
 // SessionSnapshot returns a deep copy of a session for safe concurrent access.
+// The second return value reports whether a session with the given id exists.
 func (s *SessionStore) SessionSnapshot(id string) (*ThinkingSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -189,7 +188,6 @@ func (s *SessionStore) SessionSnapshot(id string) (*ThinkingSession, bool) {
 		return nil, false
 	}
 
-	// Create a deep copy
 	return session.clone(), true
 }
 
@@ -226,8 +224,8 @@ type ThinkingHistoryArgs struct {
 func deepCopyThoughts(thoughts []*Thought) []*Thought {
 	thoughtsCopy := make([]*Thought, len(thoughts))
 	for i, t := range thoughts {
-		thoughtCopy := *t
-		thoughtsCopy[i] = &thoughtCopy
+		t2 := *t
+		thoughtsCopy[i] = &t2
 	}
 	return thoughtsCopy
 }
@@ -505,152 +503,29 @@ func randText() string {
 func main() {
 	flag.Parse()
 
-	server := mcp.NewServer("sequential-thinking", "v0.0.1", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "sequential-thinking"}, nil)
 
-	// Add thinking tools without output schemas
-	startThinkingSchema, err := jsonschema.For[StartThinkingArgs]()
-	if err != nil {
-		log.Fatalf("Failed to create start_thinking schema: %v", err)
-	}
-	continueThinkingSchema, err := jsonschema.For[ContinueThinkingArgs]()
-	if err != nil {
-		log.Fatalf("Failed to create continue_thinking schema: %v", err)
-	}
-	reviewThinkingSchema, err := jsonschema.For[ReviewThinkingArgs]()
-	if err != nil {
-		log.Fatalf("Failed to create review_thinking schema: %v", err)
-	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "start_thinking",
+		Description: "Begin a new sequential thinking session for a complex problem",
+	}, StartThinking)
 
-	server.AddTools(
-		&mcp.ServerTool{
-			Tool: &mcp.Tool{
-				Name:        "start_thinking",
-				Description: "Begin a new sequential thinking session for a complex problem",
-				InputSchema: startThinkingSchema,
-				// No OutputSchema to avoid structured output requirement
-			},
-			Handler: func(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
-				// Convert map[string]any to StartThinkingArgs
-				args := StartThinkingArgs{}
-				if v, ok := params.Arguments["problem"].(string); ok {
-					args.Problem = v
-				}
-				if v, ok := params.Arguments["sessionId"].(string); ok {
-					args.SessionID = v
-				}
-				if v, ok := params.Arguments["estimatedSteps"].(float64); ok {
-					args.EstimatedSteps = int(v)
-				}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "continue_thinking",
+		Description: "Add the next thought step, revise a previous step, or create a branch",
+	}, ContinueThinking)
 
-				result, err := StartThinking(ctx, ss, &mcp.CallToolParamsFor[StartThinkingArgs]{
-					Meta:      params.Meta,
-					Name:      params.Name,
-					Arguments: args,
-				})
-				if err != nil {
-					return &mcp.CallToolResult{
-						Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
-						IsError: true,
-					}, nil
-				}
-				return &mcp.CallToolResult{
-					Content: result.Content,
-					IsError: result.IsError,
-				}, nil
-			},
-		},
-		&mcp.ServerTool{
-			Tool: &mcp.Tool{
-				Name:        "continue_thinking",
-				Description: "Add the next thought step, revise a previous step, or create a branch",
-				InputSchema: continueThinkingSchema,
-				// No OutputSchema to avoid structured output requirement
-			},
-			Handler: func(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
-				// Convert map[string]any to ContinueThinkingArgs
-				args := ContinueThinkingArgs{}
-				if v, ok := params.Arguments["sessionId"].(string); ok {
-					args.SessionID = v
-				}
-				if v, ok := params.Arguments["thought"].(string); ok {
-					args.Thought = v
-				}
-				if v, ok := params.Arguments["nextNeeded"].(bool); ok {
-					args.NextNeeded = &v
-				}
-				if v, ok := params.Arguments["reviseStep"].(float64); ok {
-					step := int(v)
-					args.ReviseStep = &step
-				}
-				if v, ok := params.Arguments["createBranch"].(bool); ok {
-					args.CreateBranch = v
-				}
-				if v, ok := params.Arguments["estimatedTotal"].(float64); ok {
-					args.EstimatedTotal = int(v)
-				}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "review_thinking",
+		Description: "Review the complete thinking process for a session",
+	}, ReviewThinking)
 
-				result, err := ContinueThinking(ctx, ss, &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-					Meta:      params.Meta,
-					Name:      params.Name,
-					Arguments: args,
-				})
-				if err != nil {
-					return &mcp.CallToolResult{
-						Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
-						IsError: true,
-					}, nil
-				}
-				return &mcp.CallToolResult{
-					Content: result.Content,
-					IsError: result.IsError,
-				}, nil
-			},
-		},
-		&mcp.ServerTool{
-			Tool: &mcp.Tool{
-				Name:        "review_thinking",
-				Description: "Review the complete thinking process for a session",
-				InputSchema: reviewThinkingSchema,
-				// No OutputSchema to avoid structured output requirement
-			},
-			Handler: func(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
-				// Convert map[string]any to ReviewThinkingArgs
-				args := ReviewThinkingArgs{}
-				if v, ok := params.Arguments["sessionId"].(string); ok {
-					args.SessionID = v
-				}
-
-				result, err := ReviewThinking(ctx, ss, &mcp.CallToolParamsFor[ReviewThinkingArgs]{
-					Meta:      params.Meta,
-					Name:      params.Name,
-					Arguments: args,
-				})
-				if err != nil {
-					return &mcp.CallToolResult{
-						Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
-						IsError: true,
-					}, nil
-				}
-				return &mcp.CallToolResult{
-					Content: result.Content,
-					IsError: result.IsError,
-				}, nil
-			},
-		},
-	)
-
-	// Add resources for accessing thinking history
-	server.AddResources(
-		&mcp.ServerResource{
-			Resource: &mcp.Resource{
-				Name:        "thinking_sessions",
-				Description: "Access thinking session data and history",
-				URI:         "thinking://sessions",
-				MIMEType:    "application/json",
-			},
-			Handler: ThinkingHistory,
-		},
-	)
+	server.AddResource(&mcp.Resource{
+		Name:        "thinking_sessions",
+		Description: "Access thinking session data and history",
+		URI:         "thinking://sessions",
+		MIMEType:    "application/json",
+	}, ThinkingHistory)
 
 	if *httpAddr != "" {
 		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
