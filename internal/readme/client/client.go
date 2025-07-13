@@ -17,7 +17,7 @@ func main() {
 	ctx := context.Background()
 
 	// Create a new client, with no features.
-	client := mcp.NewClient("mcp-client", "v1.0.0", nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 
 	// Connect to a server over stdin/stdout
 	transport := mcp.NewCommandTransport(exec.Command("myserver"))

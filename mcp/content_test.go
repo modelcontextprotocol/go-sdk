@@ -23,6 +23,14 @@ func TestContent(t *testing.T) {
 			`{"type":"text","text":"hello"}`,
 		},
 		{
+			&mcp.TextContent{Text: ""},
+			`{"type":"text","text":""}`,
+		},
+		{
+			&mcp.TextContent{},
+			`{"type":"text","text":""}`,
+		},
+		{
 			&mcp.TextContent{
 				Text:        "hello",
 				Meta:        mcp.Meta{"key": "value"},
@@ -145,6 +153,10 @@ func TestEmbeddedResource(t *testing.T) {
 		{
 			&mcp.ResourceContents{URI: "u", Blob: []byte{1}},
 			`{"uri":"u","blob":"AQ=="}`,
+		},
+		{
+			&mcp.ResourceContents{URI: "u", MIMEType: "m", Blob: []byte{1}, Meta: mcp.Meta{"key": "value"}},
+			`{"uri":"u","mimeType":"m","blob":"AQ==","_meta":{"key":"value"}}`,
 		},
 	} {
 		data, err := json.Marshal(tt.rc)

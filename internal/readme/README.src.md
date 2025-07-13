@@ -1,4 +1,10 @@
-# MCP Go SDK
+# MCP Go SDK v0.2.0
+
+***BREAKING CHANGES***
+
+This version contains breaking changes.
+See the [release notes](
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.2.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
@@ -25,7 +31,7 @@ open-ended discussion. See CONTRIBUTING.md for details.
 
 ## Package documentation
 
-The SDK consists of two importable packages:
+The SDK consists of three importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
@@ -35,6 +41,10 @@ The SDK consists of two importable packages:
   [`github.com/modelcontextprotocol/go-sdk/jsonschema`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
   package provides an implementation of [JSON
   Schema](https://json-schema.org/), used for MCP tool input and output schema.
+- The
+  [`github.com/modelcontextprotocol/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema) package is for users implementing
+  their own transports.
+   
 
 ## Example
 

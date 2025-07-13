@@ -119,18 +119,14 @@ func TestTemplateMatch(t *testing.T) {
 		template string
 		want     bool
 	}{
-		{"file:///{}/{a}/{b}", true},
+		{"file:///{}/{a}/{b}", false}, // invalid: empty variable expression "{}" is not allowed in RFC 6570
 		{"file:///{a}/{b}", false},
 		{"file:///{+path}", true},
 		{"file:///{a}/{+path}", true},
 	} {
-		re, err := uriTemplateToRegexp(tt.template)
-		if err != nil {
-			t.Fatalf("%s: %v", tt.template, err)
-		}
-		got := re.MatchString(uri)
-		if got != tt.want {
-			t.Errorf("%s: got %t, want %t", tt.template, got, tt.want)
+		resourceTmpl := serverResourceTemplate{resourceTemplate: &ResourceTemplate{URITemplate: tt.template}}
+		if matched := resourceTmpl.Matches(uri); matched != tt.want {
+			t.Errorf("%s: got %t, want %t", tt.template, matched, tt.want)
 		}
 	}
 }

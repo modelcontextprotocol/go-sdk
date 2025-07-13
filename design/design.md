@@ -323,7 +323,7 @@ Sessions are created from either `Client` or `Server` using the `Connect` method
 
 ```go
 type Client struct { /* ... */ }
-func NewClient(name, version string, opts *ClientOptions) *Client
+func NewClient(impl *Implementation, opts *ClientOptions) *Client
 func (*Client) Connect(context.Context, Transport) (*ClientSession, error)
 func (*Client) Sessions() iter.Seq[*ClientSession]
 // Methods for adding/removing client features are described below.
@@ -338,7 +338,7 @@ func (*ClientSession) Wait() error
 // For example: ClientSession.ListTools.
 
 type Server struct { /* ... */ }
-func NewServer(name, version string, opts *ServerOptions) *Server
+func NewServer(impl *Implementation, opts *ServerOptions) *Server
 func (*Server) Connect(context.Context, Transport) (*ServerSession, error)
 func (*Server) Sessions() iter.Seq[*ServerSession]
 // Methods for adding/removing server features are described below.
@@ -356,7 +356,7 @@ func (*ServerSession) Wait() error
 Here's an example of these APIs from the client side:
 
 ```go
-client := mcp.NewClient("mcp-client", "v1.0.0", nil)
+client := mcp.NewClient(&mcp.Implementation{Name:"mcp-client", Version:"v1.0.0"}, nil)
 // Connect to a server over stdin/stdout
 transport := mcp.NewCommandTransport(exec.Command("myserver"))
 session, err := client.Connect(ctx, transport)
@@ -371,13 +371,12 @@ A server that can handle that client call would look like this:
 
 ```go
 // Create a server with a single tool.
-server := mcp.NewServer("greeter", "v1.0.0", nil)
-server.AddTools(mcp.NewServerTool("greet", "say hi", SayHi))
+server := mcp.NewServer(&mcp.Implementation{Name:"greeter", Version:"v1.0.0"}, nil)
+mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 // Run the server over stdin/stdout, until the client disconnects.
-transport := mcp.NewStdioTransport()
-session, err := server.Connect(ctx, transport)
-...
-return session.Wait()
+if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
+    log.Fatal(err)
+}
 ```
 
 For convenience, we provide `Server.Run` to handle the common case of running a session until the client disconnects:
@@ -603,14 +602,14 @@ type ClientOptions struct {
 
 ### Tools
 
-A `Tool` is a logical MCP tool, generated from the MCP spec, and a `ServerTool` is a tool bound to a tool handler.
+A `Tool` is a logical MCP tool, generated from the MCP spec.
 
-A tool handler accepts `CallToolParams` and returns a `CallToolResult`. However, since we want to bind tools to Go input types, it is convenient in associated APIs to make `CallToolParams` generic, with a type parameter `TArgs` for the tool argument type. This allows tool APIs to manage the marshalling and unmarshalling of tool inputs for their caller. The bound `ServerTool` type expects a `json.RawMessage` for its tool arguments, but the `NewServerTool` constructor described below provides a mechanism to bind a typed handler.
+A tool handler accepts `CallToolParams` and returns a `CallToolResult`. However, since we want to bind tools to Go input types, it is convenient in associated APIs to have a generic version of `CallToolParams`, with a type parameter `In` for the tool argument type, as well as a generic version of for `CallToolResult`. This allows tool APIs to manage the marshalling and unmarshalling of tool inputs for their caller.
 
 ```go
-type CallToolParams[TArgs any] struct {
+type CallToolParamsFor[In any] struct {
 	Meta      Meta   `json:"_meta,omitempty"`
-	Arguments TArgs  `json:"arguments,omitempty"`
+	Arguments In `json:"arguments,omitempty"`
 	Name      string `json:"name"`
 }
 
@@ -621,23 +620,31 @@ type Tool struct {
 	Name string                    `json:"name"`
 }
 
-type ToolHandler[TArgs] func(context.Context, *ServerSession, *CallToolParams[TArgs]) (*CallToolResult, error)
-
-type ServerTool struct {
-	Tool    Tool
-	Handler ToolHandler[json.RawMessage]
-}
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error)
+type ToolHandler = ToolHandlerFor[map[string]any, any]
 ```
 
-Add tools to a server with `AddTools`:
+Add tools to a server with the `AddTool` method or function. The function is generic and infers schemas from the handler
+arguments:
 
 ```go
-server.AddTools(
-  mcp.NewServerTool("add", "add numbers", addHandler),
-  mcp.NewServerTool("subtract, subtract numbers", subHandler))
+func (s *Server) AddTool(t *Tool, h ToolHandler)
+func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out])
 ```
 
-Remove them by name with `RemoveTools`:
+```go
+mcp.AddTool(server, &mcp.Tool{Name: "add", Description: "add numbers"}, addHandler)
+mcp.AddTool(server, &mcp.Tool{Name: "subtract", Description: "subtract numbers"}, subHandler)
+```
+
+The `AddTool` method requires an input schema, and optionally an output one. It will not modify them.
+The handler should accept a `CallToolParams` and return a `CallToolResult`.
+```go
+t := &Tool{Name: ..., Description: ..., InputSchema: &jsonschema.Schema{...}}
+server.AddTool(t, myHandler)
+```
+
+Tools can be removed by name with `RemoveTools`:
 
 ```go
 server.RemoveTools("add", "subtract")
@@ -650,53 +657,30 @@ A tool's input schema, expressed as a [JSON Schema](https://json-schema.org), pr
 
 Both of these have their advantages and disadvantages. Reflection is nice, because it allows you to bind directly to a Go API, and means that the JSON schema of your API is compatible with your Go types by construction. It also means that concerns like parsing and validation can be handled automatically. However, it can become cumbersome to express the full breadth of JSON schema using Go types or struct tags, and sometimes you want to express things that aren’t naturally modeled by Go types, like unions. Explicit schemas are simple and readable, and give the caller full control over their tool definition, but involve significant boilerplate.
 
-We have found that a hybrid model works well, where the _initial_ schema is derived using reflection, but any customization on top of that schema is applied using variadic options. We achieve this using a `NewServerTool` helper, which generates the schema from the input type, and wraps the handler to provide parsing and validation. The schema (and potentially other features) can be customized using ToolOptions.
+We provide both ways. The `jsonschema.For[T]` function will infer a schema, and it is called by the `AddTool` generic function.
+Users can also call it themselves, or build a schema directly as a struct literal. They can still use the `AddTool` function to
+create a typed handler, since `AddTool` doesn't touch schemas that are already present.
 
+
+If the tool's `InputSchema` is nil, it is inferred from the `In` type parameter. If the `OutputSchema` is nil, it is inferred from the `Out` type parameter (unless `Out` is `any`).
+
+For example, given this handler:
 ```go
-// NewServerTool creates a Tool using reflection on the given handler.
-func NewServerTool[TArgs any](name, description string, handler ToolHandler[TArgs], opts …ToolOption) *ServerTool
+type AddParams struct {
+    X int `json:"x"`
+    Y int `json:"y"`
+}
 
-type ToolOption interface { /* ... */ }
-```
-
-`NewServerTool` determines the input schema for a Tool from the `TArgs` type. Each struct field that would be marshaled by `encoding/json.Marshal` becomes a property of the schema. The property is required unless the field's `json` tag specifies "omitempty" or "omitzero" (new in Go 1.24). For example, given this struct:
-
-```go
-struct {
-  Name     string `json:"name"`
-  Count    int    `json:"count,omitempty"`
-  Choices  []string
-  Password []byte `json:"-"`
+func addHandler(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[AddParams]) (*mcp.CallToolResultFor[int], error) {
+    return &mcp.CallToolResultFor[int]{StructuredContent: params.Arguments.X + params.Arguments.Y}, nil
 }
 ```
 
-"name" and "Choices" are required, while "count" is optional.
-
-As of this writing, the only `ToolOption` is `Input`, which allows customizing the input schema of the tool using schema options. These schema options are recursive, in the sense that they may also be applied to properties.
-
+You can add it to a server like this:
 ```go
-func Input(...SchemaOption) ToolOption
-
-type Property(name string, opts ...SchemaOption) SchemaOption
-type Description(desc string) SchemaOption
-// etc.
+mcp.AddTool(server, &mcp.Tool{Name: "add", Description: "add numbers"}, addHandler)
 ```
-
-For example:
-
-```go
-NewServerTool(name, description, handler,
-    Input(Property("count", Description("size of the inventory"))))
-```
-
-The most recent JSON Schema spec defines over 40 keywords. Providing them all as options would bloat the API despite the fact that most would be very rarely used. For less common keywords, use the `Schema` option to set the schema explicitly:
-
-```go
-NewServerTool(name, description, handler,
-    Input(Property("Choices", Schema(&jsonschema.Schema{UniqueItems: true}))))
-```
-
-Schemas are validated on the server before the tool handler is called.
+The input schema will be inferred from `AddParams`, and the output schema from `int`.
 
 Since all the fields of the Tool struct are exported, a Tool can also be created directly with assignment or a struct literal.
 
@@ -708,25 +692,13 @@ func (cs *ClientSession) CallTool(context.Context, *CallToolParams[json.RawMessa
 func CallTool[TArgs any](context.Context, *ClientSession, *CallToolParams[TArgs]) (*CallToolResult, error)
 ```
 
-**Differences from mcp-go**: using variadic options to configure tools was significantly inspired by mcp-go. However, the distinction between `ToolOption` and `SchemaOption` allows for recursive application of schema options. For example, that limitation is visible in [this code](https://github.com/DCjanus/dida365-mcp-server/blob/master/cmd/mcp/tools.go#L315), which must resort to untyped maps to express a nested schema.
+**Differences from mcp-go**: We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want. The `jsonschema.For[T]` function can infer a schema from a Go struct. These combined features eliminate the need for variadic arguments to construct tool schemas.
 
-Additionally, the `NewServerTool` helper provides a means for building a tool from a Go function using reflection, that automatically handles parsing and validation of inputs.
-
-We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want, so there is no need to provide options for all of them. When combined with schema inference from input structs, we found that we needed only three options to cover the common cases, instead of mcp-go's 23. For example, we will provide `Enum`, which occurs 125 times in open source code, but not MinItems, MinLength or MinProperties, which each occur only once (and in an SDK that wraps mcp-go).
-
-For registering tools, we provide only `AddTools`; mcp-go's `SetTools`, `AddTool`, `AddSessionTool`, and `AddSessionTools` are deemed unnecessary. (Similarly for Delete/Remove).
+For registering tools, we provide only a `Server.AddTool` method; mcp-go's `SetTools`, `AddTool`, `AddSessionTool`, and `AddSessionTools` are deemed unnecessary. (Similarly for Delete/Remove). The `AddTool` generic function combines schema inference with registration, providing a easy way to register many tools.
 
 ### Prompts
 
-Use `NewServerPrompt` to create a prompt. As with tools, prompt argument schemas can be inferred from a struct, or obtained from options.
-
-```go
-func NewServerPrompt[TReq any](name, description string,
-  handler func(context.Context, *ServerSession, TReq) (*GetPromptResult, error),
-  opts ...PromptOption) *ServerPrompt
-```
-
-Use `AddPrompts` to add prompts to the server, and `RemovePrompts`
+Use `AddPrompt` to add a prompt to the server, and `RemovePrompts`
 to remove them by name.
 
 ```go
@@ -734,18 +706,19 @@ type codeReviewArgs struct {
   Code string `json:"code"`
 }
 
-func codeReviewHandler(context.Context, *ServerSession, codeReviewArgs) {...}
+func codeReviewHandler(context.Context, *ServerSession, *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {...}
 
-server.AddPrompts(
-  NewServerPrompt("code_review", "review code", codeReviewHandler,
-    Argument("code", Description("the code to review"))))
+server.AddPrompt(
+  &mcp.Prompt{Name: "code_review", Description: "review code"},
+  codeReviewHandler,
+)
 
 server.RemovePrompts("code_review")
 ```
 
 Client sessions can call the spec method `ListPrompts` or the iterator method `Prompts` to list the available prompts, and the spec method `GetPrompt` to get one.
 
-**Differences from mcp-go**: We provide a `NewServerPrompt` helper to bind a prompt handler to a Go function using reflection to derive its arguments. We provide `RemovePrompts` to remove prompts from the server.
+**Differences from mcp-go**: We provide `RemovePrompts` to remove prompts from the server.
 
 ### Resources and resource templates
 
@@ -757,25 +730,11 @@ type ResourceHandler func(context.Context, *ServerSession, *ReadResourceParams) 
 
 The arguments include the `ServerSession` so the handler can observe the client's roots. The handler should return the resource contents in a `ReadResourceResult`, calling either `NewTextResourceContents` or `NewBlobResourceContents`. If the handler omits the URI or MIME type, the server will populate them from the resource.
 
-The `ServerResource` and `ServerResourceTemplate` types hold the association between the resource and its handler:
+To add a resource or resource template to a server, users call the `AddResource` and `AddResourceTemplate` methods. We also provide methods to remove them.
 
 ```go
-type ServerResource struct {
-  Resource Resource
-  Handler  ResourceHandler
-}
-
-type ServerResourceTemplate struct {
-  Template ResourceTemplate
-  Handler  ResourceHandler
-}
-```
-
-To add a resource or resource template to a server, users call the `AddResources` and `AddResourceTemplates` methods with one or more `ServerResource`s or `ServerResourceTemplate`s. We also provide methods to remove them.
-
-```go
-func (*Server) AddResources(...*ServerResource)
-func (*Server) AddResourceTemplates(...*ServerResourceTemplate)
+func (*Server) AddResource(*Resource, ResourceHandler)
+func (*Server) AddResourceTemplate(*ResourceTemplate, ResourceHandler)
 
 func (s *Server) RemoveResources(uris ...string)
 func (s *Server) RemoveResourceTemplates(uriTemplates ...string)
@@ -783,27 +742,9 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string)
 
 The `ReadResource` method finds a resource or resource template matching the argument URI and calls its associated handler.
 
-To read files from the local filesystem, we recommend using `FileResourceHandler` to construct a handler:
-
-```go
-// FileResourceHandler returns a ResourceHandler that reads paths using dir as a root directory.
-// It protects against path traversal attacks.
-// It will not read any file that is not in the root set of the client requesting the resource.
-func (*Server) FileResourceHandler(dir string) ResourceHandler
-```
-
-Here is an example:
-
-```go
-// Safely read "/public/puppies.txt".
-s.AddResources(&mcp.ServerResource{
-  Resource: mcp.Resource{URI: "file:///puppies.txt"},
-  Handler: s.FileReadResourceHandler("/public")})
-```
-
 Server sessions also support the spec methods `ListResources` and `ListResourceTemplates`, and the corresponding iterator methods `Resources` and `ResourceTemplates`.
 
-**Differences from mcp-go**: for symmetry with tools and prompts, we use `AddResources` rather than `AddResource`. Additionally, the `ResourceHandler` returns a `ReadResourceResult`, rather than just its content, for compatibility with future evolution of the spec.
+**Differences from mcp-go**: The `ResourceHandler` returns a `ReadResourceResult`, rather than just its content, for compatibility with future evolution of the spec.
 
 #### Subscriptions
 

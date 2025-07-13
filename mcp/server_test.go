@@ -227,3 +227,91 @@ func TestServerPaginateVariousPageSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestServerCapabilities(t *testing.T) {
+	testCases := []struct {
+		name             string
+		configureServer  func(s *Server)
+		wantCapabilities *serverCapabilities
+	}{
+		{
+			name:            "No capabilities",
+			configureServer: func(s *Server) {},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+			},
+		},
+		{
+			name: "With prompts",
+			configureServer: func(s *Server) {
+				s.AddPrompt(&Prompt{Name: "p"}, nil)
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Prompts:     &promptCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "With resources",
+			configureServer: func(s *Server) {
+				s.AddResource(&Resource{URI: "file:///r"}, nil)
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Resources:   &resourceCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "With resource templates",
+			configureServer: func(s *Server) {
+				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Resources:   &resourceCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "With tools",
+			configureServer: func(s *Server) {
+				s.AddTool(&Tool{Name: "t"}, nil)
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Tools:       &toolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "With all capabilities",
+			configureServer: func(s *Server) {
+				s.AddPrompt(&Prompt{Name: "p"}, nil)
+				s.AddResource(&Resource{URI: "file:///r"}, nil)
+				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
+				s.AddTool(&Tool{Name: "t"}, nil)
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Prompts:     &promptCapabilities{ListChanged: true},
+				Resources:   &resourceCapabilities{ListChanged: true},
+				Tools:       &toolCapabilities{ListChanged: true},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			tc.configureServer(server)
+			gotCapabilities := server.capabilities()
+			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
+				t.Errorf("capabilities() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

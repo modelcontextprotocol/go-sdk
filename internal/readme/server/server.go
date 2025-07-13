@@ -13,7 +13,7 @@ import (
 )
 
 type HiParams struct {
-	Name string `json:"name"`
+	Name string `json:"name", mcp:"the name of the person to greet"`
 }
 
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
@@ -24,12 +24,9 @@ func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParam
 
 func main() {
 	// Create a server with a single tool.
-	server := mcp.NewServer("greeter", "v1.0.0", nil)
-	server.AddTools(
-		mcp.NewServerTool("greet", "say hi", SayHi, mcp.Input(
-			mcp.Property("name", mcp.Description("the name of the person to greet")),
-		)),
-	)
+	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v1.0.0"}, nil)
+
+	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	// Run the server over stdin/stdout, until the client disconnects
 	if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
 		log.Fatal(err)

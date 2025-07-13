@@ -292,7 +292,7 @@ type InitializeParams struct {
 	// attach additional metadata to their responses.
 	Meta         `json:"_meta,omitempty"`
 	Capabilities *ClientCapabilities `json:"capabilities"`
-	ClientInfo   *implementation     `json:"clientInfo"`
+	ClientInfo   *Implementation     `json:"clientInfo"`
 	// The latest version of the Model Context Protocol that the client supports.
 	// The client may decide to support older versions as well.
 	ProtocolVersion string `json:"protocolVersion"`
@@ -318,7 +318,7 @@ type InitializeResult struct {
 	// may not match the version that the client requested. If the client cannot
 	// support this version, it must disconnect.
 	ProtocolVersion string          `json:"protocolVersion"`
-	ServerInfo      *implementation `json:"serverInfo"`
+	ServerInfo      *Implementation `json:"serverInfo"`
 }
 
 type InitializedParams struct {
@@ -863,9 +863,9 @@ func (x *ToolListChangedParams) SetProgressToken(t any) { setProgressToken(x, t)
 
 // TODO(jba): add ElicitRequest and related types.
 
-// Describes the name and version of an MCP implementation, with an optional
+// An Implementation describes the name and version of an MCP implementation, with an optional
 // title for UI representation.
-type implementation struct {
+type Implementation struct {
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
 	Name string `json:"name"`

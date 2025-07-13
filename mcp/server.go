@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"log"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -20,7 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const DefaultPageSize = 1000
@@ -31,15 +32,14 @@ const DefaultPageSize = 1000
 // sessions by using [Server.Start] or [Server.Run].
 type Server struct {
 	// fixed at creation
-	name    string
-	version string
-	opts    ServerOptions
+	impl *Implementation
+	opts ServerOptions
 
 	mu                      sync.Mutex
-	prompts                 *featureSet[*ServerPrompt]
-	tools                   *featureSet[*ServerTool]
-	resources               *featureSet[*ServerResource]
-	resourceTemplates       *featureSet[*ServerResourceTemplate]
+	prompts                 *featureSet[*serverPrompt]
+	tools                   *featureSet[*serverTool]
+	resources               *featureSet[*serverResource]
+	resourceTemplates       *featureSet[*serverResourceTemplate]
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
@@ -67,13 +67,18 @@ type ServerOptions struct {
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
-// add features using [Server.AddTools], [Server.AddPrompts] and [Server.AddResources].
+// add features using the various Server.AddXXX methods, and the [AddTool] function.
 //
 // The server can be connected to one or more MCP clients using [Server.Start]
 // or [Server.Run].
 //
-// If non-nil, the provided options is used to configure the server.
-func NewServer(name, version string, opts *ServerOptions) *Server {
+// The first argument must not be nil.
+//
+// If non-nil, the provided options are used to configure the server.
+func NewServer(impl *Implementation, opts *ServerOptions) *Server {
+	if impl == nil {
+		panic("nil Implementation")
+	}
 	if opts == nil {
 		opts = new(ServerOptions)
 	}
@@ -84,31 +89,25 @@ func NewServer(name, version string, opts *ServerOptions) *Server {
 		opts.PageSize = DefaultPageSize
 	}
 	return &Server{
-		name:                    name,
-		version:                 version,
+		impl:                    impl,
 		opts:                    *opts,
-		prompts:                 newFeatureSet(func(p *ServerPrompt) string { return p.Prompt.Name }),
-		tools:                   newFeatureSet(func(t *ServerTool) string { return t.Tool.Name }),
-		resources:               newFeatureSet(func(r *ServerResource) string { return r.Resource.URI }),
-		resourceTemplates:       newFeatureSet(func(t *ServerResourceTemplate) string { return t.ResourceTemplate.URITemplate }),
+		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
+		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
+		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
+		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 	}
 }
 
-// AddPrompts adds the given prompts to the server,
-// replacing any with the same names.
-func (s *Server) AddPrompts(prompts ...*ServerPrompt) {
-	// Only notify if something could change.
-	if len(prompts) == 0 {
-		return
-	}
-	// Assume there was a change, since add replaces existing roots.
-	// (It's possible a root was replaced with an identical one, but not worth checking.)
+// AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
+func (s *Server) AddPrompt(p *Prompt, h PromptHandler) {
+	// Assume there was a change, since add replaces existing items.
+	// (It's possible an item was replaced with an identical one, but not worth checking.)
 	s.changeAndNotify(
 		notificationPromptListChanged,
 		&PromptListChangedParams{},
-		func() bool { s.prompts.add(prompts...); return true })
+		func() bool { s.prompts.add(&serverPrompt{p, h}); return true })
 }
 
 // RemovePrompts removes the prompts with the given names.
@@ -118,55 +117,44 @@ func (s *Server) RemovePrompts(names ...string) {
 		func() bool { return s.prompts.remove(names...) })
 }
 
-// AddTools adds the given tools to the server,
-// replacing any with the same names.
-// The arguments must not be modified after this call.
-//
-// AddTools panics if errors are detected.
-func (s *Server) AddTools(tools ...*ServerTool) {
-	if err := s.addToolsErr(tools...); err != nil {
+// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// The tool's input schema must be non-nil.
+// The Tool argument must not be modified after this call.
+func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	// TODO(jba): This is a breaking behavior change. Add before v0.2.0?
+	if t.InputSchema == nil {
+		log.Printf("mcp: tool %q has a nil input schema. This will panic in a future release.", t.Name)
+		// panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
+	}
+	if err := addToolErr(s, t, h); err != nil {
 		panic(err)
 	}
 }
 
-// addToolsErr is like [AddTools], but returns an error instead of panicking.
-func (s *Server) addToolsErr(tools ...*ServerTool) error {
-	// Only notify if something could change.
-	if len(tools) == 0 {
-		return nil
+// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// If the tool's input schema is nil, it is set to the schema inferred from the In
+// type parameter, using [jsonschema.For].
+// If the tool's output schema is nil and the Out type parameter is not the empty
+// interface, then the output schema is set to the schema inferred from Out.
+// The Tool argument must not be modified after this call.
+func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
+	if err := addToolErr(s, t, h); err != nil {
+		panic(err)
 	}
-	// Wrap the user's Handlers with rawHandlers that take a json.RawMessage.
-	for _, st := range tools {
-		if st.rawHandler == nil {
-			// This ServerTool was not created with NewServerTool.
-			if st.Handler == nil {
-				return fmt.Errorf("AddTools: tool %q has no handler", st.Tool.Name)
-			}
-			st.rawHandler = newRawHandler(st)
-			// Resolve the schemas, with no base URI. We don't expect tool schemas to
-			// refer outside of themselves.
-			if st.Tool.InputSchema != nil {
-				r, err := st.Tool.InputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-				if err != nil {
-					return err
-				}
-				st.inputResolved = r
-			}
+}
 
-			// if st.Tool.OutputSchema != nil {
-			// 	st.outputResolved, err := st.Tool.OutputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-			// 	if err != nil {
-			// 		return err
-			// 	}
-			// }
-		}
+func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
+	defer util.Wrapf(&err, "adding tool %q", t.Name)
+	st, err := newServerTool(t, h)
+	if err != nil {
+		return err
 	}
-
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
-	// TODO: surface notify error here?
+	// TODO: Batch these changes by size and time? The typescript SDK doesn't.
+	// TODO: Surface notify error here? best not, in case we need to batch.
 	s.changeAndNotify(notificationToolListChanged, &ToolListChangedParams{},
-		func() bool { s.tools.add(tools...); return true })
+		func() bool { s.tools.add(st); return true })
 	return nil
 }
 
@@ -177,26 +165,19 @@ func (s *Server) RemoveTools(names ...string) {
 		func() bool { return s.tools.remove(names...) })
 }
 
-// AddResources adds the given resources to the server.
-// If a resource with the same URI already exists, it is replaced.
-// AddResources panics if a resource URI is invalid or not absolute (has an empty scheme).
-func (s *Server) AddResources(resources ...*ServerResource) {
-	// Only notify if something could change.
-	if len(resources) == 0 {
-		return
-	}
+// AddResource adds a [Resource] to the server, or replaces one with the same URI.
+// AddResource panics if the resource URI is invalid or not absolute (has an empty scheme).
+func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			for _, r := range resources {
-				u, err := url.Parse(r.Resource.URI)
-				if err != nil {
-					panic(err) // url.Parse includes the URI in the error
-				}
-				if !u.IsAbs() {
-					panic(fmt.Errorf("URI %s needs a scheme", r.Resource.URI))
-				}
-				s.resources.add(r)
+			u, err := url.Parse(r.URI)
+			if err != nil {
+				panic(err) // url.Parse includes the URI in the error
 			}
+			if !u.IsAbs() {
+				panic(fmt.Errorf("URI %s needs a scheme", r.URI))
+			}
+			s.resources.add(&serverResource{r, h})
 			return true
 		})
 }
@@ -208,20 +189,13 @@ func (s *Server) RemoveResources(uris ...string) {
 		func() bool { return s.resources.remove(uris...) })
 }
 
-// AddResourceTemplates adds the given resource templates to the server.
-// If a resource template with the same URI template already exists, it will be replaced.
-// AddResourceTemplates panics if a URI template is invalid or not absolute (has an empty scheme).
-func (s *Server) AddResourceTemplates(templates ...*ServerResourceTemplate) {
-	// Only notify if something could change.
-	if len(templates) == 0 {
-		return
-	}
+// AddResourceTemplate adds a [ResourceTemplate] to the server, or replaces on with the same URI.
+// AddResourceTemplate panics if a URI template is invalid or not absolute (has an empty scheme).
+func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			for _, t := range templates {
-				// TODO: check template validity.
-				s.resourceTemplates.add(t)
-			}
+			// TODO: check template validity.
+			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
 		})
 }
@@ -231,6 +205,26 @@ func (s *Server) AddResourceTemplates(templates ...*ServerResourceTemplate) {
 func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
+}
+
+func (s *Server) capabilities() *serverCapabilities {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	caps := &serverCapabilities{
+		Completions: &completionCapabilities{},
+		Logging:     &loggingCapabilities{},
+	}
+	if s.tools.len() > 0 {
+		caps.Tools = &toolCapabilities{ListChanged: true}
+	}
+	if s.prompts.len() > 0 {
+		caps.Prompts = &promptCapabilities{ListChanged: true}
+	}
+	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
+		caps.Resources = &resourceCapabilities{ListChanged: true}
+	}
+	return caps
 }
 
 func (s *Server) complete(ctx context.Context, ss *ServerSession, params *CompleteParams) (Result, error) {
@@ -268,10 +262,10 @@ func (s *Server) listPrompts(_ context.Context, _ *ServerSession, params *ListPr
 	if params == nil {
 		params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*ServerPrompt) {
+	return paginateList(s.prompts, s.opts.PageSize, params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
-			res.Prompts = append(res.Prompts, p.Prompt)
+			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
 }
@@ -284,7 +278,7 @@ func (s *Server) getPrompt(ctx context.Context, cc *ServerSession, params *GetPr
 		// TODO: surface the error code over the wire, instead of flattening it into the string.
 		return nil, fmt.Errorf("%s: unknown prompt %q", jsonrpc2.ErrInvalidParams, params.Name)
 	}
-	return prompt.Handler(ctx, cc, params)
+	return prompt.handler(ctx, cc, params)
 }
 
 func (s *Server) listTools(_ context.Context, _ *ServerSession, params *ListToolsParams) (*ListToolsResult, error) {
@@ -293,22 +287,22 @@ func (s *Server) listTools(_ context.Context, _ *ServerSession, params *ListTool
 	if params == nil {
 		params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, params, &ListToolsResult{}, func(res *ListToolsResult, tools []*ServerTool) {
+	return paginateList(s.tools, s.opts.PageSize, params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
-			res.Tools = append(res.Tools, t.Tool)
+			res.Tools = append(res.Tools, t.tool)
 		}
 	})
 }
 
 func (s *Server) callTool(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error) {
 	s.mu.Lock()
-	tool, ok := s.tools.get(params.Name)
+	st, ok := s.tools.get(params.Name)
 	s.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("%s: unknown tool %q", jsonrpc2.ErrInvalidParams, params.Name)
 	}
-	return tool.rawHandler(ctx, cc, params)
+	return st.handler(ctx, cc, params)
 }
 
 func (s *Server) listResources(_ context.Context, _ *ServerSession, params *ListResourcesParams) (*ListResourcesResult, error) {
@@ -317,10 +311,10 @@ func (s *Server) listResources(_ context.Context, _ *ServerSession, params *List
 	if params == nil {
 		params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*ServerResource) {
+	return paginateList(s.resources, s.opts.PageSize, params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
-			res.Resources = append(res.Resources, r.Resource)
+			res.Resources = append(res.Resources, r.resource)
 		}
 	})
 }
@@ -332,10 +326,10 @@ func (s *Server) listResourceTemplates(_ context.Context, _ *ServerSession, para
 		params = &ListResourceTemplatesParams{}
 	}
 	return paginateList(s.resourceTemplates, s.opts.PageSize, params, &ListResourceTemplatesResult{},
-		func(res *ListResourceTemplatesResult, rts []*ServerResourceTemplate) {
+		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
-				res.ResourceTemplates = append(res.ResourceTemplates, rt.ResourceTemplate)
+				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
 }
@@ -376,12 +370,12 @@ func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, boo
 	defer s.mu.Unlock()
 	// Try resources first.
 	if r, ok := s.resources.get(uri); ok {
-		return r.Handler, r.Resource.MIMEType, true
+		return r.handler, r.resource.MIMEType, true
 	}
 	// Look for matching template.
 	for rt := range s.resourceTemplates.all() {
 		if rt.Matches(uri) {
-			return rt.Handler, rt.ResourceTemplate.MIMEType, true
+			return rt.handler, rt.resourceTemplate.MIMEType, true
 		}
 	}
 	return nil, "", false
@@ -394,7 +388,7 @@ func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, boo
 // The dir argument should be a filesystem path. It need not be absolute, but
 // that is recommended to avoid a dependency on the current working directory (the
 // check against client roots is done with an absolute path). If dir is not absolute
-// and the current working directory is unavailable, FileResourceHandler panics.
+// and the current working directory is unavailable, fileResourceHandler panics.
 //
 // Lexical path traversal attacks, where the path has ".." elements that escape dir,
 // are always caught. Go 1.24 and above also protects against symlink-based attacks,
@@ -434,13 +428,31 @@ func fileResourceHandler(dir string) ResourceHandler {
 
 // Run runs the server over the given transport, which must be persistent.
 //
-// Run blocks until the client terminates the connection.
+// Run blocks until the client terminates the connection or the provided
+// context is cancelled. If the context is cancelled, Run closes the connection.
+//
+// If tools have been added to the server before this call, then the server will
+// advertise the capability for tools, including the ability to send list-changed notifications.
+// If no tools have been added, the server will not have the tool capability.
+// The same goes for other features like prompts and resources.
 func (s *Server) Run(ctx context.Context, t Transport) error {
 	ss, err := s.Connect(ctx, t)
 	if err != nil {
 		return err
 	}
-	return ss.Wait()
+
+	ssClosed := make(chan error)
+	go func() {
+		ssClosed <- ss.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		ss.Close()
+		return ctx.Err()
+	case err := <-ssClosed:
+		return err
+	}
 }
 
 // bind implements the binder[*ServerSession] interface, so that Servers can
@@ -627,7 +639,7 @@ func (ss *ServerSession) receivingMethodHandler() methodHandler {
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 
 // handle invokes the method described by the given JSON RPC request.
-func (ss *ServerSession) handle(ctx context.Context, req *JSONRPCRequest) (any, error) {
+func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
 	initialized := ss.initialized
 	ss.mu.Unlock()
@@ -664,34 +676,20 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		ss.mu.Unlock()
 	}()
 
-	version := "2025-03-26" // preferred version
-	switch v := params.ProtocolVersion; v {
-	case "2024-11-05", "2025-03-26":
-		version = v
+	// If we support the client's version, reply with it. Otherwise, reply with our
+	// latest version.
+	version := params.ProtocolVersion
+	if !slices.Contains(supportedProtocolVersions, params.ProtocolVersion) {
+		version = latestProtocolVersion
 	}
 
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
 		ProtocolVersion: version,
-		Capabilities: &serverCapabilities{
-			Completions: &completionCapabilities{},
-			Prompts: &promptCapabilities{
-				ListChanged: true,
-			},
-			Tools: &toolCapabilities{
-				ListChanged: true,
-			},
-			Resources: &resourceCapabilities{
-				ListChanged: true,
-			},
-			Logging: &loggingCapabilities{},
-		},
-		Instructions: ss.server.opts.Instructions,
-		ServerInfo: &implementation{
-			Name:    ss.server.name,
-			Version: ss.server.version,
-		},
+		Capabilities:    ss.server.capabilities(),
+		Instructions:    ss.server.opts.Instructions,
+		ServerInfo:      ss.server.impl,
 	}, nil
 }
 

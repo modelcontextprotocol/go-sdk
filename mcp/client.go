@@ -6,19 +6,20 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // A Client is an MCP client, which may be connected to an MCP server
 // using the [Client.Connect] method.
 type Client struct {
-	name                    string
-	version                 string
+	impl                    *Implementation
 	opts                    ClientOptions
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
@@ -27,15 +28,19 @@ type Client struct {
 	receivingMethodHandler_ MethodHandler[*ClientSession]
 }
 
-// NewClient creates a new Client.
+// NewClient creates a new [Client].
 //
 // Use [Client.Connect] to connect it to an MCP server.
 //
+// The first argument must not be nil.
+//
 // If non-nil, the provided options configure the Client.
-func NewClient(name, version string, opts *ClientOptions) *Client {
+func NewClient(impl *Implementation, opts *ClientOptions) *Client {
+	if impl == nil {
+		panic("nil Implementation")
+	}
 	c := &Client{
-		name:                    name,
-		version:                 version,
+		impl:                    impl,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ClientSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
@@ -86,6 +91,15 @@ func (c *Client) disconnect(cs *ClientSession) {
 	})
 }
 
+// TODO: Consider exporting this type and its field.
+type unsupportedProtocolVersionError struct {
+	version string
+}
+
+func (e unsupportedProtocolVersionError) Error() string {
+	return fmt.Sprintf("unsupported protocol version: %q", e.version)
+}
+
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
 //
@@ -106,19 +120,22 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 	}
 
 	params := &InitializeParams{
-		ClientInfo:      &implementation{Name: c.name, Version: c.version},
+		ProtocolVersion: latestProtocolVersion,
+		ClientInfo:      c.impl,
 		Capabilities:    caps,
-		ProtocolVersion: "2025-03-26",
 	}
-	// TODO(rfindley): handle protocol negotiation gracefully. If the server
-	// responds with 2024-11-05, surface that failure to the caller of connect,
-	// so that they can choose a different transport.
 	res, err := handleSend[*InitializeResult](ctx, cs, methodInitialize, params)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
 	}
+	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
+		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
+	}
 	cs.initializeResult = res
+	if hc, ok := cs.mcpConn.(httpConnection); ok {
+		hc.setProtocolVersion(res.ProtocolVersion)
+	}
 	if err := handleNotify(ctx, cs, notificationInitialized, &InitializedParams{}); err != nil {
 		_ = cs.Close()
 		return nil, err
@@ -288,7 +305,7 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 	return clientMethodInfos
 }
 
-func (cs *ClientSession) handle(ctx context.Context, req *JSONRPCRequest) (any, error) {
+func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	return handleReceive(ctx, cs, req)
 }
 

@@ -20,7 +20,18 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// latestProtocolVersion is the latest protocol version that this version of the SDK supports.
+// It is the version that the client sends in the initialization request.
+const latestProtocolVersion = "2025-06-18"
+
+var supportedProtocolVersions = []string{
+	latestProtocolVersion,
+	"2025-03-26",
+	"2024-11-05",
+}
 
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
@@ -111,7 +122,7 @@ func defaultReceivingMethodHandler[S Session](ctx context.Context, session S, me
 	return info.handleMethod.(MethodHandler[S])(ctx, session, method, params)
 }
 
-func handleReceive[S Session](ctx context.Context, session S, req *JSONRPCRequest) (Result, error) {
+func handleReceive[S Session](ctx context.Context, session S, req *jsonrpc.Request) (Result, error) {
 	info, ok := session.receivingMethodInfos()[req.Method]
 	if !ok {
 		return nil, jsonrpc2.ErrNotHandled

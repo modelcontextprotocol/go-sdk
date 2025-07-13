@@ -9,6 +9,7 @@ package jsonschema
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
@@ -33,13 +34,20 @@ import (
 // types, as they are incompatible with the JSON schema spec.
 //   - maps with key other than 'string'
 //   - function types
+//   - channel types
 //   - complex numbers
 //   - unsafe pointers
 //
-// The types must not have cycles.
+// It will return an error if there is a cycle in the types.
+//
+// This function recognizes struct field tags named "jsonschema".
+// A jsonschema tag on a field is used as the description for the corresponding property.
+// For future compatibility, descriptions must not start with "WORD=", where WORD is a
+// sequence of non-whitespace characters.
 func For[T any]() (*Schema, error) {
 	// TODO: consider skipping incompatible fields, instead of failing.
-	s, err := forType(reflect.TypeFor[T]())
+	seen := make(map[reflect.Type]bool)
+	s, err := forType(reflect.TypeFor[T](), seen)
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)
@@ -47,13 +55,23 @@ func For[T any]() (*Schema, error) {
 	return s, nil
 }
 
-func forType(t reflect.Type) (*Schema, error) {
+func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 	// Follow pointers: the schema for *T is almost the same as for T, except that
 	// an explicit JSON "null" is allowed for the pointer.
 	allowNull := false
 	for t.Kind() == reflect.Pointer {
 		allowNull = true
 		t = t.Elem()
+	}
+
+	// Check for cycles
+	// User defined types have a name, so we can skip those that are natively defined
+	if t.Name() != "" {
+		if seen[t] {
+			return nil, fmt.Errorf("cycle detected for type %v", t)
+		}
+		seen[t] = true
+		defer delete(seen, t)
 	}
 
 	var (
@@ -81,14 +99,14 @@ func forType(t reflect.Type) (*Schema, error) {
 			return nil, fmt.Errorf("unsupported map key type %v", t.Key().Kind())
 		}
 		s.Type = "object"
-		s.AdditionalProperties, err = forType(t.Elem())
+		s.AdditionalProperties, err = forType(t.Elem(), seen)
 		if err != nil {
 			return nil, fmt.Errorf("computing map value schema: %v", err)
 		}
 
 	case reflect.Slice, reflect.Array:
 		s.Type = "array"
-		s.Items, err = forType(t.Elem())
+		s.Items, err = forType(t.Elem(), seen)
 		if err != nil {
 			return nil, fmt.Errorf("computing element schema: %v", err)
 		}
@@ -114,10 +132,20 @@ func forType(t reflect.Type) (*Schema, error) {
 			if s.Properties == nil {
 				s.Properties = make(map[string]*Schema)
 			}
-			s.Properties[info.Name], err = forType(field.Type)
+			fs, err := forType(field.Type, seen)
 			if err != nil {
 				return nil, err
 			}
+			if tag, ok := field.Tag.Lookup("jsonschema"); ok {
+				if tag == "" {
+					return nil, fmt.Errorf("empty jsonschema tag on struct field %s.%s", t, field.Name)
+				}
+				if disallowedPrefixRegexp.MatchString(tag) {
+					return nil, fmt.Errorf("tag must not begin with 'WORD=': %q", tag)
+				}
+				fs.Description = tag
+			}
+			s.Properties[info.Name] = fs
 			if !info.Settings["omitempty"] && !info.Settings["omitzero"] {
 				s.Required = append(s.Required, info.Name)
 			}
@@ -132,3 +160,6 @@ func forType(t reflect.Type) (*Schema, error) {
 	}
 	return s, nil
 }
+
+// Disallow jsonschema tag values beginning "WORD=", for future expansion.
+var disallowedPrefixRegexp = regexp.MustCompile("^[^ \t\n]*=")
