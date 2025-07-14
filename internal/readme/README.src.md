@@ -42,7 +42,7 @@ The SDK consists of three importable packages:
   package provides an implementation of [JSON
   Schema](https://json-schema.org/), used for MCP tool input and output schema.
 - The
-  [`github.com/modelcontextprotocol/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema) package is for users implementing
+  [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
   their own transports.
    
 
