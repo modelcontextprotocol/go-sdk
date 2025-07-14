@@ -19,7 +19,7 @@ type ID struct {
 // MakeID coerces the given Go value to an ID. The value is assumed to be the
 // default JSON marshaling of a Request identifier -- nil, float64, or string.
 //
-// Returns an error if the value type was a valid Request ID type.
+// Returns an error if the value type was not a valid Request ID type.
 //
 // TODO: ID can't be a json.Marshaler/Unmarshaler, because we want to omitzero.
 // Simplify this package by making ID json serializable once we can rely on
