@@ -29,12 +29,6 @@ code_review
 			"logging": {},
 			"prompts": {
 				"listChanged": true
-			},
-			"resources": {
-				"listChanged": true
-			},
-			"tools": {
-				"listChanged": true
 			}
 		},
 		"protocolVersion": "2024-11-05",

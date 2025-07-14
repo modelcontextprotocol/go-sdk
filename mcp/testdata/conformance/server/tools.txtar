@@ -30,12 +30,6 @@ greet
 		"capabilities": {
 			"completions": {},
 			"logging": {},
-			"prompts": {
-				"listChanged": true
-			},
-			"resources": {
-				"listChanged": true
-			},
 			"tools": {
 				"listChanged": true
 			}

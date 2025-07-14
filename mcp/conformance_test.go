@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"golang.org/x/tools/txtar"
 )
 
@@ -46,12 +47,12 @@ var update = flag.Bool("update", false, "if set, update conformance test data")
 // with -update to have the test runner update the expected output, which may
 // be client or server depending on the perspective of the test.
 type conformanceTest struct {
-	name                      string           // test name
-	path                      string           // path to test file
-	archive                   *txtar.Archive   // raw archive, for updating
-	tools, prompts, resources []string         // named features to include
-	client                    []JSONRPCMessage // client messages
-	server                    []JSONRPCMessage // server messages
+	name                      string            // test name
+	path                      string            // path to test file
+	archive                   *txtar.Archive    // raw archive, for updating
+	tools, prompts, resources []string          // named features to include
+	client                    []jsonrpc.Message // client messages
+	server                    []jsonrpc.Message // server messages
 }
 
 // TODO(rfindley): add client conformance tests.
@@ -100,10 +101,36 @@ func TestServerConformance(t *testing.T) {
 func runServerTest(t *testing.T, test *conformanceTest) {
 	ctx := t.Context()
 	// Construct the server based on features listed in the test.
-	s := NewServer("testServer", "v1.0.0", nil)
-	add(tools, s.AddTools, test.tools...)
-	add(prompts, s.AddPrompts, test.prompts...)
-	add(resources, s.AddResources, test.resources...)
+	s := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	for _, tn := range test.tools {
+		switch tn {
+		case "greet":
+			AddTool(s, &Tool{
+				Name:        "greet",
+				Description: "say hi",
+			}, sayHi)
+		default:
+			t.Fatalf("unknown tool %q", tn)
+		}
+	}
+	for _, pn := range test.prompts {
+		switch pn {
+		case "code_review":
+			s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
+		default:
+			t.Fatalf("unknown prompt %q", pn)
+		}
+	}
+	for _, rn := range test.resources {
+		switch rn {
+		case "info.txt":
+			s.AddResource(resource1, readHandler)
+		case "info":
+			s.AddResource(resource3, handleEmbeddedResource)
+		default:
+			t.Fatalf("unknown resource %q", rn)
+		}
+	}
 
 	// Connect the server, and connect the client stream,
 	// but don't connect an actual client.
@@ -117,24 +144,24 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 		t.Fatal(err)
 	}
 
-	writeMsg := func(msg JSONRPCMessage) {
+	writeMsg := func(msg jsonrpc.Message) {
 		if err := cStream.Write(ctx, msg); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 	}
 
 	var (
-		serverMessages []JSONRPCMessage
-		outRequests    []*JSONRPCRequest
-		outResponses   []*JSONRPCResponse
+		serverMessages []jsonrpc.Message
+		outRequests    []*jsonrpc.Request
+		outResponses   []*jsonrpc.Response
 	)
 
 	// Separate client requests and responses; we use them differently.
 	for _, msg := range test.client {
 		switch msg := msg.(type) {
-		case *JSONRPCRequest:
+		case *jsonrpc.Request:
 			outRequests = append(outRequests, msg)
-		case *JSONRPCResponse:
+		case *jsonrpc.Response:
 			outResponses = append(outResponses, msg)
 		default:
 			t.Fatalf("bad message type %T", msg)
@@ -143,7 +170,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 
 	// nextResponse handles incoming requests and notifications, and returns the
 	// next incoming response.
-	nextResponse := func() (*JSONRPCResponse, error, bool) {
+	nextResponse := func() (*jsonrpc.Response, error, bool) {
 		for {
 			msg, err := cStream.Read(ctx)
 			if err != nil {
@@ -156,7 +183,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				return nil, err, false
 			}
 			serverMessages = append(serverMessages, msg)
-			if req, ok := msg.(*JSONRPCRequest); ok && req.ID.IsValid() {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() {
 				// Pair up the next outgoing response with this request.
 				// We assume requests arrive in the same order every time.
 				if len(outResponses) == 0 {
@@ -167,7 +194,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				outResponses = outResponses[1:]
 				continue
 			}
-			return msg.(*JSONRPCResponse), nil, true
+			return msg.(*jsonrpc.Response), nil, true
 		}
 	}
 
@@ -191,7 +218,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// There might be more notifications or requests, but there shouldn't be more
 	// responses.
 	// Run this in a goroutine so the current thread can wait for it.
-	var extra *JSONRPCResponse
+	var extra *jsonrpc.Response
 	go func() {
 		extra, err, _ = nextResponse()
 	}()
@@ -240,8 +267,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			t.Fatalf("os.WriteFile(%q) failed: %v", test.path, err)
 		}
 	} else {
-		// JSONRPCMessages are not comparable, so we instead compare lines of JSON.
-		transform := cmpopts.AcyclicTransformer("toJSON", func(msg JSONRPCMessage) []string {
+		// jsonrpc.Messages are not comparable, so we instead compare lines of JSON.
+		transform := cmpopts.AcyclicTransformer("toJSON", func(msg jsonrpc.Message) []string {
 			encoded, err := jsonrpc2.EncodeIndent(msg, "", "\t")
 			if err != nil {
 				t.Fatal(err)
@@ -271,9 +298,9 @@ func loadConformanceTest(dir, path string) (*conformanceTest, error) {
 	}
 
 	// decodeMessages loads JSON-RPC messages from the archive file.
-	decodeMessages := func(data []byte) ([]JSONRPCMessage, error) {
+	decodeMessages := func(data []byte) ([]jsonrpc.Message, error) {
 		dec := json.NewDecoder(bytes.NewReader(data))
-		var res []JSONRPCMessage
+		var res []jsonrpc.Message
 		for dec.More() {
 			var raw json.RawMessage
 			if err := dec.Decode(&raw); err != nil {
