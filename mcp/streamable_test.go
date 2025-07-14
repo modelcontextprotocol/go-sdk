@@ -620,12 +620,12 @@ func TestStreamableClientConnSSEGoroutineLeak(t *testing.T) {
 	go conn.handleSSE(resp)
 
 	// Wait until incoming channel is filled
-	deadlineCtx, cancelFunc := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	deadlineCtx, cancelFunc := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelFunc()
 	for len(conn.incoming) < cap(conn.incoming) { // Ensure enough events are written
 		select {
 		case <-deadlineCtx.Done():
-			t.Skipf("timeout when waiting for streamableClientConn.incoming to be full, test skipped: %v", deadlineCtx.Err())
+			t.Fatalf("timeout when waiting for streamableClientConn.incoming to be full: %v", deadlineCtx.Err())
 		default:
 			// Continue checking until the channel is full
 		}
