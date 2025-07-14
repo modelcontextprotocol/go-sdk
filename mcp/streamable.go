@@ -645,8 +645,7 @@ type streamableClientConn struct {
 	mu              sync.Mutex
 	protocolVersion string
 	_sessionID      string
-	// bodies map[*http.Response]io.Closer
-	err error
+	err             error
 }
 
 func (c *streamableClientConn) setProtocolVersion(s string) {
@@ -741,10 +740,16 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	}
 
 	sessionID = resp.Header.Get(sessionIDHeader)
-	if resp.Header.Get("Content-Type") == "text/event-stream" {
+	switch ct := resp.Header.Get("Content-Type"); ct {
+	case "text/event-stream":
 		go s.handleSSE(resp)
-	} else {
+	case "application/json":
+		// TODO: read the body and send to s.incoming (in a select that also receives from s.done).
 		resp.Body.Close()
+		return "", fmt.Errorf("streamable HTTP client does not yet support raw JSON responses")
+	default:
+		resp.Body.Close()
+		return "", fmt.Errorf("unsupported content type %q", ct)
 	}
 	return sessionID, nil
 }
@@ -760,7 +765,11 @@ func (s *streamableClientConn) handleSSE(resp *http.Response) {
 				// TODO: surface this error; possibly break the stream
 				return
 			}
-			s.incoming <- evt.data
+			select {
+			case <-s.done:
+				return
+			case s.incoming <- evt.data:
+			}
 		}
 	}()
 
