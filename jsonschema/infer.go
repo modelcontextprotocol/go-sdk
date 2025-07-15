@@ -7,11 +7,18 @@
 package jsonschema
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
+)
+
+var (
+	// List of allowed extra tags for schema property fields.
+	extraTags = []string{"default", "minimum", "maximum", "examples", "readOnly", "deprecated", "writeOnly"}
 )
 
 // For constructs a JSON schema object for the given type argument.
@@ -149,6 +156,10 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			if !info.Settings["omitempty"] && !info.Settings["omitzero"] {
 				s.Required = append(s.Required, info.Name)
 			}
+			// Checks for extra tags.
+			if err := setExtraTags(fs, field); err != nil {
+				return nil, fmt.Errorf("failed to set extra tags for field %s.%s: %w", t, field.Name, err)
+			}
 		}
 
 	default:
@@ -163,3 +174,134 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 
 // Disallow jsonschema tag values beginning "WORD=", for future expansion.
 var disallowedPrefixRegexp = regexp.MustCompile("^[^ \t\n]*=")
+
+// setTags sets the extra tags on the schema field, if they are present in the struct field.
+// It returns an error if any of the tags are invalid or if the tag values are empty.
+// Note: For the "examples" tag, values are appended to the Schema.Examples field, not overwritten.
+// TODO: Make the `extraTags` list configurable.
+func setExtraTags(s *Schema, field reflect.StructField) error {
+	type tagHandler func(s *Schema, value string, tag string) error
+
+	handlers := map[string]tagHandler{
+		"default": func(s *Schema, value string, tag string) error {
+			defaultValue, err := handleRawMessageTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.Default = defaultValue
+			return nil
+		},
+		"minimum": func(s *Schema, value string, tag string) error {
+			min, err := handleFloatTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.Minimum = &min
+			return nil
+		},
+		"maximum": func(s *Schema, value string, tag string) error {
+			max, err := handleFloatTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.Maximum = &max
+			return nil
+		},
+		"readOnly": func(s *Schema, value string, tag string) error {
+			val, err := handleBoolTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.ReadOnly = val
+			return nil
+		},
+		"deprecated": func(s *Schema, value string, tag string) error {
+			val, err := handleBoolTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.Deprecated = val
+			return nil
+		},
+		"writeOnly": func(s *Schema, value string, tag string) error {
+			val, err := handleBoolTag(value, tag)
+			if err != nil {
+				return err
+			}
+			s.WriteOnly = val
+			return nil
+		},
+		"examples": func(s *Schema, value string, tag string) error {
+			examples, err := handleAnyArr(value, tag)
+			if err != nil {
+				return err
+			}
+			s.Examples = append(s.Examples, examples...)
+			return nil
+		},
+	}
+
+	for _, tag := range extraTags {
+		if value, ok := field.Tag.Lookup(tag); ok {
+			if handler, exists := handlers[tag]; exists {
+				if err := handler(s, value, tag); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// handleRawMessageTag handles tags that expect a raw JSON message, like "default".
+// It tries to parse the value as JSON first. If that fails, it treats the value as a string
+// and marshals it to JSON (adding quotes and escaping as needed).
+func handleRawMessageTag(value string, tag string) (json.RawMessage, error) {
+	// First, try to parse as raw JSON
+	var parsed any
+	if err := json.Unmarshal([]byte(value), &parsed); err == nil {
+		// Successfully parsed as JSON
+		if parsed == nil {
+			return nil, fmt.Errorf("%s value for tag = %q must not be null", tag, value)
+		}
+		return json.RawMessage(value), nil
+	}
+
+	// If parsing as JSON failed, treat it as a string and marshal it
+	jsonBytes, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal %s value for tag = %q => %v", tag, value, err)
+	}
+	return json.RawMessage(jsonBytes), nil
+}
+
+// handleFloatTag handles tags that expect a float value, like "minimum" or "maximum".
+func handleFloatTag(value string, tag string) (float64, error) {
+	max, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s value for tag = %q => %v", tag, value, err)
+	}
+	return max, nil
+}
+
+// handleBoolTag handles tags that expect a boolean value, like "exclusiveMaximum" or "exclusiveMinimum".
+func handleBoolTag(value string, tag string) (bool, error) {
+	selection, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value for tag = %q => %v", tag, value, err)
+	}
+	return selection, nil
+}
+
+// handleAnyArr handles tags that expect an array of any type, like "examples".
+// It returns the parsed examples or an error if the value is invalid or null.
+func handleAnyArr(value string, tag string) ([]any, error) {
+	var examples []any
+	if err := json.Unmarshal([]byte(value), &examples); err != nil {
+		return nil, fmt.Errorf("invalid %s value for tag = %q => %v", tag, value, err)
+	}
+	if examples == nil {
+		return nil, fmt.Errorf("%s value for tag = %q must not be null", tag, value)
+	}
+	return examples, nil
+}

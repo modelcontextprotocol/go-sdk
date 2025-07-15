@@ -5,6 +5,7 @@
 package jsonschema_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -25,8 +26,21 @@ func TestFor(t *testing.T) {
 	type schema = jsonschema.Schema
 
 	type S struct {
-		B int `jsonschema:"bdesc"`
+		B int       `jsonschema:"bdesc"`
+		C int       `jsonschema:"cdesc" default:"42"`
+		D int       `jsonschema:"ddesc" minimum:"1" maximum:"100"`
+		F []float64 `jsonschema:"fdesc" examples:"[1.5,2.0,3.0]"`
+		G []string  `jsonschema:"gdesc" examples:"[\"default\", \"value\"]" default:"[\"default\", \"value\"]"`
+		H string    `jsonschema:"hdesc" default:"default value"`
+		I []string  `jsonschema:"idesc" default:"[]"`
 	}
+
+	// These are the expected values for the schema.
+	var default42 = json.RawMessage("42")
+	var defaultStrArray = json.RawMessage(`["default", "value"]`)
+	var defaultStrValue = json.RawMessage(`"default value"`)
+	var oneMin float64 = 1.0
+	var hundredMax float64 = 100.0
 
 	tests := []struct {
 		name string
@@ -96,16 +110,28 @@ func TestFor(t *testing.T) {
 						Type: "object",
 						Properties: map[string]*schema{
 							"B": {Type: "integer", Description: "bdesc"},
+							"C": {Type: "integer", Description: "cdesc", Default: default42},
+							"D": {Type: "integer", Description: "ddesc", Minimum: &oneMin, Maximum: &hundredMax},
+							"F": {Type: "array", Description: "fdesc", Examples: []any{1.5, 2.0, 3.0}, Items: &schema{Type: "number"}},
+							"G": {Type: "array", Description: "gdesc", Examples: []any{"default", "value"}, Default: defaultStrArray, Items: &schema{Type: "string"}},
+							"H": {Type: "string", Description: "hdesc", Default: defaultStrValue},
+							"I": {Type: "array", Description: "idesc", Default: json.RawMessage("[]"), Items: &schema{Type: "string"}},
 						},
-						Required:             []string{"B"},
+						Required:             []string{"B", "C", "D", "F", "G", "H", "I"},
 						AdditionalProperties: falseSchema(),
 					},
 					"S": {
 						Type: "object",
 						Properties: map[string]*schema{
 							"B": {Type: "integer", Description: "bdesc"},
+							"C": {Type: "integer", Description: "cdesc", Default: default42},
+							"D": {Type: "integer", Description: "ddesc", Minimum: &oneMin, Maximum: &hundredMax},
+							"F": {Type: "array", Description: "fdesc", Examples: []any{1.5, 2.0, 3.0}, Items: &schema{Type: "number"}},
+							"G": {Type: "array", Description: "gdesc", Examples: []any{"default", "value"}, Default: defaultStrArray, Items: &schema{Type: "string"}},
+							"H": {Type: "string", Description: "hdesc", Default: defaultStrValue},
+							"I": {Type: "array", Description: "idesc", Default: json.RawMessage("[]"), Items: &schema{Type: "string"}},
 						},
-						Required:             []string{"B"},
+						Required:             []string{"B", "C", "D", "F", "G", "H", "I"},
 						AdditionalProperties: falseSchema(),
 					},
 				},
