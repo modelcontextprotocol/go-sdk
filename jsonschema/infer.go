@@ -14,6 +14,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
+// GeneratorOptions contains options for the schema generator.
+// It allows defining custom AdditionalProperties for a specific type.
+// Also, SchemaRegistry can be used to provide pre-defined schemas for specific types (e.g., struct, interfaces)
+type GeneratorOptions struct {
+	AdditionalProperties func(reflect.Type) *Schema // input is type name
+	SchemaRegistry       map[reflect.Type]*Schema
+}
+
+// defaultGeneratorOptions is the default set of options for the schema generator.
+// Used by [For] function,
+var defaultGeneratorOptions = GeneratorOptions{
+	AdditionalProperties: func(t reflect.Type) *Schema {
+		return falseSchema()
+	},
+	SchemaRegistry: make(map[reflect.Type]*Schema),
+}
+
 // For constructs a JSON schema object for the given type argument.
 //
 // It translates Go types into compatible JSON schema types, as follows:
@@ -45,9 +62,20 @@ import (
 // For future compatibility, descriptions must not start with "WORD=", where WORD is a
 // sequence of non-whitespace characters.
 func For[T any]() (*Schema, error) {
+	return CustomizedFor[T](defaultGeneratorOptions)
+}
+
+// See [For] description for details.
+//
+// Main difference is that it allows customizing things like:
+//   - AdditionalProperties for a specific type
+//   - Pre-defined schemas for specific types (e.g., struct, interfaces)
+//
+// For more details, see [GeneratorOptions] documentation.
+func CustomizedFor[T any](options GeneratorOptions) (*Schema, error) {
 	// TODO: consider skipping incompatible fields, instead of failing.
 	seen := make(map[reflect.Type]bool)
-	s, err := forType(reflect.TypeFor[T](), seen)
+	s, err := forType(reflect.TypeFor[T](), seen, options)
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)
@@ -55,7 +83,7 @@ func For[T any]() (*Schema, error) {
 	return s, nil
 }
 
-func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
+func forType(t reflect.Type, seen map[reflect.Type]bool, options GeneratorOptions) (*Schema, error) {
 	// Follow pointers: the schema for *T is almost the same as for T, except that
 	// an explicit JSON "null" is allowed for the pointer.
 	allowNull := false
@@ -92,6 +120,9 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 		s.Type = "number"
 
 	case reflect.Interface:
+		if schema, ok := options.SchemaRegistry[t]; ok {
+			s = schema
+		}
 		// Unrestricted
 
 	case reflect.Map:
@@ -99,14 +130,14 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			return nil, fmt.Errorf("unsupported map key type %v", t.Key().Kind())
 		}
 		s.Type = "object"
-		s.AdditionalProperties, err = forType(t.Elem(), seen)
+		s.AdditionalProperties, err = forType(t.Elem(), seen, options)
 		if err != nil {
 			return nil, fmt.Errorf("computing map value schema: %v", err)
 		}
 
 	case reflect.Slice, reflect.Array:
 		s.Type = "array"
-		s.Items, err = forType(t.Elem(), seen)
+		s.Items, err = forType(t.Elem(), seen, options)
 		if err != nil {
 			return nil, fmt.Errorf("computing element schema: %v", err)
 		}
@@ -120,8 +151,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 
 	case reflect.Struct:
 		s.Type = "object"
-		// no additional properties are allowed
-		s.AdditionalProperties = falseSchema()
+		s.AdditionalProperties = options.AdditionalProperties(t)
 
 		for i := range t.NumField() {
 			field := t.Field(i)
@@ -132,7 +162,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			if s.Properties == nil {
 				s.Properties = make(map[string]*Schema)
 			}
-			fs, err := forType(field.Type, seen)
+			fs, err := forType(field.Type, seen, options)
 			if err != nil {
 				return nil, err
 			}
