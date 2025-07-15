@@ -748,12 +748,25 @@ Server sessions also support the spec methods `ListResources` and `ListResourceT
 
 #### Subscriptions
 
-ClientSessions can manage change notifications on particular resources:
+##### Client-Side Usage
+
+Use the Subscribe and Unsubscribe methods on a ClientSession to start or stop receiving updates for a specific resource.
 
 ```go
 func (*ClientSession) Subscribe(context.Context, *SubscribeParams) error
 func (*ClientSession) Unsubscribe(context.Context, *UnsubscribeParams) error
 ```
+
+To process incoming update notifications, you must provide a ResourceUpdatedHandler in your ClientOptions. The SDK calls this function automatically whenever the server sends a notification for a resource you're subscribed to.
+
+```go
+type ClientOptions struct {
+  ...
+  ResourceUpdatedHandler func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams)
+}
+```
+
+##### Server-Side Implementation
 
 The server does not implement resource subscriptions. It passes along subscription requests to the user, and supplies a method to notify clients of changes. It tracks which sessions have subscribed to which resources so the user doesn't have to.
 
@@ -772,7 +785,7 @@ type ServerOptions struct {
 User code should call `ResourceUpdated` when a subscribed resource changes.
 
 ```go
-func (*Server) ResourceUpdated(context.Context, *ResourceUpdatedNotification) error
+func (*Server) ResourceUpdated(context.Context, *ResourceUpdatedNotificationParams) error
 ```
 
 The server routes these notifications to the server sessions that subscribed to the resource.

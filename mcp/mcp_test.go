@@ -60,7 +60,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Channels to check if notification callbacks happened.
 	notificationChans := map[string]chan int{}
-	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client"} {
+	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client", "resource_updated", "subscribe", "unsubscribe"} {
 		notificationChans[name] = make(chan int, 1)
 	}
 	waitForNotification := func(t *testing.T, name string) {
@@ -77,6 +77,14 @@ func TestEndToEnd(t *testing.T) {
 		RootsListChangedHandler: func(context.Context, *ServerSession, *RootsListChangedParams) { notificationChans["roots"] <- 0 },
 		ProgressNotificationHandler: func(context.Context, *ServerSession, *ProgressNotificationParams) {
 			notificationChans["progress_server"] <- 0
+		},
+		SubscribeHandler: func(context.Context, *SubscribeParams) error {
+			notificationChans["subscribe"] <- 0
+			return nil
+		},
+		UnsubscribeHandler: func(context.Context, *UnsubscribeParams) error {
+			notificationChans["unsubscribe"] <- 0
+			return nil
 		},
 	}
 	s := NewServer(testImpl, sopts)
@@ -127,6 +135,9 @@ func TestEndToEnd(t *testing.T) {
 		},
 		ProgressNotificationHandler: func(context.Context, *ClientSession, *ProgressNotificationParams) {
 			notificationChans["progress_client"] <- 0
+		},
+		ResourceUpdatedHandler: func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams) {
+			notificationChans["resource_updated"] <- 0
 		},
 	}
 	c := NewClient(testImpl, opts)
@@ -419,6 +430,37 @@ func TestEndToEnd(t *testing.T) {
 			Total:         2,
 		})
 		waitForNotification(t, "progress_server")
+	})
+
+	t.Run("resource_subscriptions", func(t *testing.T) {
+		err := cs.Subscribe(ctx, &SubscribeParams{
+			URI: "test",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitForNotification(t, "subscribe")
+		s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
+			URI: "test",
+		})
+		waitForNotification(t, "resource_updated")
+		err = cs.Unsubscribe(ctx, &UnsubscribeParams{
+			URI: "test",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitForNotification(t, "unsubscribe")
+
+		// Verify the client does not receive the update after unsubscribing.
+		s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
+			URI: "test",
+		})
+		select {
+		case <-notificationChans["resource_updated"]:
+			t.Fatalf("resource updated after unsubscription")
+		case <-time.After(time.Second):
+		}
 	})
 
 	// Disconnect.

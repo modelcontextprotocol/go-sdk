@@ -43,6 +43,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
+	resourceSubscriptions   map[string][]*ServerSession // uri -> session
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -64,6 +65,10 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// Function called when a client session subscribes to a resource.
+	SubscribeHandler func(context.Context, *SubscribeParams) error
+	// Function called when a client session unsubscribes from a resource.
+	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -89,7 +94,12 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 	if opts.PageSize == 0 {
 		opts.PageSize = DefaultPageSize
 	}
-
+	if opts.SubscribeHandler != nil && opts.UnsubscribeHandler == nil {
+		panic("SubscribeHandler requires UnsubscribeHandler")
+	}
+	if opts.UnsubscribeHandler != nil && opts.SubscribeHandler == nil {
+		panic("UnsubscribeHandler requires SubscribeHandler")
+	}
 	return &Server{
 		impl:                    impl,
 		opts:                    *opts,
@@ -99,6 +109,7 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
+		resourceSubscriptions:   make(map[string][]*ServerSession),
 	}
 }
 
@@ -225,6 +236,12 @@ func (s *Server) capabilities() *serverCapabilities {
 	}
 	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
 		caps.Resources = &resourceCapabilities{ListChanged: true}
+	}
+	if s.opts.SubscribeHandler != nil {
+		if caps.Resources == nil {
+			caps.Resources = &resourceCapabilities{}
+		}
+		caps.Resources.Subscribe = true
 	}
 	return caps
 }
@@ -428,6 +445,55 @@ func fileResourceHandler(dir string) ResourceHandler {
 	}
 }
 
+func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
+	s.mu.Lock()
+	sessions := slices.Clone(s.resourceSubscriptions[params.URI])
+	s.mu.Unlock()
+	if len(sessions) == 0 {
+		return nil
+	}
+	notifySessions(sessions, notificationResourceUpdated, params)
+	return nil
+}
+
+func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *SubscribeParams) (*emptyResult, error) {
+	if s.opts.SubscribeHandler == nil {
+		return nil, fmt.Errorf("%w: server does not support resource subscriptions", jsonrpc2.ErrMethodNotFound)
+	}
+	if err := s.opts.SubscribeHandler(ctx, params); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	uri := params.URI
+	subscribers := s.resourceSubscriptions[uri]
+	if !slices.Contains(subscribers, ss) {
+		s.resourceSubscriptions[uri] = append(subscribers, ss)
+	}
+	return &emptyResult{}, nil
+}
+
+func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *UnsubscribeParams) (*emptyResult, error) {
+	if s.opts.UnsubscribeHandler == nil {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+
+	if err := s.opts.UnsubscribeHandler(ctx, params); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	uri := params.URI
+	if sessions, ok := s.resourceSubscriptions[uri]; ok {
+		s.resourceSubscriptions[uri] = slices.DeleteFunc(sessions, func(s *ServerSession) bool {
+			return s == ss
+		})
+	}
+	return &emptyResult{}, nil
+}
+
 // Run runs the server over the given transport, which must be persistent.
 //
 // Run blocks until the client terminates the connection or the provided
@@ -475,6 +541,11 @@ func (s *Server) disconnect(cc *ServerSession) {
 	s.sessions = slices.DeleteFunc(s.sessions, func(cc2 *ServerSession) bool {
 		return cc2 == cc
 	})
+	for uri, sessions := range s.resourceSubscriptions {
+		s.resourceSubscriptions[uri] = slices.DeleteFunc(sessions, func(cc2 *ServerSession) bool {
+			return cc2 == cc
+		})
+	}
 }
 
 // Connect connects the MCP server over the given transport and starts handling
@@ -616,6 +687,8 @@ var serverMethodInfos = map[string]methodInfo{
 	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates)),
 	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource)),
 	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel)),
+	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe)),
+	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe)),
 	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler)),
 	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler)),
 	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler)),

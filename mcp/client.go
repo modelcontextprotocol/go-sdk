@@ -60,6 +60,7 @@ type ClientOptions struct {
 	ToolListChangedHandler      func(context.Context, *ClientSession, *ToolListChangedParams)
 	PromptListChangedHandler    func(context.Context, *ClientSession, *PromptListChangedParams)
 	ResourceListChangedHandler  func(context.Context, *ClientSession, *ResourceListChangedParams)
+	ResourceUpdatedHandler      func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams)
 	LoggingMessageHandler       func(context.Context, *ClientSession, *LoggingMessageParams)
 	ProgressNotificationHandler func(context.Context, *ClientSession, *ProgressNotificationParams)
 	// If non-zero, defines an interval for regular "ping" requests.
@@ -293,6 +294,7 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler)),
 	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler)),
 	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler)),
+	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler)),
 	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler)),
 	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler)),
 }
@@ -386,6 +388,20 @@ func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (
 	return handleSend[*CompleteResult](ctx, cs, methodComplete, orZero[Params](params))
 }
 
+// Subscribe sends a "resources/subscribe" request to the server, asking for
+// notifications when the specified resource changes.
+func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
+	_, err := handleSend[*emptyResult](ctx, cs, methodSubscribe, orZero[Params](params))
+	return err
+}
+
+// Unsubscribe sends a "resources/unsubscribe" request to the server, cancelling
+// a previous subscription.
+func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
+	_, err := handleSend[*emptyResult](ctx, cs, methodUnsubscribe, orZero[Params](params))
+	return err
+}
+
 func (c *Client) callToolChangedHandler(ctx context.Context, s *ClientSession, params *ToolListChangedParams) (Result, error) {
 	return callNotificationHandler(ctx, c.opts.ToolListChangedHandler, s, params)
 }
@@ -396,6 +412,10 @@ func (c *Client) callPromptChangedHandler(ctx context.Context, s *ClientSession,
 
 func (c *Client) callResourceChangedHandler(ctx context.Context, s *ClientSession, params *ResourceListChangedParams) (Result, error) {
 	return callNotificationHandler(ctx, c.opts.ResourceListChangedHandler, s, params)
+}
+
+func (c *Client) callResourceUpdatedHandler(ctx context.Context, s *ClientSession, params *ResourceUpdatedNotificationParams) (Result, error) {
+	return callNotificationHandler(ctx, c.opts.ResourceUpdatedHandler, s, params)
 }
 
 func (c *Client) callLoggingHandler(ctx context.Context, cs *ClientSession, params *LoggingMessageParams) (Result, error) {
