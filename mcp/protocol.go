@@ -876,7 +876,7 @@ type UnsubscribeParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
-	// The URI of the resource to unsubscribe to.
+	// The URI of the resource to unsubscribe from.
 	URI string `json:"uri"`
 }
 
