@@ -19,13 +19,15 @@ import (
 var httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
 
 type HiArgs struct {
-	Name string `json:"name" jsonschema:"the name to say hi to"`
+	Name   string   `json:"name" jsonschema:"the name to say hi to"`
+	Age    int      `json:"age" jsonschema:"the age of the person" minimum:"0" maximum:"120" default:"20"`
+	Funkos []string `json:"funkos" jsonschema:"the funkos the person has" minimum:"1" examples:"[\"Batman\", \"Superman\"]" default:"[\"Batman\"]"`
 }
 
 func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {
 	return &mcp.CallToolResultFor[struct{}]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
+			&mcp.TextContent{Text: fmt.Sprintf("Hi %s! You are %d years old and have %v funkos", params.Arguments.Name, params.Arguments.Age, params.Arguments.Funkos)},
 		},
 	}, nil
 }

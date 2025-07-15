@@ -156,7 +156,8 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			if !info.Settings["omitempty"] && !info.Settings["omitzero"] {
 				s.Required = append(s.Required, info.Name)
 			}
-			// Checks for extra tags.
+			// Set extra tags on the schema field, if they are present in the struct field.
+			// This allows for additional schema properties like "default", "minimum", etc.
 			if err := setExtraTags(fs, field); err != nil {
 				return nil, fmt.Errorf("failed to set extra tags for field %s.%s: %w", t, field.Name, err)
 			}
@@ -175,7 +176,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 // Disallow jsonschema tag values beginning "WORD=", for future expansion.
 var disallowedPrefixRegexp = regexp.MustCompile("^[^ \t\n]*=")
 
-// setTags sets the extra tags on the schema field, if they are present in the struct field.
+// setExtraTags sets the extra tags on the schema field, if they are present in the struct field.
 // It returns an error if any of the tags are invalid or if the tag values are empty.
 // Note: For the "examples" tag, values are appended to the Schema.Examples field, not overwritten.
 // TODO: Make the `extraTags` list configurable.
@@ -284,7 +285,7 @@ func handleFloatTag(value string, tag string) (float64, error) {
 	return max, nil
 }
 
-// handleBoolTag handles tags that expect a boolean value, like "exclusiveMaximum" or "exclusiveMinimum".
+// handleBoolTag handles tags that expect a boolean value, like "readOnly" or "writeOnly".
 func handleBoolTag(value string, tag string) (bool, error) {
 	selection, err := strconv.ParseBool(value)
 	if err != nil {

@@ -28,7 +28,7 @@ func TestFor(t *testing.T) {
 	type S struct {
 		B int       `jsonschema:"bdesc"`
 		C int       `jsonschema:"cdesc" default:"42"`
-		D int       `jsonschema:"ddesc" minimum:"1" maximum:"100"`
+		D int       `jsonschema:"ddesc" minimum:"1.0" maximum:"100"`
 		F []float64 `jsonschema:"fdesc" examples:"[1.5,2.0,3.0]"`
 		G []string  `jsonschema:"gdesc" examples:"[\"default\", \"value\"]" default:"[\"default\", \"value\"]"`
 		H string    `jsonschema:"hdesc" default:"default value"`

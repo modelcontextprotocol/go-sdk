@@ -80,7 +80,7 @@ func main() {
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
 		Name:      "greet",
-		Arguments: map[string]any{"name": "you"},
+		Arguments: map[string]any{"name": "you", "age": 24, "funkos": []string{"Batman", "Superman"}},
 	}
 	res, err := session.CallTool(ctx, params)
 	if err != nil {
@@ -108,13 +108,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type HiParams struct {
-	Name string `json:"name" jsonschema:"the name of the person to greet"`
+type HiArgs struct {
+	Name   string   `json:"name" jsonschema:"the name to say hi to"`
+	Age    int      `json:"age" jsonschema:"the age of the person" minimum:"0" maximum:"120" default:"20"`
+	Funkos []string `json:"funkos" jsonschema:"the funkos the person has" minimum:"1" examples:"[\"Batman\", \"Superman\"]" default:"[\"Batman\"]"`
 }
 
 func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
-		Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + params.Arguments.Name}},
+		&mcp.TextContent{Text: fmt.Sprintf("Hi %s! You are %d years old and have %v funkos", params.Arguments.Name, params.Arguments.Age, params.Arguments.Funkos)},
 	}, nil
 }
 
