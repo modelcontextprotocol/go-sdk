@@ -2,9 +2,9 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-// logging-middleware demonstrates a server with comprehensive logging. This
-// example shows how to add detailed observability to MCP protocol operations
-// using middleware patterns defined in the MCP Go SDK design.
+// logging-middleware demonstrates a server with logging. This example shows
+// how to add detailed observability to MCP protocol operations using
+// middleware patterns defined in the MCP Go SDK design.
 package main
 
 import (
@@ -17,12 +17,17 @@ import (
 	"os"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+var httpAddr = flag.String(
+	"http",
+	"",
+	"if set, use streamable HTTP at this address, instead of stdin/stdout",
+)
 
-// LoggingMiddleware provides comprehensive MCP-level logging
+// LoggingMiddleware provides MCP-level logging.
 func LoggingMiddleware(logger *slog.Logger) mcp.Middleware[*mcp.ServerSession] {
 	return func(next mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession] {
 		return func(
@@ -88,73 +93,93 @@ func LoggingMiddleware(logger *slog.Logger) mcp.Middleware[*mcp.ServerSession] {
 	}
 }
 
-type GreetArgs struct {
-	Name string `json:"name"`
-}
-
-// createServer creates a new MCP server with comprehensive logging middleware
+// createServer creates a new MCP server with logging middleware.
 func createServer(logger *slog.Logger) *mcp.Server {
-	server := mcp.NewServer("logging-middleware-example", "1.0.0", nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "logging-middleware-example"}, nil)
 
 	// Add logging middleware to the server
 	server.AddReceivingMiddleware(LoggingMiddleware(logger))
 
 	// Add a simple greeting tool
-	server.AddTools(
-		mcp.NewServerTool(
-			"greet",
-			"Greet someone with comprehensive logging",
-			func(
-				ctx context.Context,
-				ss *mcp.ServerSession,
-				params *mcp.CallToolParamsFor[GreetArgs],
-			) (*mcp.CallToolResultFor[struct{}], error) {
-				message := fmt.Sprintf("Hello, %s! This greeting was logged via MCP middleware.", params.Arguments.Name)
-
-				// Additional tool-specific logging
-				logger.Info("greet tool executed",
-					"name", params.Arguments.Name,
-					"message_length", len(message),
-				)
-
-				return &mcp.CallToolResultFor[struct{}]{
-					Content: []mcp.Content{
-						&mcp.TextContent{Text: message},
+	server.AddTool(
+		&mcp.Tool{
+			Name:        "greet",
+			Description: "Greet someone with logging",
+			InputSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"name": {
+						Type:        "string",
+						Description: "Name to greet",
 					},
-				}, nil
+				},
+				Required: []string{"name"},
 			},
-			mcp.Input(
-				mcp.Property("name", mcp.Description("Name to greet")),
-			),
-		),
+		},
+		func(
+			ctx context.Context,
+			ss *mcp.ServerSession,
+			params *mcp.CallToolParamsFor[map[string]any],
+		) (*mcp.CallToolResultFor[any], error) {
+			// Extract name from untyped arguments
+			name, ok := params.Arguments["name"].(string)
+			if !ok {
+				return nil, fmt.Errorf("name parameter is required and must be a string")
+			}
+
+			message := fmt.Sprintf("Hello, %s! This greeting was logged via MCP middleware.", name)
+
+			// Additional tool-specific logging
+			logger.Info("greet tool executed",
+				"name", name,
+				"message_length", len(message),
+			)
+
+			return &mcp.CallToolResultFor[any]{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: message},
+				},
+			}, nil
+		},
 	)
 
 	// Add a tool that demonstrates error logging
-	server.AddTools(
-		mcp.NewServerTool(
-			"error_demo",
-			"Demonstrate error logging via middleware",
-			func(
-				ctx context.Context,
-				ss *mcp.ServerSession,
-				params *mcp.CallToolParamsFor[struct {
-					ShouldError bool `json:"should_error"`
-				}],
-			) (*mcp.CallToolResultFor[struct{}], error) {
-				if params.Arguments.ShouldError {
-					return nil, fmt.Errorf("demonstration error as requested")
-				}
-
-				return &mcp.CallToolResultFor[struct{}]{
-					Content: []mcp.Content{
-						&mcp.TextContent{Text: "No error occurred"},
+	server.AddTool(
+		&mcp.Tool{
+			Name:        "error_demo",
+			Description: "Demonstrate error logging via middleware",
+			InputSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"should_error": {
+						Type:        "boolean",
+						Description: "Whether to return an error",
 					},
-				}, nil
+				},
+				Required: []string{"should_error"},
 			},
-			mcp.Input(
-				mcp.Property("should_error", mcp.Description("Whether to return an error")),
-			),
-		),
+		},
+		func(
+			ctx context.Context,
+			ss *mcp.ServerSession,
+			params *mcp.CallToolParamsFor[map[string]any],
+		) (*mcp.CallToolResultFor[any], error) {
+			// Extract should_error from untyped arguments
+			shouldError, ok := params.Arguments["should_error"].(bool)
+			if !ok {
+				return nil, fmt.Errorf("should_error parameter is required and must be a boolean")
+			}
+
+			if shouldError {
+				return nil, fmt.Errorf("demonstration error as requested")
+			}
+
+			return &mcp.CallToolResultFor[any]{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: "No error occurred"},
+				},
+			}, nil
+		},
 	)
 
 	logger.Info("MCP server configured with logging middleware",
@@ -167,7 +192,7 @@ func createServer(logger *slog.Logger) *mcp.Server {
 func main() {
 	flag.Parse()
 
-	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
 	}

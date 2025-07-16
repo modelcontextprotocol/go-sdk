@@ -95,7 +95,7 @@ func setupInMemorySession(t *testing.T, logger *slog.Logger) (*mcp.ClientSession
 	t.Helper()
 
 	server := createServer(logger)
-	client := mcp.NewClient("test-client", "1.0.0", nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil)
 
 	// Create in-memory transports
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
