@@ -27,7 +27,7 @@ var httpAddr = flag.String(
 	"if set, use streamable HTTP at this address, instead of stdin/stdout",
 )
 
-// LoggingMiddleware provides MCP-level logging.
+// LoggingMiddleware provides server side logging using the `mcp.Middleware` system.
 func LoggingMiddleware(logger *slog.Logger) mcp.Middleware[*mcp.ServerSession] {
 	return func(next mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession] {
 		return func(
@@ -38,11 +38,7 @@ func LoggingMiddleware(logger *slog.Logger) mcp.Middleware[*mcp.ServerSession] {
 		) (mcp.Result, error) {
 			start := time.Now()
 
-			// Note: The actual HTTP session ID (from Mcp-Session-Id header) is not
-			// accessible from middleware with the current SDK design. This would require
-			// SDK changes to pass the session ID through context. For now, we use the
-			// session pointer as a unique identifier within this process.
-			sessionID := fmt.Sprintf("%p", session)
+			sessionID := session.ID()
 
 			logger.Info("MCP method started",
 				"method", method,
@@ -69,7 +65,7 @@ func LoggingMiddleware(logger *slog.Logger) mcp.Middleware[*mcp.ServerSession] {
 					"method", method,
 					"session_id", sessionID,
 					"duration_ms", duration.Milliseconds(),
-					"error", err.Error(),
+					"err", err,
 				)
 			} else {
 				logger.Info("MCP method completed",
