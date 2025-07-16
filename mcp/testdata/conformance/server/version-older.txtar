@@ -19,16 +19,7 @@ support.
 	"result": {
 		"capabilities": {
 			"completions": {},
-			"logging": {},
-			"prompts": {
-				"listChanged": true
-			},
-			"resources": {
-				"listChanged": true
-			},
-			"tools": {
-				"listChanged": true
-			}
+			"logging": {}
 		},
 		"protocolVersion": "2024-11-05",
 		"serverInfo": {

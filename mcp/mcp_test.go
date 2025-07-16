@@ -39,6 +39,21 @@ func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiP
 	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
 }
 
+var codeReviewPrompt = &Prompt{
+	Name:        "code_review",
+	Description: "do a code review",
+	Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
+}
+
+func codReviewPromptHandler(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
+	return &GetPromptResult{
+		Description: "Code review prompt",
+		Messages: []*PromptMessage{
+			{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
+		},
+	}, nil
+}
+
 func TestEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	var ct, st Transport = NewInMemoryTransports()
@@ -73,18 +88,7 @@ func TestEndToEnd(t *testing.T) {
 		func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
-	s.AddPrompt(&Prompt{
-		Name:        "code_review",
-		Description: "do a code review",
-		Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
-	}, func(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
-		return &GetPromptResult{
-			Description: "Code review prompt",
-			Messages: []*PromptMessage{
-				{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
-			},
-		}, nil
-	})
+	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
 	s.AddPrompt(&Prompt{Name: "fail"}, func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
 		return nil, errTestFailure
 	})
