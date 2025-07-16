@@ -617,7 +617,12 @@ func TestStreamableClientConnSSEGoroutineLeak(t *testing.T) {
 	}
 
 	// Start the handleSSE goroutine manually
-	go conn.handleSSE(resp)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		conn.handleSSE(resp)
+		wg.Done()
+	}()
 
 	// Wait until incoming channel is filled
 	deadlineCtx, cancelFunc := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -633,7 +638,7 @@ func TestStreamableClientConnSSEGoroutineLeak(t *testing.T) {
 
 	// Now simulate calling Close() and blocking the goroutine
 	close(conn.done)
-	time.Sleep(50 * time.Millisecond) // Allow goroutine to exit
+	wg.Wait()
 
 	// Check if "scanEvents" goroutine is still running
 	leakKey := "scanEvents"
