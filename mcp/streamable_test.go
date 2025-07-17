@@ -520,7 +520,7 @@ func streamingRequest(ctx context.Context, serverURL, sessionID, method string, 
 			}
 			// TODO(rfindley): do we need to check evt.name?
 			// Does the MCP spec say anything about this?
-			msg, err := jsonrpc2.DecodeMessage(evt.data)
+			msg, err := jsonrpc2.DecodeMessage(evt.Data)
 			if err != nil {
 				return newSessionID, resp.StatusCode, fmt.Errorf("decoding message: %w", err)
 			}

@@ -149,6 +149,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 // NewStreamableServerTransport returns a new [StreamableServerTransport] with
 // the given session ID.
+// The session ID must be globally unique, that is, different from any other
+// session ID anywhere, past and future. (We recommend using a crypto random number
+// generator to produce one, as in [crypto/rand.Text].)
 //
 // A StreamableServerTransport implements the server-side of the streamable
 // transport.
@@ -246,7 +249,7 @@ type streamID int64
 // a streamableMsg is an SSE event with an index into its logical stream.
 type streamableMsg struct {
 	idx   int
-	event event
+	event Event
 }
 
 // Connect implements the [Transport] interface.
@@ -549,10 +552,10 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	idx := len(t.outgoingMessages[forConn])
 	t.outgoingMessages[forConn] = append(t.outgoingMessages[forConn], &streamableMsg{
 		idx: idx,
-		event: event{
-			name: "message",
-			id:   formatEventID(forConn, idx),
-			data: data,
+		event: Event{
+			Name: "message",
+			ID:   formatEventID(forConn, idx),
+			Data: data,
 		},
 	})
 	if replyTo.IsValid() {
@@ -768,7 +771,7 @@ func (s *streamableClientConn) handleSSE(resp *http.Response) {
 			select {
 			case <-s.done:
 				return
-			case s.incoming <- evt.data:
+			case s.incoming <- evt.Data:
 			}
 		}
 	}()
