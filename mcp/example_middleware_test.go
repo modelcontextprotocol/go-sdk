@@ -20,8 +20,8 @@ func Example_loggingMiddleware() {
 	// Create a logger for demonstration purposes.
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Simplify timestamp format for consistent output
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			// Simplify timestamp format for consistent output.
 			if a.Key == slog.TimeKey {
 				return slog.String("time", "2025-01-01T00:00:00Z")
 			}
@@ -29,7 +29,6 @@ func Example_loggingMiddleware() {
 		},
 	}))
 
-	// Create logging middleware
 	loggingMiddleware := func(next mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession] {
 		return func(
 			ctx context.Context,
@@ -37,15 +36,14 @@ func Example_loggingMiddleware() {
 			method string,
 			params mcp.Params,
 		) (mcp.Result, error) {
-			start := time.Now()
-
 			logger.Info("MCP method started",
 				"method", method,
 				"session_id", session.ID(),
 				"has_params", params != nil,
 			)
 
-			// Call the actual handler
+			start := time.Now()
+
 			result, err := next(ctx, session, method, params)
 
 			duration := time.Since(start)
