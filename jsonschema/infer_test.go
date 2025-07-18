@@ -5,6 +5,7 @@
 package jsonschema_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -111,6 +112,90 @@ func TestFor(t *testing.T) {
 				},
 				Required:             []string{"A", "S"},
 				AdditionalProperties: falseSchema(),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if diff := cmp.Diff(test.want, test.got, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+				t.Fatalf("ForType mismatch (-want +got):\n%s", diff)
+			}
+			// These schemas should all resolve.
+			if _, err := test.got.Resolve(nil); err != nil {
+				t.Fatalf("Resolving: %v", err)
+			}
+		})
+	}
+}
+
+func customizedForType[T any](options jsonschema.GeneratorOptions) *jsonschema.Schema {
+	s, err := jsonschema.CustomizedFor[T](options)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func TestCustomizedFor(t *testing.T) {
+	type schema = jsonschema.Schema
+
+	type S struct {
+		B int `jsonschema:"bdesc"`
+	}
+	sType := reflect.TypeOf((*S)(nil)).Elem()
+
+	type CustomS interface {
+		X() string
+	}
+	customSSchema := schema{Type: "object", Properties: map[string]*schema{
+		"X": {Type: "string", Description: "custom interface property"},
+	}}
+	customSType := reflect.TypeOf((*CustomS)(nil)).Elem()
+
+	genOptions := jsonschema.GeneratorOptions{
+		AdditionalProperties: func(t reflect.Type) *jsonschema.Schema {
+			if t == sType {
+				return &schema{AnyOf: []*schema{
+					{Type: "integer"},
+					{Type: "string"},
+				}}
+			}
+			return &schema{}
+		},
+		SchemaRegistry: map[reflect.Type]*jsonschema.Schema{
+			customSType: &customSSchema,
+		},
+	}
+
+	tests := []struct {
+		name string
+		got  *jsonschema.Schema
+		want *jsonschema.Schema
+	}{
+		{
+			"interface",
+			customizedForType[CustomS](genOptions),
+			&schema{
+				Type: "object",
+				Properties: map[string]*schema{
+					"X": {Type: "string", Description: "custom interface property"},
+				},
+			},
+		},
+		{
+			"customized struct",
+			customizedForType[S](genOptions),
+			&schema{
+				Type: "object",
+				Properties: map[string]*schema{
+					"B": {Type: "integer", Description: "bdesc"},
+				},
+				Required: []string{"B"},
+				AdditionalProperties: &schema{AnyOf: []*schema{
+					{Type: "integer"},
+					{Type: "string"},
+				}},
 			},
 		},
 	}
