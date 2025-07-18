@@ -163,10 +163,10 @@ func NewStreamableServerTransport(sessionID string) *StreamableServerTransport {
 		id:               sessionID,
 		incoming:         make(chan jsonrpc.Message, 10),
 		done:             make(chan struct{}),
-		outgoingMessages: make(map[streamID][]*streamableMsg),
-		signals:          make(map[streamID]chan struct{}),
-		requestStreams:   make(map[jsonrpc.ID]streamID),
-		streamRequests:   make(map[streamID]map[jsonrpc.ID]struct{}),
+		outgoingMessages: make(map[StreamID][]*streamableMsg),
+		signals:          make(map[StreamID]chan struct{}),
+		requestStreams:   make(map[jsonrpc.ID]StreamID),
+		streamRequests:   make(map[StreamID]map[jsonrpc.ID]struct{}),
 	}
 }
 
@@ -212,7 +212,7 @@ type StreamableServerTransport struct {
 	//
 	// TODO(rfindley): garbage collect this data. For now, we save all outgoingMessages
 	// messages for the lifespan of the transport.
-	outgoingMessages map[streamID][]*streamableMsg
+	outgoingMessages map[StreamID][]*streamableMsg
 
 	// signals maps a logical stream ID to a 1-buffered channel, owned by an
 	// incoming HTTP request, that signals that there are messages available to
@@ -223,14 +223,14 @@ type StreamableServerTransport struct {
 	//
 	// Lifecycle: signals persists for the duration of an HTTP POST or GET
 	// request for the given streamID.
-	signals map[streamID]chan struct{}
+	signals map[StreamID]chan struct{}
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
 	// Lifecycle: requestStreams persists for the duration of the session.
 	//
 	// TODO(rfindley): clean up once requests are handled.
-	requestStreams map[jsonrpc.ID]streamID
+	requestStreams map[jsonrpc.ID]StreamID
 
 	// streamRequests tracks the set of unanswered incoming RPCs for each logical
 	// stream.
@@ -241,10 +241,10 @@ type StreamableServerTransport struct {
 	// Lifecycle: streamRequests values persist as until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
-	streamRequests map[streamID]map[jsonrpc.ID]struct{}
+	streamRequests map[StreamID]map[jsonrpc.ID]struct{}
 }
 
-type streamID int64
+type StreamID int64
 
 // a streamableMsg is an SSE event with an index into its logical stream.
 type streamableMsg struct {
@@ -298,7 +298,7 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 
 func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
-	id, nextIdx := streamID(0), 0
+	id, nextIdx := StreamID(0), 0
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
 		eid := req.Header.Get("Last-Event-ID")
 		var ok bool
@@ -352,7 +352,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	}
 
 	// Update accounting for this request.
-	id := streamID(t.nextStreamID.Add(1))
+	id := StreamID(t.nextStreamID.Add(1))
 	signal := make(chan struct{}, 1)
 	t.mu.Lock()
 	if len(requests) > 0 {
@@ -376,7 +376,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	t.streamResponse(w, req, id, 0, signal)
 }
 
-func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *http.Request, id streamID, nextIndex int, signal chan struct{}) {
+func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *http.Request, id StreamID, nextIndex int, signal chan struct{}) {
 	defer func() {
 		t.mu.Lock()
 		delete(t.signals, id)
@@ -463,7 +463,7 @@ stream:
 // streamID and message index idx.
 //
 // See also [parseEventID].
-func formatEventID(sid streamID, idx int) string {
+func formatEventID(sid StreamID, idx int) string {
 	return fmt.Sprintf("%d_%d", sid, idx)
 }
 
@@ -471,7 +471,7 @@ func formatEventID(sid streamID, idx int) string {
 // index.
 //
 // See also [formatEventID].
-func parseEventID(eventID string) (sid streamID, idx int, ok bool) {
+func parseEventID(eventID string) (sid StreamID, idx int, ok bool) {
 	parts := strings.Split(eventID, "_")
 	if len(parts) != 2 {
 		return 0, 0, false
@@ -484,7 +484,7 @@ func parseEventID(eventID string) (sid streamID, idx int, ok bool) {
 	if err != nil || idx < 0 {
 		return 0, 0, false
 	}
-	return streamID(stream), idx, true
+	return StreamID(stream), idx, true
 }
 
 // Read implements the [Connection] interface.
@@ -523,7 +523,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	//
 	// For messages sent outside of a request context, this is the default
 	// connection 0.
-	var forConn streamID
+	var forConn StreamID
 	if forRequest.IsValid() {
 		t.mu.Lock()
 		forConn = t.requestStreams[forRequest]

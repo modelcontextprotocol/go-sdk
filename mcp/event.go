@@ -10,12 +10,16 @@ package mcp
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // An Event is a server-sent event.
@@ -135,4 +139,279 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			yield(evt, nil)
 		}
 	}
+}
+
+// An EventStore tracks data for SSE streams.
+// A single EventStore suffices for all sessions, since session IDs are
+// globally unique. So one EventStore can be created per process, for
+// all Servers in the process.
+// Such a store is able to bound resource usage for the entire process.
+//
+// All of an EventStore's methods must be safe for use by multiple goroutines.
+type EventStore interface {
+	// AppendEvent appends data for an outgoing event to given stream, which is part of the
+	// given session. It returns the index of the event in the stream, suitable for constructing
+	// an event ID to send to the client.
+	AppendEvent(_ context.Context, sessionID string, _ StreamID, data []byte) (int, error)
+
+	// After returns an iterator over the data for the given session and stream, beginning
+	// just after the given index.
+	// Once the iterator yields a non-nil error, it will stop.
+	// After's iterator must return an error immediately if any data after index was
+	// dropped; it must not return partial results.
+	After(_ context.Context, sessionID string, _ StreamID, index int) iter.Seq2[[]byte, error]
+
+	// StreamClosed informs the store that the given stream is finished.
+	// A store cannot rely on this method being called for cleanup. It should institute
+	// additional mechanisms, such as timeouts, to reclaim storage.
+	StreamClosed(_ context.Context, sessionID string, streamID StreamID) error
+
+	// SessionClosed informs the store that the given session is finished, along
+	// with all of its streams.
+	// A store cannot rely on this method being called for cleanup. It should institute
+	// additional mechanisms, such as timeouts, to reclaim storage.
+	SessionClosed(_ context.Context, sessionID string) error
+}
+
+// A dataList is a list of []byte.
+// The zero dataList is ready to use.
+type dataList struct {
+	size  int // total size of data bytes
+	first int // the stream index of the first element in data
+	data  [][]byte
+}
+
+func (dl *dataList) appendData(d []byte) {
+	// If we allowed empty data, we would consume memory without incrementing the size.
+	// We could of course account for that, but we keep it simple and assume there is no
+	// empty data.
+	if len(d) == 0 {
+		panic("empty data item")
+	}
+	dl.data = append(dl.data, d)
+	dl.size += len(d)
+}
+
+// removeFirst removes the first data item in dl, returning the size of the item.
+// It panics if dl is empty.
+func (dl *dataList) removeFirst() int {
+	if len(dl.data) == 0 {
+		panic("empty dataList")
+	}
+	r := len(dl.data[0])
+	dl.size -= r
+	dl.data[0] = nil // help GC
+	dl.data = dl.data[1:]
+	dl.first++
+	return r
+}
+
+// lastIndex returns the index of the last data item in dl.
+// It panics if there are none.
+func (dl *dataList) lastIndex() int {
+	if len(dl.data) == 0 {
+		panic("empty dataList")
+	}
+	return dl.first + len(dl.data) - 1
+}
+
+// A MemoryEventStore is an [EventStore] backed by memory.
+type MemoryEventStore struct {
+	mu       sync.Mutex
+	maxBytes int                               // max total size of all data
+	nBytes   int                               // current total size of all data
+	store    map[string]map[StreamID]*dataList // session ID -> stream ID -> *dataList
+}
+
+// MemoryEventStoreOptions are options for a [MemoryEventStore].
+type MemoryEventStoreOptions struct{}
+
+// MaxBytes returns the maximum number of bytes that the store will retain before
+// purging data.
+func (s *MemoryEventStore) MaxBytes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxBytes
+}
+
+// SetMaxBytes sets the maximum number of bytes the store will retain before purging
+// data. The argument must not be negative. If it is zero, a suitable default will be used.
+// SetMaxBytes can be called at any time. The size of the store will be adjusted
+// immediately.
+func (s *MemoryEventStore) SetMaxBytes(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case n < 0:
+		panic("negative argument")
+	case n == 0:
+		s.maxBytes = defaultMaxBytes
+	default:
+		s.maxBytes = n
+	}
+	s.purge()
+}
+
+const defaultMaxBytes = 10 << 20 // 10 MiB
+
+// NewMemoryEventStore creates a [MemoryEventStore] with the default value
+// for MaxBytes.
+func NewMemoryEventStore(opts *MemoryEventStoreOptions) *MemoryEventStore {
+	return &MemoryEventStore{
+		maxBytes: defaultMaxBytes,
+		store:    make(map[string]map[StreamID]*dataList),
+	}
+}
+
+// AppendEvent implements [EventStore.AppendEvent] by recording data
+// in memory.
+func (s *MemoryEventStore) AppendEvent(_ context.Context, sessionID string, streamID StreamID, data []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	streamMap, ok := s.store[sessionID]
+	if !ok {
+		streamMap = make(map[StreamID]*dataList)
+		s.store[sessionID] = streamMap
+	}
+	dl, ok := streamMap[streamID]
+	if !ok {
+		dl = &dataList{}
+		streamMap[streamID] = dl
+	}
+	// Purge before adding, so at least the current data item will be present.
+	// (That could result in nBytes > maxBytes, but we'll live with that.)
+	s.purge()
+	dl.appendData(data)
+	s.nBytes += len(data)
+	return dl.lastIndex(), nil
+}
+
+// After implements [EventStore.After].
+func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID StreamID, index int) iter.Seq2[[]byte, error] {
+	// Return the data items to yield.
+	// We must copy, because dataList.removeFirst nils out slice elements.
+	copyData := func() ([][]byte, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		streamMap, ok := s.store[sessionID]
+		if !ok {
+			return nil, fmt.Errorf("MemoryEventStore.After: unknown session ID %q", sessionID)
+		}
+		dl, ok := streamMap[streamID]
+		if !ok {
+			return nil, fmt.Errorf("MemoryEventStore.After: unknown stream ID %v in session %q", streamID, sessionID)
+		}
+		if dl.first > index {
+			return nil, fmt.Errorf("MemoryEventStore.After: data purged at index %d, stream ID %v, session %q", index, streamID, sessionID)
+		}
+		return slices.Clone(dl.data[index-dl.first:]), nil
+	}
+
+	return func(yield func([]byte, error) bool) {
+		ds, err := copyData()
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for _, d := range ds {
+			if !yield(d, nil) {
+				return
+			}
+		}
+	}
+}
+
+// StreamClosed implements [EventStore.StreamClosed].
+func (s *MemoryEventStore) StreamClosed(_ context.Context, sessionID string, streamID StreamID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sm := s.store[sessionID]
+	dl := sm[streamID]
+	s.nBytes -= dl.size
+	delete(sm, streamID)
+	s.validate()
+	return nil
+}
+
+// SessionClosed implements [EventStore.SessionClosed].
+func (s *MemoryEventStore) SessionClosed(_ context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, dl := range s.store[sessionID] {
+		s.nBytes -= dl.size
+	}
+	delete(s.store, sessionID)
+	s.validate()
+	return nil
+}
+
+// purge removes data until no more than s.maxBytes bytes are in use.
+// It must be called with s.mu held.
+func (s *MemoryEventStore) purge() {
+	if s.maxBytes <= 0 {
+		panic("non-positive maxBytes")
+	}
+	// Remove the first element of every dataList until below the max.
+	for s.nBytes > s.maxBytes {
+		changed := false
+		for _, sm := range s.store {
+			for _, dl := range sm {
+				if dl.size > 0 {
+					r := dl.removeFirst()
+					if r > 0 {
+						changed = true
+						s.nBytes -= r
+					}
+				}
+			}
+		}
+		if !changed {
+			panic("no progress during purge")
+		}
+	}
+	s.validate()
+}
+
+// validate checks that the store's data structures are valid.
+// It must be called with s.mu held.
+func (s *MemoryEventStore) validate() {
+	// Check that we're accounting for the size correctly.
+	n := 0
+	for _, sm := range s.store {
+		for _, dl := range sm {
+			for _, d := range dl.data {
+				n += len(d)
+			}
+		}
+	}
+	if n != s.nBytes {
+		panic("sizes don't add up")
+	}
+}
+
+// debugString returns a string containing the state of s.
+// Used in tests.
+func (s *MemoryEventStore) debugString() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var b strings.Builder
+	for i, sess := range slices.Sorted(maps.Keys(s.store)) {
+		if i > 0 {
+			fmt.Fprintf(&b, "; ")
+		}
+		sm := s.store[sess]
+		for i, sid := range slices.Sorted(maps.Keys(sm)) {
+			if i > 0 {
+				fmt.Fprintf(&b, "; ")
+			}
+			dl := sm[sid]
+			fmt.Fprintf(&b, "%s %d first=%d", sess, sid, dl.first)
+			for _, d := range dl.data {
+				fmt.Fprintf(&b, " %s", d)
+			}
+		}
+	}
+	return b.String()
 }
