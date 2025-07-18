@@ -113,6 +113,22 @@ func TestFor(t *testing.T) {
 				AdditionalProperties: falseSchema(),
 			},
 		},
+		{
+			"ignore",
+			forType[struct {
+				A int
+				B map[int]int
+				C func()
+			}](),
+			&schema{
+				Type: "object",
+				Properties: map[string]*schema{
+					"A": {Type: "integer"},
+				},
+				Required:             []string{"A"},
+				AdditionalProperties: falseSchema(),
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -147,10 +163,8 @@ func TestForErrors(t *testing.T) {
 		got  error
 		want string
 	}{
-		{forErr[map[int]int](), "unsupported map key type"},
 		{forErr[s1](), "empty jsonschema tag"},
 		{forErr[s2](), "must not begin with"},
-		{forErr[func()](), "unsupported"},
 	} {
 		if tt.got == nil {
 			t.Errorf("got nil, want error containing %q", tt.want)

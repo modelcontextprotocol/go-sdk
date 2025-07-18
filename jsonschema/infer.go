@@ -30,8 +30,10 @@ import (
 //     struct field JSON name. Fields that are marked "omitempty" are
 //     considered optional; all other fields become required properties.
 //
-// For returns an error if t contains (possibly recursively) any of the following Go
-// types, as they are incompatible with the JSON schema spec.
+// For ignores the following Go types, as they are incompatible with the JSON schema spec.
+// Since it ignores them instead of failing, you can call this function first, then adjust
+// the result yourself to handle these types.
+//
 //   - maps with key other than 'string'
 //   - function types
 //   - channel types
@@ -96,12 +98,16 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("unsupported map key type %v", t.Key().Kind())
+			return nil, nil
 		}
 		s.Type = "object"
 		s.AdditionalProperties, err = forType(t.Elem(), seen)
 		if err != nil {
 			return nil, fmt.Errorf("computing map value schema: %v", err)
+		}
+		// Ignore if the element type is invalid.
+		if s.AdditionalProperties == nil {
+			return nil, nil
 		}
 
 	case reflect.Slice, reflect.Array:
@@ -109,6 +115,10 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 		s.Items, err = forType(t.Elem(), seen)
 		if err != nil {
 			return nil, fmt.Errorf("computing element schema: %v", err)
+		}
+		// Ignore if the element type is invalid.
+		if s.Items == nil {
+			return nil, nil
 		}
 		if t.Kind() == reflect.Array {
 			s.MinItems = Ptr(t.Len())
@@ -136,6 +146,10 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			if err != nil {
 				return nil, err
 			}
+			// Skip fields of invalid type.
+			if fs == nil {
+				continue
+			}
 			if tag, ok := field.Tag.Lookup("jsonschema"); ok {
 				if tag == "" {
 					return nil, fmt.Errorf("empty jsonschema tag on struct field %s.%s", t, field.Name)
@@ -152,7 +166,8 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 		}
 
 	default:
-		return nil, fmt.Errorf("type %v is unsupported by jsonschema", t)
+		// Ignore.
+		return nil, nil
 	}
 	if allowNull && s.Type != "" {
 		s.Types = []string{"null", s.Type}
