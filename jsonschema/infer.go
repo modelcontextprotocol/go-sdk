@@ -47,7 +47,7 @@ import (
 func For[T any]() (*Schema, error) {
 	// TODO: consider skipping incompatible fields, instead of failing.
 	seen := make(map[reflect.Type]bool)
-	s, err := forType(reflect.TypeFor[T](), seen)
+	s, err := forType(reflect.TypeFor[T](), seen, false)
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)
@@ -55,7 +55,22 @@ func For[T any]() (*Schema, error) {
 	return s, nil
 }
 
-func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
+// ForLax behaves like [For], except that it ignores struct fields with invalid types instead of
+// returning an error. That allows callers to adjust the resulting schema using custom knowledge.
+// For example, an interface type where all the possible implementations are known
+// can be described with "oneof".
+func ForLax[T any]() (*Schema, error) {
+	// TODO: consider skipping incompatible fields, instead of failing.
+	seen := make(map[reflect.Type]bool)
+	s, err := forType(reflect.TypeFor[T](), seen, true)
+	if err != nil {
+		var z T
+		return nil, fmt.Errorf("ForLax[%T](): %w", z, err)
+	}
+	return s, nil
+}
+
+func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, error) {
 	// Follow pointers: the schema for *T is almost the same as for T, except that
 	// an explicit JSON "null" is allowed for the pointer.
 	allowNull := false
@@ -96,19 +111,32 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
+			if lax {
+				return nil, nil // ignore
+			}
 			return nil, fmt.Errorf("unsupported map key type %v", t.Key().Kind())
 		}
+		if t.Key().Kind() != reflect.String {
+		}
 		s.Type = "object"
-		s.AdditionalProperties, err = forType(t.Elem(), seen)
+		s.AdditionalProperties, err = forType(t.Elem(), seen, lax)
 		if err != nil {
 			return nil, fmt.Errorf("computing map value schema: %v", err)
+		}
+		if lax && s.AdditionalProperties == nil {
+			// Ignore if the element type is invalid.
+			return nil, nil
 		}
 
 	case reflect.Slice, reflect.Array:
 		s.Type = "array"
-		s.Items, err = forType(t.Elem(), seen)
+		s.Items, err = forType(t.Elem(), seen, lax)
 		if err != nil {
 			return nil, fmt.Errorf("computing element schema: %v", err)
+		}
+		if lax && s.Items == nil {
+			// Ignore if the element type is invalid.
+			return nil, nil
 		}
 		if t.Kind() == reflect.Array {
 			s.MinItems = Ptr(t.Len())
@@ -132,9 +160,13 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 			if s.Properties == nil {
 				s.Properties = make(map[string]*Schema)
 			}
-			fs, err := forType(field.Type, seen)
+			fs, err := forType(field.Type, seen, lax)
 			if err != nil {
 				return nil, err
+			}
+			if lax && fs == nil {
+				// Skip fields of invalid type.
+				continue
 			}
 			if tag, ok := field.Tag.Lookup("jsonschema"); ok {
 				if tag == "" {
@@ -152,6 +184,10 @@ func forType(t reflect.Type, seen map[reflect.Type]bool) (*Schema, error) {
 		}
 
 	default:
+		if lax {
+			// Ignore.
+			return nil, nil
+		}
 		return nil, fmt.Errorf("type %v is unsupported by jsonschema", t)
 	}
 	if allowNull && s.Type != "" {
