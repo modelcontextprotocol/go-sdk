@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"context"
 	"log"
 	"slices"
 	"testing"
@@ -232,6 +233,7 @@ func TestServerCapabilities(t *testing.T) {
 	testCases := []struct {
 		name             string
 		configureServer  func(s *Server)
+		serverOpts       ServerOptions
 		wantCapabilities *serverCapabilities
 	}{
 		{
@@ -276,6 +278,23 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
+			name:            "With resource subscriptions",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {
+					return nil
+				},
+				UnsubscribeHandler: func(ctx context.Context, up *UnsubscribeParams) error {
+					return nil
+				},
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Resources:   &resourceCapabilities{Subscribe: true},
+			},
+		},
+		{
 			name: "With tools",
 			configureServer: func(s *Server) {
 				s.AddTool(&Tool{Name: "t"}, nil)
@@ -294,11 +313,19 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 				s.AddTool(&Tool{Name: "t"}, nil)
 			},
+			serverOpts: ServerOptions{
+				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {
+					return nil
+				},
+				UnsubscribeHandler: func(ctx context.Context, up *UnsubscribeParams) error {
+					return nil
+				},
+			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
 				Logging:     &loggingCapabilities{},
 				Prompts:     &promptCapabilities{ListChanged: true},
-				Resources:   &resourceCapabilities{ListChanged: true},
+				Resources:   &resourceCapabilities{ListChanged: true, Subscribe: true},
 				Tools:       &toolCapabilities{ListChanged: true},
 			},
 		},
@@ -306,7 +333,7 @@ func TestServerCapabilities(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(testImpl, nil)
+			server := NewServer(testImpl, &tc.serverOpts)
 			tc.configureServer(server)
 			gotCapabilities := server.capabilities()
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {

@@ -859,6 +859,38 @@ type ToolListChangedParams struct {
 func (x *ToolListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ToolListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
+// Sent from the client to request resources/updated notifications from the
+// server whenever a particular resource changes.
+type SubscribeParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The URI of the resource to subscribe to.
+	URI string `json:"uri"`
+}
+
+// Sent from the client to request cancellation of resources/updated
+// notifications from the server. This should follow a previous
+// resources/subscribe request.
+type UnsubscribeParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The URI of the resource to unsubscribe from.
+	URI string `json:"uri"`
+}
+
+// A notification from the server to the client, informing it that a resource
+// has changed and may need to be read again. This should only be sent if the
+// client previously sent a resources/subscribe request.
+type ResourceUpdatedNotificationParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The URI of the resource that has been updated. This might be a sub-resource of the one that the client actually subscribed to.
+	URI string `json:"uri"`
+}
+
 // TODO(jba): add CompleteRequest and related types.
 
 // TODO(jba): add ElicitRequest and related types.
