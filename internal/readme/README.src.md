@@ -11,11 +11,12 @@ https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.2.0) for details.
 This repository contains an unreleased implementation of the official Go
 software development kit (SDK) for the Model Context Protocol (MCP).
 
-**WARNING**: The SDK should be considered unreleased, and is currently unstable
-and subject to breaking changes. Please test it out and file bug reports or API
-proposals, but don't use it in real projects. See the issue tracker for known
-issues and missing features. We aim to release a stable version of the SDK in
-August, 2025.
+> [!WARNING]
+> **WARNING**: The SDK should be considered unreleased, and is currently unstable
+> and subject to breaking changes. Please test it out and file bug reports or API
+> proposals, but don't use it in real projects. See the issue tracker for known
+> issues and missing features. We aim to release a stable version of the SDK in
+> August, 2025.
 
 ## Design
 
@@ -27,7 +28,7 @@ Further design discussion should occur in
 [issues](https://github.com/modelcontextprotocol/go-sdk/issues) (for concrete
 proposals) or
 [discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
-open-ended discussion. See CONTRIBUTING.md for details.
+open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
 
 ## Package documentation
 
@@ -58,7 +59,7 @@ with its client over stdin/stdout:
 
 %include server/server.go -
 
-The `examples/` directory contains more example clients and servers.
+The [`examples/`](/examples/) directory contains more example clients and servers.
 
 ## Acknowledgements
 
