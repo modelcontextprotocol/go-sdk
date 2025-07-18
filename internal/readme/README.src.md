@@ -12,7 +12,7 @@ This repository contains an unreleased implementation of the official Go
 software development kit (SDK) for the Model Context Protocol (MCP).
 
 > [!WARNING]
-> **WARNING**: The SDK should be considered unreleased, and is currently unstable
+> The SDK should be considered unreleased, and is currently unstable
 > and subject to breaking changes. Please test it out and file bug reports or API
 > proposals, but don't use it in real projects. See the issue tracker for known
 > issues and missing features. We aim to release a stable version of the SDK in
