@@ -63,13 +63,7 @@ func (c *ImageContent) MarshalJSON() ([]byte, error) {
 	if data == nil {
 		data = []byte{}
 	}
-	wire := struct {
-		Type        string       `json:"type"`
-		MIMEType    string       `json:"mimeType"`
-		Data        []byte       `json:"data"`
-		Meta        Meta         `json:"_meta,omitempty"`
-		Annotations *Annotations `json:"annotations,omitempty"`
-	}{
+	wire := imageAudioWire{
 		Type:        "image",
 		MIMEType:    c.MIMEType,
 		Data:        data,
@@ -100,13 +94,7 @@ func (c AudioContent) MarshalJSON() ([]byte, error) {
 	if data == nil {
 		data = []byte{}
 	}
-	wire := struct {
-		Type        string       `json:"type"`
-		MIMEType    string       `json:"mimeType"`
-		Data        []byte       `json:"data"`
-		Meta        Meta         `json:"_meta,omitempty"`
-		Annotations *Annotations `json:"annotations,omitempty"`
-	}{
+	wire := imageAudioWire{
 		Type:        "audio",
 		MIMEType:    c.MIMEType,
 		Data:        data,
@@ -121,6 +109,15 @@ func (c *AudioContent) fromWire(wire *wireContent) {
 	c.Data = wire.Data
 	c.Meta = wire.Meta
 	c.Annotations = wire.Annotations
+}
+
+// Custom wire format to ensure required fields are always included, even when empty.
+type imageAudioWire struct {
+	Type        string       `json:"type"`
+	MIMEType    string       `json:"mimeType"`
+	Data        []byte       `json:"data"`
+	Meta        Meta         `json:"_meta,omitempty"`
+	Annotations *Annotations `json:"annotations,omitempty"`
 }
 
 // ResourceLink is a link to a resource
