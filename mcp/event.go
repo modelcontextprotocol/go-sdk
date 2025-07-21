@@ -328,6 +328,10 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID S
 
 // StreamClosed implements [EventStore.StreamClosed].
 func (s *MemoryEventStore) StreamClosed(_ context.Context, sessionID string, streamID StreamID) error {
+	if sessionID == "" {
+		panic("empty sessionID")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
