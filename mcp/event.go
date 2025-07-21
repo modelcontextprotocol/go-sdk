@@ -22,6 +22,10 @@ import (
 	"sync"
 )
 
+// If true, MemoryEventStore will do frequent validation to check invariants, slowing it down.
+// Remove when we're confident in the code.
+const validateMemoryEventStore = true
+
 // An Event is a server-sent event.
 // See https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#fields.
 type Event struct {
@@ -331,6 +335,9 @@ func (s *MemoryEventStore) StreamClosed(_ context.Context, sessionID string, str
 	dl := sm[streamID]
 	s.nBytes -= dl.size
 	delete(sm, streamID)
+	if len(sm) == 0 {
+		delete(s.store, sessionID)
+	}
 	s.validate()
 	return nil
 }
@@ -350,9 +357,6 @@ func (s *MemoryEventStore) SessionClosed(_ context.Context, sessionID string) er
 // purge removes data until no more than s.maxBytes bytes are in use.
 // It must be called with s.mu held.
 func (s *MemoryEventStore) purge() {
-	if s.maxBytes <= 0 {
-		panic("non-positive maxBytes")
-	}
 	// Remove the first element of every dataList until below the max.
 	for s.nBytes > s.maxBytes {
 		changed := false
@@ -377,6 +381,9 @@ func (s *MemoryEventStore) purge() {
 // validate checks that the store's data structures are valid.
 // It must be called with s.mu held.
 func (s *MemoryEventStore) validate() {
+	if !validateMemoryEventStore {
+		return
+	}
 	// Check that we're accounting for the size correctly.
 	n := 0
 	for _, sm := range s.store {
