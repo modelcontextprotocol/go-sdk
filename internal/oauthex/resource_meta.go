@@ -9,7 +9,6 @@ package oauthex
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -164,38 +163,15 @@ func getPRM(ctx context.Context, url string, c *http.Client, wantResource string
 	if !strings.HasPrefix(strings.ToUpper(url), "HTTPS://") {
 		return nil, fmt.Errorf("resource URL %q does not use HTTPS", url)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, url, 1<<20)
 	if err != nil {
-		return nil, err
-	}
-	if c == nil {
-		c = http.DefaultClient
-	}
-	res, err := c.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	// Spec §3.2 requires a 200.
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status %s", res.Status)
-	}
-	// Spec §3.2 requires application/json.
-	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
-		return nil, fmt.Errorf("bad content type %q", ct)
-	}
-
-	var prm ProtectedResourceMetadata
-	dec := json.NewDecoder(res.Body)
-	if err := dec.Decode(&prm); err != nil {
 		return nil, err
 	}
 	// Validate the Resource field to thwart impersonation attacks (section 3.3).
 	if prm.Resource != wantResource {
 		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, wantResource)
 	}
-	return &prm, nil
+	return prm, nil
 }
 
 // challenge represents a single authentication challenge from a WWW-Authenticate header.
