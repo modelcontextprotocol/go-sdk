@@ -85,9 +85,11 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 	if opts.PageSize < 0 {
 		panic(fmt.Errorf("invalid page size %d", opts.PageSize))
 	}
+	// TODO(jba): don't modify opts, modify Server.opts.
 	if opts.PageSize == 0 {
 		opts.PageSize = DefaultPageSize
 	}
+
 	return &Server{
 		impl:                    impl,
 		opts:                    *opts,

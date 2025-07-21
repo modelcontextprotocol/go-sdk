@@ -105,7 +105,7 @@ func TestMemoryEventStoreState(t *testing.T) {
 	ctx := context.Background()
 
 	appendEvent := func(s *MemoryEventStore, sess string, str StreamID, data string) {
-		if _, err := s.AppendEvent(ctx, sess, str, []byte(data)); err != nil {
+		if err := s.Append(ctx, sess, str, []byte(data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -126,18 +126,6 @@ func TestMemoryEventStoreState(t *testing.T) {
 			},
 			"S1 1 first=0 d1 d3; S1 2 first=0 d2; S2 8 first=0 d4",
 			8,
-		},
-		{
-			"stream close",
-			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
-				s.StreamClosed(ctx, "S1", 1)
-			},
-			"S1 2 first=0 d2; S2 8 first=0 d4",
-			4,
 		},
 		{
 			"session close",
@@ -218,10 +206,10 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryEventStore(nil)
 	s.SetMaxBytes(4)
-	s.AppendEvent(ctx, "S1", 1, []byte("d1"))
-	s.AppendEvent(ctx, "S1", 1, []byte("d2"))
-	s.AppendEvent(ctx, "S1", 1, []byte("d3"))
-	s.AppendEvent(ctx, "S1", 2, []byte("d4")) // will purge d1
+	s.Append(ctx, "S1", 1, []byte("d1"))
+	s.Append(ctx, "S1", 1, []byte("d2"))
+	s.Append(ctx, "S1", 1, []byte("d3"))
+	s.Append(ctx, "S1", 2, []byte("d4")) // will purge d1
 	want := "S1 1 first=1 d2 d3; S1 2 first=0 d4"
 	if got := s.debugString(); got != want {
 		t.Fatalf("got state %q, want %q", got, want)
@@ -234,10 +222,10 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 		want      []string
 		wantErr   string // if non-empty, error should contain this string
 	}{
-		{"S1", 1, 0, nil, "purge"},
-		{"S1", 1, 1, []string{"d2", "d3"}, ""},
-		{"S1", 1, 2, []string{"d3"}, ""},
-		{"S1", 2, 0, []string{"d4"}, ""},
+		{"S1", 1, 0, []string{"d2", "d3"}, ""},
+		{"S1", 1, 1, []string{"d3"}, ""},
+		{"S1", 1, 2, nil, ""},
+		{"S1", 2, 0, nil, ""},
 		{"S1", 3, 0, nil, "unknown stream ID"},
 		{"S2", 0, 0, nil, "unknown session ID"},
 	} {
