@@ -278,8 +278,10 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With resource subscriptions",
-			configureServer: func(s *Server) {},
+			name: "With resource subscriptions",
+			configureServer: func(s *Server) {
+				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
+			},
 			serverOpts: ServerOptions{
 				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {
 					return nil
@@ -291,7 +293,7 @@ func TestServerCapabilities(t *testing.T) {
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
 				Logging:     &loggingCapabilities{},
-				Resources:   &resourceCapabilities{Subscribe: true},
+				Resources:   &resourceCapabilities{ListChanged: true, Subscribe: true},
 			},
 		},
 		{

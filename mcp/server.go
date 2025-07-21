@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -43,7 +44,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
-	resourceSubscriptions   map[string][]*ServerSession // uri -> session
+	resourceSubscriptions   map[string]map[string]bool // uri -> session ID -> bool
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -109,7 +110,7 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
-		resourceSubscriptions:   make(map[string][]*ServerSession),
+		resourceSubscriptions:   make(map[string]map[string]bool),
 	}
 }
 
@@ -236,12 +237,9 @@ func (s *Server) capabilities() *serverCapabilities {
 	}
 	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
 		caps.Resources = &resourceCapabilities{ListChanged: true}
-	}
-	if s.opts.SubscribeHandler != nil {
-		if caps.Resources == nil {
-			caps.Resources = &resourceCapabilities{}
+		if s.opts.SubscribeHandler != nil {
+			caps.Resources.Subscribe = true
 		}
-		caps.Resources.Subscribe = true
 	}
 	return caps
 }
@@ -447,10 +445,21 @@ func fileResourceHandler(dir string) ResourceHandler {
 
 func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
 	s.mu.Lock()
-	sessions := slices.Clone(s.resourceSubscriptions[params.URI])
+	subscribedSessionIDs := maps.Clone(s.resourceSubscriptions[params.URI])
 	s.mu.Unlock()
-	if len(sessions) == 0 {
+	if len(subscribedSessionIDs) == 0 {
 		return nil
+	}
+	sessions := make([]*ServerSession, 0, len(subscribedSessionIDs))
+	for sessionID, active := range subscribedSessionIDs {
+		if !active {
+			continue
+		}
+		for session := range s.Sessions() {
+			if session.ID() == sessionID {
+				sessions = append(sessions, session)
+			}
+		}
 	}
 	notifySessions(sessions, notificationResourceUpdated, params)
 	return nil
@@ -466,10 +475,10 @@ func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *Subsc
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	uri := params.URI
-	subscribers := s.resourceSubscriptions[uri]
-	if !slices.Contains(subscribers, ss) {
-		s.resourceSubscriptions[uri] = append(subscribers, ss)
+	if s.resourceSubscriptions[uri] == nil {
+		s.resourceSubscriptions[uri] = make(map[string]bool)
 	}
+	s.resourceSubscriptions[uri][ss.ID()] = true
 	return &emptyResult{}, nil
 }
 
@@ -486,10 +495,8 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 	defer s.mu.Unlock()
 
 	uri := params.URI
-	if sessions, ok := s.resourceSubscriptions[uri]; ok {
-		s.resourceSubscriptions[uri] = slices.DeleteFunc(sessions, func(s *ServerSession) bool {
-			return s == ss
-		})
+	if subscribedSessionIDs, ok := s.resourceSubscriptions[uri]; ok {
+		subscribedSessionIDs[ss.ID()] = false
 	}
 	return &emptyResult{}, nil
 }
@@ -541,10 +548,9 @@ func (s *Server) disconnect(cc *ServerSession) {
 	s.sessions = slices.DeleteFunc(s.sessions, func(cc2 *ServerSession) bool {
 		return cc2 == cc
 	})
-	for uri, sessions := range s.resourceSubscriptions {
-		s.resourceSubscriptions[uri] = slices.DeleteFunc(sessions, func(cc2 *ServerSession) bool {
-			return cc2 == cc
-		})
+
+	for _, subscribedSessionIDs := range s.resourceSubscriptions {
+		delete(subscribedSessionIDs, cc.ID())
 	}
 }
 
