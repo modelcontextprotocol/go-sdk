@@ -826,12 +826,12 @@ func (s *streamableClientConn) handleSSE(initialResp *http.Response) {
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, reconnectErr := s.reconnect(lastEventID)
-		if reconnectErr != nil {
+		newResp, err := s.reconnect(lastEventID)
+		if err != nil {
 			// All reconnection attempts failed. Set the final error, close the
 			// connection, and exit the goroutine.
 			s.mu.Lock()
-			s.err = reconnectErr
+			s.err = err
 			s.mu.Unlock()
 			s.Close()
 			return
@@ -881,9 +881,9 @@ func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 		case <-s.done:
 			return nil, fmt.Errorf("connection closed by client during reconnect")
 		case <-time.After(calculateReconnectDelay(s.ReconnectOptions, attempt)):
-			resp, reconnectErr := s.establishSSE(lastEventID)
-			if reconnectErr != nil {
-				finalErr = reconnectErr // Store the error and try again.
+			resp, err := s.establishSSE(lastEventID)
+			if err != nil {
+				finalErr = err // Store the error and try again.
 				continue
 			}
 
@@ -910,10 +910,7 @@ func isResumable(resp *http.Response) bool {
 		return false
 	}
 
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return false
-	}
-	return true
+	return strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 }
 
 // Close implements the [Connection] interface.
@@ -958,8 +955,7 @@ func (s *streamableClientConn) establishSSE(lastEventID string) (*http.Response,
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := s.client.Do(req)
-	return resp, err
+	return s.client.Do(req)
 }
 
 // calculateReconnectDelay calculates a delay using exponential backoff with full jitter.
