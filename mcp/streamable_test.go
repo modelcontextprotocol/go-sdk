@@ -113,7 +113,7 @@ func TestStreamableTransports(t *testing.T) {
 // mid-stream network failure and receive replayed messages. It uses a proxy
 // that is killed and restarted to simulate a recoverable network outage.
 func TestClientReplay(t *testing.T) {
-	notifications := make(chan string, 10)
+	notifications := make(chan string)
 	// 1. Configure the real MCP server.
 	server := NewServer(testImpl, nil)
 
