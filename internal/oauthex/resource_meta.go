@@ -145,11 +145,11 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 // If there is no URL in the request, it returns nil, nil.
 func GetProtectedResourceMetadataFromHeader(ctx context.Context, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromHeader")
-	headers := header[http.CanonicalHeaderKey("WWW-Authenticate")]
-	if len(headers) == 0 {
+	authHeaders := header[http.CanonicalHeaderKey("WWW-Authenticate")]
+	if len(authHeaders) == 0 {
 		return nil, nil
 	}
-	cs, err := parseWWWAuthenticate(headers)
+	cs, err := parseWWWAuthenticate(authHeaders)
 	if err != nil {
 		return nil, err
 	}
