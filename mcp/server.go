@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"iter"
 	"log"
-	"maps"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -445,22 +444,18 @@ func fileResourceHandler(dir string) ResourceHandler {
 
 func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
 	s.mu.Lock()
-	subscribedSessionIDs := maps.Clone(s.resourceSubscriptions[params.URI])
-	s.mu.Unlock()
+	subscribedSessionIDs := s.resourceSubscriptions[params.URI]
 	if len(subscribedSessionIDs) == 0 {
+		s.mu.Unlock()
 		return nil
 	}
-	sessions := make([]*ServerSession, 0, len(subscribedSessionIDs))
-	for sessionID, active := range subscribedSessionIDs {
-		if !active {
-			continue
-		}
-		for session := range s.Sessions() {
-			if session.ID() == sessionID {
-				sessions = append(sessions, session)
-			}
+	var sessions []*ServerSession
+	for _, session := range s.sessions {
+		if _, ok := subscribedSessionIDs[session.ID()]; ok {
+			sessions = append(sessions, session)
 		}
 	}
+	s.mu.Unlock()
 	notifySessions(sessions, notificationResourceUpdated, params)
 	return nil
 }
@@ -474,11 +469,10 @@ func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *Subsc
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	uri := params.URI
-	if s.resourceSubscriptions[uri] == nil {
-		s.resourceSubscriptions[uri] = make(map[string]bool)
+	if s.resourceSubscriptions[params.URI] == nil {
+		s.resourceSubscriptions[params.URI] = make(map[string]bool)
 	}
-	s.resourceSubscriptions[uri][ss.ID()] = true
+	s.resourceSubscriptions[params.URI][ss.ID()] = true
 	return &emptyResult{}, nil
 }
 
@@ -494,10 +488,13 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	uri := params.URI
-	if subscribedSessionIDs, ok := s.resourceSubscriptions[uri]; ok {
-		subscribedSessionIDs[ss.ID()] = false
+	if subscribedSessionIDs, ok := s.resourceSubscriptions[params.URI]; ok {
+		delete(subscribedSessionIDs, ss.ID())
+		if len(subscribedSessionIDs) == 0 {
+			delete(s.resourceSubscriptions, params.URI)
+		}
 	}
+
 	return &emptyResult{}, nil
 }
 
