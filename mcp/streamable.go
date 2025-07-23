@@ -312,7 +312,11 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 
 func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
-	id, lastIdx := StreamID(0), -1
+	id := StreamID(0)
+	// By default, we haven't seen a last index. Since indices start at 0, we represent
+	// that by -1. This is incremented just before each event is written, in streamResponse
+	// around L407.
+	lastIdx := -1
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
 		eid := req.Header.Get("Last-Event-ID")
 		var ok bool
