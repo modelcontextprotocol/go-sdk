@@ -540,7 +540,7 @@ func (ss *ServerSession) ID() string {
 
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, ss, methodPing, params)
+	_, err := handleSend[*emptyResult](ctx, ss, methodPing, orZero[Params](params))
 	return err
 }
 
