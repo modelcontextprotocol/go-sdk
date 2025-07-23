@@ -19,18 +19,8 @@ var (
 	httpAddr = flag.String("http", "", "use SSE HTTP at this address (deprecated, use -host and -port instead)")
 	host     = flag.String("host", "localhost", "host to listen on")
 	port     = flag.String("port", "8080", "port to listen on")
+	showUsage = flag.Bool("usage", false, "show usage information")
 )
-
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "This program runs MCP servers over SSE HTTP.\n\n")
-	fmt.Fprintf(os.Stderr, "Options:\n")
-	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, "\nEndpoints:\n")
-	fmt.Fprintf(os.Stderr, "  /greeter1 - Greeter 1 service\n")
-	fmt.Fprintf(os.Stderr, "  /greeter2 - Greeter 2 service\n")
-	os.Exit(1)
-}
 
 type SayHiParams struct {
 	Name string `json:"name"`
@@ -45,7 +35,21 @@ func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParam
 }
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "This program runs MCP servers over SSE HTTP.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nEndpoints:\n")
+		fmt.Fprintf(os.Stderr, "  /greeter1 - Greeter 1 service\n")
+		fmt.Fprintf(os.Stderr, "  /greeter2 - Greeter 2 service\n")
+		os.Exit(1)
+	}
 	flag.Parse()
+
+	if *showUsage {
+		flag.Usage()
+	}
 
 	var addr string
 	if *httpAddr != "" {
