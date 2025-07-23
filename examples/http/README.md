@@ -10,6 +10,10 @@ The example implements:
 
 ## Running the Example
 
+When run with -server, the program becomes an MCP server.
+When run with -client, it becomes an MCP client.
+Server and client support passing custom -port and -host.
+
 ### Start the Server
 
 ```bash
@@ -32,29 +36,33 @@ The client will:
 3. Call the `get_time` tool for NYC, San Francisco, and Boston
 4. Display the results
 
-### Custom Host and Port
 
-You can specify custom host and port:
+## Testing with real-world MCP Clients
 
-```bash
-# Server on all interfaces, port 9090
-go run main.go -server -host 0.0.0.0 -port 9090
+Once the server is started, assuming it's the default
+localhost:8080, you can try to add it to a popular MCP client:
 
-# Client connecting to custom address
-go run main.go -client -host 192.168.1.100 -port 9090
-```
-
-## Testing with Real-World MCP Clients
-
-You can test this server with Claude Code or other MCP clients:
-
-```bash
-# Start the server
-go run main.go -server -host localhost -port 8080
-
-# In another terminal, add the server to Claude Code
-claude mcp add http://localhost:8080
-```
+    claude mcp add -t http timezone http://localhost:8080
 
 Once added, Claude Code will be able to discover and use the `get_time` tool provided by this server.
 
+In Claude Code:
+
+    > what's the timezone
+
+    ⏺ I'll get the current time in a major US city for you.
+
+    ⏺ timezone - get_time (MCP)(city: "nyc")
+      ⎿ The current time in New York City is 7:30:16 PM EDT on Wedn
+        esday, July 23, 2025
+
+
+    ⏺ The current timezone is EDT (Eastern Daylight Time), and it's
+       7:30 PM on Wednesday, July 23, 2025.
+
+    > what timezones do you support?
+
+    ⏺ The timezone tool supports three US cities:
+      - NYC (Eastern Time)
+      - SF (Pacific Time)
+      - Boston (Eastern Time)
