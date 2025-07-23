@@ -722,3 +722,118 @@ func TestEventID(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamableStateless(t *testing.T) {
+	// Test stateless mode behavior
+	ctx := context.Background()
+
+	// Create a server with stateless mode enabled
+	statelessServer := NewServer(testImpl, &ServerOptions{Stateless: true})
+	AddTool(statelessServer, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+
+	// Create a regular server for comparison
+	regularServer := NewServer(testImpl, nil)
+	AddTool(regularServer, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+
+	// Test stateless server
+	t.Run("stateless_server", func(t *testing.T) {
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return statelessServer }, nil)
+		httpServer := httptest.NewServer(handler)
+		defer httpServer.Close()
+
+		// Verify we can call tools/list directly without initialization in stateless mode
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL,
+			strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		// Verify that no session ID header is returned in stateless mode
+		sessionID := resp.Header.Get(sessionIDHeader)
+		if sessionID != "" {
+			t.Errorf("Expected no session ID header in stateless mode, got: %s", sessionID)
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			t.Errorf("Expected successful response in stateless mode, got status: %d", resp.StatusCode)
+		}
+
+		// Verify we can make another request without session ID
+		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL,
+			strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"greet","arguments":{"name":"World"}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp2, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp2.Body.Close()
+
+		if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusAccepted {
+			t.Errorf("Expected successful response for tool call in stateless mode, got status: %d", resp2.StatusCode)
+		}
+	})
+
+	// Test regular server
+	t.Run("regular_server", func(t *testing.T) {
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return regularServer }, nil)
+		httpServer := httptest.NewServer(handler)
+		defer httpServer.Close()
+
+		// Create a request to the regular server
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL,
+			strings.NewReader(`{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"test","version":"1.0"}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		// Verify that session ID header is returned in regular mode
+		sessionID := resp.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Error("Expected session ID header in regular mode, got empty string")
+		}
+	})
+
+	// Test DELETE method rejection in stateless mode
+	t.Run("delete_rejected_in_stateless", func(t *testing.T) {
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return statelessServer }, nil)
+		httpServer := httptest.NewServer(handler)
+		defer httpServer.Close()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, httpServer.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("Expected 405 Method Not Allowed for DELETE in stateless mode, got: %d", resp.StatusCode)
+		}
+	})
+}
