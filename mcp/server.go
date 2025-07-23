@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -43,7 +44,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
-	resourceSubscriptions   map[string]map[string]bool // uri -> session ID -> bool
+	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -109,7 +110,7 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
-		resourceSubscriptions:   make(map[string]map[string]bool),
+		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 	}
 }
 
@@ -442,19 +443,13 @@ func fileResourceHandler(dir string) ResourceHandler {
 	}
 }
 
+// ResourceUpdated sends a notification to all clients that have subscribed to the
+// resource specified in params. This method is the primary way for a
+// server author to signal that a resource has changed.
 func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
 	s.mu.Lock()
-	subscribedSessionIDs := s.resourceSubscriptions[params.URI]
-	if len(subscribedSessionIDs) == 0 {
-		s.mu.Unlock()
-		return nil
-	}
-	var sessions []*ServerSession
-	for _, session := range s.sessions {
-		if _, ok := subscribedSessionIDs[session.ID()]; ok {
-			sessions = append(sessions, session)
-		}
-	}
+	subscribedSessions := s.resourceSubscriptions[params.URI]
+	sessions := slices.Collect(maps.Keys(subscribedSessions))
 	s.mu.Unlock()
 	notifySessions(sessions, notificationResourceUpdated, params)
 	return nil
@@ -467,12 +462,14 @@ func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *Subsc
 	if err := s.opts.SubscribeHandler(ctx, params); err != nil {
 		return nil, err
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.resourceSubscriptions[params.URI] == nil {
-		s.resourceSubscriptions[params.URI] = make(map[string]bool)
+		s.resourceSubscriptions[params.URI] = make(map[*ServerSession]bool)
 	}
-	s.resourceSubscriptions[params.URI][ss.ID()] = true
+	s.resourceSubscriptions[params.URI][ss] = true
+
 	return &emptyResult{}, nil
 }
 
@@ -487,10 +484,9 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if subscribedSessionIDs, ok := s.resourceSubscriptions[params.URI]; ok {
-		delete(subscribedSessionIDs, ss.ID())
-		if len(subscribedSessionIDs) == 0 {
+	if subscribedSessions, ok := s.resourceSubscriptions[params.URI]; ok {
+		delete(subscribedSessions, ss)
+		if len(subscribedSessions) == 0 {
 			delete(s.resourceSubscriptions, params.URI)
 		}
 	}
@@ -546,8 +542,8 @@ func (s *Server) disconnect(cc *ServerSession) {
 		return cc2 == cc
 	})
 
-	for _, subscribedSessionIDs := range s.resourceSubscriptions {
-		delete(subscribedSessionIDs, cc.ID())
+	for _, subscribedSessions := range s.resourceSubscriptions {
+		delete(subscribedSessions, cc)
 	}
 }
 
