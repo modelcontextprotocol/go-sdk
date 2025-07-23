@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 type testItem struct {
@@ -230,6 +231,7 @@ func TestServerPaginateVariousPageSizes(t *testing.T) {
 }
 
 func TestServerCapabilities(t *testing.T) {
+	tool := &Tool{Name: "t", InputSchema: &jsonschema.Schema{}}
 	testCases := []struct {
 		name             string
 		configureServer  func(s *Server)
@@ -299,7 +301,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With tools",
 			configureServer: func(s *Server) {
-				s.AddTool(&Tool{Name: "t"}, nil)
+				s.AddTool(tool, nil)
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
@@ -313,7 +315,7 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
-				s.AddTool(&Tool{Name: "t"}, nil)
+				s.AddTool(tool, nil)
 			},
 			serverOpts: ServerOptions{
 				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {

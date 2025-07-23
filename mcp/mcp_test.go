@@ -659,7 +659,7 @@ func TestCancellation(t *testing.T) {
 		return nil, nil
 	}
 	_, cs := basicConnection(t, func(s *Server) {
-		s.AddTool(&Tool{Name: "slow"}, slowRequest)
+		s.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{}}, slowRequest)
 	})
 	defer cs.Close()
 

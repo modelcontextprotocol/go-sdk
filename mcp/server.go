@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
-	"log"
 	"maps"
 	"net/url"
 	"path/filepath"
@@ -137,8 +136,7 @@ func (s *Server) RemovePrompts(names ...string) {
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	// TODO(jba): This is a breaking behavior change. Add before v0.2.0?
 	if t.InputSchema == nil {
-		log.Printf("mcp: tool %q has a nil input schema. This will panic in a future release.", t.Name)
-		// panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
+		panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
 	}
 	if err := addToolErr(s, t, h); err != nil {
 		panic(err)
