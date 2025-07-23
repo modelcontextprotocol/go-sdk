@@ -16,10 +16,8 @@ import (
 )
 
 var (
-	httpAddr = flag.String("http", "", "use SSE HTTP at this address (deprecated, use -host and -port instead)")
 	host     = flag.String("host", "localhost", "host to listen on")
 	port     = flag.String("port", "8080", "port to listen on")
-	showUsage = flag.Bool("usage", false, "show usage information")
 )
 
 type SayHiParams struct {
@@ -47,16 +45,7 @@ func main() {
 	}
 	flag.Parse()
 
-	if *showUsage {
-		flag.Usage()
-	}
-
-	var addr string
-	if *httpAddr != "" {
-		addr = *httpAddr
-	} else {
-		addr = fmt.Sprintf("%s:%s", *host, *port)
-	}
+	addr := fmt.Sprintf("%s:%s", *host, *port)
 
 	server1 := mcp.NewServer(&mcp.Implementation{Name: "greeter1"}, nil)
 	mcp.AddTool(server1, &mcp.Tool{Name: "greet1", Description: "say hi"}, SayHi)
@@ -78,7 +67,5 @@ func main() {
 		}
 	})
 	
-	if err := http.ListenAndServe(addr, handler); err != nil {
-		log.Fatalf("Failed to start server on %s: %v", addr, err)
-	}
+	log.Fatal(http.ListenAndServe(addr, handler))
 }
