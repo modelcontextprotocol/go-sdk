@@ -131,11 +131,17 @@ func (s *Server) RemovePrompts(names ...string) {
 }
 
 // AddTool adds a [Tool] to the server, or replaces one with the same name.
-// The tool's input schema must be non-nil.
 // The Tool argument must not be modified after this call.
+//
+// The tool's input schema must be non-nil. For a tool that takes no input,
+// or one where any input is valid, set [Tool.InputSchema] to the empty schema,
+// &jsonschema.Schema{}.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
-	// TODO(jba): This is a breaking behavior change. Add before v0.2.0?
 	if t.InputSchema == nil {
+		// This prevents the tool author from forgetting to write a schema where
+		// one should be provided. If we papered over this by supplying the empty
+		// schema, then every input would be validated and the problem wouldn't be
+		// discovered until runtime, when the LLM sent bad data.
 		panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
 	}
 	if err := addToolErr(s, t, h); err != nil {
