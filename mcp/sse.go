@@ -55,12 +55,13 @@ type SSEHandler struct {
 // Sessions are created when the client issues a GET request to the server,
 // which must accept text/event-stream responses (server-sent events).
 // For each such request, a new [SSEServerTransport] is created with a distinct
-// messages endpoint, and connected to the server returned by getServer. It is
-// up to the user whether getServer returns a distinct [Server] for each new
-// request, or reuses an existing server.
-//
+// messages endpoint, and connected to the server returned by getServer.
 // The SSEHandler also handles requests to the message endpoints, by
 // delegating them to the relevant server transport.
+//
+// The getServer function may return a distinct [Server] for each new
+// request, or reuse an existing server. If it returns nil, the handler
+// will return a 400 Bad Request.
 //
 // TODO(rfindley): add options.
 func NewSSEHandler(getServer func(request *http.Request) *Server) *SSEHandler {
@@ -208,8 +209,12 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.mu.Unlock()
 	}()
 
-	// TODO(hxjiang): getServer returns nil will panic.
 	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewSSEHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
+	}
 	ss, err := server.Connect(req.Context(), transport)
 	if err != nil {
 		http.Error(w, "connection failed", http.StatusInternalServerError)

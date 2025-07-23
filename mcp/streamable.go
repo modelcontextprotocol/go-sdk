@@ -50,6 +50,7 @@ type StreamableHTTPOptions struct {
 //
 // The getServer function is used to create or look up servers for new
 // sessions. It is OK for getServer to return the same server multiple times.
+// If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
 	return &StreamableHTTPHandler{
 		getServer: getServer,
@@ -135,6 +136,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	if session == nil {
 		s := NewStreamableServerTransport(randText(), nil)
 		server := h.getServer(req)
+		if server == nil {
+			// The getServer argument to NewStreamableHTTPHandler returned nil.
+			http.Error(w, "no server available", http.StatusBadRequest)
+			return
+		}
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
