@@ -471,7 +471,7 @@ server.AddReceivingMiddleware(withLogging)
 
 #### Rate Limiting
 
-Rate limiting can be configured using middleware. Please see [examples/rate-limiting](<https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/rate-limiting>] for an example on how to implement this.
+Rate limiting can be configured using middleware. Please see [examples/rate-limiting](<https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/rate-limiting>) for an example on how to implement this.
 
 ### Errors
 
@@ -609,7 +609,7 @@ A tool handler accepts `CallToolParams` and returns a `CallToolResult`. However,
 ```go
 type CallToolParamsFor[In any] struct {
 	Meta      Meta   `json:"_meta,omitempty"`
-	Arguments In `json:"arguments,omitempty"`
+	Arguments In     `json:"arguments,omitempty"`
 	Name      string `json:"name"`
 }
 
