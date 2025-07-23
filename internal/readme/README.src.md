@@ -1,30 +1,22 @@
-# MCP Go SDK
+# MCP Go SDK v0.2.0
 
 ***BREAKING CHANGES***
 
-The latest version contains breaking changes:
-
-- Server.AddTools is replaced by Server.AddTool.
-
-- NewServerTool is replaced by AddTool. AddTool takes a Tool rather than a name and description, so you can 
-  set any field on the Tool that you want before associating it with a handler.
-
-- Tool options have been removed. If you don't want AddTool to infer a JSON Schema for you, you can construct one
-  as a struct literal, or using any other code that suits you.
-
-- AddPrompts, AddResources and AddResourceTemplates are similarly replaced by singular methods which pair the
-  feature with a handler. The ServerXXX types have been removed.
+This version contains breaking changes.
+See the [release notes](
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.2.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an unreleased implementation of the official Go
 software development kit (SDK) for the Model Context Protocol (MCP).
 
-**WARNING**: The SDK should be considered unreleased, and is currently unstable
-and subject to breaking changes. Please test it out and file bug reports or API
-proposals, but don't use it in real projects. See the issue tracker for known
-issues and missing features. We aim to release a stable version of the SDK in
-August, 2025.
+> [!WARNING]
+> The SDK should be considered unreleased, and is currently unstable
+> and subject to breaking changes. Please test it out and file bug reports or API
+> proposals, but don't use it in real projects. See the issue tracker for known
+> issues and missing features. We aim to release a stable version of the SDK in
+> August, 2025.
 
 ## Design
 
@@ -36,11 +28,11 @@ Further design discussion should occur in
 [issues](https://github.com/modelcontextprotocol/go-sdk/issues) (for concrete
 proposals) or
 [discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
-open-ended discussion. See CONTRIBUTING.md for details.
+open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
 
 ## Package documentation
 
-The SDK consists of two importable packages:
+The SDK consists of three importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
@@ -50,6 +42,10 @@ The SDK consists of two importable packages:
   [`github.com/modelcontextprotocol/go-sdk/jsonschema`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
   package provides an implementation of [JSON
   Schema](https://json-schema.org/), used for MCP tool input and output schema.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
+  their own transports.
+   
 
 ## Example
 
@@ -63,7 +59,7 @@ with its client over stdin/stdout:
 
 %include server/server.go -
 
-The `examples/` directory contains more example clients and servers.
+The [`examples/`](/examples/) directory contains more example clients and servers.
 
 ## Acknowledgements
 

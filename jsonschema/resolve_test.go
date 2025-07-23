@@ -17,7 +17,8 @@ import (
 func TestSchemaStructure(t *testing.T) {
 	check := func(s *Schema, want string) {
 		t.Helper()
-		err := s.checkStructure()
+		infos := map[*Schema]*resolvedInfo{}
+		err := s.checkStructure(infos)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("checkStructure returned error %q, want %q", err, want)
 		}
@@ -89,13 +90,14 @@ func TestPaths(t *testing.T) {
 		{root.PrefixItems[1], "/prefixItems/1"},
 		{root.PrefixItems[1].Items, "/prefixItems/1/items"},
 	}
-	if err := root.checkStructure(); err != nil {
+	rs := newResolved(root)
+	if err := root.checkStructure(rs.resolvedInfos); err != nil {
 		t.Fatal(err)
 	}
 
 	var got []item
 	for s := range root.all() {
-		got = append(got, item{s, s.path})
+		got = append(got, item{s, rs.resolvedInfos[s].path})
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("\ngot  %v\nwant %v", got, want)
@@ -129,8 +131,12 @@ func TestResolveURIs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := resolveURIs(root, base)
-			if err != nil {
+
+			rs := newResolved(root)
+			if err := root.check(rs.resolvedInfos); err != nil {
+				t.Fatal(err)
+			}
+			if err := resolveURIs(rs, base); err != nil {
 				t.Fatal(err)
 			}
 
@@ -154,6 +160,7 @@ func TestResolveURIs(t *testing.T) {
 				},
 			}
 
+			got := rs.resolvedURIs
 			gotKeys := slices.Sorted(maps.Keys(got))
 			wantKeys := slices.Sorted(maps.Keys(wantIDs))
 			if !slices.Equal(gotKeys, wantKeys) {
@@ -163,11 +170,12 @@ func TestResolveURIs(t *testing.T) {
 				t.Errorf("IDs:\ngot  %+v\n\nwant %+v", got, wantIDs)
 			}
 			for s := range root.all() {
+				info := rs.resolvedInfos[s]
 				if want := wantAnchors[s]; want != nil {
-					if got := s.anchors; !maps.Equal(got, want) {
+					if got := info.anchors; !maps.Equal(got, want) {
 						t.Errorf("anchors:\ngot  %+v\n\nwant %+v", got, want)
 					}
-				} else if s.anchors != nil {
+				} else if info.anchors != nil {
 					t.Errorf("non-nil anchors for %s", s)
 				}
 			}
@@ -199,7 +207,7 @@ func TestRefCycle(t *testing.T) {
 
 	check := func(s *Schema, key string) {
 		t.Helper()
-		if s.resolvedRef != schemas[key] {
+		if rs.resolvedInfos[s].resolvedRef != schemas[key] {
 			t.Errorf("%s resolvedRef != schemas[%q]", s.json(), key)
 		}
 	}

@@ -13,9 +13,7 @@ import (
 	"iter"
 	"maps"
 	"math"
-	"net/url"
 	"reflect"
-	"regexp"
 	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -129,47 +127,6 @@ type Schema struct {
 
 	// Extra allows for additional keywords beyond those specified.
 	Extra map[string]any `json:"-"`
-
-	// computed fields
-
-	// This schema's base schema.
-	// If the schema is the root or has an ID, its base is itself.
-	// Otherwise, its base is the innermost enclosing schema whose base
-	// is itself.
-	// Intuitively, a base schema is one that can be referred to with a
-	// fragmentless URI.
-	base *Schema
-
-	// The URI for the schema, if it is the root or has an ID.
-	// Otherwise nil.
-	// Invariants:
-	//   s.base.uri != nil.
-	//   s.base == s <=> s.uri != nil
-	uri *url.URL
-
-	// The JSON Pointer path from the root schema to here.
-	// Used in errors.
-	path string
-
-	// The schema to which Ref refers.
-	resolvedRef *Schema
-
-	// If the schema has a dynamic ref, exactly one of the next two fields
-	// will be non-zero after successful resolution.
-	// The schema to which the dynamic ref refers when it acts lexically.
-	resolvedDynamicRef *Schema
-	// The anchor to look up on the stack when the dynamic ref acts dynamically.
-	dynamicRefAnchor string
-
-	// Map from anchors to subschemas.
-	anchors map[string]anchorInfo
-
-	// compiled regexps
-	pattern           *regexp.Regexp
-	patternProperties map[*regexp.Regexp]*Schema
-
-	// the set of required properties
-	isRequired map[string]bool
 }
 
 // falseSchema returns a new Schema tree that fails to validate any value.
@@ -186,26 +143,13 @@ type anchorInfo struct {
 
 // String returns a short description of the schema.
 func (s *Schema) String() string {
-	if s.uri != nil {
-		if u := s.uri.String(); u != "" {
-			return u
-		}
+	if s.ID != "" {
+		return s.ID
 	}
 	if a := cmp.Or(s.Anchor, s.DynamicAnchor); a != "" {
-		return fmt.Sprintf("%q, anchor %s", s.base.uri.String(), a)
-	}
-	if s.path != "" {
-		return s.path
+		return fmt.Sprintf("anchor %s", a)
 	}
 	return "<anonymous schema>"
-}
-
-// ResolvedRef returns the Schema to which this schema's $ref keyword
-// refers, or nil if it doesn't have a $ref.
-// It returns nil if this schema has not been resolved, meaning that
-// [Schema.Resolve] was called on it or one of its ancestors.
-func (s *Schema) ResolvedRef() *Schema {
-	return s.resolvedRef
 }
 
 func (s *Schema) basicChecks() error {

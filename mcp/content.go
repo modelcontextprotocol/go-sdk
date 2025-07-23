@@ -58,13 +58,19 @@ type ImageContent struct {
 }
 
 func (c *ImageContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&wireContent{
+	// Custom wire format to ensure required fields are always included, even when empty.
+	data := c.Data
+	if data == nil {
+		data = []byte{}
+	}
+	wire := imageAudioWire{
 		Type:        "image",
 		MIMEType:    c.MIMEType,
-		Data:        c.Data,
+		Data:        data,
 		Meta:        c.Meta,
 		Annotations: c.Annotations,
-	})
+	}
+	return json.Marshal(wire)
 }
 
 func (c *ImageContent) fromWire(wire *wireContent) {
@@ -83,13 +89,19 @@ type AudioContent struct {
 }
 
 func (c AudioContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&wireContent{
+	// Custom wire format to ensure required fields are always included, even when empty.
+	data := c.Data
+	if data == nil {
+		data = []byte{}
+	}
+	wire := imageAudioWire{
 		Type:        "audio",
 		MIMEType:    c.MIMEType,
-		Data:        c.Data,
+		Data:        data,
 		Meta:        c.Meta,
 		Annotations: c.Annotations,
-	})
+	}
+	return json.Marshal(wire)
 }
 
 func (c *AudioContent) fromWire(wire *wireContent) {
@@ -97,6 +109,15 @@ func (c *AudioContent) fromWire(wire *wireContent) {
 	c.Data = wire.Data
 	c.Meta = wire.Meta
 	c.Annotations = wire.Annotations
+}
+
+// Custom wire format to ensure required fields are always included, even when empty.
+type imageAudioWire struct {
+	Type        string       `json:"type"`
+	MIMEType    string       `json:"mimeType"`
+	Data        []byte       `json:"data"`
+	Meta        Meta         `json:"_meta,omitempty"`
+	Annotations *Annotations `json:"annotations,omitempty"`
 }
 
 // ResourceLink is a link to a resource

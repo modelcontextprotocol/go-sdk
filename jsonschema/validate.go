@@ -48,12 +48,12 @@ func (rs *Resolved) validateDefaults() error {
 		// We checked for nil schemas in [Schema.Resolve].
 		assert(s != nil, "nil schema")
 		if s.DynamicRef != "" {
-			return fmt.Errorf("jsonschema: %s: validateDefaults does not support dynamic refs", s)
+			return fmt.Errorf("jsonschema: %s: validateDefaults does not support dynamic refs", rs.schemaString(s))
 		}
 		if s.Default != nil {
 			var d any
 			if err := json.Unmarshal(s.Default, &d); err != nil {
-				return fmt.Errorf("unmarshaling default value of schema %s: %w", s, err)
+				return fmt.Errorf("unmarshaling default value of schema %s: %w", rs.schemaString(s), err)
 			}
 			if err := st.validate(reflect.ValueOf(d), s, nil); err != nil {
 				return err
@@ -74,7 +74,7 @@ type state struct {
 
 // validate validates the reflected value of the instance.
 func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *annotations) (err error) {
-	defer util.Wrapf(&err, "validating %s", schema)
+	defer util.Wrapf(&err, "validating %s", st.rs.schemaString(schema))
 
 	// Maintain a stack for dynamic schema resolution.
 	st.stack = append(st.stack, schema) // push
@@ -89,6 +89,8 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 	for instance.Kind() == reflect.Pointer || instance.Kind() == reflect.Interface {
 		instance = instance.Elem()
 	}
+
+	schemaInfo := st.rs.resolvedInfos[schema]
 
 	// type: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-01#section-6.1.1
 	if schema.Type != "" || schema.Types != nil {
@@ -176,7 +178,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 			}
 		}
 
-		if schema.Pattern != "" && !schema.pattern.MatchString(str) {
+		if schema.Pattern != "" && !schemaInfo.pattern.MatchString(str) {
 			return fmt.Errorf("pattern: %q does not match regular expression %q", str, schema.Pattern)
 		}
 	}
@@ -185,7 +187,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 
 	// $ref: https://json-schema.org/draft/2020-12/json-schema-core#section-8.2.3.1
 	if schema.Ref != "" {
-		if err := st.validate(instance, schema.resolvedRef, &anns); err != nil {
+		if err := st.validate(instance, schemaInfo.resolvedRef, &anns); err != nil {
 			return err
 		}
 	}
@@ -193,11 +195,11 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 	// $dynamicRef: https://json-schema.org/draft/2020-12/json-schema-core#section-8.2.3.2
 	if schema.DynamicRef != "" {
 		// The ref behaves lexically or dynamically, but not both.
-		assert((schema.resolvedDynamicRef == nil) != (schema.dynamicRefAnchor == ""),
+		assert((schemaInfo.resolvedDynamicRef == nil) != (schemaInfo.dynamicRefAnchor == ""),
 			"DynamicRef not resolved properly")
-		if schema.resolvedDynamicRef != nil {
+		if schemaInfo.resolvedDynamicRef != nil {
 			// Same as $ref.
-			if err := st.validate(instance, schema.resolvedDynamicRef, &anns); err != nil {
+			if err := st.validate(instance, schemaInfo.resolvedDynamicRef, &anns); err != nil {
 				return err
 			}
 		} else {
@@ -212,14 +214,15 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 			// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 			var dynamicSchema *Schema
 			for _, s := range st.stack {
-				info, ok := s.base.anchors[schema.dynamicRefAnchor]
+				base := st.rs.resolvedInfos[s].base
+				info, ok := st.rs.resolvedInfos[base].anchors[schemaInfo.dynamicRefAnchor]
 				if ok && info.dynamic {
 					dynamicSchema = info.schema
 					break
 				}
 			}
 			if dynamicSchema == nil {
-				return fmt.Errorf("missing dynamic anchor %q", schema.dynamicRefAnchor)
+				return fmt.Errorf("missing dynamic anchor %q", schemaInfo.dynamicRefAnchor)
 			}
 			if err := st.validate(instance, dynamicSchema, &anns); err != nil {
 				return err
@@ -417,7 +420,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 			// If the instance is a struct and an optional property has the zero
 			// value, then we could interpret it as present or missing. Be generous:
 			// assume it's missing, and thus always validates successfully.
-			if instance.Kind() == reflect.Struct && val.IsZero() && !schema.isRequired[prop] {
+			if instance.Kind() == reflect.Struct && val.IsZero() && !schemaInfo.isRequired[prop] {
 				continue
 			}
 			if err := st.validate(val, subschema, nil); err != nil {
@@ -428,7 +431,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 		if len(schema.PatternProperties) > 0 {
 			for prop, val := range properties(instance) {
 				// Check every matching pattern.
-				for re, schema := range schema.patternProperties {
+				for re, schema := range schemaInfo.patternProperties {
 					if re.MatchString(prop) {
 						if err := st.validate(val, schema, nil); err != nil {
 							return err
@@ -463,7 +466,7 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 		// https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-01#section-6.5
 		var min, max int
 		if schema.MinProperties != nil || schema.MaxProperties != nil {
-			min, max = numPropertiesBounds(instance, schema.isRequired)
+			min, max = numPropertiesBounds(instance, schemaInfo.isRequired)
 		}
 		if schema.MinProperties != nil {
 			if n, m := max, *schema.MinProperties; n < m {
@@ -554,10 +557,11 @@ func (st *state) resolveDynamicRef(schema *Schema) (*Schema, error) {
 	if schema.DynamicRef == "" {
 		return nil, nil
 	}
+	info := st.rs.resolvedInfos[schema]
 	// The ref behaves lexically or dynamically, but not both.
-	assert((schema.resolvedDynamicRef == nil) != (schema.dynamicRefAnchor == ""),
+	assert((info.resolvedDynamicRef == nil) != (info.dynamicRefAnchor == ""),
 		"DynamicRef not statically resolved properly")
-	if r := schema.resolvedDynamicRef; r != nil {
+	if r := info.resolvedDynamicRef; r != nil {
 		// Same as $ref.
 		return r, nil
 	}
@@ -571,12 +575,13 @@ func (st *state) resolveDynamicRef(schema *Schema) (*Schema, error) {
 	// on the stack.
 	// For an example, search for "detached" in testdata/draft2020-12/dynamicRef.json.
 	for _, s := range st.stack {
-		info, ok := s.base.anchors[schema.dynamicRefAnchor]
+		base := st.rs.resolvedInfos[s].base
+		info, ok := st.rs.resolvedInfos[base].anchors[info.dynamicRefAnchor]
 		if ok && info.dynamic {
 			return info.schema, nil
 		}
 	}
-	return nil, fmt.Errorf("missing dynamic anchor %q", schema.dynamicRefAnchor)
+	return nil, fmt.Errorf("missing dynamic anchor %q", info.dynamicRefAnchor)
 }
 
 // ApplyDefaults modifies an instance by applying the schema's defaults to it. If
@@ -608,8 +613,9 @@ func (rs *Resolved) ApplyDefaults(instancep any) error {
 // Leave this as a potentially recursive helper function, because we'll surely want
 // to apply defaults on sub-schemas someday.
 func (st *state) applyDefaults(instancep reflect.Value, schema *Schema) (err error) {
-	defer util.Wrapf(&err, "applyDefaults: schema %s, instance %v", schema, instancep)
+	defer util.Wrapf(&err, "applyDefaults: schema %s, instance %v", st.rs.schemaString(schema), instancep)
 
+	schemaInfo := st.rs.resolvedInfos[schema]
 	instance := instancep.Elem()
 	if instance.Kind() == reflect.Map || instance.Kind() == reflect.Struct {
 		if instance.Kind() == reflect.Map {
@@ -619,7 +625,7 @@ func (st *state) applyDefaults(instancep reflect.Value, schema *Schema) (err err
 		}
 		for prop, subschema := range schema.Properties {
 			// Ignore defaults on required properties. (A required property shouldn't have a default.)
-			if schema.isRequired[prop] {
+			if schemaInfo.isRequired[prop] {
 				continue
 			}
 			val := property(instance, prop)

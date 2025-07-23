@@ -5,22 +5,30 @@
 /*
 Package jsonschema is an implementation of the [JSON Schema specification],
 a JSON-based format for describing the structure of JSON data.
-The package can be used to read schemas for code generation, and to validate data using the
-draft 2020-12 specification. Validation with other drafts or custom meta-schemas
-is not supported.
+The package can be used to read schemas for code generation, and to validate
+data using the draft 2020-12 specification. Validation with other drafts
+or custom meta-schemas is not supported.
 
-Construct a [Schema] as you would any Go struct (for example, by writing a struct
-literal), or unmarshal a JSON schema into a [Schema] in the usual way (with [encoding/json],
-for instance). It can then be used for code generation or other purposes without
-further processing.
+Construct a [Schema] as you would any Go struct (for example, by writing
+a struct literal), or unmarshal a JSON schema into a [Schema] in the usual
+way (with [encoding/json], for instance). It can then be used for code
+generation or other purposes without further processing.
+You can also infer a schema from a Go struct.
+
+# Resolution
+
+A Schema can refer to other schemas, both inside and outside itself. These
+references must be resolved before a schema can be used for validation.
+Call [Schema.Resolve] to obtain a resolved schema (called a [Resolved]).
+If the schema has external references, pass a [ResolveOptions] with a [Loader]
+to load them. To validate default values in a schema, set
+[ResolveOptions.ValidateDefaults] to true.
 
 # Validation
 
-Before using a Schema to validate a JSON value, you must first resolve it by calling
-[Schema.Resolve].
-The call [Resolved.Validate] on the result to validate a JSON value.
-The value must be a Go value that looks like the result of unmarshaling a JSON
-value into an [any] or a struct. For example, the JSON value
+Call [Resolved.Validate] to validate a JSON value. The value must be a
+Go value that looks like the result of unmarshaling a JSON value into an
+[any] or a struct. For example, the JSON value
 
 	{"name": "Al", "scores": [90, 80, 100]}
 
@@ -41,8 +49,11 @@ or as a value of this type:
 # Inference
 
 The [For] function returns a [Schema] describing the given Go type.
-The type cannot contain any function or channel types, and any map types must have a string key.
-For example, calling For on the above Player type results in this schema:
+Each field in the struct becomes a property of the schema.
+The values of "json" tags are respected: the field's property name is taken
+from the tag, and fields omitted from the JSON are omitted from the schema as
+well.
+For example, `jsonschema.For[Player]()` returns this schema:
 
 	{
 	    "properties": {
@@ -58,17 +69,33 @@ For example, calling For on the above Player type results in this schema:
 	    }
 	}
 
+Use the "jsonschema" struct tag to provide a description for the property:
+
+	type Player struct {
+		Name   string `json:"name" jsonschema:"player name"`
+		Scores []int  `json:"scores" jsonschema:"scores of player's games"`
+	}
+
 # Deviations from the specification
 
-Regular expressions are processed with Go's regexp package, which differs from ECMA 262,
-most significantly in not supporting back-references.
+Regular expressions are processed with Go's regexp package, which differs
+from ECMA 262, most significantly in not supporting back-references.
 See [this table of differences] for more.
 
-The value of the "format" keyword is recorded in the Schema, but is ignored during validation.
+The "format" keyword described in [section 7 of the validation spec] is recorded
+in the Schema, but is ignored during validation.
 It does not even produce [annotations].
+Use the "pattern" keyword instead: it will work more reliably across JSON Schema
+implementations. See [learnjsonschema.com] for more recommendations about "format".
+
+The content keywords described in [section 8 of the validation spec]
+are recorded in the schema, but ignored during validation.
 
 [JSON Schema specification]: https://json-schema.org
-[this table of differences] https://github.com/dlclark/regexp2?tab=readme-ov-file#compare-regexp-and-regexp2
+[section 7 of the validation spec]: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.7
+[section 8 of the validation spec]: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-00#rfc.section.8
+[learnjsonschema.com]: https://www.learnjsonschema.com/2020-12/format-annotation/format/
+[this table of differences]: https://github.com/dlclark/regexp2?tab=readme-ov-file#compare-regexp-and-regexp2
 [annotations]: https://json-schema.org/draft/2020-12/json-schema-core#name-annotations
 */
 package jsonschema

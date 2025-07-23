@@ -19,18 +19,9 @@ response with its latest supported version.
 	"result": {
 		"capabilities": {
 			"completions": {},
-			"logging": {},
-			"prompts": {
-				"listChanged": true
-			},
-			"resources": {
-				"listChanged": true
-			},
-			"tools": {
-				"listChanged": true
-			}
+			"logging": {}
 		},
-		"protocolVersion": "2025-03-26",
+		"protocolVersion": "2025-06-18",
 		"serverInfo": {
 			"name": "testServer",
 			"version": "v1.0.0"
