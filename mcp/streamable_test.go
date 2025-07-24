@@ -10,19 +10,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func TestStreamableTransports(t *testing.T) {
@@ -102,6 +106,127 @@ func TestStreamableTransports(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+	}
+}
+
+// TestClientReplay verifies that the client can recover from a
+// mid-stream network failure and receive replayed messages. It uses a proxy
+// that is killed and restarted to simulate a recoverable network outage.
+func TestClientReplay(t *testing.T) {
+	notifications := make(chan string)
+	// 1. Configure the real MCP server.
+	server := NewServer(testImpl, nil)
+
+	// Use a channel to synchronize the server's message sending with the test's
+	// proxy-killing action.
+	serverReadyToKillProxy := make(chan struct{})
+	serverClosed := make(chan struct{})
+	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
+		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+			go func() {
+				bgCtx := context.Background()
+				// Send the first two messages immediately.
+				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg1"})
+				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
+
+				// Signal the test that it can now kill the proxy.
+				close(serverReadyToKillProxy)
+				<-serverClosed
+
+				// These messages should be queued for replay by the server after
+				// the client's connection drops.
+				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg3"})
+				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
+			}()
+			return &CallToolResult{}, nil
+		})
+	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	defer realServer.Close()
+	realServerURL, err := url.Parse(realServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse real server URL: %v", err)
+	}
+
+	// 2. Configure a proxy that sits between the client and the real server.
+	proxyHandler := httputil.NewSingleHostReverseProxy(realServerURL)
+	proxy := httptest.NewServer(proxyHandler)
+	proxyAddr := proxy.Listener.Addr().String() // Get the address to restart it later.
+
+	// 3. Configure the client to connect to the proxy with default options.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := NewClient(testImpl, &ClientOptions{
+		ProgressNotificationHandler: func(ctx context.Context, cc *ClientSession, params *ProgressNotificationParams) {
+			notifications <- params.Message
+		}})
+	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil))
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer clientSession.Close()
+	clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+
+	// 4. Read and verify messages until the server signals it's ready for the proxy kill.
+	receivedNotifications := readProgressNotifications(t, ctx, notifications, 2)
+
+	wantReceived := []string{"msg1", "msg2"}
+	if diff := cmp.Diff(wantReceived, receivedNotifications); diff != "" {
+		t.Errorf("Received notifications mismatch (-want +got):\n%s", diff)
+	}
+
+	select {
+	case <-serverReadyToKillProxy:
+		// Server has sent the first two messages and is paused.
+	case <-ctx.Done():
+		t.Fatalf("Context timed out before server was ready to kill proxy")
+	}
+
+	// 5. Simulate a total network failure by closing the proxy.
+	t.Log("--- Killing proxy to simulate network failure ---")
+	proxy.CloseClientConnections()
+	proxy.Close()
+	close(serverClosed)
+
+	// 6. Simulate network recovery by restarting the proxy on the same address.
+	t.Logf("--- Restarting proxy on %s ---", proxyAddr)
+	listener, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("Failed to listen on proxy address: %v", err)
+	}
+	restartedProxy := &http.Server{Handler: proxyHandler}
+	go restartedProxy.Serve(listener)
+	defer restartedProxy.Close()
+
+	// 7. Continue reading from the same connection object.
+	// Its internal logic should successfully retry, reconnect to the new proxy,
+	// and receive the replayed messages.
+	recoveredNotifications := readProgressNotifications(t, ctx, notifications, 2)
+
+	// 8. Verify the correct messages were received on the recovered connection.
+	wantRecovered := []string{"msg3", "msg4"}
+
+	if diff := cmp.Diff(wantRecovered, recoveredNotifications); diff != "" {
+		t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Helper to read a specific number of progress notifications.
+func readProgressNotifications(t *testing.T, ctx context.Context, notifications chan string, count int) []string {
+	t.Helper()
+	var collectedNotifications []string
+	for {
+		select {
+		case n := <-notifications:
+			collectedNotifications = append(collectedNotifications, n)
+			if len(collectedNotifications) == count {
+				return collectedNotifications
+			}
+		case <-ctx.Done():
+			if len(collectedNotifications) != count {
+				t.Fatalf("readProgressNotifications(): did not receive expected notifications, got %d, want %d", len(collectedNotifications), count)
+			}
+			return collectedNotifications
+		}
 	}
 }
 
@@ -555,7 +680,7 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 
 func TestEventID(t *testing.T) {
 	tests := []struct {
-		sid streamID
+		sid StreamID
 		idx int
 	}{
 		{0, 0},

@@ -7,13 +7,17 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -129,7 +133,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	if session == nil {
-		s := NewStreamableServerTransport(randText())
+		s := NewStreamableServerTransport(randText(), nil)
 		server := h.getServer(req)
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
@@ -147,27 +151,40 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	session.ServeHTTP(w, req)
 }
 
+type StreamableServerTransportOptions struct {
+	// Storage for events, to enable stream resumption.
+	// If nil, a [MemoryEventStore] with the default maximum size will be used.
+	EventStore EventStore
+}
+
 // NewStreamableServerTransport returns a new [StreamableServerTransport] with
-// the given session ID.
+// the given session ID and options.
 // The session ID must be globally unique, that is, different from any other
 // session ID anywhere, past and future. (We recommend using a crypto random number
-// generator to produce one, as in [crypto/rand.Text].)
+// generator to produce one, as with [crypto/rand.Text].)
 //
 // A StreamableServerTransport implements the server-side of the streamable
 // transport.
-//
-// TODO(rfindley): consider adding options here, to configure event storage
-// policy.
-func NewStreamableServerTransport(sessionID string) *StreamableServerTransport {
-	return &StreamableServerTransport{
-		id:               sessionID,
-		incoming:         make(chan jsonrpc.Message, 10),
-		done:             make(chan struct{}),
-		outgoingMessages: make(map[streamID][]*streamableMsg),
-		signals:          make(map[streamID]chan struct{}),
-		requestStreams:   make(map[jsonrpc.ID]streamID),
-		streamRequests:   make(map[streamID]map[jsonrpc.ID]struct{}),
+func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransportOptions) *StreamableServerTransport {
+	if opts == nil {
+		opts = &StreamableServerTransportOptions{}
 	}
+	t := &StreamableServerTransport{
+		id:             sessionID,
+		incoming:       make(chan jsonrpc.Message, 10),
+		done:           make(chan struct{}),
+		outgoing:       make(map[StreamID][][]byte),
+		signals:        make(map[StreamID]chan struct{}),
+		requestStreams: make(map[jsonrpc.ID]StreamID),
+		streamRequests: make(map[StreamID]map[jsonrpc.ID]struct{}),
+	}
+	if opts != nil {
+		t.opts = *opts
+	}
+	if t.opts.EventStore == nil {
+		t.opts.EventStore = NewMemoryEventStore(nil)
+	}
+	return t
 }
 
 func (t *StreamableServerTransport) SessionID() string {
@@ -180,10 +197,10 @@ type StreamableServerTransport struct {
 	nextStreamID atomic.Int64 // incrementing next stream ID
 
 	id       string
+	opts     StreamableServerTransportOptions
 	incoming chan jsonrpc.Message // messages from the client to the server
 
 	mu sync.Mutex
-
 	// Sessions are closed exactly once.
 	isDone bool
 	done   chan struct{}
@@ -202,17 +219,14 @@ type StreamableServerTransport struct {
 	//
 	// TODO(rfindley): simplify.
 
-	// outgoingMessages is the collection of outgoingMessages messages, keyed by the logical
+	// outgoing is the collection of outgoing messages, keyed by the logical
 	// stream ID where they should be delivered.
 	//
 	// streamID 0 is used for messages that don't correlate with an incoming
 	// request.
 	//
-	// Lifecycle: outgoingMessages persists for the duration of the session.
-	//
-	// TODO(rfindley): garbage collect this data. For now, we save all outgoingMessages
-	// messages for the lifespan of the transport.
-	outgoingMessages map[streamID][]*streamableMsg
+	// Lifecycle: persists for the duration of the session.
+	outgoing map[StreamID][][]byte
 
 	// signals maps a logical stream ID to a 1-buffered channel, owned by an
 	// incoming HTTP request, that signals that there are messages available to
@@ -223,14 +237,14 @@ type StreamableServerTransport struct {
 	//
 	// Lifecycle: signals persists for the duration of an HTTP POST or GET
 	// request for the given streamID.
-	signals map[streamID]chan struct{}
+	signals map[StreamID]chan struct{}
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
 	// Lifecycle: requestStreams persists for the duration of the session.
 	//
 	// TODO(rfindley): clean up once requests are handled.
-	requestStreams map[jsonrpc.ID]streamID
+	requestStreams map[jsonrpc.ID]StreamID
 
 	// streamRequests tracks the set of unanswered incoming RPCs for each logical
 	// stream.
@@ -241,10 +255,10 @@ type StreamableServerTransport struct {
 	// Lifecycle: streamRequests values persist as until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
-	streamRequests map[streamID]map[jsonrpc.ID]struct{}
+	streamRequests map[StreamID]map[jsonrpc.ID]struct{}
 }
 
-type streamID int64
+type StreamID int64
 
 // a streamableMsg is an SSE event with an index into its logical stream.
 type streamableMsg struct {
@@ -298,16 +312,19 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 
 func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
-	id, nextIdx := streamID(0), 0
+	id := StreamID(0)
+	// By default, we haven't seen a last index. Since indices start at 0, we represent
+	// that by -1. This is incremented just before each event is written, in streamResponse
+	// around L407.
+	lastIdx := -1
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
 		eid := req.Header.Get("Last-Event-ID")
 		var ok bool
-		id, nextIdx, ok = parseEventID(eid)
+		id, lastIdx, ok = parseEventID(eid)
 		if !ok {
 			http.Error(w, fmt.Sprintf("malformed Last-Event-ID %q", eid), http.StatusBadRequest)
 			return
 		}
-		nextIdx++
 	}
 
 	t.mu.Lock()
@@ -320,7 +337,7 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 	t.signals[id] = signal
 	t.mu.Unlock()
 
-	t.streamResponse(w, req, id, nextIdx, signal)
+	t.streamResponse(w, req, id, lastIdx, signal)
 }
 
 func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) {
@@ -352,7 +369,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	}
 
 	// Update accounting for this request.
-	id := streamID(t.nextStreamID.Add(1))
+	id := StreamID(t.nextStreamID.Add(1))
 	signal := make(chan struct{}, 1)
 	t.mu.Lock()
 	if len(requests) > 0 {
@@ -373,26 +390,33 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// TODO(rfindley): consider optimizing for a single incoming request, by
 	// responding with application/json when there is only a single message in
 	// the response.
-	t.streamResponse(w, req, id, 0, signal)
+	t.streamResponse(w, req, id, -1, signal)
 }
 
-func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *http.Request, id streamID, nextIndex int, signal chan struct{}) {
+// lastIndex is the index of the last seen event if resuming, else -1.
+func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *http.Request, id StreamID, lastIndex int, signal chan struct{}) {
 	defer func() {
 		t.mu.Lock()
 		delete(t.signals, id)
 		t.mu.Unlock()
 	}()
 
-	// Stream resumption: adjust outgoing index based on what the user says
-	// they've received.
-	if nextIndex > 0 {
-		t.mu.Lock()
-		// Clamp nextIndex to outgoing messages.
-		outgoing := t.outgoingMessages[id]
-		if nextIndex > len(outgoing) {
-			nextIndex = len(outgoing)
+	writes := 0
+
+	// write one event containing data.
+	write := func(data []byte) bool {
+		lastIndex++
+		e := Event{
+			Name: "message",
+			ID:   formatEventID(id, lastIndex),
+			Data: data,
 		}
-		t.mu.Unlock()
+		if _, err := writeEvent(w, e); err != nil {
+			// Connection closed or broken.
+			return false
+		}
+		writes++
+		return true
 	}
 
 	w.Header().Set(sessionIDHeader, t.id)
@@ -400,37 +424,53 @@ func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *h
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 
-	writes := 0
-stream:
-	for {
-		// Send outgoing messages
-		t.mu.Lock()
-		outgoing := t.outgoingMessages[id][nextIndex:]
-		t.mu.Unlock()
-
-		for _, msg := range outgoing {
-			if _, err := writeEvent(w, msg.event); err != nil {
-				// Connection closed or broken.
+	if lastIndex >= 0 {
+		// Resume.
+		for data, err := range t.opts.EventStore.After(req.Context(), t.SessionID(), id, lastIndex) {
+			if err != nil {
+				// TODO: reevaluate these status codes.
+				// Maybe distinguish between storage errors, which are 500s, and missing
+				// session or stream ID--can these arise from bad input?
+				status := http.StatusInternalServerError
+				if errors.Is(err, ErrEventsPurged) {
+					status = http.StatusInsufficientStorage
+				}
+				http.Error(w, err.Error(), status)
 				return
 			}
-			writes++
-			nextIndex++
+			// The iterator yields events beginning just after lastIndex, or it would have
+			// yielded an error.
+			if !write(data) {
+				return
+			}
+		}
+	}
+
+stream:
+	// Repeatedly collect pending outgoing events and send them.
+	for {
+		t.mu.Lock()
+		outgoing := t.outgoing[id]
+		t.outgoing[id] = nil
+		t.mu.Unlock()
+
+		for _, data := range outgoing {
+			if err := t.opts.EventStore.Append(req.Context(), t.id, id, data); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !write(data) {
+				return
+			}
 		}
 
 		t.mu.Lock()
 		nOutstanding := len(t.streamRequests[id])
-		nOutgoing := len(t.outgoingMessages[id])
 		t.mu.Unlock()
-		// If all requests have been handled and replied to, we can terminate this
-		// connection. However, in the case of a sequencing violation from the server
-		// (a send on the request context after the request has been handled), we
-		// loop until we've written all messages.
-		//
-		// TODO(rfindley): should we instead refuse to send messages after the last
-		// response? Decide, write a test, and change the behavior.
-		if nextIndex < nOutgoing {
-			continue // more to send
-		}
+		// If all requests have been handled and replied to, we should terminate this connection.
+		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
+		// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
+		// TODO(jba): why not terminate regardless of http method?
 		if req.Method == http.MethodPost && nOutstanding == 0 {
 			if writes == 0 {
 				// Spec: If the server accepts the input, the server MUST return HTTP
@@ -441,8 +481,9 @@ stream:
 		}
 
 		select {
-		case <-signal:
-		case <-t.done:
+		case <-signal: // there are new outgoing messages
+			// return to top of loop
+		case <-t.done: // session is closed
 			if writes == 0 {
 				http.Error(w, "session terminated", http.StatusGone)
 			}
@@ -463,7 +504,7 @@ stream:
 // streamID and message index idx.
 //
 // See also [parseEventID].
-func formatEventID(sid streamID, idx int) string {
+func formatEventID(sid StreamID, idx int) string {
 	return fmt.Sprintf("%d_%d", sid, idx)
 }
 
@@ -471,7 +512,7 @@ func formatEventID(sid streamID, idx int) string {
 // index.
 //
 // See also [formatEventID].
-func parseEventID(eventID string) (sid streamID, idx int, ok bool) {
+func parseEventID(eventID string) (sid StreamID, idx int, ok bool) {
 	parts := strings.Split(eventID, "_")
 	if len(parts) != 2 {
 		return 0, 0, false
@@ -484,7 +525,7 @@ func parseEventID(eventID string) (sid streamID, idx int, ok bool) {
 	if err != nil || idx < 0 {
 		return 0, 0, false
 	}
-	return streamID(stream), idx, true
+	return StreamID(stream), idx, true
 }
 
 // Read implements the [Connection] interface.
@@ -523,7 +564,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	//
 	// For messages sent outside of a request context, this is the default
 	// connection 0.
-	var forConn streamID
+	var forConn StreamID
 	if forRequest.IsValid() {
 		t.mu.Lock()
 		forConn = t.requestStreams[forRequest]
@@ -549,15 +590,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		forConn = 0
 	}
 
-	idx := len(t.outgoingMessages[forConn])
-	t.outgoingMessages[forConn] = append(t.outgoingMessages[forConn], &streamableMsg{
-		idx: idx,
-		event: Event{
-			Name: "message",
-			ID:   formatEventID(forConn, idx),
-			Data: data,
-		},
-	})
+	t.outgoing[forConn] = append(t.outgoing[forConn], data)
 	if replyTo.IsValid() {
 		// Once we've put the reply on the queue, it's no longer outstanding.
 		delete(t.streamRequests[forConn], replyTo)
@@ -583,6 +616,7 @@ func (t *StreamableServerTransport) Close() error {
 	if !t.isDone {
 		t.isDone = true
 		close(t.done)
+		return t.opts.EventStore.SessionClosed(context.TODO(), t.id)
 	}
 	return nil
 }
@@ -597,12 +631,39 @@ type StreamableClientTransport struct {
 	opts StreamableClientTransportOptions
 }
 
+// StreamableReconnectOptions defines parameters for client reconnect attempts.
+type StreamableReconnectOptions struct {
+	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
+	// A value of 0 or less means never retry.
+	MaxRetries int
+
+	// growFactor is the multiplicative factor by which the delay increases after each attempt.
+	// A value of 1.0 results in a constant delay, while a value of 2.0 would double it each time.
+	// It must be 1.0 or greater if MaxRetries is greater than 0.
+	growFactor float64
+
+	// initialDelay is the base delay for the first reconnect attempt.
+	initialDelay time.Duration
+
+	// maxDelay caps the backoff delay, preventing it from growing indefinitely.
+	maxDelay time.Duration
+}
+
+// DefaultReconnectOptions provides sensible defaults for reconnect logic.
+var DefaultReconnectOptions = &StreamableReconnectOptions{
+	MaxRetries:   5,
+	growFactor:   1.5,
+	initialDelay: 1 * time.Second,
+	maxDelay:     30 * time.Second,
+}
+
 // StreamableClientTransportOptions provides options for the
 // [NewStreamableClientTransport] constructor.
 type StreamableClientTransportOptions struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
-	HTTPClient *http.Client
+	HTTPClient       *http.Client
+	ReconnectOptions *StreamableReconnectOptions
 }
 
 // NewStreamableClientTransport returns a new client transport that connects to
@@ -628,22 +689,37 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &streamableClientConn{
-		url:      t.url,
-		client:   client,
-		incoming: make(chan []byte, 100),
-		done:     make(chan struct{}),
-	}, nil
+	reconnOpts := t.opts.ReconnectOptions
+	if reconnOpts == nil {
+		reconnOpts = DefaultReconnectOptions
+	}
+	// Create a new cancellable context that will manage the connection's lifecycle.
+	// This is crucial for cleanly shutting down the background SSE listener by
+	// cancelling its blocking network operations, which prevents hangs on exit.
+	connCtx, cancel := context.WithCancel(context.Background())
+	conn := &streamableClientConn{
+		url:              t.url,
+		client:           client,
+		incoming:         make(chan []byte, 100),
+		done:             make(chan struct{}),
+		ReconnectOptions: reconnOpts,
+		ctx:              connCtx,
+		cancel:           cancel,
+	}
+	return conn, nil
 }
 
 type streamableClientConn struct {
-	url      string
-	client   *http.Client
-	incoming chan []byte
-	done     chan struct{}
+	url              string
+	client           *http.Client
+	incoming         chan []byte
+	done             chan struct{}
+	ReconnectOptions *StreamableReconnectOptions
 
 	closeOnce sync.Once
 	closeErr  error
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	mu              sync.Mutex
 	protocolVersion string
@@ -665,6 +741,12 @@ func (c *streamableClientConn) SessionID() string {
 
 // Read implements the [Connection] interface.
 func (s *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -745,6 +827,7 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	sessionID = resp.Header.Get(sessionIDHeader)
 	switch ct := resp.Header.Get("Content-Type"); ct {
 	case "text/event-stream":
+		// Section 2.1: The SSE stream is initiated after a POST.
 		go s.handleSSE(resp)
 	case "application/json":
 		// TODO: read the body and send to s.incoming (in a select that also receives from s.done).
@@ -757,34 +840,115 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	return sessionID, nil
 }
 
-func (s *streamableClientConn) handleSSE(resp *http.Response) {
+// handleSSE manages the entire lifecycle of an SSE connection. It processes
+// an incoming Server-Sent Events stream and automatically handles reconnection
+// logic if the stream breaks.
+func (s *streamableClientConn) handleSSE(initialResp *http.Response) {
+	resp := initialResp
+	var lastEventID string
+
+	for {
+		eventID, clientClosed := s.processStream(resp)
+		lastEventID = eventID
+
+		// If the connection was closed by the client, we're done.
+		if clientClosed {
+			return
+		}
+
+		// The stream was interrupted or ended by the server. Attempt to reconnect.
+		newResp, err := s.reconnect(lastEventID)
+		if err != nil {
+			// All reconnection attempts failed. Set the final error, close the
+			// connection, and exit the goroutine.
+			s.mu.Lock()
+			s.err = err
+			s.mu.Unlock()
+			s.Close()
+			return
+		}
+
+		// Reconnection was successful. Continue the loop with the new response.
+		resp = newResp
+	}
+}
+
+// processStream reads from a single response body, sending events to the
+// incoming channel. It returns the ID of the last processed event, any error
+// that occurred, and a flag indicating if the connection was closed by the client.
+func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID string, clientClosed bool) {
 	defer resp.Body.Close()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for evt, err := range scanEvents(resp.Body) {
-			if err != nil {
-				// TODO: surface this error; possibly break the stream
-				return
-			}
-			select {
-			case <-s.done:
-				return
-			case s.incoming <- evt.Data:
-			}
+	for evt, err := range scanEvents(resp.Body) {
+		if err != nil {
+			return lastEventID, false
 		}
-	}()
 
-	select {
-	case <-s.done:
-	case <-done:
+		if evt.ID != "" {
+			lastEventID = evt.ID
+		}
+
+		select {
+		case s.incoming <- evt.Data:
+		case <-s.done:
+			// The connection was closed by the client; exit gracefully.
+			return lastEventID, true
+		}
 	}
+
+	// The loop finished without an error, indicating the server closed the stream.
+	// We'll attempt to reconnect, so this is not a client-side close.
+	return lastEventID, false
+}
+
+// reconnect handles the logic of retrying a connection with an exponential
+// backoff strategy. It returns a new, valid HTTP response if successful, or
+// an error if all retries are exhausted.
+func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, error) {
+	var finalErr error
+
+	for attempt := 0; attempt < s.ReconnectOptions.MaxRetries; attempt++ {
+		select {
+		case <-s.done:
+			return nil, fmt.Errorf("connection closed by client during reconnect")
+		case <-time.After(calculateReconnectDelay(s.ReconnectOptions, attempt)):
+			resp, err := s.establishSSE(lastEventID)
+			if err != nil {
+				finalErr = err // Store the error and try again.
+				continue
+			}
+
+			if !isResumable(resp) {
+				// The server indicated we should not continue.
+				resp.Body.Close()
+				return nil, fmt.Errorf("reconnection failed with unresumable status: %s", resp.Status)
+			}
+
+			return resp, nil
+		}
+	}
+	// If the loop completes, all retries have failed.
+	if finalErr != nil {
+		return nil, fmt.Errorf("connection failed after %d attempts: %w", s.ReconnectOptions.MaxRetries, finalErr)
+	}
+	return nil, fmt.Errorf("connection failed after %d attempts", s.ReconnectOptions.MaxRetries)
+}
+
+// isResumable checks if an HTTP response indicates a valid SSE stream that can be processed.
+func isResumable(resp *http.Response) bool {
+	// Per the spec, a 405 response means the server doesn't support SSE streams at this endpoint.
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return false
+	}
+
+	return strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 }
 
 // Close implements the [Connection] interface.
 func (s *streamableClientConn) Close() error {
 	s.closeOnce.Do(func() {
+		// Cancel any hanging network requests.
+		s.cancel()
 		close(s.done)
 
 		req, err := http.NewRequest(http.MethodDelete, s.url, nil)
@@ -802,4 +966,38 @@ func (s *streamableClientConn) Close() error {
 		}
 	})
 	return s.closeErr
+}
+
+// establishSSE establishes the persistent SSE listening stream.
+// It is used for reconnect attempts using the Last-Event-ID header to
+// resume a broken stream where it left off.
+func (s *streamableClientConn) establishSSE(lastEventID string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s._sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", s._sessionID)
+	}
+	s.mu.Unlock()
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	return s.client.Do(req)
+}
+
+// calculateReconnectDelay calculates a delay using exponential backoff with full jitter.
+func calculateReconnectDelay(opts *StreamableReconnectOptions, attempt int) time.Duration {
+	// Calculate the exponential backoff using the grow factor.
+	backoffDuration := time.Duration(float64(opts.initialDelay) * math.Pow(opts.growFactor, float64(attempt)))
+	// Cap the backoffDuration at maxDelay.
+	backoffDuration = min(backoffDuration, opts.maxDelay)
+
+	// Use a full jitter using backoffDuration
+	jitter := rand.N(backoffDuration)
+
+	return backoffDuration + jitter
 }
