@@ -153,10 +153,9 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 //
 // All of an EventStore's methods must be safe for use by multiple goroutines.
 type EventStore interface {
-	// AppendEvent appends data for an outgoing event to given stream, which is part of the
-	// given session. It returns the index of the event in the stream, suitable for constructing
-	// an event ID to send to the client.
-	AppendEvent(_ context.Context, sessionID string, _ StreamID, data []byte) (int, error)
+	// Append appends data for an outgoing event to given stream, which is part of the
+	// given session.
+	Append(_ context.Context, sessionID string, _ StreamID, data []byte) error
 
 	// After returns an iterator over the data for the given session and stream, beginning
 	// just after the given index.
@@ -165,16 +164,15 @@ type EventStore interface {
 	// dropped; it must not return partial results.
 	After(_ context.Context, sessionID string, _ StreamID, index int) iter.Seq2[[]byte, error]
 
-	// StreamClosed informs the store that the given stream is finished.
-	// A store cannot rely on this method being called for cleanup. It should institute
-	// additional mechanisms, such as timeouts, to reclaim storage.
-	StreamClosed(_ context.Context, sessionID string, streamID StreamID) error
-
 	// SessionClosed informs the store that the given session is finished, along
 	// with all of its streams.
 	// A store cannot rely on this method being called for cleanup. It should institute
 	// additional mechanisms, such as timeouts, to reclaim storage.
+	//
 	SessionClosed(_ context.Context, sessionID string) error
+
+	// There is no StreamClosed method. A server doesn't know when a stream is finished, because
+	// the client can always send a GET with a Last-Event-ID referring to the stream.
 }
 
 // A dataList is a list of []byte.
@@ -208,15 +206,6 @@ func (dl *dataList) removeFirst() int {
 	dl.data = dl.data[1:]
 	dl.first++
 	return r
-}
-
-// lastIndex returns the index of the last data item in dl.
-// It panics if there are none.
-func (dl *dataList) lastIndex() int {
-	if len(dl.data) == 0 {
-		panic("empty dataList")
-	}
-	return dl.first + len(dl.data) - 1
 }
 
 // A MemoryEventStore is an [EventStore] backed by memory.
@@ -267,9 +256,8 @@ func NewMemoryEventStore(opts *MemoryEventStoreOptions) *MemoryEventStore {
 	}
 }
 
-// AppendEvent implements [EventStore.AppendEvent] by recording data
-// in memory.
-func (s *MemoryEventStore) AppendEvent(_ context.Context, sessionID string, streamID StreamID, data []byte) (int, error) {
+// Append implements [EventStore.Append] by recording data in memory.
+func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID StreamID, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -288,8 +276,12 @@ func (s *MemoryEventStore) AppendEvent(_ context.Context, sessionID string, stre
 	s.purge()
 	dl.appendData(data)
 	s.nBytes += len(data)
-	return dl.lastIndex(), nil
+	return nil
 }
+
+// ErrEventsPurged is the error that [EventStore.After] should return if the event just after the
+// index is no longer available.
+var ErrEventsPurged = errors.New("data purged")
 
 // After implements [EventStore.After].
 func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID StreamID, index int) iter.Seq2[[]byte, error] {
@@ -306,10 +298,12 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID S
 		if !ok {
 			return nil, fmt.Errorf("MemoryEventStore.After: unknown stream ID %v in session %q", streamID, sessionID)
 		}
-		if dl.first > index {
-			return nil, fmt.Errorf("MemoryEventStore.After: data purged at index %d, stream ID %v, session %q", index, streamID, sessionID)
+		start := index + 1
+		if dl.first > start {
+			return nil, fmt.Errorf("MemoryEventStore.After: index %d, stream ID %v, session %q: %w",
+				index, streamID, sessionID, ErrEventsPurged)
 		}
-		return slices.Clone(dl.data[index-dl.first:]), nil
+		return slices.Clone(dl.data[start-dl.first:]), nil
 	}
 
 	return func(yield func([]byte, error) bool) {
@@ -324,26 +318,6 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID S
 			}
 		}
 	}
-}
-
-// StreamClosed implements [EventStore.StreamClosed].
-func (s *MemoryEventStore) StreamClosed(_ context.Context, sessionID string, streamID StreamID) error {
-	if sessionID == "" {
-		panic("empty sessionID")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sm := s.store[sessionID]
-	dl := sm[streamID]
-	s.nBytes -= dl.size
-	delete(sm, streamID)
-	if len(sm) == 0 {
-		delete(s.store, sessionID)
-	}
-	s.validate()
-	return nil
 }
 
 // SessionClosed implements [EventStore.SessionClosed].
