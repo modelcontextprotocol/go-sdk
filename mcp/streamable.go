@@ -242,22 +242,25 @@ type stream struct {
 	// ID 0 is used for messages that don't correlate with an incoming request.
 	id StreamID
 
-	// These mutable fields are protected by the mutex of the corresponding StreamableServerTransport.
+	// signal is a 1-buffered channel, owned by an incoming HTTP request, that signals
+	// that there are messages available to write into the HTTP response.
+	// In addition, the presence of a channel guarantees that at most one HTTP response
+	// can receive messages for a logical stream. After claiming the stream, incoming
+	// requests should read from outgoing, to ensure that no new messages are missed.
+	//
+	// To simplify locking, signal is an atomic. We need an atomic.Pointer, because
+	// you can't set an atomic.Value to nil.
+	//
+	// Lifecycle: each channel value persists for the duration of an HTTP POST or
+	// GET request for the given streamID.
+	signal atomic.Pointer[chan struct{}]
+
+	// The following mutable fields are protected by the mutex of the containing
+	// StreamableServerTransport.
 
 	// outgoing is the list of outgoing messages, enqueued by server methods that
 	// write notifications and responses, and dequeued by streamResponse.
 	outgoing [][]byte
-
-	// signal is a 1-buffered channel, owned by an
-	// incoming HTTP request, that signals that there are messages available to
-	// write into the HTTP response. This guarantees that at most one HTTP
-	// response can receive messages for a logical stream. After claiming
-	// the stream, incoming requests should read from outgoing, to ensure
-	// that no new messages are missed.
-	//
-	// Lifecycle: persists for the duration of an HTTP POST or GET
-	// request for the given streamID.
-	signal chan struct{}
 
 	// streamRequests is the set of unanswered incoming RPCs for the stream.
 	//
@@ -272,6 +275,11 @@ func newStream(id StreamID) *stream {
 		id:       id,
 		requests: make(map[jsonrpc.ID]struct{}),
 	}
+}
+
+func signalChanPtr() *chan struct{} {
+	c := make(chan struct{}, 1)
+	return &c
 }
 
 // A StreamID identifies a stream of SSE events. It is unique within the stream's
@@ -346,17 +354,14 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 
 	t.mu.Lock()
 	stream, ok := t.streams[id]
+	t.mu.Unlock()
 	if !ok {
-		t.mu.Unlock()
 		return http.StatusBadRequest, "unknown stream"
 	}
-	if stream.signal != nil {
-		t.mu.Unlock()
+	if !stream.signal.CompareAndSwap(nil, signalChanPtr()) {
+		// The CAS returned false, meaning that the comparison failed: stream.signal is not nil.
 		return http.StatusBadRequest, "stream ID conflicts with ongoing stream"
 	}
-	stream.signal = make(chan struct{}, 1)
-	t.mu.Unlock()
-
 	return t.streamResponse(stream, w, req, lastIdx)
 }
 
@@ -395,8 +400,8 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 		t.requestStreams[reqID] = stream.id
 		stream.requests[reqID] = struct{}{}
 	}
-	stream.signal = make(chan struct{}, 1)
 	t.mu.Unlock()
+	stream.signal.Store(signalChanPtr())
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
@@ -411,18 +416,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 
 // lastIndex is the index of the last seen event if resuming, else -1.
 func (t *StreamableServerTransport) streamResponse(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int) (int, string) {
-	defer func() {
-		t.mu.Lock()
-		stream.signal = nil
-		t.mu.Unlock()
-	}()
-
-	t.mu.Lock()
-	// Although there is a gap in locking between when stream.signal is set and here,
-	// it cannot change, because it is changed only when non-nil, and it is only
-	// set to nil in the defer above.
-	signal := stream.signal
-	t.mu.Unlock()
+	defer stream.signal.Store(nil)
 
 	writes := 0
 
@@ -503,7 +497,7 @@ stream:
 		}
 
 		select {
-		case <-signal: // there are new outgoing messages
+		case <-*stream.signal.Load(): // there are new outgoing messages
 			// return to top of loop
 		case <-t.done: // session is closed
 			if writes == 0 {
@@ -623,10 +617,11 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		delete(stream.requests, replyTo)
 	}
 
-	// Signal work.
-	if stream.signal != nil {
+	// Signal streamResponse that new work is available.
+	signalp := stream.signal.Load()
+	if signalp != nil {
 		select {
-		case stream.signal <- struct{}{}:
+		case *signalp <- struct{}{}:
 		default:
 		}
 	}
