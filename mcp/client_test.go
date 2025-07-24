@@ -190,3 +190,54 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 		})
 	}
 }
+
+func TestClientSession_ServerCapabilities_ReturnsACopy(t *testing.T) {
+	// Test that modifying the returned capabilities doesn't affect the original
+	session := &ClientSession{
+		initializeResult: &InitializeResult{
+			Capabilities: &ServerCapabilities{
+				Experimental: map[string]struct{}{
+					"original": {},
+				},
+				Prompts: &PromptCapabilities{
+					ListChanged: true,
+				},
+				Resources: &ResourceCapabilities{
+					ListChanged: true,
+					Subscribe:   true,
+				},
+			},
+		},
+	}
+
+	// Get the capabilities
+	caps := session.ServerCapabilities()
+	if caps == nil {
+		t.Fatal("expected non-nil capabilities")
+	}
+
+	// Modify the returned capabilities
+	caps.Experimental["new_key"] = struct{}{}
+	caps.Prompts.ListChanged = false
+	caps.Resources.Subscribe = false
+
+	// Get capabilities again to verify the original is unchanged
+	caps2 := session.ServerCapabilities()
+	if caps2 == nil {
+		t.Fatal("expected non-nil capabilities")
+	}
+
+	// Verify original values are unchanged
+	if _, exists := caps2.Experimental["new_key"]; exists {
+		t.Error("experimental capabilities were not properly copied")
+	}
+	if _, exists := caps2.Experimental["original"]; !exists {
+		t.Error("original experimental capability was lost")
+	}
+	if caps2.Prompts.ListChanged != true {
+		t.Error("prompts ListChanged was modified in original")
+	}
+	if caps2.Resources.Subscribe != true {
+		t.Error("resources Subscribe was modified in original")
+	}
+}
