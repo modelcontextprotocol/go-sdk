@@ -204,11 +204,11 @@ type StreamableServerTransport struct {
 	id       string
 	opts     StreamableServerTransportOptions
 	incoming chan jsonrpc.Message // messages from the client to the server
+	done     chan struct{}
 
 	mu sync.Mutex
 	// Sessions are closed exactly once.
 	isDone bool
-	done   chan struct{}
 
 	// Sessions can have multiple logical connections, corresponding to HTTP
 	// requests. Additionally, logical sessions may be resumed by subsequent HTTP
