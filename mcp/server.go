@@ -225,22 +225,22 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
 }
 
-func (s *Server) capabilities() *serverCapabilities {
+func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	caps := &serverCapabilities{
-		Completions: &completionCapabilities{},
-		Logging:     &loggingCapabilities{},
+	caps := &ServerCapabilities{
+		Completions: &CompletionCapabilities{},
+		Logging:     &LoggingCapabilities{},
 	}
 	if s.tools.len() > 0 {
-		caps.Tools = &toolCapabilities{ListChanged: true}
+		caps.Tools = &ToolCapabilities{ListChanged: true}
 	}
 	if s.prompts.len() > 0 {
-		caps.Prompts = &promptCapabilities{ListChanged: true}
+		caps.Prompts = &PromptCapabilities{ListChanged: true}
 	}
 	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
-		caps.Resources = &resourceCapabilities{ListChanged: true}
+		caps.Resources = &ResourceCapabilities{ListChanged: true}
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true
 		}
