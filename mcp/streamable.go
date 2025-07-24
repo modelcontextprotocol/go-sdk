@@ -310,19 +310,25 @@ type idContextKey struct{}
 
 // ServeHTTP handles a single HTTP request for the session.
 func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	status := 0
+	message := ""
 	switch req.Method {
 	case http.MethodGet:
-		t.serveGET(w, req)
+		status, message = t.serveGET(w, req)
 	case http.MethodPost:
-		t.servePOST(w, req)
+		status, message = t.servePOST(w, req)
 	default:
 		// Should not be reached, as this is checked in StreamableHTTPHandler.ServeHTTP.
 		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
+		status = http.StatusMethodNotAllowed
+		message = "unsupported method"
+	}
+	if status != 0 && status != http.StatusOK {
+		http.Error(w, message, status)
 	}
 }
 
-func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
+func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) (int, string) {
 	// connID 0 corresponds to the default GET request.
 	id := StreamID(0)
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
@@ -334,49 +340,42 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 		var ok bool
 		id, lastIdx, ok = parseEventID(eid)
 		if !ok {
-			http.Error(w, fmt.Sprintf("malformed Last-Event-ID %q", eid), http.StatusBadRequest)
-			return
+			return http.StatusBadRequest, fmt.Sprintf("malformed Last-Event-ID %q", eid)
 		}
 	}
 
 	t.mu.Lock()
 	stream, ok := t.streams[id]
 	if !ok {
-		http.Error(w, "unknown stream", http.StatusBadRequest)
 		t.mu.Unlock()
-		return
+		return http.StatusBadRequest, "unknown stream"
 	}
 	if stream.signal != nil {
-		http.Error(w, "stream ID conflicts with ongoing stream", http.StatusBadRequest)
 		t.mu.Unlock()
-		return
+		return http.StatusBadRequest, "stream ID conflicts with ongoing stream"
 	}
 	stream.signal = make(chan struct{}, 1)
 	t.mu.Unlock()
 
-	t.streamResponse(stream, w, req, lastIdx)
+	return t.streamResponse(stream, w, req, lastIdx)
 }
 
-func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) {
+func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) (int, string) {
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
-		http.Error(w, "can't send Last-Event-ID for POST request", http.StatusBadRequest)
-		return
+		return http.StatusBadRequest, "can't send Last-Event-ID for POST request"
 	}
 
 	// Read incoming messages.
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
+		return http.StatusBadRequest, "failed to read body"
 	}
 	if len(body) == 0 {
-		http.Error(w, "POST requires a non-empty body", http.StatusBadRequest)
-		return
+		return http.StatusBadRequest, "POST requires a non-empty body"
 	}
 	incoming, _, err := readBatch(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
-		return
+		return http.StatusBadRequest, fmt.Sprintf("malformed payload: %v", err)
 	}
 	requests := make(map[jsonrpc.ID]struct{})
 	for _, msg := range incoming {
@@ -407,11 +406,11 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// TODO(rfindley): consider optimizing for a single incoming request, by
 	// responding with application/json when there is only a single message in
 	// the response.
-	t.streamResponse(stream, w, req, -1)
+	return t.streamResponse(stream, w, req, -1)
 }
 
 // lastIndex is the index of the last seen event if resuming, else -1.
-func (t *StreamableServerTransport) streamResponse(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int) {
+func (t *StreamableServerTransport) streamResponse(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int) (int, string) {
 	defer func() {
 		t.mu.Lock()
 		stream.signal = nil
@@ -437,7 +436,7 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 		}
 		if _, err := writeEvent(w, e); err != nil {
 			// Connection closed or broken.
-			// TODO: log when we add server-side logging.
+			// TODO(#170): log when we add server-side logging.
 			return false
 		}
 		writes++
@@ -460,13 +459,12 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 				if errors.Is(err, ErrEventsPurged) {
 					status = http.StatusInsufficientStorage
 				}
-				http.Error(w, err.Error(), status)
-				return
+				return status, err.Error()
 			}
 			// The iterator yields events beginning just after lastIndex, or it would have
 			// yielded an error.
 			if !write(data) {
-				return
+				return 0, ""
 			}
 		}
 	}
@@ -481,11 +479,10 @@ stream:
 
 		for _, data := range outgoing {
 			if err := t.opts.EventStore.Append(req.Context(), t.SessionID(), stream.id, data); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+				return http.StatusInternalServerError, err.Error()
 			}
 			if !write(data) {
-				return
+				return 0, ""
 			}
 		}
 
@@ -495,14 +492,14 @@ stream:
 		// If all requests have been handled and replied to, we should terminate this connection.
 		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
 		// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
-		// TODO(jba): why not terminate regardless of http method?
+		// TODO(jba,findleyr): why not terminate regardless of http method?
 		if req.Method == http.MethodPost && nOutstanding == 0 {
 			if writes == 0 {
 				// Spec: If the server accepts the input, the server MUST return HTTP
 				// status code 202 Accepted with no body.
 				w.WriteHeader(http.StatusAccepted)
 			}
-			return
+			return 0, ""
 		}
 
 		select {
@@ -510,7 +507,7 @@ stream:
 			// return to top of loop
 		case <-t.done: // session is closed
 			if writes == 0 {
-				http.Error(w, "session terminated", http.StatusGone)
+				return http.StatusGone, "session terminated"
 			}
 			break stream
 		case <-req.Context().Done():
@@ -520,6 +517,7 @@ stream:
 			break stream
 		}
 	}
+	return 0, ""
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
