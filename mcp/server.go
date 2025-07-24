@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
-	"log"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -43,6 +43,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler[*ServerSession]
 	receivingMethodHandler_ MethodHandler[*ServerSession]
+	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -64,6 +65,10 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// Function called when a client session subscribes to a resource.
+	SubscribeHandler func(context.Context, *SubscribeParams) error
+	// Function called when a client session unsubscribes from a resource.
+	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -89,7 +94,12 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 	if opts.PageSize == 0 {
 		opts.PageSize = DefaultPageSize
 	}
-
+	if opts.SubscribeHandler != nil && opts.UnsubscribeHandler == nil {
+		panic("SubscribeHandler requires UnsubscribeHandler")
+	}
+	if opts.UnsubscribeHandler != nil && opts.SubscribeHandler == nil {
+		panic("UnsubscribeHandler requires SubscribeHandler")
+	}
 	return &Server{
 		impl:                    impl,
 		opts:                    *opts,
@@ -99,6 +109,7 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
+		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 	}
 }
 
@@ -120,13 +131,18 @@ func (s *Server) RemovePrompts(names ...string) {
 }
 
 // AddTool adds a [Tool] to the server, or replaces one with the same name.
-// The tool's input schema must be non-nil.
 // The Tool argument must not be modified after this call.
+//
+// The tool's input schema must be non-nil. For a tool that takes no input,
+// or one where any input is valid, set [Tool.InputSchema] to the empty schema,
+// &jsonschema.Schema{}.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
-	// TODO(jba): This is a breaking behavior change. Add before v0.2.0?
 	if t.InputSchema == nil {
-		log.Printf("mcp: tool %q has a nil input schema. This will panic in a future release.", t.Name)
-		// panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
+		// This prevents the tool author from forgetting to write a schema where
+		// one should be provided. If we papered over this by supplying the empty
+		// schema, then every input would be validated and the problem wouldn't be
+		// discovered until runtime, when the LLM sent bad data.
+		panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
 	}
 	if err := addToolErr(s, t, h); err != nil {
 		panic(err)
@@ -225,6 +241,9 @@ func (s *Server) capabilities() *serverCapabilities {
 	}
 	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
 		caps.Resources = &resourceCapabilities{ListChanged: true}
+		if s.opts.SubscribeHandler != nil {
+			caps.Resources.Subscribe = true
+		}
 	}
 	return caps
 }
@@ -428,6 +447,57 @@ func fileResourceHandler(dir string) ResourceHandler {
 	}
 }
 
+// ResourceUpdated sends a notification to all clients that have subscribed to the
+// resource specified in params. This method is the primary way for a
+// server author to signal that a resource has changed.
+func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
+	s.mu.Lock()
+	subscribedSessions := s.resourceSubscriptions[params.URI]
+	sessions := slices.Collect(maps.Keys(subscribedSessions))
+	s.mu.Unlock()
+	notifySessions(sessions, notificationResourceUpdated, params)
+	return nil
+}
+
+func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *SubscribeParams) (*emptyResult, error) {
+	if s.opts.SubscribeHandler == nil {
+		return nil, fmt.Errorf("%w: server does not support resource subscriptions", jsonrpc2.ErrMethodNotFound)
+	}
+	if err := s.opts.SubscribeHandler(ctx, params); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resourceSubscriptions[params.URI] == nil {
+		s.resourceSubscriptions[params.URI] = make(map[*ServerSession]bool)
+	}
+	s.resourceSubscriptions[params.URI][ss] = true
+
+	return &emptyResult{}, nil
+}
+
+func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *UnsubscribeParams) (*emptyResult, error) {
+	if s.opts.UnsubscribeHandler == nil {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+
+	if err := s.opts.UnsubscribeHandler(ctx, params); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if subscribedSessions, ok := s.resourceSubscriptions[params.URI]; ok {
+		delete(subscribedSessions, ss)
+		if len(subscribedSessions) == 0 {
+			delete(s.resourceSubscriptions, params.URI)
+		}
+	}
+
+	return &emptyResult{}, nil
+}
+
 // Run runs the server over the given transport, which must be persistent.
 //
 // Run blocks until the client terminates the connection or the provided
@@ -475,6 +545,10 @@ func (s *Server) disconnect(cc *ServerSession) {
 	s.sessions = slices.DeleteFunc(s.sessions, func(cc2 *ServerSession) bool {
 		return cc2 == cc
 	})
+
+	for _, subscribedSessions := range s.resourceSubscriptions {
+		delete(subscribedSessions, cc)
+	}
 }
 
 // Connect connects the MCP server over the given transport and starts handling
@@ -540,7 +614,7 @@ func (ss *ServerSession) ID() string {
 
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, ss, methodPing, params)
+	_, err := handleSend[*emptyResult](ctx, ss, methodPing, orZero[Params](params))
 	return err
 }
 
@@ -616,6 +690,8 @@ var serverMethodInfos = map[string]methodInfo{
 	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates)),
 	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource)),
 	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel)),
+	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe)),
+	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe)),
 	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler)),
 	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler)),
 	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler)),
