@@ -103,6 +103,17 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 	}, nil
 }
 
+// responseWriter wraps http.ResponseWriter to capture the status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
 func runServer(host, port string) {
 	// Create an MCP server
 	server := mcp.NewServer(&mcp.Implementation{
@@ -121,12 +132,40 @@ func runServer(host, port string) {
 		return server
 	}, nil)
 
+	// Wrap the handler with logging middleware
+	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		
+		// Create a response writer wrapper to capture status code
+		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		
+		// Log request details
+		log.Printf("[REQUEST] %s | %s | %s %s", 
+			start.Format("2006-01-02 15:04:05.000"),
+			r.RemoteAddr,
+			r.Method,
+			r.URL.Path)
+		
+		// Call the actual handler
+		handler.ServeHTTP(wrapped, r)
+		
+		// Log response details
+		duration := time.Since(start)
+		log.Printf("[RESPONSE] %s | %s | %s %s | Status: %d | Duration: %v",
+			time.Now().Format("2006-01-02 15:04:05.000"),
+			r.RemoteAddr,
+			r.Method,
+			r.URL.Path,
+			wrapped.statusCode,
+			duration)
+	})
+
 	addr := fmt.Sprintf("%s:%s", host, port)
 	log.Printf("MCP server listening on http://%s", addr)
 	log.Printf("Available tool: get_time (cities: nyc, sf, boston)")
 
-	// Start the HTTP server
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	// Start the HTTP server with logging handler
+	if err := http.ListenAndServe(addr, loggingHandler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
