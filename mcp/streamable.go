@@ -255,7 +255,7 @@ type stream struct {
 
 	// streamRequests is the set of unanswered incoming RPCs for the stream.
 	//
-	// Lifecycle: requests values persist as until the requests have been
+	// Lifecycle: requests values persist until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
 	requests map[jsonrpc.ID]struct{}
@@ -598,7 +598,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.isDone {
-		return errors.New("session is closed") // TODO: should this be EOF?
+		return errors.New("session is closed")
 	}
 
 	stream := t.streams[forConn]
