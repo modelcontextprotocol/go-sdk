@@ -179,11 +179,10 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 		id:             sessionID,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
-		outgoing:       make(map[StreamID][][]byte),
-		signals:        make(map[StreamID]chan struct{}),
+		streams:        make(map[StreamID]*stream),
 		requestStreams: make(map[jsonrpc.ID]StreamID),
-		streamRequests: make(map[StreamID]map[jsonrpc.ID]struct{}),
 	}
+	t.streams[0] = newStream(0)
 	if opts != nil {
 		t.opts = *opts
 	}
@@ -219,31 +218,10 @@ type StreamableServerTransport struct {
 	// perform the accounting described below when incoming HTTP requests are
 	// handled.
 	//
-	// The accounting is complicated. It is tempting to merge some of the maps
-	// below, but they each have different lifecycles, as indicated by Lifecycle:
-	// comments.
-	//
 	// TODO(rfindley): simplify.
 
-	// outgoing is the collection of outgoing messages, keyed by the logical
-	// stream ID where they should be delivered.
-	//
-	// streamID 0 is used for messages that don't correlate with an incoming
-	// request.
-	//
-	// Lifecycle: persists for the duration of the session.
-	outgoing map[StreamID][][]byte
-
-	// signals maps a logical stream ID to a 1-buffered channel, owned by an
-	// incoming HTTP request, that signals that there are messages available to
-	// write into the HTTP response. Signals guarantees that at most one HTTP
-	// response can receive messages for a logical stream. After claiming
-	// the stream, incoming requests should read from outgoing, to ensure
-	// that no new messages are missed.
-	//
-	// Lifecycle: signals persists for the duration of an HTTP POST or GET
-	// request for the given streamID.
-	signals map[StreamID]chan struct{}
+	// streams holds the logical streams for this session, keyed by their ID.
+	streams map[StreamID]*stream
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
@@ -251,26 +229,54 @@ type StreamableServerTransport struct {
 	//
 	// TODO(rfindley): clean up once requests are handled.
 	requestStreams map[jsonrpc.ID]StreamID
+}
 
-	// streamRequests tracks the set of unanswered incoming RPCs for each logical
-	// stream.
+// A stream is a single logical stream of SSE events within a server session.
+// A stream begins with a client request, or with a client GET that has
+// no Last-Event-ID header.
+// A stream ends only when its session ends; we cannot determine its end otherwise,
+// since a client may send a GET with a Last-Event-ID that references the stream
+// at any time.
+type stream struct {
+	// id is the logical ID for the stream, unique within a session.
+	// ID 0 is used for messages that don't correlate with an incoming request.
+	id StreamID
+
+	// These mutable fields are protected by the mutex of the corresponding StreamableServerTransport.
+
+	// outgoing is the list of outgoing messages, enqueued by server methods that
+	// write notifications and responses, and dequeued by streamResponse.
+	outgoing [][]byte
+
+	// signal is a 1-buffered channel, owned by an
+	// incoming HTTP request, that signals that there are messages available to
+	// write into the HTTP response. This guarantees that at most one HTTP
+	// response can receive messages for a logical stream. After claiming
+	// the stream, incoming requests should read from outgoing, to ensure
+	// that no new messages are missed.
 	//
-	// When the server has responded to each request, the stream should be
-	// closed.
+	// Lifecycle: persists for the duration of an HTTP POST or GET
+	// request for the given streamID.
+	signal chan struct{}
+
+	// streamRequests is the set of unanswered incoming RPCs for the stream.
 	//
-	// Lifecycle: streamRequests values persist as until the requests have been
+	// Lifecycle: requests values persist until the requests have been
 	// replied to by the server. Notably, NOT until they are sent to an HTTP
 	// response, as delivery is not guaranteed.
-	streamRequests map[StreamID]map[jsonrpc.ID]struct{}
+	requests map[jsonrpc.ID]struct{}
 }
 
+func newStream(id StreamID) *stream {
+	return &stream{
+		id:       id,
+		requests: make(map[jsonrpc.ID]struct{}),
+	}
+}
+
+// A StreamID identifies a stream of SSE events. It is unique within the stream's
+// [ServerSession].
 type StreamID int64
-
-// a streamableMsg is an SSE event with an index into its logical stream.
-type streamableMsg struct {
-	idx   int
-	event Event
-}
 
 // Connect implements the [Transport] interface.
 //
@@ -334,16 +340,21 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 	}
 
 	t.mu.Lock()
-	if _, ok := t.signals[id]; ok {
+	stream, ok := t.streams[id]
+	if !ok {
+		http.Error(w, "unknown stream", http.StatusBadRequest)
+		t.mu.Unlock()
+		return
+	}
+	if stream.signal != nil {
 		http.Error(w, "stream ID conflicts with ongoing stream", http.StatusBadRequest)
 		t.mu.Unlock()
 		return
 	}
-	signal := make(chan struct{}, 1)
-	t.signals[id] = signal
+	stream.signal = make(chan struct{}, 1)
 	t.mu.Unlock()
 
-	t.streamResponse(w, req, id, lastIdx, signal)
+	t.streamResponse(stream, w, req, lastIdx)
 }
 
 func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) {
@@ -375,17 +386,17 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	}
 
 	// Update accounting for this request.
-	id := StreamID(t.nextStreamID.Add(1))
-	signal := make(chan struct{}, 1)
+	stream := newStream(StreamID(t.nextStreamID.Add(1)))
 	t.mu.Lock()
+	t.streams[stream.id] = stream
 	if len(requests) > 0 {
-		t.streamRequests[id] = make(map[jsonrpc.ID]struct{})
+		stream.requests = make(map[jsonrpc.ID]struct{})
 	}
 	for reqID := range requests {
-		t.requestStreams[reqID] = id
-		t.streamRequests[id][reqID] = struct{}{}
+		t.requestStreams[reqID] = stream.id
+		stream.requests[reqID] = struct{}{}
 	}
-	t.signals[id] = signal
+	stream.signal = make(chan struct{}, 1)
 	t.mu.Unlock()
 
 	// Publish incoming messages.
@@ -396,16 +407,23 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// TODO(rfindley): consider optimizing for a single incoming request, by
 	// responding with application/json when there is only a single message in
 	// the response.
-	t.streamResponse(w, req, id, -1, signal)
+	t.streamResponse(stream, w, req, -1)
 }
 
 // lastIndex is the index of the last seen event if resuming, else -1.
-func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *http.Request, id StreamID, lastIndex int, signal chan struct{}) {
+func (t *StreamableServerTransport) streamResponse(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int) {
 	defer func() {
 		t.mu.Lock()
-		delete(t.signals, id)
+		stream.signal = nil
 		t.mu.Unlock()
 	}()
+
+	t.mu.Lock()
+	// Although there is a gap in locking between when stream.signal is set and here,
+	// it cannot change, because it is changed only when non-nil, and it is only
+	// set to nil in the defer above.
+	signal := stream.signal
+	t.mu.Unlock()
 
 	writes := 0
 
@@ -414,11 +432,12 @@ func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *h
 		lastIndex++
 		e := Event{
 			Name: "message",
-			ID:   formatEventID(id, lastIndex),
+			ID:   formatEventID(stream.id, lastIndex),
 			Data: data,
 		}
 		if _, err := writeEvent(w, e); err != nil {
 			// Connection closed or broken.
+			// TODO: log when we add server-side logging.
 			return false
 		}
 		writes++
@@ -432,7 +451,7 @@ func (t *StreamableServerTransport) streamResponse(w http.ResponseWriter, req *h
 
 	if lastIndex >= 0 {
 		// Resume.
-		for data, err := range t.opts.EventStore.After(req.Context(), t.SessionID(), id, lastIndex) {
+		for data, err := range t.opts.EventStore.After(req.Context(), t.SessionID(), stream.id, lastIndex) {
 			if err != nil {
 				// TODO: reevaluate these status codes.
 				// Maybe distinguish between storage errors, which are 500s, and missing
@@ -456,12 +475,12 @@ stream:
 	// Repeatedly collect pending outgoing events and send them.
 	for {
 		t.mu.Lock()
-		outgoing := t.outgoing[id]
-		t.outgoing[id] = nil
+		outgoing := stream.outgoing
+		stream.outgoing = nil
 		t.mu.Unlock()
 
 		for _, data := range outgoing {
-			if err := t.opts.EventStore.Append(req.Context(), t.id, id, data); err != nil {
+			if err := t.opts.EventStore.Append(req.Context(), t.SessionID(), stream.id, data); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -471,7 +490,7 @@ stream:
 		}
 
 		t.mu.Lock()
-		nOutstanding := len(t.streamRequests[id])
+		nOutstanding := len(stream.requests)
 		t.mu.Unlock()
 		// If all requests have been handled and replied to, we should terminate this connection.
 		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
@@ -585,30 +604,31 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.isDone {
-		return fmt.Errorf("session is closed") // TODO: should this be EOF?
+		return errors.New("session is closed")
 	}
 
-	if _, ok := t.streamRequests[forConn]; !ok && forConn != 0 {
+	stream := t.streams[forConn]
+	if stream == nil {
+		return fmt.Errorf("no stream with ID %d", forConn)
+	}
+	if len(stream.requests) == 0 && forConn != 0 {
 		// No outstanding requests for this connection, which means it is logically
 		// done. This is a sequencing violation from the server, so we should report
 		// a side-channel error here. Put the message on the general queue to avoid
 		// dropping messages.
-		forConn = 0
+		stream = t.streams[0]
 	}
 
-	t.outgoing[forConn] = append(t.outgoing[forConn], data)
+	stream.outgoing = append(stream.outgoing, data)
 	if replyTo.IsValid() {
 		// Once we've put the reply on the queue, it's no longer outstanding.
-		delete(t.streamRequests[forConn], replyTo)
-		if len(t.streamRequests[forConn]) == 0 {
-			delete(t.streamRequests, forConn)
-		}
+		delete(stream.requests, replyTo)
 	}
 
 	// Signal work.
-	if c, ok := t.signals[forConn]; ok {
+	if stream.signal != nil {
 		select {
-		case c <- struct{}{}:
+		case stream.signal <- struct{}{}:
 		default:
 		}
 	}
