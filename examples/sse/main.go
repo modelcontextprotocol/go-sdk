@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	host     = flag.String("host", "localhost", "host to listen on")
-	port     = flag.String("port", "8080", "port to listen on")
+	host = flag.String("host", "localhost", "host to listen on")
+	port = flag.String("port", "8080", "port to listen on")
 )
 
 type SayHiParams struct {
