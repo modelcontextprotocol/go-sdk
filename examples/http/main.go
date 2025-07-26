@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check if we have at least one argument
+	// Check if we have at least one argument.
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: Must specify 'client' or 'server' as first argument\n\n")
 		flag.Usage()
@@ -56,12 +56,12 @@ func main() {
 	}
 }
 
-// GetTimeParams defines the parameters for the cityTime tool
+// GetTimeParams defines the parameters for the cityTime tool.
 type GetTimeParams struct {
 	City string `json:"city" jsonschema:"City to get time for (nyc, sf, or boston)"`
 }
 
-// getTime implements the tool that returns the current time for a given city
+// getTime implements the tool that returns the current time for a given city.
 func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[GetTimeParams]) (*mcp.CallToolResultFor[any], error) {
 	// Define time zones for each city
 	locations := map[string]string{
@@ -75,22 +75,22 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 		city = "nyc" // Default to NYC
 	}
 
-	// Get the timezone
+	// Get the timezone.
 	tzName, ok := locations[city]
 	if !ok {
 		return nil, fmt.Errorf("unknown city: %s", city)
 	}
 
-	// Load the location
+	// Load the location.
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load timezone: %w", err)
 	}
 
-	// Get current time in that location
+	// Get current time in that location.
 	now := time.Now().In(loc)
 
-	// Format the response
+	// Format the response.
 	cityNames := map[string]string{
 		"nyc":    "New York City",
 		"sf":     "San Francisco",
@@ -109,19 +109,19 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 }
 
 func runServer(host, port string) {
-	// Create an MCP server
+	// Create an MCP server.
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "time-server",
 		Version: "1.0.0",
 	}, nil)
 
-	// Add the cityTime tool
+	// Add the cityTime tool.
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cityTime",
 		Description: "Get the current time in NYC, San Francisco, or Boston",
 	}, getTime)
 
-	// Create the streamable HTTP handler
+	// Create the streamable HTTP handler.
 	handler := mcp.NewStreamableHTTPHandler(func(req *http.Request) *mcp.Server {
 		return server
 	}, nil)
@@ -132,7 +132,7 @@ func runServer(host, port string) {
 	log.Printf("MCP server listening on http://%s", addr)
 	log.Printf("Available tool: cityTime (cities: nyc, sf, boston)")
 
-	// Start the HTTP server with logging handler
+	// Start the HTTP server with logging handler.
 	if err := http.ListenAndServe(addr, handlerWithLogging); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -141,20 +141,20 @@ func runServer(host, port string) {
 func runClient(host, port string) {
 	ctx := context.Background()
 
-	// Create the URL for the server
+	// Create the URL for the server.
 	url := fmt.Sprintf("http://%s:%s", host, port)
 	log.Printf("Connecting to MCP server at %s", url)
 
-	// Create a streamable client transport
+	// Create a streamable client transport.
 	transport := mcp.NewStreamableClientTransport(url, nil)
 
-	// Create an MCP client
+	// Create an MCP client.
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "time-client",
 		Version: "1.0.0",
 	}, nil)
 
-	// Connect to the server
+	// Connect to the server.
 	session, err := client.Connect(ctx, transport)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
@@ -163,7 +163,7 @@ func runClient(host, port string) {
 
 	log.Printf("Connected to server (session ID: %s)", session.ID())
 
-	// First, list available tools
+	// First, list available tools.
 	log.Println("Listing available tools...")
 	toolsResult, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -174,12 +174,12 @@ func runClient(host, port string) {
 		log.Printf("  - %s: %s\n", tool.Name, tool.Description)
 	}
 
-	// Call the cityTime tool for each city
+	// Call the cityTime tool for each city.
 	cities := []string{"nyc", "sf", "boston"}
 
 	log.Println("Getting time for each city...")
 	for _, city := range cities {
-		// Call the tool
+		// Call the tool.
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{
 			Name: "cityTime",
 			Arguments: map[string]any{
@@ -191,7 +191,7 @@ func runClient(host, port string) {
 			continue
 		}
 
-		// Print the result
+		// Print the result.
 		for _, content := range result.Content {
 			if textContent, ok := content.(*mcp.TextContent); ok {
 				log.Printf("  %s", textContent.Text)
