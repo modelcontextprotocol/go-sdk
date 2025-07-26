@@ -18,36 +18,41 @@ import (
 
 func main() {
 	var (
-		serverMode = flag.Bool("server", false, "Run as server")
-		clientMode = flag.Bool("client", false, "Run as client")
-		host       = flag.String("host", "localhost", "Host to connect to or listen on")
-		port       = flag.String("port", "8080", "Port to connect to or listen on")
+		host = flag.String("host", "localhost", "Host to connect to or listen on")
+		port = flag.String("port", "8080", "Port to connect to or listen on")
 	)
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s <client|server> [options]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "This program demonstrates MCP over HTTP using the streamable transport.\n")
 		fmt.Fprintf(os.Stderr, "It can run as either a server or client.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  Run as server:  %s -server\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Run as client:  %s -client\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Custom host/port: %s -server -host 0.0.0.0 -port 9090\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Run as server:  %s server\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Run as client:  %s client\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Custom host/port: %s server -host 0.0.0.0 -port 9090\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	flag.Parse()
-
-	if (*serverMode && *clientMode) || (!*serverMode && !*clientMode) {
-		fmt.Fprintf(os.Stderr, "Error: Must specify exactly one of -server or -client\n\n")
+	// Check if we have at least one argument
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Error: Must specify 'client' or 'server' as first argument\n\n")
 		flag.Usage()
 	}
+	mode := os.Args[1]
 
-	if *serverMode {
+	os.Args = append(os.Args[:1], os.Args[2:]...)
+	flag.Parse()
+    
+	switch mode {
+	case "server":
 		runServer(*host, *port)
-	} else {
+	case "client":
 		runClient(*host, *port)
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Invalid mode '%s'. Must be 'client' or 'server'\n\n", mode)
+		flag.Usage()
 	}
 }
 
@@ -94,7 +99,7 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 
 	response := fmt.Sprintf("The current time in %s is %s", 
 		cityNames[city], 
-		now.Format("3:04:05 PM MST on Monday, January 2, 2006"))
+		now.Format(time.RFC3339))
 
 	return &mcp.CallToolResultFor[any]{
 		Content: []mcp.Content{
@@ -141,7 +146,7 @@ func runServer(host, port string) {
 		
 		// Log request details
 		log.Printf("[REQUEST] %s | %s | %s %s", 
-			start.Format("2006-01-02 15:04:05.000"),
+			start.Format(time.RFC3339),
 			r.RemoteAddr,
 			r.Method,
 			r.URL.Path)
@@ -152,7 +157,7 @@ func runServer(host, port string) {
 		// Log response details
 		duration := time.Since(start)
 		log.Printf("[RESPONSE] %s | %s | %s %s | Status: %d | Duration: %v",
-			time.Now().Format("2006-01-02 15:04:05.000"),
+			time.Now().Format(time.RFC3339),
 			r.RemoteAddr,
 			r.Method,
 			r.URL.Path,
@@ -196,30 +201,30 @@ func runClient(host, port string) {
 	log.Printf("Connected to server (session ID: %s)", session.ID())
 
 	// First, list available tools
-	log.Println("\nListing available tools...")
-	toolsResult, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	log.Println("Listing available tools...")
+	toolsResult, err := session.ListTools(ctx, nil)
 	if err != nil {
 		log.Fatalf("Failed to list tools: %v", err)
 	}
 
 	for _, tool := range toolsResult.Tools {
-		log.Printf("  - %s: %s", tool.Name, tool.Description)
+		log.Printf("  - %s: %s\n", tool.Name, tool.Description)
 	}
 
 	// Call the get_time tool for each city
 	cities := []string{"nyc", "sf", "boston"}
 	
-	log.Println("\nGetting time for each city...")
+	log.Println("Getting time for each city...")
 	for _, city := range cities {
 		// Call the tool
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{
 			Name: "get_time",
-			Arguments: map[string]interface{}{
+			Arguments: map[string]any{
 				"city": city,
 			},
 		})
 		if err != nil {
-			log.Printf("Failed to get time for %s: %v", city, err)
+			log.Printf("Failed to get time for %s: %v\n", city, err)
 			continue
 		}
 
@@ -231,5 +236,5 @@ func runClient(host, port string) {
 		}
 	}
 
-	log.Println("\nClient completed successfully")
+	log.Println("Client completed successfully")
 }
