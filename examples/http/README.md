@@ -5,8 +5,8 @@ This example demonstrates how to use the Model Context Protocol (MCP) over HTTP 
 ## Overview
 
 The example implements:
-- A server that provides a `get_time` tool
-- A client that connects to the server, lists available tools, and calls the `get_time` tool
+- A server that provides a `cityTime` tool
+- A client that connects to the server, lists available tools, and calls the `cityTime` tool
 
 ## Running the Example
 
@@ -20,7 +20,7 @@ Server and client support passing custom -port and -host.
 go run main.go -server
 ```
 
-This starts an MCP server on `localhost:8080` (default) that provides a `get_time` tool.
+This starts an MCP server on `localhost:8080` (default) that provides a `cityTime` tool.
 
 ### Run the Client
 
@@ -33,7 +33,7 @@ go run main.go -client
 The client will:
 1. Connect to the server
 2. List available tools
-3. Call the `get_time` tool for NYC, San Francisco, and Boston
+3. Call the `cityTime` tool for NYC, San Francisco, and Boston
 4. Display the results
 
 
@@ -44,7 +44,7 @@ localhost:8080, you can try to add it to a popular MCP client:
 
     claude mcp add -t http timezone http://localhost:8080
 
-Once added, Claude Code will be able to discover and use the `get_time` tool provided by this server.
+Once added, Claude Code will be able to discover and use the `cityTime` tool provided by this server.
 
 In Claude Code:
 
@@ -52,7 +52,7 @@ In Claude Code:
 
     ⏺ I'll get the current time in a major US city for you.
 
-    ⏺ timezone - get_time (MCP)(city: "nyc")
+    ⏺ timezone - cityTime (MCP)(city: "nyc")
       ⎿ The current time in New York City is 7:30:16 PM EDT on Wedn
         esday, July 23, 2025
 
