@@ -53,5 +53,5 @@ func main() {
 			return nil
 		}
 	})
-	http.ListenAndServe(*httpAddr, handler)
+	log.Fatal(http.ListenAndServe(*httpAddr, handler))
 }
