@@ -56,7 +56,7 @@ func main() {
 	}
 }
 
-// GetTimeParams defines the parameters for the get_time tool
+// GetTimeParams defines the parameters for the cityTime tool
 type GetTimeParams struct {
 	City string `json:"city" jsonschema:"City to get time for (nyc, sf, or boston)"`
 }
@@ -115,9 +115,9 @@ func runServer(host, port string) {
 		Version: "1.0.0",
 	}, nil)
 
-	// Add the get_time tool
+	// Add the cityTime tool
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_time",
+		Name:        "cityTime",
 		Description: "Get the current time in NYC, San Francisco, or Boston",
 	}, getTime)
 
@@ -130,7 +130,7 @@ func runServer(host, port string) {
 
 	addr := fmt.Sprintf("%s:%s", host, port)
 	log.Printf("MCP server listening on http://%s", addr)
-	log.Printf("Available tool: get_time (cities: nyc, sf, boston)")
+	log.Printf("Available tool: cityTime (cities: nyc, sf, boston)")
 
 	// Start the HTTP server with logging handler
 	if err := http.ListenAndServe(addr, handlerWithLogging); err != nil {
@@ -174,14 +174,14 @@ func runClient(host, port string) {
 		log.Printf("  - %s: %s\n", tool.Name, tool.Description)
 	}
 
-	// Call the get_time tool for each city
+	// Call the cityTime tool for each city
 	cities := []string{"nyc", "sf", "boston"}
 	
 	log.Println("Getting time for each city...")
 	for _, city := range cities {
 		// Call the tool
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{
-			Name: "get_time",
+			Name: "cityTime",
 			Arguments: map[string]any{
 				"city": city,
 			},
