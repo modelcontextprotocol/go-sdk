@@ -44,7 +44,7 @@ func main() {
 
 	os.Args = append(os.Args[:1], os.Args[2:]...)
 	flag.Parse()
-    
+
 	switch mode {
 	case "server":
 		runServer(*host, *port)
@@ -97,8 +97,8 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 		"boston": "Boston",
 	}
 
-	response := fmt.Sprintf("The current time in %s is %s", 
-		cityNames[city], 
+	response := fmt.Sprintf("The current time in %s is %s",
+		cityNames[city],
 		now.Format(time.RFC3339))
 
 	return &mcp.CallToolResultFor[any]{
@@ -140,7 +140,7 @@ func runServer(host, port string) {
 
 func runClient(host, port string) {
 	ctx := context.Background()
-	
+
 	// Create the URL for the server
 	url := fmt.Sprintf("http://%s:%s", host, port)
 	log.Printf("Connecting to MCP server at %s", url)
@@ -176,7 +176,7 @@ func runClient(host, port string) {
 
 	// Call the cityTime tool for each city
 	cities := []string{"nyc", "sf", "boston"}
-	
+
 	log.Println("Getting time for each city...")
 	for _, city := range cities {
 		// Call the tool
