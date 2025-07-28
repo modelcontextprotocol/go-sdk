@@ -89,7 +89,7 @@ func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool
 func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) error {
 	var err error
 	if *sfield == nil {
-		*sfield, err = jsonschema.For[T]()
+		*sfield, err = jsonschema.For[T](nil)
 	}
 	if err != nil {
 		return err
