@@ -203,7 +203,7 @@ func serverMethod[P Params, R Result](
 	}
 }
 
-// clientMethod is glue for creating a typedMethodHandler from a method on Server.
+// clientMethod is glue for creating a typedMethodHandler from a method on Client.
 func clientMethod[P Params, R Result](
 	f func(*Client, context.Context, *ClientSession, P) (R, error),
 ) typedMethodHandler[*ClientSession, P, R] {
