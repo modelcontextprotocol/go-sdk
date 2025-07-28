@@ -174,6 +174,59 @@ func (cs *ClientSession) ID() string {
 	return cs.mcpConn.SessionID()
 }
 
+// ServerCapabilities returns a copy of the server capabilities obtained during initialization.
+// If the session has not been initialized or capabilities are not available, it returns nil.
+func (cs *ClientSession) ServerCapabilities() *ServerCapabilities {
+	if cs.initializeResult == nil || cs.initializeResult.Capabilities == nil {
+		return nil
+	}
+
+	// Create a copy of the capabilities
+	caps := &ServerCapabilities{}
+
+	// Copy experimental capabilities
+	if cs.initializeResult.Capabilities.Experimental != nil {
+		caps.Experimental = make(map[string]struct{})
+		for k, v := range cs.initializeResult.Capabilities.Experimental {
+			caps.Experimental[k] = v
+		}
+	}
+
+	// Copy completion capabilities
+	if cs.initializeResult.Capabilities.Completions != nil {
+		caps.Completions = &CompletionCapabilities{}
+	}
+
+	// Copy logging capabilities
+	if cs.initializeResult.Capabilities.Logging != nil {
+		caps.Logging = &LoggingCapabilities{}
+	}
+
+	// Copy prompt capabilities
+	if cs.initializeResult.Capabilities.Prompts != nil {
+		caps.Prompts = &PromptCapabilities{
+			ListChanged: cs.initializeResult.Capabilities.Prompts.ListChanged,
+		}
+	}
+
+	// Copy resource capabilities
+	if cs.initializeResult.Capabilities.Resources != nil {
+		caps.Resources = &ResourceCapabilities{
+			ListChanged: cs.initializeResult.Capabilities.Resources.ListChanged,
+			Subscribe:   cs.initializeResult.Capabilities.Resources.Subscribe,
+		}
+	}
+
+	// Copy tool capabilities
+	if cs.initializeResult.Capabilities.Tools != nil {
+		caps.Tools = &ToolCapabilities{
+			ListChanged: cs.initializeResult.Capabilities.Tools.ListChanged,
+		}
+	}
+
+	return caps
+}
+
 // Close performs a graceful close of the connection, preventing new requests
 // from being handled, and waiting for ongoing requests to return. Close then
 // terminates the connection.
