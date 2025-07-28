@@ -46,6 +46,14 @@ type Server struct {
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 }
 
+// InitialCapabilities allows a server to advertise support for capabilities
+// during initialization, even if no resources for that capability have been added yet.
+type InitialCapabilities struct {
+	Prompts   bool
+	Tools     bool
+	Resources bool
+}
+
 // ServerOptions is used to configure behavior of the server.
 type ServerOptions struct {
 	// Optional instructions for connected clients.
@@ -69,6 +77,10 @@ type ServerOptions struct {
 	SubscribeHandler func(context.Context, *SubscribeParams) error
 	// Function called when a client session unsubscribes from a resource.
 	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
+	// InitialCapabilities allows a server to advertise support for capabilities
+	// at initialization, even if no specific items (like tools or prompts)
+	// have been added yet.
+	InitialCapabilities InitialCapabilities
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -230,16 +242,17 @@ func (s *Server) capabilities() *serverCapabilities {
 	defer s.mu.Unlock()
 
 	caps := &serverCapabilities{
+		// TODO(samthanawalla): check for completionHandler before advertising capability.
 		Completions: &completionCapabilities{},
 		Logging:     &loggingCapabilities{},
 	}
-	if s.tools.len() > 0 {
+	if s.tools.len() > 0 || s.opts.InitialCapabilities.Tools {
 		caps.Tools = &toolCapabilities{ListChanged: true}
 	}
-	if s.prompts.len() > 0 {
+	if s.prompts.len() > 0 || s.opts.InitialCapabilities.Prompts {
 		caps.Prompts = &promptCapabilities{ListChanged: true}
 	}
-	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
+	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 || s.opts.InitialCapabilities.Resources {
 		caps.Resources = &resourceCapabilities{ListChanged: true}
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true

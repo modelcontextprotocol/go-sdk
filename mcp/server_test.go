@@ -333,6 +333,24 @@ func TestServerCapabilities(t *testing.T) {
 				Tools:       &toolCapabilities{ListChanged: true},
 			},
 		},
+		{
+			name:            "With initial capabilities",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				InitialCapabilities: InitialCapabilities{
+					Prompts:   true,
+					Tools:     true,
+					Resources: true,
+				},
+			},
+			wantCapabilities: &serverCapabilities{
+				Completions: &completionCapabilities{},
+				Logging:     &loggingCapabilities{},
+				Prompts:     &promptCapabilities{ListChanged: true},
+				Resources:   &resourceCapabilities{ListChanged: true},
+				Tools:       &toolCapabilities{ListChanged: true},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
