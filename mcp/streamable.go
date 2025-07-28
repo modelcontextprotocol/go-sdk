@@ -847,9 +847,8 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 		case s.incoming <- body:
 		case <-s.done:
 			// The connection was closed by the client; exit gracefully.
-			return sessionID, nil
 		}
-		return "", fmt.Errorf("streamable HTTP client does not yet support raw JSON responses")
+		return sessionID, nil
 	default:
 		resp.Body.Close()
 		return "", fmt.Errorf("unsupported content type %q", ct)
