@@ -44,7 +44,7 @@ type MethodHandler[S Session] func(ctx context.Context, _ S, method string, para
 // the compiler would complain.
 type methodHandler any // MethodHandler[*ClientSession] | MethodHandler[*ServerSession]
 
-// A Session is either a ClientSession or a ServerSession.
+// A Session is either a [ClientSession] or a [ServerSession].
 type Session interface {
 	*ClientSession | *ServerSession
 	// ID returns the session ID, or the empty string if there is none.
@@ -57,7 +57,7 @@ type Session interface {
 	getConn() *jsonrpc2.Connection
 }
 
-// Middleware is a function from MethodHandlers to MethodHandlers.
+// Middleware is a function from [MethodHandler] to [MethodHandler].
 type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
 
 // addMiddleware wraps the handler in the middleware functions.

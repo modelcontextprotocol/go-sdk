@@ -134,7 +134,7 @@ type canceller struct {
 	conn *jsonrpc2.Connection
 }
 
-// Preempt implements jsonrpc2.Preempter.
+// Preempt implements [jsonrpc2.Preempter].
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == "notifications/cancelled" {
 		var params CancelledParams
@@ -203,7 +203,7 @@ type loggingConn struct {
 
 func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
 
-// loggingReader is a stream middleware that logs incoming messages.
+// Read is a stream middleware that logs incoming messages.
 func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	msg, err := s.delegate.Read(ctx)
 	if err != nil {
@@ -218,7 +218,7 @@ func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	return msg, err
 }
 
-// loggingWriter is a stream middleware that logs outgoing messages.
+// Write is a stream middleware that logs outgoing messages.
 func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	err := s.delegate.Write(ctx, msg)
 	if err != nil {
