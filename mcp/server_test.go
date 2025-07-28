@@ -337,11 +337,9 @@ func TestServerCapabilities(t *testing.T) {
 			name:            "With initial capabilities",
 			configureServer: func(s *Server) {},
 			serverOpts: ServerOptions{
-				InitialCapabilities: InitialCapabilities{
-					Prompts:   true,
-					Tools:     true,
-					Resources: true,
-				},
+				HasPrompts:   true,
+				HasResources: true,
+				HasTools:     true,
 			},
 			wantCapabilities: &serverCapabilities{
 				Completions: &completionCapabilities{},
