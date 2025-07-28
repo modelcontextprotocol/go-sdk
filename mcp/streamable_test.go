@@ -158,7 +158,8 @@ func TestClientReplay(t *testing.T) {
 	client := NewClient(testImpl, &ClientOptions{
 		ProgressNotificationHandler: func(ctx context.Context, cc *ClientSession, params *ProgressNotificationParams) {
 			notifications <- params.Message
-		}})
+		},
+	})
 	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil))
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)

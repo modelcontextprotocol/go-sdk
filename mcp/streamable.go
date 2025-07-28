@@ -800,6 +800,8 @@ func (s *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
+// postMessage POSTs msg to the server and reads the response.
+// It returns the session ID from the response.
 func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg jsonrpc.Message) (string, error) {
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
@@ -836,8 +838,17 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 		// Section 2.1: The SSE stream is initiated after a POST.
 		go s.handleSSE(resp)
 	case "application/json":
-		// TODO: read the body and send to s.incoming (in a select that also receives from s.done).
+		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		select {
+		case s.incoming <- body:
+		case <-s.done:
+			// The connection was closed by the client; exit gracefully.
+			return sessionID, nil
+		}
 		return "", fmt.Errorf("streamable HTTP client does not yet support raw JSON responses")
 	default:
 		resp.Body.Close()
