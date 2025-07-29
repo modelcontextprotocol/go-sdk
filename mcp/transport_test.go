@@ -7,6 +7,8 @@ package mcp
 import (
 	"context"
 	"io"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -49,5 +51,48 @@ func TestBatchFraming(t *testing.T) {
 		if got := got.(*jsonrpc.Request).ID.Raw(); got != want {
 			t.Errorf("got message #%d, want #%d", got, want)
 		}
+	}
+}
+
+func Test_ioConn_Read_BadTrailingData(t *testing.T) {
+	type fields struct {
+		rwc io.ReadWriteCloser
+	}
+	type args struct {
+		ctx context.Context
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "bad data at the end of first valid json",
+			fields: fields{
+				rwc: rwc{
+					rc: io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"test","params":{}},`)),
+				},
+			},
+			args: args{
+				ctx: context.Background(),
+			},
+			want:    "invalid trailing data ',' at the end of stream",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := newIOConn(tt.fields.rwc)
+			_, err := tr.Read(tt.args.ctx)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ioConn.Read() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(err.Error(), tt.want) {
+				t.Errorf("ioConn.Read() = %v, want %v", err.Error(), tt.want)
+			}
+		})
 	}
 }
