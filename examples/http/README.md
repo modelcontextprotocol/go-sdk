@@ -32,7 +32,7 @@ The client will:
 At any given time you can pass a custom URL to the program to run it on a custom host/port:
 
 ```
-go run main.go server http://0.0.0.0:9000
+go run main.go -host 0.0.0.0 -port 9000 server
 ```
 
 ## Testing with real-world MCP Clients
