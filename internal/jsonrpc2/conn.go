@@ -125,7 +125,7 @@ func (c *Connection) updateInFlight(f func(*inFlightState)) {
 		// that and avoided making any updates that would cause the state to be
 		// non-idle.)
 		if !s.idle() {
-			panic("jsonrpc2_v2: updateInFlight transitioned to non-idle when already done")
+			panic("jsonrpc2: updateInFlight transitioned to non-idle when already done")
 		}
 		return
 	default:
@@ -718,7 +718,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 	req.cancel()
 	c.updateInFlight(func(s *inFlightState) {
 		if s.incoming == 0 {
-			panic("jsonrpc2_v2: processResult called when incoming count is already zero")
+			panic("jsonrpc2: processResult called when incoming count is already zero")
 		}
 		s.incoming--
 	})

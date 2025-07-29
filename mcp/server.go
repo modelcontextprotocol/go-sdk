@@ -29,7 +29,7 @@ const DefaultPageSize = 1000
 // A Server is an instance of an MCP server.
 //
 // Servers expose server-side MCP features, which can serve one or more MCP
-// sessions by using [Server.Start] or [Server.Run].
+// sessions by using [Server.Run].
 type Server struct {
 	// fixed at creation
 	impl *Implementation
@@ -69,13 +69,21 @@ type ServerOptions struct {
 	SubscribeHandler func(context.Context, *SubscribeParams) error
 	// Function called when a client session unsubscribes from a resource.
 	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
+	// If true, advertises the prompts capability during initialization,
+	// even if no prompts have been registered.
+	HasPrompts bool
+	// If true, advertises the resources capability during initialization,
+	// even if no resources have been registered.
+	HasResources bool
+	// If true, advertises the tools capability during initialization,
+	// even if no tools have been registered.
+	HasTools bool
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
 // add features using the various Server.AddXXX methods, and the [AddTool] function.
 //
-// The server can be connected to one or more MCP clients using [Server.Start]
-// or [Server.Run].
+// The server can be connected to one or more MCP clients using [Server.Run].
 //
 // The first argument must not be nil.
 //
@@ -230,16 +238,17 @@ func (s *Server) capabilities() *serverCapabilities {
 	defer s.mu.Unlock()
 
 	caps := &serverCapabilities{
+		// TODO(samthanawalla): check for completionHandler before advertising capability.
 		Completions: &completionCapabilities{},
 		Logging:     &loggingCapabilities{},
 	}
-	if s.tools.len() > 0 {
+	if s.opts.HasTools || s.tools.len() > 0 {
 		caps.Tools = &toolCapabilities{ListChanged: true}
 	}
-	if s.prompts.len() > 0 {
+	if s.opts.HasPrompts || s.prompts.len() > 0 {
 		caps.Prompts = &promptCapabilities{ListChanged: true}
 	}
-	if s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
+	if s.opts.HasResources || s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
 		caps.Resources = &resourceCapabilities{ListChanged: true}
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true
@@ -733,7 +742,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 	// For the streamable transport, we need the request ID to correlate
 	// server->client calls and notifications to the incoming request from which
-	// they originated. See [idContext] for details.
+	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
 	return handleReceive(ctx, ss, req)
 }
