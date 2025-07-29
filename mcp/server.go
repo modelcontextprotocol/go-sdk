@@ -69,6 +69,9 @@ type ServerOptions struct {
 	SubscribeHandler func(context.Context, *SubscribeParams) error
 	// Function called when a client session unsubscribes from a resource.
 	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
+	// If true, the Mcp-Session-Id header will not be sent or validated.
+	// This enables stateless operation where each request is independent.
+	Stateless bool
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -720,14 +723,23 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	ss.mu.Lock()
 	initialized := ss.initialized
 	ss.mu.Unlock()
+
+	var isStateless bool
+	if transport, ok := ss.mcpConn.(*StreamableServerTransport); ok {
+		isStateless = transport.id == ""
+	}
+
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
-	switch req.Method {
-	case "initialize", "ping":
-	default:
-		if !initialized {
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+	// However, in stateless mode, each request is independent and doesn't require initialization.
+	if !isStateless {
+		switch req.Method {
+		case "initialize", "ping":
+		default:
+			if !initialized {
+				return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+			}
 		}
 	}
 	// For the streamable transport, we need the request ID to correlate

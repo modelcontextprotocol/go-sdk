@@ -98,31 +98,50 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	var session *StreamableServerTransport
-	if id := req.Header.Get(sessionIDHeader); id != "" {
-		h.sessionsMu.Lock()
-		session, _ = h.sessions[id]
-		h.sessionsMu.Unlock()
-		if session == nil {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
+	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewStreamableHTTPHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
 	}
 
-	// TODO(rfindley): simplify the locking so that each request has only one
-	// critical section.
-	if req.Method == http.MethodDelete {
-		if session == nil {
-			// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
-			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+	stateless := server.opts.Stateless
+
+	var session *StreamableServerTransport
+
+	// Only validate and lookup sessions if not in stateless mode
+	if !stateless {
+		if id := req.Header.Get(sessionIDHeader); id != "" {
+			h.sessionsMu.Lock()
+			session, _ = h.sessions[id]
+			h.sessionsMu.Unlock()
+			if session == nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+		}
+
+		// TODO(rfindley): simplify the locking so that each request has only one
+		// critical section.
+		if req.Method == http.MethodDelete {
+			if session == nil {
+				// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
+				http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+				return
+			}
+			h.sessionsMu.Lock()
+			delete(h.sessions, session.id)
+			h.sessionsMu.Unlock()
+			session.Close()
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		h.sessionsMu.Lock()
-		delete(h.sessions, session.id)
-		h.sessionsMu.Unlock()
-		session.Close()
-		w.WriteHeader(http.StatusNoContent)
-		return
+	} else {
+		// In stateless mode, DELETE method doesn't make sense since there are no persistent sessions
+		if req.Method == http.MethodDelete {
+			http.Error(w, "DELETE not supported in stateless mode", http.StatusMethodNotAllowed)
+			return
+		}
 	}
 
 	switch req.Method {
@@ -134,13 +153,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	if session == nil {
-		s := NewStreamableServerTransport(randText(), nil)
-		server := h.getServer(req)
-		if server == nil {
-			// The getServer argument to NewStreamableHTTPHandler returned nil.
-			http.Error(w, "no server available", http.StatusBadRequest)
-			return
+		var sessionID = ""
+		if !stateless {
+			sessionID = randText()
 		}
+
+		s := NewStreamableServerTransport(sessionID, nil)
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
@@ -148,9 +166,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		h.sessionsMu.Lock()
-		h.sessions[s.id] = s
-		h.sessionsMu.Unlock()
+
+		// Only store the session if not in stateless mode
+		if !stateless {
+			h.sessionsMu.Lock()
+			h.sessions[s.id] = s
+			h.sessionsMu.Unlock()
+		}
 		session = s
 	}
 
@@ -437,7 +459,9 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 		return true
 	}
 
-	w.Header().Set(sessionIDHeader, t.id)
+	if t.id != "" {
+		w.Header().Set(sessionIDHeader, t.id)
+	}
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
