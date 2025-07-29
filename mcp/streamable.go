@@ -42,8 +42,8 @@ type StreamableHTTPHandler struct {
 // StreamableHTTPOptions is a placeholder options struct for future
 // configuration of the StreamableHTTP handler.
 type StreamableHTTPOptions struct {
-	// TODO(rfindley): support configurable session ID generation and event
-	// store, session retention, and event retention.
+	// TODO: support configurable session ID generation (?)
+	// TODO: support session retention (?)
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -61,7 +61,7 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 // closeAll closes all ongoing sessions.
 //
 // TODO(rfindley): investigate the best API for callers to configure their
-// session lifecycle.
+// session lifecycle. (?)
 //
 // Should we allow passing in a session store? That would allow the handler to
 // be stateless.
@@ -118,7 +118,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		h.sessionsMu.Lock()
-		delete(h.sessions, session.id)
+		delete(h.sessions, session.sessionID)
 		h.sessionsMu.Unlock()
 		session.Close()
 		w.WriteHeader(http.StatusNoContent)
@@ -149,7 +149,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		h.sessionsMu.Lock()
-		h.sessions[s.id] = s
+		h.sessions[s.sessionID] = s
 		h.sessionsMu.Unlock()
 		session = s
 	}
@@ -176,7 +176,7 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 		opts = &StreamableServerTransportOptions{}
 	}
 	t := &StreamableServerTransport{
-		id:             sessionID,
+		sessionID:      sessionID,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
 		streams:        make(map[StreamID]*stream),
@@ -193,7 +193,7 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 }
 
 func (t *StreamableServerTransport) SessionID() string {
-	return t.id
+	return t.sessionID
 }
 
 // A StreamableServerTransport implements the [Transport] interface for a
@@ -201,10 +201,10 @@ func (t *StreamableServerTransport) SessionID() string {
 type StreamableServerTransport struct {
 	nextStreamID atomic.Int64 // incrementing next stream ID
 
-	id       string
-	opts     StreamableServerTransportOptions
-	incoming chan jsonrpc.Message // messages from the client to the server
-	done     chan struct{}
+	sessionID string
+	opts      StreamableServerTransportOptions
+	incoming  chan jsonrpc.Message // messages from the client to the server
+	done      chan struct{}
 
 	mu sync.Mutex
 	// Sessions are closed exactly once.
@@ -217,17 +217,20 @@ type StreamableServerTransport struct {
 	// Therefore, we use a logical connection ID to key the connection state, and
 	// perform the accounting described below when incoming HTTP requests are
 	// handled.
-	//
-	// TODO(rfindley): simplify.
 
 	// streams holds the logical streams for this session, keyed by their ID.
+	// TODO: streams are never deleted, so the memory for a connection grows without
+	// bound. If we deleted a stream when the response is sent, we would lose the ability
+	// to replay if there was a cut just before the response was transmitted.
+	// Perhaps we could have a TTL for streams that starts just after the response.
 	streams map[StreamID]*stream
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
 	// Lifecycle: requestStreams persists for the duration of the session.
 	//
-	// TODO(rfindley): clean up once requests are handled.
+	// TODO(rfindley): clean up once requests are handled. See the TODO for streams
+	// above.
 	requestStreams map[jsonrpc.ID]StreamID
 }
 
@@ -288,7 +291,7 @@ type StreamID int64
 
 // Connect implements the [Transport] interface.
 //
-// TODO(rfindley): Connect should return a new object.
+// TODO(rfindley): Connect should return a new object. (Why?)
 func (s *StreamableServerTransport) Connect(context.Context) (Connection, error) {
 	return s, nil
 }
@@ -411,6 +414,8 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// TODO(rfindley): consider optimizing for a single incoming request, by
 	// responding with application/json when there is only a single message in
 	// the response.
+	// (But how would we know there is only a single message? For example, couldn't
+	//  a progress notification be sent before a response on the same context?)
 	return t.streamResponse(stream, w, req, -1)
 }
 
@@ -437,7 +442,7 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 		return true
 	}
 
-	w.Header().Set(sessionIDHeader, t.id)
+	w.Header().Set(sessionIDHeader, t.sessionID)
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
@@ -486,7 +491,9 @@ stream:
 		// If all requests have been handled and replied to, we should terminate this connection.
 		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
 		// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
-		// TODO(jba,findleyr): why not terminate regardless of http method?
+		// We only want to terminate POSTs, and GETs that are replaying. The general-purpose GET
+		// (stream ID 0) will never have requests, and should remain open indefinitely.
+		// TODO: implement the GET case.
 		if req.Method == http.MethodPost && nOutstanding == 0 {
 			if writes == 0 {
 				// Spec: If the server accepts the input, the server MUST return HTTP
@@ -563,11 +570,12 @@ func (t *StreamableServerTransport) Read(ctx context.Context) (jsonrpc.Message, 
 // Write implements the [Connection] interface.
 func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// Find the incoming request that this write relates to, if any.
-	var forRequest, replyTo jsonrpc.ID
+	var forRequest jsonrpc.ID
+	isResponse := false
 	if resp, ok := msg.(*jsonrpc.Response); ok {
 		// If the message is a response, it relates to its request (of course).
 		forRequest = resp.ID
-		replyTo = resp.ID
+		isResponse = true
 	} else {
 		// Otherwise, we check to see if it request was made in the context of an
 		// ongoing request. This may not be the case if the request way made with
@@ -611,10 +619,12 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		stream = t.streams[0]
 	}
 
+	// TODO: if there is nothing to send these messages to (as would happen, for example, if forConn == 0
+	// and the client never did a GET), then memory will grow without bound. Consider a mitigation.
 	stream.outgoing = append(stream.outgoing, data)
-	if replyTo.IsValid() {
+	if isResponse {
 		// Once we've put the reply on the queue, it's no longer outstanding.
-		delete(stream.requests, replyTo)
+		delete(stream.requests, forRequest)
 	}
 
 	// Signal streamResponse that new work is available.
@@ -635,7 +645,9 @@ func (t *StreamableServerTransport) Close() error {
 	if !t.isDone {
 		t.isDone = true
 		close(t.done)
-		return t.opts.EventStore.SessionClosed(context.TODO(), t.id)
+		// TODO: find a way to plumb a context here, or an event store with a long-running
+		// close operation can take arbitrary time. Alternative: impose a fixed timeout here.
+		return t.opts.EventStore.SessionClosed(context.TODO(), t.sessionID)
 	}
 	return nil
 }
@@ -643,8 +655,6 @@ func (t *StreamableServerTransport) Close() error {
 // A StreamableClientTransport is a [Transport] that can communicate with an MCP
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
-//
-// TODO(rfindley): support retries and resumption tokens.
 type StreamableClientTransport struct {
 	url  string
 	opts StreamableClientTransportOptions
