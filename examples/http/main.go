@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -17,13 +18,8 @@ import (
 )
 
 func main() {
-	var (
-		host = flag.String("host", "localhost", "Host to connect to or listen on")
-		port = flag.String("port", "8080", "Port to connect to or listen on")
-	)
-
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s <client|server> [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s <client|server> [proto://<host>:<port>]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "This program demonstrates MCP over HTTP using the streamable transport.\n")
 		fmt.Fprintf(os.Stderr, "It can run as either a server or client.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -31,25 +27,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  Run as server:  %s server\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Run as client:  %s client\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Custom host/port: %s server -host 0.0.0.0 -port 9090\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Custom host/port: %s server https://0.0.0.0:8000\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	// Check if we have at least one argument.
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: Must specify 'client' or 'server' as first argument\n\n")
 		flag.Usage()
 	}
 	mode := os.Args[1]
 
-	os.Args = append(os.Args[:1], os.Args[2:]...)
-	flag.Parse()
+	rawurl := "http://localhost:8000"
+	if len(os.Args) >= 3 {
+		rawurl = os.Args[2]
+	}
+	url, err := url.Parse(rawurl)
+	if err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
 
 	switch mode {
 	case "server":
-		runServer(*host, *port)
+		runServer(url)
 	case "client":
-		runClient(*host, *port)
+		runClient(url)
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Invalid mode '%s'. Must be 'client' or 'server'\n\n", mode)
 		flag.Usage()
@@ -108,7 +109,7 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 	}, nil
 }
 
-func runServer(host, port string) {
+func runServer(url *url.URL) {
 	// Create an MCP server.
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "time-server",
@@ -128,25 +129,24 @@ func runServer(host, port string) {
 
 	handlerWithLogging := loggingHandler(handler)
 
-	addr := fmt.Sprintf("%s:%s", host, port)
-	log.Printf("MCP server listening on http://%s", addr)
+	laddr := fmt.Sprintf("%s:%s", url.Hostname(), url.Port())
+	log.Printf("MCP server listening on %s", laddr)
 	log.Printf("Available tool: cityTime (cities: nyc, sf, boston)")
 
 	// Start the HTTP server with logging handler.
-	if err := http.ListenAndServe(addr, handlerWithLogging); err != nil {
+	if err := http.ListenAndServe("localhost:8000", handlerWithLogging); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
 
-func runClient(host, port string) {
+func runClient(url *url.URL) {
 	ctx := context.Background()
 
 	// Create the URL for the server.
-	url := fmt.Sprintf("http://%s:%s", host, port)
-	log.Printf("Connecting to MCP server at %s", url)
+	log.Printf("Connecting to MCP server at %s", url.String())
 
 	// Create a streamable client transport.
-	transport := mcp.NewStreamableClientTransport(url, nil)
+	transport := mcp.NewStreamableClientTransport(url.String(), nil)
 
 	// Create an MCP client.
 	client := mcp.NewClient(&mcp.Implementation{
