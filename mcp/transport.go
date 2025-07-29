@@ -420,16 +420,17 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	case <-t.closed:
 		return nil, io.EOF
 	}
-	// Read remaining data in the buffer.
-	tr := &trail{}
-	buf := in.Buffered()
-	err := tr.load(buf)
+
+	// Read the next byte to check if there is trailing data.
+	tr := make([]byte, 1)
+	_, err := in.Buffered().Read(tr)
 	if err != nil {
 		return nil, err
 	}
-	// If trailing data exists, it is an error.
-	if err := tr.validate(); err != nil {
-		return nil, err
+
+	// If the next byte is not a newline, it is an error.
+	if tr[0] != '\n' {
+		return nil, fmt.Errorf("invalid trailing data at the end of stream")
 	}
 
 	msgs, batch, err := readBatch(raw)
@@ -462,36 +463,6 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 		}
 	}
 	return msgs[0], err
-}
-
-// trail is a helper type to store and validate remaining data in decoder buffer.
-type trail struct {
-	data []byte
-}
-
-// load reads remaining data from the buffer.
-func (t *trail) load(buf io.Reader) error {
-	data, err := io.ReadAll(buf)
-	if err != nil {
-		return err
-	}
-	t.data = data
-	log.Println("trail", string(t.data))
-	return nil
-}
-
-// validate checks if the trailing data exists.
-// if it does, it returns an error.
-func (t *trail) validate() error {
-	// Ignore newline to be deemed as trailing data.
-	// It is usual for stdio transport.
-	if t.data[len(t.data)-1] == '\n' {
-		t.data = t.data[:len(t.data)-1]
-	}
-	if len(t.data) > 0 {
-		return fmt.Errorf("invalid trailing data '%s' at the end of stream", string(t.data))
-	}
-	return nil
 }
 
 // readBatch reads batch data, which may be either a single JSON-RPC message,
