@@ -10,52 +10,54 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+var (
+	host = flag.String("host", "localhost", "host to connect to/listen on")
+	port = flag.Int("port", 8000, "port number to connect to/listen on")
+	proto = flag.String("proto", "http", "if set, use as proto:// part of URL (ignored for server)")
+)
+
 func main() {
+	out := flag.CommandLine.Output()
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s <client|server> [proto://<host>:<port>]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "This program demonstrates MCP over HTTP using the streamable transport.\n")
-		fmt.Fprintf(os.Stderr, "It can run as either a server or client.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(out, "Usage: %s <client|server> [-proto <http|https>] [-port <port] [-host <host>]\n\n", os.Args[0])
+		fmt.Fprintf(out, "This program demonstrates MCP over HTTP using the streamable transport.\n")
+		fmt.Fprintf(out, "It can run as either a server or client.\n\n")
+		fmt.Fprintf(out, "Options:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  Run as server:  %s server\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Run as client:  %s client\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Custom host/port: %s server https://0.0.0.0:8000\n", os.Args[0])
+		fmt.Fprintf(out, "\nExamples:\n")
+		fmt.Fprintf(out, "  Run as server:  %s server\n", os.Args[0])
+		fmt.Fprintf(out, "  Run as client:  %s client\n", os.Args[0])
+		fmt.Fprintf(out, "  Custom host/port: %s -port 9000 -host 0.0.0.0 server\n", os.Args[0])
 		os.Exit(1)
 	}
+	flag.Parse()
 
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Error: Must specify 'client' or 'server' as first argument\n\n")
+	if flag.NArg() != 1 {
+		fmt.Fprintf(out, "Error: Must specify 'client' or 'server' as first argument\n")
 		flag.Usage()
 	}
-	mode := os.Args[1]
-
-	rawurl := "http://localhost:8000"
-	if len(os.Args) >= 3 {
-		rawurl = os.Args[2]
-	}
-	url, err := url.Parse(rawurl)
-	if err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+	mode := flag.Arg(0)
 
 	switch mode {
 	case "server":
-		runServer(url)
+		if (*proto != "http") {
+			log.Fatalf("Server only works with 'http' (you passed proto=%s)", *proto)
+		}
+		runServer(fmt.Sprintf("%s:%d", *host, *port))
 	case "client":
-		runClient(url)
+		runClient(fmt.Sprintf("%s://%s:%d", *proto, *host, *port))
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Invalid mode '%s'. Must be 'client' or 'server'\n\n", mode)
 		flag.Usage()
 	}
 }
+
 
 // GetTimeParams defines the parameters for the cityTime tool.
 type GetTimeParams struct {
@@ -109,7 +111,7 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 	}, nil
 }
 
-func runServer(url *url.URL) {
+func runServer(url string) {
 	// Create an MCP server.
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "time-server",
@@ -129,24 +131,23 @@ func runServer(url *url.URL) {
 
 	handlerWithLogging := loggingHandler(handler)
 
-	laddr := fmt.Sprintf("%s:%s", url.Hostname(), url.Port())
-	log.Printf("MCP server listening on %s", laddr)
+	log.Printf("MCP server listening on %s", url)
 	log.Printf("Available tool: cityTime (cities: nyc, sf, boston)")
 
 	// Start the HTTP server with logging handler.
-	if err := http.ListenAndServe("localhost:8000", handlerWithLogging); err != nil {
+	if err := http.ListenAndServe(url, handlerWithLogging); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
 
-func runClient(url *url.URL) {
+func runClient(url string) {
 	ctx := context.Background()
 
 	// Create the URL for the server.
-	log.Printf("Connecting to MCP server at %s", url.String())
+	log.Printf("Connecting to MCP server at %s", url)
 
 	// Create a streamable client transport.
-	transport := mcp.NewStreamableClientTransport(url.String(), nil)
+	transport := mcp.NewStreamableClientTransport(url, nil)
 
 	// Create an MCP client.
 	client := mcp.NewClient(&mcp.Implementation{
