@@ -22,7 +22,7 @@ func TestSSEServer(t *testing.T) {
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet"}, sayHi)
 
-			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server })
+			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
 
 			conns := make(chan *ServerSession, 1)
 			sseHandler.onConnection = func(cc *ServerSession) {

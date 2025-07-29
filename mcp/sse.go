@@ -44,9 +44,14 @@ import (
 type SSEHandler struct {
 	getServer    func(request *http.Request) *Server
 	onConnection func(*ServerSession) // for testing; must not block
+	sessionStore ServerSessionStore[*SSEServerTransport]
+}
 
-	mu       sync.Mutex
-	sessions map[string]*SSEServerTransport
+// SSEOptions is a placeholder options struct for future
+// configuration of the SSEHandler.
+type SSEOptions struct {
+	// TODO: support configurable session ID generation (?)
+	SessionStore ServerSessionStore[*SSEServerTransport]
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -64,10 +69,17 @@ type SSEHandler struct {
 // will return a 400 Bad Request.
 //
 // TODO(rfindley): add options.
-func NewSSEHandler(getServer func(request *http.Request) *Server) *SSEHandler {
+func NewSSEHandler(getServer func(request *http.Request) *Server, opts *SSEOptions) *SSEHandler {
+	var sessionStore ServerSessionStore[*SSEServerTransport]
+	if opts != nil {
+		sessionStore = opts.SessionStore
+	}
+	if sessionStore == nil {
+		sessionStore = NewMemoryServerSessionStore[*SSEServerTransport]()
+	}
 	return &SSEHandler{
-		getServer: getServer,
-		sessions:  make(map[string]*SSEServerTransport),
+		getServer:    getServer,
+		sessionStore: sessionStore,
 	}
 }
 
@@ -164,9 +176,11 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "sessionid must be provided", http.StatusBadRequest)
 			return
 		}
-		h.mu.Lock()
-		session := h.sessions[sessionID]
-		h.mu.Unlock()
+		session, err := h.sessionStore.Get(sessionID)
+		if err != nil {
+			http.Error(w, "failed to get session", http.StatusInternalServerError)
+			return
+		}
 		if session == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
@@ -200,13 +214,13 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	transport := NewSSEServerTransport(endpoint.RequestURI(), w)
 
 	// The session is terminated when the request exits.
-	h.mu.Lock()
-	h.sessions[sessionID] = transport
-	h.mu.Unlock()
+	err = h.sessionStore.Set(sessionID, transport)
+	if err != nil {
+		http.Error(w, "internal error: failed to set session", http.StatusInternalServerError)
+		return
+	}
 	defer func() {
-		h.mu.Lock()
-		delete(h.sessions, sessionID)
-		h.mu.Unlock()
+		h.sessionStore.Delete(sessionID)
 	}()
 
 	server := h.getServer(req)
