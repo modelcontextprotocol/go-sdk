@@ -1,5 +1,7 @@
 # MCP Go SDK v0.2.0
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
+
 ***BREAKING CHANGES***
 
 This version contains breaking changes.
