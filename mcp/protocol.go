@@ -264,6 +264,23 @@ type CreateMessageResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
+func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
+	type result CreateMessageResult // avoid recursion
+	var wire struct {
+		result
+		Content *wireContent `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if wire.result.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true}); err != nil {
+		return err
+	}
+	*r = CreateMessageResult(wire.result)
+	return nil
+}
+
 type GetPromptParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
