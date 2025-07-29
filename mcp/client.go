@@ -56,6 +56,9 @@ type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
+	// Handler for elicitation.
+	// Called when a server requests user input via Elicit.
+	ElicitationHandler func(context.Context, *ClientSession, *ElicitParams) (*ElicitResult, error)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
 	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
@@ -110,6 +113,9 @@ func (c *Client) capabilities() *ClientCapabilities {
 	caps.Roots.ListChanged = true
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}
+	}
+	if c.opts.ElicitationHandler != nil {
+		caps.Elicitation = &ElicitationCapabilities{}
 	}
 	return caps
 }
@@ -268,6 +274,14 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (
 	return c.opts.CreateMessageHandler(ctx, req)
 }
 
+func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
+	if c.opts.ElicitationHandler == nil {
+		// TODO: wrap or annotate this error? Pick a standard code?
+		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support elicitation"}
+	}
+	return c.opts.ElicitationHandler(ctx, req.Session, req.Params)
+}
+
 // AddSendingMiddleware wraps the current sending method handler using the provided
 // middleware. Middleware is applied from right to left, so that the first one is
 // executed first.
@@ -308,6 +322,7 @@ var clientMethodInfos = map[string]methodInfo{
 	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
 	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
 	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
+	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK),
 	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
 	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
 	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),

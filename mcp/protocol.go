@@ -968,7 +968,33 @@ func (*ResourceUpdatedNotificationParams) isParams() {}
 
 // TODO(jba): add CompleteRequest and related types.
 
-// TODO(jba): add ElicitRequest and related types.
+type ElicitParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// A human-readable message describing what information is being requested.
+	Message string `json:"message"`
+	// A JSON Schema object defining the structure of the requested data.
+	RequestedSchema *jsonschema.Schema `json:"requestedSchema"`
+}
+
+func (x *ElicitParams) isParams()              {}
+func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+// The client's response to an elicitation/create request from the server.
+type ElicitResult struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The action taken by the user: "accept", "decline", or "cancel".
+	Action string `json:"action"`
+	// The data provided by the user if action is "accept". This should conform
+	// to the requested schema.
+	Content map[string]any `json:"content,omitempty"`
+}
+
+func (*ElicitResult) isResult() {}
 
 // An Implementation describes the name and version of an MCP implementation, with an optional
 // title for UI representation.
