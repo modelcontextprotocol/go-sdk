@@ -78,7 +78,7 @@ func Test_ioConn_Read_BadTrailingData(t *testing.T) {
 			args: args{
 				ctx: context.Background(),
 			},
-			want:    "invalid trailing data ',' at the end of stream",
+			want:    "invalid trailing data at the end of stream",
 			wantErr: true,
 		},
 	}
