@@ -8,26 +8,19 @@ The example implements:
 - A server that provides a `cityTime` tool
 - A client that connects to the server, lists available tools, and calls the `cityTime` tool
 
-## Running the Example
+## Usage
 
-When run with -server, the program becomes an MCP server.
-When run with -client, it becomes an MCP client.
-Server and client support passing custom -port and -host.
-
-### Start the Server
+Start the Server
 
 ```bash
-go run main.go -server
+go run main.go server
 ```
+This starts an MCP server on `http://localhost:8080` (default) that provides a `cityTime` tool.
 
-This starts an MCP server on `localhost:8080` (default) that provides a `cityTime` tool.
-
-### Run the Client
-
-In another terminal:
+To run a client in another terminal:
 
 ```bash
-go run main.go -client
+go run main.go client
 ```
 
 The client will:
@@ -36,6 +29,11 @@ The client will:
 3. Call the `cityTime` tool for NYC, San Francisco, and Boston
 4. Display the results
 
+At any given time you can pass a custom URL to the program to run it on a custom host/port:
+
+```
+go run main.go server http://0.0.0.0:9000
+```
 
 ## Testing with real-world MCP Clients
 
