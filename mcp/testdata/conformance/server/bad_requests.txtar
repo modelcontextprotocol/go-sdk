@@ -4,6 +4,7 @@ bad requests.
 Fixed bugs:
 - No id in 'initialize' should not panic (#197).
 - No id in 'ping' should not panic (#194).
+- Notifications with IDs should not be treated like requests.
 
 TODO:
 - No params in 'initialize' should not panic (#195).
@@ -31,6 +32,7 @@ code_review
     "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
   }
 }
+{"jsonrpc":"2.0", "id": 3, "method":"notifications/initialized"}
 {"jsonrpc":"2.0", "method":"ping"}
 
 -- server --
@@ -50,5 +52,13 @@ code_review
 			"name": "testServer",
 			"version": "v1.0.0"
 		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 3,
+	"error": {
+		"code": -32600,
+		"message": "JSON RPC invalid request: unexpected id for \"notifications/initialized\""
 	}
 }

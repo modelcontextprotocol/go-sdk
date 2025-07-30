@@ -155,7 +155,10 @@ func checkRequest(req *jsonrpc.Request, infos map[string]methodInfo) (methodInfo
 		return methodInfo{}, fmt.Errorf("%w: %q unsupported", jsonrpc2.ErrNotHandled, req.Method)
 	}
 	if info.isRequest && !req.ID.IsValid() {
-		return methodInfo{}, fmt.Errorf("%w: %q missing ID", jsonrpc2.ErrInvalidRequest, req.Method)
+		return methodInfo{}, fmt.Errorf("%w: missing ID, %q", jsonrpc2.ErrInvalidRequest, req.Method)
+	}
+	if !info.isRequest && req.ID.IsValid() {
+		return methodInfo{}, fmt.Errorf("%w: unexpected id for %q", jsonrpc2.ErrInvalidRequest, req.Method)
 	}
 	return info, nil
 }
