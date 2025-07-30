@@ -739,7 +739,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// Section 2.2: The client MAY issue an HTTP GET to the MCP endpoint.
 	// This can be used to open an SSE stream, allowing the server to
 	// communicate to the client, without the client first sending data via HTTP POST.
-	go conn.handleSSE(nil, false)
+	go conn.handleSSE(nil, true)
 
 	return conn, nil
 }
@@ -865,7 +865,7 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	switch ct := resp.Header.Get("Content-Type"); ct {
 	case "text/event-stream":
 		// Section 2.1: The SSE stream is initiated after a POST.
-		go s.handleSSE(resp, true)
+		go s.handleSSE(resp, false)
 	case "application/json":
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -886,8 +886,8 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 }
 
 // handleSSE manages the lifecycle of an SSE connection. It can be either
-// temporary (for a POST response) or persistent (for the main GET listener).
-func (s *streamableClientConn) handleSSE(initialResp *http.Response, temporary bool) {
+// persistent (for the main GET listener) or temporary (for a POST response).
+func (s *streamableClientConn) handleSSE(initialResp *http.Response, persistent bool) {
 	resp := initialResp
 	var lastEventID string
 	for {
@@ -900,7 +900,7 @@ func (s *streamableClientConn) handleSSE(initialResp *http.Response, temporary b
 		}
 		// If the stream has ended, then do not reconnect if the stream is
 		// temporary (POST initiated SSE).
-		if lastEventID == "" && temporary {
+		if lastEventID == "" && !persistent {
 			return
 		}
 

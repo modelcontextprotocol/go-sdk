@@ -212,10 +212,10 @@ func TestClientReplay(t *testing.T) {
 }
 
 // TestServerInitiatedSSE verifies that the persistent SSE connection remains
-// open and can receive multiple, non-consecutive, server-initiated events.
+// open and can receive server-initiated events.
 func TestServerInitiatedSSE(t *testing.T) {
 	notifications := make(chan string)
-	server := NewServer(testImpl, &ServerOptions{})
+	server := NewServer(testImpl, nil)
 
 	httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
 	defer httpServer.Close()
