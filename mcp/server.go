@@ -22,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 const DefaultPageSize = 1000
@@ -682,24 +683,38 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 	addMiddleware(&s.receivingMethodHandler_, middleware)
 }
 
+func must[T any](t T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
-var serverMethodInfos = map[string]methodInfo{
-	methodComplete:               newMethodInfo(serverMethod((*Server).complete), true),
-	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), true),
-	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), true),
-	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), true),
-	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), true),
-	methodListTools:              newMethodInfo(serverMethod((*Server).listTools), true),
-	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), true),
-	methodListResources:          newMethodInfo(serverMethod((*Server).listResources), true),
-	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), true),
-	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), true),
-	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), true),
-	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), true),
-	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), true),
-	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), false),
-	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), false),
-	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), false),
+var serverMethodInfos map[string]methodInfo
+
+func init() {
+	initializeSchema := must(jsonschema.For[*InitializeParams]())
+	initializeSchema.Required = []string{"capabilities", "clientInfo", "protocolVersion"}
+
+	serverMethodInfos = map[string]methodInfo{
+		methodComplete:               newMethodInfo(serverMethod((*Server).complete), true, nil),
+		methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), true, initializeSchema),
+		methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), true, nil),
+		methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), true, nil),
+		methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), true, nil),
+		methodListTools:              newMethodInfo(serverMethod((*Server).listTools), true, nil),
+		methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), true, nil),
+		methodListResources:          newMethodInfo(serverMethod((*Server).listResources), true, nil),
+		methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), true, nil),
+		methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), true, nil),
+		methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), true, nil),
+		methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), true, nil),
+		methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), true, nil),
+		notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), false, nil),
+		notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), false, nil),
+		notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), false, nil),
+	}
 }
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
