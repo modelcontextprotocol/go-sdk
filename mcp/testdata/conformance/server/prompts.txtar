@@ -1,7 +1,8 @@
 Check behavior of a server with just prompts.
 
 Fixed bugs:
-- empty tools lists should not be returned as 'null'
+- Empty tools lists should not be returned as 'null'.
+- No params in 'prompts/get' should not panic.
 
 -- prompts --
 code_review
@@ -19,6 +20,7 @@ code_review
 }
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
+{ "jsonrpc": "2.0", "id": 5, "method": "prompts/get" }
 -- server --
 {
 	"jsonrpc": "2.0",
@@ -61,5 +63,13 @@ code_review
 				"name": "code_review"
 			}
 		]
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 5,
+	"error": {
+		"code": -32600,
+		"message": "invalid request: missing required \"params\""
 	}
 }

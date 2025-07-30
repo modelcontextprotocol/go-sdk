@@ -88,7 +88,7 @@ func TestSSEServer(t *testing.T) {
 					responseContains string
 				}{
 					{"not a method", `{"jsonrpc":"2.0", "method":"notamethod"}`, "not handled"},
-					{"missing ID", `{"jsonrpc":"2.0", "method":"ping"}`, "missing ID"},
+					{"missing ID", `{"jsonrpc":"2.0", "method":"ping"}`, "missing id"},
 				}
 				for _, r := range badRequests {
 					t.Run(r.name, func(t *testing.T) {

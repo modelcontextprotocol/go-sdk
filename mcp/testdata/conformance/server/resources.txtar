@@ -2,6 +2,9 @@ Check behavior of a server with just resources.
 
 Fixed bugs:
 - A resource result holds a slice of contents, not just one.
+- No params in 'resource/read' should not panic.
+- No params in 'resources/subscribe' should not panic.
+- No params in 'resources/unsubscribe' should not panic.
 
 -- resources --
 info
@@ -39,6 +42,8 @@ info.txt
 	"roots": []
   }
 }
+{ "jsonrpc": "2.0", "id": 4, "method": "resources/read" }
+{ "jsonrpc": "2.0", "id": 5, "method": "resources/subscribe" }
 -- server --
 {
 	"jsonrpc": "2.0",
@@ -105,5 +110,21 @@ info.txt
 				"blob": "Q29udGVudHMK"
 			}
 		]
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 4,
+	"error": {
+		"code": -32600,
+		"message": "invalid request: missing required \"params\""
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 5,
+	"error": {
+		"code": -32600,
+		"message": "invalid request: missing required \"params\""
 	}
 }

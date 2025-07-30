@@ -286,17 +286,21 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 }
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
+//
+// The 'allowMissingParams' values are extracted from the protocol schema.
+// TODO(rfindley): actually load and validate the protocol schema, rather than
+// curating these method flags.
 var clientMethodInfos = map[string]methodInfo{
-	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), true),
-	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), true),
-	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), true),
-	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), true),
-	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), false),
-	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), false),
-	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), false),
-	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), false),
-	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), false),
-	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), false),
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), 0),
+	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), missingParamsOK),
+	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
+	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), 0),
+	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
+	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
+	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
+	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
+	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
+	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), notification),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {

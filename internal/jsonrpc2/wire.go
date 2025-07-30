@@ -13,30 +13,30 @@ import (
 
 var (
 	// ErrParse is used when invalid JSON was received by the server.
-	ErrParse = NewError(-32700, "JSON RPC parse error")
+	ErrParse = NewError(-32700, "parse error")
 	// ErrInvalidRequest is used when the JSON sent is not a valid Request object.
-	ErrInvalidRequest = NewError(-32600, "JSON RPC invalid request")
+	ErrInvalidRequest = NewError(-32600, "invalid request")
 	// ErrMethodNotFound should be returned by the handler when the method does
 	// not exist / is not available.
-	ErrMethodNotFound = NewError(-32601, "JSON RPC method not found")
+	ErrMethodNotFound = NewError(-32601, "method not found")
 	// ErrInvalidParams should be returned by the handler when method
 	// parameter(s) were invalid.
-	ErrInvalidParams = NewError(-32602, "JSON RPC invalid params")
+	ErrInvalidParams = NewError(-32602, "invalid params")
 	// ErrInternal indicates a failure to process a call correctly
-	ErrInternal = NewError(-32603, "JSON RPC internal error")
+	ErrInternal = NewError(-32603, "internal error")
 
 	// The following errors are not part of the json specification, but
 	// compliant extensions specific to this implementation.
 
 	// ErrServerOverloaded is returned when a message was refused due to a
 	// server being temporarily unable to accept any new messages.
-	ErrServerOverloaded = NewError(-32000, "JSON RPC overloaded")
+	ErrServerOverloaded = NewError(-32000, "overloaded")
 	// ErrUnknown should be used for all non coded errors.
-	ErrUnknown = NewError(-32001, "JSON RPC unknown error")
+	ErrUnknown = NewError(-32001, "unknown error")
 	// ErrServerClosing is returned for calls that arrive while the server is closing.
-	ErrServerClosing = NewError(-32004, "JSON RPC server is closing")
+	ErrServerClosing = NewError(-32004, "server is closing")
 	// ErrClientClosing is a dummy error returned for calls initiated while the client is closing.
-	ErrClientClosing = NewError(-32003, "JSON RPC client is closing")
+	ErrClientClosing = NewError(-32003, "client is closing")
 )
 
 const wireVersion = "2.0"

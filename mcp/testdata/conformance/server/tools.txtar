@@ -4,6 +4,7 @@ Fixed bugs:
 - "tools/list" can have missing params
 - "_meta" should not be nil
 - empty resource or prompts should not be returned as 'null'
+- the server should not crash when params are passed to tools/call
 
 -- tools --
 greet
@@ -22,6 +23,7 @@ greet
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 { "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
+{ "jsonrpc": "2.0", "id": 5, "method": "tools/call" }
 -- server --
 {
 	"jsonrpc": "2.0",
@@ -79,5 +81,13 @@ greet
 	"id": 4,
 	"result": {
 		"prompts": []
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 5,
+	"error": {
+		"code": -32600,
+		"message": "invalid request: missing required \"params\""
 	}
 }

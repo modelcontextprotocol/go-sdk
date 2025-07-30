@@ -683,23 +683,27 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 }
 
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
+//
+// The 'allowMissingParams' values are extracted from the protocol schema.
+// TODO(rfindley): actually load and validate the protocol schema, rather than
+// curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
-	methodComplete:               newMethodInfo(serverMethod((*Server).complete), true),
-	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), true),
-	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), true),
-	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), true),
-	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), true),
-	methodListTools:              newMethodInfo(serverMethod((*Server).listTools), true),
-	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), true),
-	methodListResources:          newMethodInfo(serverMethod((*Server).listResources), true),
-	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), true),
-	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), true),
-	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), true),
-	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), true),
-	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), true),
-	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), false),
-	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), false),
-	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), false),
+	methodComplete:               newMethodInfo(serverMethod((*Server).complete), 0),
+	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), 0),
+	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), missingParamsOK),
+	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
+	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), 0),
+	methodListTools:              newMethodInfo(serverMethod((*Server).listTools), missingParamsOK),
+	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), 0),
+	methodListResources:          newMethodInfo(serverMethod((*Server).listResources), missingParamsOK),
+	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), missingParamsOK),
+	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), 0),
+	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), 0),
+	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), 0),
+	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), 0),
+	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), notification|missingParamsOK),
+	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
+	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), notification),
 }
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
@@ -744,6 +748,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
+	if params == nil {
+		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
+	}
 	ss.mu.Lock()
 	ss.initializeParams = params
 	ss.mu.Unlock()
