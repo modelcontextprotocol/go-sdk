@@ -387,8 +387,16 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	}
 	requests := make(map[jsonrpc.ID]struct{})
 	for _, msg := range incoming {
-		if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() {
-			requests[req.ID] = struct{}{}
+		if req, ok := msg.(*jsonrpc.Request); ok {
+			// Preemptively check that this is a valid request, so that we can fail
+			// the HTTP request. If we didn't do this, a request with a bad method or
+			// missing ID could be silently swallowed.
+			if _, err := checkRequest(req, serverMethodInfos); err != nil {
+				return http.StatusBadRequest, err.Error()
+			}
+			if req.ID.IsValid() {
+				requests[req.ID] = struct{}{}
+			}
 		}
 	}
 

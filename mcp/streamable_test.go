@@ -280,7 +280,7 @@ func TestStreamableServerTransport(t *testing.T) {
 	}
 
 	// Predefined steps, to avoid repetition below.
-	initReq := req(1, "initialize", &InitializeParams{})
+	initReq := req(1, methodInitialize, &InitializeParams{})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &serverCapabilities{
 			Completions: &completionCapabilities{},
@@ -290,7 +290,7 @@ func TestStreamableServerTransport(t *testing.T) {
 		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
-	initializedMsg := req(0, "initialized", &InitializedParams{})
+	initializedMsg := req(0, notificationInitialized, &InitializedParams{})
 	initialize := step{
 		Method:     "POST",
 		Send:       []jsonrpc.Message{initReq},
@@ -437,6 +437,16 @@ func TestStreamableServerTransport(t *testing.T) {
 				{
 					Method:     "DELETE",
 					StatusCode: http.StatusBadRequest,
+				},
+				{
+					Method:     "POST",
+					Send:       []jsonrpc.Message{req(1, "notamethod", nil)},
+					StatusCode: http.StatusBadRequest, // notamethod is an invalid method
+				},
+				{
+					Method:     "POST",
+					Send:       []jsonrpc.Message{req(0, "tools/call", &CallToolParams{Name: "tool"})},
+					StatusCode: http.StatusBadRequest, // tools/call must have an ID
 				},
 				{
 					Method:     "POST",

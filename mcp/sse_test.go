@@ -5,8 +5,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -24,10 +26,10 @@ func TestSSEServer(t *testing.T) {
 
 			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server })
 
-			conns := make(chan *ServerSession, 1)
-			sseHandler.onConnection = func(cc *ServerSession) {
+			serverSessions := make(chan *ServerSession, 1)
+			sseHandler.onConnection = func(ss *ServerSession) {
 				select {
-				case conns <- cc:
+				case serverSessions <- ss:
 				default:
 				}
 			}
@@ -54,7 +56,7 @@ func TestSSEServer(t *testing.T) {
 			if err := cs.Ping(ctx, nil); err != nil {
 				t.Fatal(err)
 			}
-			ss := <-conns
+			ss := <-serverSessions
 			gotHi, err := cs.CallTool(ctx, &CallToolParams{
 				Name:      "greet",
 				Arguments: map[string]any{"Name": "user"},
@@ -75,6 +77,39 @@ func TestSSEServer(t *testing.T) {
 			if atomic.LoadInt64(&customClientUsed) == 0 {
 				t.Error("Expected custom HTTP client to be used, but it wasn't")
 			}
+
+			t.Run("badrequests", func(t *testing.T) {
+				msgEndpoint := cs.mcpConn.(*sseClientConn).msgEndpoint.String()
+
+				// Test some invalid data, and verify that we get 400s.
+				badRequests := []struct {
+					name             string
+					body             string
+					responseContains string
+				}{
+					{"not a method", `{"jsonrpc":"2.0", "method":"notamethod"}`, "not handled"},
+					{"missing ID", `{"jsonrpc":"2.0", "method":"ping"}`, "missing ID"},
+				}
+				for _, r := range badRequests {
+					t.Run(r.name, func(t *testing.T) {
+						resp, err := http.Post(msgEndpoint, "application/json", bytes.NewReader([]byte(r.body)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer resp.Body.Close()
+						if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+							t.Errorf("Sending bad request %q: got status %d, want %d", r.body, got, want)
+						}
+						result, err := io.ReadAll(resp.Body)
+						if err != nil {
+							t.Fatalf("Reading response: %v", err)
+						}
+						if !bytes.Contains(result, []byte(r.responseContains)) {
+							t.Errorf("Response body does not contain %q:\n%s", r.responseContains, string(result))
+						}
+					})
+				}
+			})
 
 			// Test that closing either end of the connection terminates the other
 			// end.

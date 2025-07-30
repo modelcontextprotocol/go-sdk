@@ -123,9 +123,9 @@ func defaultReceivingMethodHandler[S Session](ctx context.Context, session S, me
 }
 
 func handleReceive[S Session](ctx context.Context, session S, req *jsonrpc.Request) (Result, error) {
-	info, ok := session.receivingMethodInfos()[req.Method]
-	if !ok {
-		return nil, jsonrpc2.ErrNotHandled
+	info, err := checkRequest(req, session.receivingMethodInfos())
+	if err != nil {
+		return nil, err
 	}
 	params, err := info.unmarshalParams(req.Params)
 	if err != nil {
@@ -141,8 +141,30 @@ func handleReceive[S Session](ctx context.Context, session S, req *jsonrpc.Reque
 	return res, nil
 }
 
+// checkRequest checks the given request against the provided method info, to
+// ensure it is a valid MCP request.
+//
+// If valid, the relevant method info is returned. Otherwise, a non-nil error
+// is returned describing why the request is invalid.
+//
+// This is extracted from request handling so that it can be called in the
+// transport layer to preemptively reject bad requests.
+func checkRequest(req *jsonrpc.Request, infos map[string]methodInfo) (methodInfo, error) {
+	info, ok := infos[req.Method]
+	if !ok {
+		return methodInfo{}, fmt.Errorf("%w: %q unsupported", jsonrpc2.ErrNotHandled, req.Method)
+	}
+	if info.isRequest && !req.ID.IsValid() {
+		return methodInfo{}, fmt.Errorf("%w: %q missing ID", jsonrpc2.ErrInvalidRequest, req.Method)
+	}
+	return info, nil
+}
+
 // methodInfo is information about sending and receiving a method.
 type methodInfo struct {
+	// isRequest reports whether the method is a JSON-RPC request.
+	// Otherwise, the method is treated as a notification.
+	isRequest bool
 	// Unmarshal params from the wire into a Params struct.
 	// Used on the receive side.
 	unmarshalParams func(json.RawMessage) (Params, error)
@@ -169,8 +191,12 @@ type paramsPtr[T any] interface {
 }
 
 // newMethodInfo creates a methodInfo from a typedMethodHandler.
-func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHandler[S, P, R]) methodInfo {
+//
+// If isRequest is set, the method is treated as a request rather than a
+// notification.
+func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHandler[S, P, R], isRequest bool) methodInfo {
 	return methodInfo{
+		isRequest: isRequest,
 		unmarshalParams: func(m json.RawMessage) (Params, error) {
 			var p P
 			if m != nil {

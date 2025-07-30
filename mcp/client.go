@@ -287,16 +287,16 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 var clientMethodInfos = map[string]methodInfo{
-	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete)),
-	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping)),
-	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots)),
-	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage)),
-	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler)),
-	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler)),
-	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler)),
-	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler)),
-	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler)),
-	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler)),
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), true),
+	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), true),
+	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), true),
+	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), true),
+	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), false),
+	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), false),
+	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), false),
+	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), false),
+	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), false),
+	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), false),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
@@ -323,7 +323,7 @@ func (cs *ClientSession) receivingMethodHandler() methodHandler {
 	return cs.client.receivingMethodHandler_
 }
 
-// getConn implements [session.getConn].
+// getConn implements [Session.getConn].
 func (cs *ClientSession) getConn() *jsonrpc2.Connection { return cs.conn }
 
 func (*ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {

@@ -688,22 +688,22 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
 var serverMethodInfos = map[string]methodInfo{
-	methodComplete:               newMethodInfo(serverMethod((*Server).complete)),
-	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize)),
-	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping)),
-	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts)),
-	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt)),
-	methodListTools:              newMethodInfo(serverMethod((*Server).listTools)),
-	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool)),
-	methodListResources:          newMethodInfo(serverMethod((*Server).listResources)),
-	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates)),
-	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource)),
-	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel)),
-	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe)),
-	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe)),
-	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler)),
-	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler)),
-	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler)),
+	methodComplete:               newMethodInfo(serverMethod((*Server).complete), true),
+	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), true),
+	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), true),
+	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), true),
+	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), true),
+	methodListTools:              newMethodInfo(serverMethod((*Server).listTools), true),
+	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), true),
+	methodListResources:          newMethodInfo(serverMethod((*Server).listResources), true),
+	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), true),
+	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), true),
+	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), true),
+	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), true),
+	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), true),
+	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), false),
+	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), false),
+	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), false),
 }
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }

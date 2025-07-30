@@ -129,6 +129,12 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		http.Error(w, "failed to parse body", http.StatusBadRequest)
 		return
 	}
+	if req, ok := msg.(*jsonrpc.Request); ok {
+		if _, err := checkRequest(req, serverMethodInfos); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	select {
 	case t.incoming <- msg:
 		w.WriteHeader(http.StatusAccepted)

@@ -1,0 +1,54 @@
+Check robustness to missing fields: servers should reject and otherwise ignore
+bad requests.
+
+Fixed bugs:
+- No id in 'initialize' should not panic (#197).
+- No id in 'ping' should not panic (#194).
+
+TODO:
+- No params in 'initialize' should not panic (#195).
+
+-- prompts --
+code_review
+
+-- client --
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
+  }
+}
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
+  }
+}
+{"jsonrpc":"2.0", "method":"ping"}
+
+-- server --
+{
+	"jsonrpc": "2.0",
+	"id": 2,
+	"result": {
+		"capabilities": {
+			"completions": {},
+			"logging": {},
+			"prompts": {
+				"listChanged": true
+			}
+		},
+		"protocolVersion": "2024-11-05",
+		"serverInfo": {
+			"name": "testServer",
+			"version": "v1.0.0"
+		}
+	}
+}
