@@ -231,7 +231,6 @@ func TestServerInitiatedSSE(t *testing.T) {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer clientSession.Close()
-	time.Sleep(50 * time.Millisecond)
 	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
 		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
