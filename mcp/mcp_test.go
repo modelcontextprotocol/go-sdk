@@ -125,7 +125,7 @@ func TestEndToEnd(t *testing.T) {
 	loggingMessages := make(chan *LoggingMessageParams, 100) // big enough for all logging
 	opts := &ClientOptions{
 		CreateMessageHandler: func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error) {
-			return &CreateMessageResult{Model: "aModel"}, nil
+			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 		ToolListChangedHandler:     func(context.Context, *ClientSession, *ToolListChangedParams) { notificationChans["tools"] <- 0 },
 		PromptListChangedHandler:   func(context.Context, *ClientSession, *PromptListChangedParams) { notificationChans["prompts"] <- 0 },
