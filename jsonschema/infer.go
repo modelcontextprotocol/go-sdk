@@ -19,12 +19,12 @@ import (
 
 // ForOptions are options for the [For] function.
 type ForOptions struct {
-	// If IgnoreBadTypes is true, fields that can't be represented as a JSON Schema
+	// If IgnoreInvalidTypes is true, fields that can't be represented as a JSON Schema
 	// are ignored instead of causing an error.
 	// This allows callers to adjust the resulting schema using custom knowledge.
 	// For example, an interface type where all the possible implementations are
 	// known can be described with "oneof".
-	IgnoreBadTypes bool
+	IgnoreInvalidTypes bool
 
 	// TypeSchemas maps types to their schemas.
 	// If [For] encounters a type equal to a type of a key in this map, the
@@ -36,8 +36,12 @@ type ForOptions struct {
 }
 
 // For constructs a JSON schema object for the given type argument.
+// If non-nil, the provided options configure certain aspects of this contruction,
+// described below.
+
+// It translates Go types into compatible JSON schema types, as follows.
+// These defaults can be overridden by [ForOptions.TypeSchemas].
 //
-// It translates Go types into compatible JSON schema types, as follows:
 //   - Strings have schema type "string".
 //   - Bools have schema type "boolean".
 //   - Signed and unsigned integer types have schema type "integer".
@@ -54,17 +58,16 @@ type ForOptions struct {
 //     translate to schemas that match the values to which they marshal.
 //     For example, [time.Time] translates to the schema for strings.
 //
+// For will return an error if there is a cycle in the types.
+//
 // By default, For returns an error if t contains (possibly recursively) any of the
 // following Go types, as they are incompatible with the JSON schema spec.
+// If [ForOptions.IgnoreInvalidTypes] is true, then these types are ignored instead.
 //   - maps with key other than 'string'
 //   - function types
 //   - channel types
 //   - complex numbers
 //   - unsafe pointers
-//
-// If [ForOptions.IgnoreBadTypes] is true, then these types are ignored instead.
-//
-// It will return an error if there is a cycle in the types.
 //
 // This function recognizes struct field tags named "jsonschema".
 // A jsonschema tag on a field is used as the description for the corresponding property.
@@ -87,7 +90,7 @@ func For[T any](opts *ForOptions) (*Schema, error) {
 	for v, s := range opts.TypeSchemas {
 		schemas[reflect.TypeOf(v)] = s
 	}
-	s, err := forType(reflect.TypeFor[T](), map[reflect.Type]bool{}, opts.IgnoreBadTypes, schemas)
+	s, err := forType(reflect.TypeFor[T](), map[reflect.Type]bool{}, opts.IgnoreInvalidTypes, schemas)
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)

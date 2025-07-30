@@ -23,7 +23,7 @@ func forType[T any](ignore bool) *jsonschema.Schema {
 	var err error
 
 	opts := &jsonschema.ForOptions{
-		IgnoreBadTypes: ignore,
+		IgnoreInvalidTypes: ignore,
 		TypeSchemas: map[any]*jsonschema.Schema{
 			custom(0): {Type: "custom"},
 		},
