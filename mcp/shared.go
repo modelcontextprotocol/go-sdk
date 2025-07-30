@@ -21,6 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 // latestProtocolVersion is the latest protocol version that this version of the SDK supports.
@@ -197,14 +198,29 @@ type paramsPtr[T any] interface {
 //
 // If isRequest is set, the method is treated as a request rather than a
 // notification.
-func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHandler[S, P, R], isRequest bool) methodInfo {
+func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHandler[S, P, R], isRequest bool, paramSchema *jsonschema.Schema) methodInfo {
+	var resolved *jsonschema.Resolved
+	if paramSchema != nil {
+		var err error
+		resolved, err = paramSchema.Resolve(nil)
+		if err != nil {
+			panic(err)
+		}
+	}
 	return methodInfo{
 		isRequest: isRequest,
 		unmarshalParams: func(m json.RawMessage) (Params, error) {
 			var p P
 			if m != nil {
 				if err := json.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					return nil, fmt.Errorf("unmarshaling params into a %T: %w", p, err)
+				}
+			} else if resolved != nil {
+				return nil, fmt.Errorf(`missing required "params"`)
+			}
+			if resolved != nil {
+				if err := resolved.Validate(p); err != nil {
+					return nil, fmt.Errorf("invalid params: %v", err)
 				}
 			}
 			return orZero[Params](p), nil

@@ -287,16 +287,16 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 var clientMethodInfos = map[string]methodInfo{
-	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), true),
-	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), true),
-	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), true),
-	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), true),
-	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), false),
-	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), false),
-	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), false),
-	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), false),
-	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), false),
-	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), false),
+	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), true, nil),
+	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), true, nil),
+	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), true, nil),
+	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), true, nil),
+	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), false, nil),
+	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), false, nil),
+	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), false, nil),
+	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), false, nil),
+	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), false, nil),
+	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), false, nil),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {

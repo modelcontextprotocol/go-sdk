@@ -4,10 +4,10 @@ bad requests.
 Fixed bugs:
 - No id in 'initialize' should not panic (#197).
 - No id in 'ping' should not panic (#194).
+- No params in 'initialize' should not panic (#195).
 - Notifications with IDs should not be treated like requests.
 
 TODO:
-- No params in 'initialize' should not panic (#195).
 
 -- prompts --
 code_review
@@ -24,6 +24,11 @@ code_review
 }
 {
   "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize"
+}
+{
+  "jsonrpc": "2.0",
   "id": 2,
   "method": "initialize",
   "params": {
@@ -36,6 +41,14 @@ code_review
 {"jsonrpc":"2.0", "method":"ping"}
 
 -- server --
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"error": {
+		"code": 0,
+		"message": "handleRequest \"initialize\": missing required \"params\""
+	}
+}
 {
 	"jsonrpc": "2.0",
 	"id": 2,
