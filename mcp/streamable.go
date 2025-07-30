@@ -735,6 +735,12 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		ctx:              connCtx,
 		cancel:           cancel,
 	}
+	// Start the persistent SSE listener right away.
+	// Section 2.2: The client MAY issue an HTTP GET to the MCP endpoint.
+	// This can be used to open an SSE stream, allowing the server to
+	// communicate to the client, without the client first sending data via HTTP POST.
+	go conn.handleSSE(nil, false)
+
 	return conn, nil
 }
 
@@ -859,7 +865,7 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	switch ct := resp.Header.Get("Content-Type"); ct {
 	case "text/event-stream":
 		// Section 2.1: The SSE stream is initiated after a POST.
-		go s.handleSSE(resp)
+		go s.handleSSE(resp, true)
 	case "application/json":
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -879,19 +885,22 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	return sessionID, nil
 }
 
-// handleSSE manages the entire lifecycle of an SSE connection. It processes
-// an incoming Server-Sent Events stream and automatically handles reconnection
-// logic if the stream breaks.
-func (s *streamableClientConn) handleSSE(initialResp *http.Response) {
+// handleSSE manages the lifecycle of an SSE connection. It can be either
+// temporary (for a POST response) or persistent (for the main GET listener).
+func (s *streamableClientConn) handleSSE(initialResp *http.Response, temporary bool) {
 	resp := initialResp
 	var lastEventID string
-
 	for {
 		eventID, clientClosed := s.processStream(resp)
 		lastEventID = eventID
 
 		// If the connection was closed by the client, we're done.
 		if clientClosed {
+			return
+		}
+		// If the stream has ended, then do not reconnect if the stream is
+		// temporary (POST initiated SSE).
+		if lastEventID == "" && temporary {
 			return
 		}
 
@@ -915,9 +924,13 @@ func (s *streamableClientConn) handleSSE(initialResp *http.Response) {
 // processStream reads from a single response body, sending events to the
 // incoming channel. It returns the ID of the last processed event, any error
 // that occurred, and a flag indicating if the connection was closed by the client.
+// If resp is nil, it returns "", false.
 func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID string, clientClosed bool) {
-	defer resp.Body.Close()
+	if resp == nil {
+		return "", false
+	}
 
+	defer resp.Body.Close()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
 			return lastEventID, false
@@ -931,13 +944,11 @@ func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID s
 		case s.incoming <- evt.Data:
 		case <-s.done:
 			// The connection was closed by the client; exit gracefully.
-			return lastEventID, true
+			return "", true
 		}
 	}
-
 	// The loop finished without an error, indicating the server closed the stream.
-	// We'll attempt to reconnect, so this is not a client-side close.
-	return lastEventID, false
+	return "", false
 }
 
 // reconnect handles the logic of retrying a connection with an exponential

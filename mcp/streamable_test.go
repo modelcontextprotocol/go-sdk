@@ -168,7 +168,7 @@ func TestClientReplay(t *testing.T) {
 	clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
 
 	// 4. Read and verify messages until the server signals it's ready for the proxy kill.
-	receivedNotifications := readProgressNotifications(t, ctx, notifications, 2)
+	receivedNotifications := readNotifications(t, ctx, notifications, 2)
 
 	wantReceived := []string{"msg1", "msg2"}
 	if diff := cmp.Diff(wantReceived, receivedNotifications); diff != "" {
@@ -201,7 +201,7 @@ func TestClientReplay(t *testing.T) {
 	// 7. Continue reading from the same connection object.
 	// Its internal logic should successfully retry, reconnect to the new proxy,
 	// and receive the replayed messages.
-	recoveredNotifications := readProgressNotifications(t, ctx, notifications, 2)
+	recoveredNotifications := readNotifications(t, ctx, notifications, 2)
 
 	// 8. Verify the correct messages were received on the recovered connection.
 	wantRecovered := []string{"msg3", "msg4"}
@@ -211,8 +211,40 @@ func TestClientReplay(t *testing.T) {
 	}
 }
 
-// Helper to read a specific number of progress notifications.
-func readProgressNotifications(t *testing.T, ctx context.Context, notifications chan string, count int) []string {
+// TestServerInitiatedSSE verifies that the persistent SSE connection remains
+// open and can receive multiple, non-consecutive, server-initiated events.
+func TestServerInitiatedSSE(t *testing.T) {
+	notifications := make(chan string)
+	server := NewServer(testImpl, &ServerOptions{})
+
+	httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := NewClient(testImpl, &ClientOptions{ToolListChangedHandler: func(ctx context.Context, cc *ClientSession, params *ToolListChangedParams) {
+		notifications <- "toolListChanged"
+	},
+	})
+	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil))
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer clientSession.Close()
+	time.Sleep(50 * time.Millisecond)
+	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
+		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+	receivedNotifications := readNotifications(t, ctx, notifications, 1)
+	wantReceived := []string{"toolListChanged"}
+	if diff := cmp.Diff(wantReceived, receivedNotifications); diff != "" {
+		t.Errorf("Received notifications mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Helper to read a specific number of notifications.
+func readNotifications(t *testing.T, ctx context.Context, notifications chan string, count int) []string {
 	t.Helper()
 	var collectedNotifications []string
 	for {
