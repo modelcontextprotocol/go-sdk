@@ -520,17 +520,6 @@ func handleEmbeddedResource(_ context.Context, _ *ServerSession, params *ReadRes
 	}, nil
 }
 
-// Add calls the given function to add the named features.
-func add[T any](m map[string]T, add func(...T), names ...string) {
-	for _, name := range names {
-		feat, ok := m[name]
-		if !ok {
-			panic("missing feature " + name)
-		}
-		add(feat)
-	}
-}
-
 // errorCode returns the code associated with err.
 // If err is nil, it returns 0.
 // If there is no code, it returns -1.
@@ -836,9 +825,6 @@ func traceCalls[S Session](w io.Writer, prefix string) Middleware[S] {
 		}
 	}
 }
-
-// A function, because schemas must form a tree (they have hidden state).
-func falseSchema() *jsonschema.Schema { return &jsonschema.Schema{Not: &jsonschema.Schema{}} }
 
 func nopHandler(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
 	return nil, nil
