@@ -56,6 +56,9 @@ type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
 	CreateMessageHandler func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error)
+	// Handler for elicitation.
+	// Called when a server requests user input via Elicit.
+	ElicitationHandler func(context.Context, *ClientSession, *ElicitParams) (*ElicitResult, error)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ClientSession, *ToolListChangedParams)
 	PromptListChangedHandler    func(context.Context, *ClientSession, *PromptListChangedParams)
@@ -118,6 +121,9 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 	caps.Roots.ListChanged = true
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}
+	}
+	if c.opts.ElicitationHandler != nil {
+		caps.Elicitation = &ElicitationCapabilities{}
 	}
 
 	params := &InitializeParams{
@@ -255,6 +261,14 @@ func (c *Client) createMessage(ctx context.Context, cs *ClientSession, params *C
 	return c.opts.CreateMessageHandler(ctx, cs, params)
 }
 
+func (c *Client) elicit(ctx context.Context, cs *ClientSession, params *ElicitParams) (*ElicitResult, error) {
+	if c.opts.ElicitationHandler == nil {
+		// TODO: wrap or annotate this error? Pick a standard code?
+		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support elicitation"}
+	}
+	return c.opts.ElicitationHandler(ctx, cs, params)
+}
+
 // AddSendingMiddleware wraps the current sending method handler using the provided
 // middleware. Middleware is applied from right to left, so that the first one is
 // executed first.
@@ -297,6 +311,7 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), false),
 	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), false),
 	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), false),
+	methodElicit:                    newMethodInfo(clientMethod((*Client).elicit), true),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
