@@ -5,22 +5,30 @@
 package jsonschema_test
 
 import (
+	"log/slog"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
-func forType[T any](lax bool) *jsonschema.Schema {
+type custom int
+
+func forType[T any](ignore bool) *jsonschema.Schema {
 	var s *jsonschema.Schema
 	var err error
-	if lax {
-		s, err = jsonschema.ForLax[T]()
-	} else {
-		s, err = jsonschema.For[T]()
+
+	opts := &jsonschema.ForOptions{
+		IgnoreInvalidTypes: ignore,
+		TypeSchemas: map[any]*jsonschema.Schema{
+			custom(0): {Type: "custom"},
+		},
 	}
+	s, err = jsonschema.For[T](opts)
 	if err != nil {
 		panic(err)
 	}
@@ -40,19 +48,23 @@ func TestFor(t *testing.T) {
 		want *jsonschema.Schema
 	}
 
-	tests := func(lax bool) []test {
+	tests := func(ignore bool) []test {
 		return []test{
-			{"string", forType[string](lax), &schema{Type: "string"}},
-			{"int", forType[int](lax), &schema{Type: "integer"}},
-			{"int16", forType[int16](lax), &schema{Type: "integer"}},
-			{"uint32", forType[int16](lax), &schema{Type: "integer"}},
-			{"float64", forType[float64](lax), &schema{Type: "number"}},
-			{"bool", forType[bool](lax), &schema{Type: "boolean"}},
-			{"intmap", forType[map[string]int](lax), &schema{
+			{"string", forType[string](ignore), &schema{Type: "string"}},
+			{"int", forType[int](ignore), &schema{Type: "integer"}},
+			{"int16", forType[int16](ignore), &schema{Type: "integer"}},
+			{"uint32", forType[int16](ignore), &schema{Type: "integer"}},
+			{"float64", forType[float64](ignore), &schema{Type: "number"}},
+			{"bool", forType[bool](ignore), &schema{Type: "boolean"}},
+			{"time", forType[time.Time](ignore), &schema{Type: "string"}},
+			{"level", forType[slog.Level](ignore), &schema{Type: "string"}},
+			{"bigint", forType[big.Int](ignore), &schema{Types: []string{"null", "string"}}},
+			{"custom", forType[custom](ignore), &schema{Type: "custom"}},
+			{"intmap", forType[map[string]int](ignore), &schema{
 				Type:                 "object",
 				AdditionalProperties: &schema{Type: "integer"},
 			}},
-			{"anymap", forType[map[string]any](lax), &schema{
+			{"anymap", forType[map[string]any](ignore), &schema{
 				Type:                 "object",
 				AdditionalProperties: &schema{},
 			}},
@@ -66,7 +78,7 @@ func TestFor(t *testing.T) {
 					NoSkip      string `json:",omitempty"`
 					unexported  float64
 					unexported2 int `json:"No"`
-				}](lax),
+				}](ignore),
 				&schema{
 					Type: "object",
 					Properties: map[string]*schema{
@@ -81,7 +93,7 @@ func TestFor(t *testing.T) {
 			},
 			{
 				"no sharing",
-				forType[struct{ X, Y int }](lax),
+				forType[struct{ X, Y int }](ignore),
 				&schema{
 					Type: "object",
 					Properties: map[string]*schema{
@@ -97,7 +109,7 @@ func TestFor(t *testing.T) {
 				forType[struct {
 					A S
 					S
-				}](lax),
+				}](ignore),
 				&schema{
 					Type: "object",
 					Properties: map[string]*schema{
@@ -165,7 +177,7 @@ func TestFor(t *testing.T) {
 }
 
 func forErr[T any]() error {
-	_, err := jsonschema.For[T]()
+	_, err := jsonschema.For[T](nil)
 	return err
 }
 
@@ -209,7 +221,7 @@ func TestForWithMutation(t *testing.T) {
 		D [3]S
 		E *bool
 	}
-	s, err := jsonschema.For[T]()
+	s, err := jsonschema.For[T](nil)
 	if err != nil {
 		t.Fatalf("For: %v", err)
 	}
@@ -220,7 +232,7 @@ func TestForWithMutation(t *testing.T) {
 	s.Properties["D"].MinItems = jsonschema.Ptr(10)
 	s.Properties["E"].Types[0] = "mutated"
 
-	s2, err := jsonschema.For[T]()
+	s2, err := jsonschema.For[T](nil)
 	if err != nil {
 		t.Fatalf("For: %v", err)
 	}
@@ -266,13 +278,13 @@ func TestForWithCycle(t *testing.T) {
 		shouldErr bool
 		fn        func() error
 	}{
-		{"slice alias (a)", true, func() error { _, err := jsonschema.For[a](); return err }},
-		{"unexported self cycle (b1)", false, func() error { _, err := jsonschema.For[b1](); return err }},
-		{"exported self cycle (b2)", true, func() error { _, err := jsonschema.For[b2](); return err }},
-		{"unexported map self cycle (c1)", false, func() error { _, err := jsonschema.For[c1](); return err }},
-		{"exported map self cycle (c2)", true, func() error { _, err := jsonschema.For[c2](); return err }},
-		{"cross-cycle x -> y -> x", true, func() error { _, err := jsonschema.For[x](); return err }},
-		{"cross-cycle y -> x -> y", true, func() error { _, err := jsonschema.For[y](); return err }},
+		{"slice alias (a)", true, func() error { _, err := jsonschema.For[a](nil); return err }},
+		{"unexported self cycle (b1)", false, func() error { _, err := jsonschema.For[b1](nil); return err }},
+		{"exported self cycle (b2)", true, func() error { _, err := jsonschema.For[b2](nil); return err }},
+		{"unexported map self cycle (c1)", false, func() error { _, err := jsonschema.For[c1](nil); return err }},
+		{"exported map self cycle (c2)", true, func() error { _, err := jsonschema.For[c2](nil); return err }},
+		{"cross-cycle x -> y -> x", true, func() error { _, err := jsonschema.For[x](nil); return err }},
+		{"cross-cycle y -> x -> y", true, func() error { _, err := jsonschema.For[y](nil); return err }},
 	}
 
 	for _, test := range tests {

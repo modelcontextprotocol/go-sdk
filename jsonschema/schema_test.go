@@ -142,3 +142,34 @@ func (s *Schema) jsonIndent() string {
 	}
 	return string(data)
 }
+
+func TestCloneSchemas(t *testing.T) {
+	ss1 := &Schema{Type: "string"}
+	ss2 := &Schema{Type: "integer"}
+	ss3 := &Schema{Type: "boolean"}
+	ss4 := &Schema{Type: "number"}
+	ss5 := &Schema{Contains: ss4}
+
+	s1 := Schema{
+		Contains:    ss1,
+		PrefixItems: []*Schema{ss2, ss3},
+		Properties:  map[string]*Schema{"a": ss5},
+	}
+	s2 := s1.CloneSchemas()
+
+	// The clones should appear identical.
+	if g, w := s1.json(), s2.json(); g != w {
+		t.Errorf("\ngot  %s\nwant %s", g, w)
+	}
+	// None of the schemas should overlap.
+	schemas1 := map[*Schema]bool{ss1: true, ss2: true, ss3: true, ss4: true, ss5: true}
+	for ss := range s2.all() {
+		if schemas1[ss] {
+			t.Errorf("uncloned schema %s", ss.json())
+		}
+	}
+	// s1's original schemas should be intact.
+	if s1.Contains != ss1 || s1.PrefixItems[0] != ss2 || s1.PrefixItems[1] != ss3 || ss5.Contains != ss4 || s1.Properties["a"] != ss5 {
+		t.Errorf("s1 modified")
+	}
+}

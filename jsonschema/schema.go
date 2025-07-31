@@ -152,6 +152,42 @@ func (s *Schema) String() string {
 	return "<anonymous schema>"
 }
 
+// CloneSchemas returns a copy of s.
+// The copy is shallow except for sub-schemas, which are themelves copied with CloneSchemas.
+// This allows both s and s.CloneSchemas() to appear as sub-schemas in the same parent.
+func (s *Schema) CloneSchemas() *Schema {
+	if s == nil {
+		return nil
+	}
+	s2 := *s
+	v := reflect.ValueOf(&s2)
+	for _, info := range schemaFieldInfos {
+		fv := v.Elem().FieldByIndex(info.sf.Index)
+		switch info.sf.Type {
+		case schemaType:
+			sscss := fv.Interface().(*Schema)
+			fv.Set(reflect.ValueOf(sscss.CloneSchemas()))
+
+		case schemaSliceType:
+			slice := fv.Interface().([]*Schema)
+			slice = slices.Clone(slice)
+			for i, ss := range slice {
+				slice[i] = ss.CloneSchemas()
+			}
+			fv.Set(reflect.ValueOf(slice))
+
+		case schemaMapType:
+			m := fv.Interface().(map[string]*Schema)
+			m = maps.Clone(m)
+			for k, ss := range m {
+				m[k] = ss.CloneSchemas()
+			}
+			fv.Set(reflect.ValueOf(m))
+		}
+	}
+	return &s2
+}
+
 func (s *Schema) basicChecks() error {
 	if s.Type != "" && s.Types != nil {
 		return errors.New("both Type and Types are set; at most one should be")

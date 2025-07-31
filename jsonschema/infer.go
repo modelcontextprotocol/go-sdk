@@ -8,15 +8,40 @@ package jsonschema
 
 import (
 	"fmt"
+	"log/slog"
+	"math/big"
 	"reflect"
 	"regexp"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
+// ForOptions are options for the [For] function.
+type ForOptions struct {
+	// If IgnoreInvalidTypes is true, fields that can't be represented as a JSON Schema
+	// are ignored instead of causing an error.
+	// This allows callers to adjust the resulting schema using custom knowledge.
+	// For example, an interface type where all the possible implementations are
+	// known can be described with "oneof".
+	IgnoreInvalidTypes bool
+
+	// TypeSchemas maps types to their schemas.
+	// If [For] encounters a type equal to a type of a key in this map, the
+	// corresponding value is used as the resulting schema (after cloning to
+	// ensure uniqueness).
+	// Types in this map override the default translations, as described
+	// in [For]'s documentation.
+	TypeSchemas map[any]*Schema
+}
+
 // For constructs a JSON schema object for the given type argument.
+// If non-nil, the provided options configure certain aspects of this contruction,
+// described below.
+
+// It translates Go types into compatible JSON schema types, as follows.
+// These defaults can be overridden by [ForOptions.TypeSchemas].
 //
-// It translates Go types into compatible JSON schema types, as follows:
 //   - Strings have schema type "string".
 //   - Bools have schema type "boolean".
 //   - Signed and unsigned integer types have schema type "integer".
@@ -29,25 +54,43 @@ import (
 //     Their properties are derived from exported struct fields, using the
 //     struct field JSON name. Fields that are marked "omitempty" are
 //     considered optional; all other fields become required properties.
+//   - Some types in the standard library that implement json.Marshaler
+//     translate to schemas that match the values to which they marshal.
+//     For example, [time.Time] translates to the schema for strings.
 //
-// For returns an error if t contains (possibly recursively) any of the following Go
-// types, as they are incompatible with the JSON schema spec.
+// For will return an error if there is a cycle in the types.
+//
+// By default, For returns an error if t contains (possibly recursively) any of the
+// following Go types, as they are incompatible with the JSON schema spec.
+// If [ForOptions.IgnoreInvalidTypes] is true, then these types are ignored instead.
 //   - maps with key other than 'string'
 //   - function types
 //   - channel types
 //   - complex numbers
 //   - unsafe pointers
 //
-// It will return an error if there is a cycle in the types.
-//
 // This function recognizes struct field tags named "jsonschema".
 // A jsonschema tag on a field is used as the description for the corresponding property.
 // For future compatibility, descriptions must not start with "WORD=", where WORD is a
 // sequence of non-whitespace characters.
-func For[T any]() (*Schema, error) {
-	// TODO: consider skipping incompatible fields, instead of failing.
-	seen := make(map[reflect.Type]bool)
-	s, err := forType(reflect.TypeFor[T](), seen, false)
+func For[T any](opts *ForOptions) (*Schema, error) {
+	if opts == nil {
+		opts = &ForOptions{}
+	}
+	schemas := make(map[reflect.Type]*Schema)
+	// Add types from the standard library that have MarshalJSON methods.
+	ss := &Schema{Type: "string"}
+	schemas[reflect.TypeFor[time.Time]()] = ss
+	schemas[reflect.TypeFor[slog.Level]()] = ss
+	schemas[reflect.TypeFor[big.Int]()] = &Schema{Types: []string{"null", "string"}}
+	schemas[reflect.TypeFor[big.Rat]()] = ss
+	schemas[reflect.TypeFor[big.Float]()] = ss
+
+	// Add types from the options. They override the default ones.
+	for v, s := range opts.TypeSchemas {
+		schemas[reflect.TypeOf(v)] = s
+	}
+	s, err := forType(reflect.TypeFor[T](), map[reflect.Type]bool{}, opts.IgnoreInvalidTypes, schemas)
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)
@@ -55,22 +98,7 @@ func For[T any]() (*Schema, error) {
 	return s, nil
 }
 
-// ForLax behaves like [For], except that it ignores struct fields with invalid types instead of
-// returning an error. That allows callers to adjust the resulting schema using custom knowledge.
-// For example, an interface type where all the possible implementations are known
-// can be described with "oneof".
-func ForLax[T any]() (*Schema, error) {
-	// TODO: consider skipping incompatible fields, instead of failing.
-	seen := make(map[reflect.Type]bool)
-	s, err := forType(reflect.TypeFor[T](), seen, true)
-	if err != nil {
-		var z T
-		return nil, fmt.Errorf("ForLax[%T](): %w", z, err)
-	}
-	return s, nil
-}
-
-func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, error) {
+func forType(t reflect.Type, seen map[reflect.Type]bool, ignore bool, schemas map[reflect.Type]*Schema) (*Schema, error) {
 	// Follow pointers: the schema for *T is almost the same as for T, except that
 	// an explicit JSON "null" is allowed for the pointer.
 	allowNull := false
@@ -87,6 +115,10 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 		}
 		seen[t] = true
 		defer delete(seen, t)
+	}
+
+	if s := schemas[t]; s != nil {
+		return s.CloneSchemas(), nil
 	}
 
 	var (
@@ -111,7 +143,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
-			if lax {
+			if ignore {
 				return nil, nil // ignore
 			}
 			return nil, fmt.Errorf("unsupported map key type %v", t.Key().Kind())
@@ -119,22 +151,22 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 		if t.Key().Kind() != reflect.String {
 		}
 		s.Type = "object"
-		s.AdditionalProperties, err = forType(t.Elem(), seen, lax)
+		s.AdditionalProperties, err = forType(t.Elem(), seen, ignore, schemas)
 		if err != nil {
 			return nil, fmt.Errorf("computing map value schema: %v", err)
 		}
-		if lax && s.AdditionalProperties == nil {
+		if ignore && s.AdditionalProperties == nil {
 			// Ignore if the element type is invalid.
 			return nil, nil
 		}
 
 	case reflect.Slice, reflect.Array:
 		s.Type = "array"
-		s.Items, err = forType(t.Elem(), seen, lax)
+		s.Items, err = forType(t.Elem(), seen, ignore, schemas)
 		if err != nil {
 			return nil, fmt.Errorf("computing element schema: %v", err)
 		}
-		if lax && s.Items == nil {
+		if ignore && s.Items == nil {
 			// Ignore if the element type is invalid.
 			return nil, nil
 		}
@@ -160,11 +192,11 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 			if s.Properties == nil {
 				s.Properties = make(map[string]*Schema)
 			}
-			fs, err := forType(field.Type, seen, lax)
+			fs, err := forType(field.Type, seen, ignore, schemas)
 			if err != nil {
 				return nil, err
 			}
-			if lax && fs == nil {
+			if ignore && fs == nil {
 				// Skip fields of invalid type.
 				continue
 			}
@@ -184,7 +216,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 		}
 
 	default:
-		if lax {
+		if ignore {
 			// Ignore.
 			return nil, nil
 		}
@@ -194,6 +226,7 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, lax bool) (*Schema, err
 		s.Types = []string{"null", s.Type}
 		s.Type = ""
 	}
+	schemas[t] = s
 	return s, nil
 }
 
