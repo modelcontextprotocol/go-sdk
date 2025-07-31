@@ -685,7 +685,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 // serverMethodInfos maps from the RPC method name to serverMethodInfos.
 var serverMethodInfos = map[string]methodInfo{
 	methodComplete:               newMethodInfo(serverMethod((*Server).complete), true),
-	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), true),
+	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).Initialize), true),
 	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), true),
 	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), true),
 	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), true),
@@ -743,7 +743,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	return handleReceive(ctx, ss, req)
 }
 
-func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
+func (ss *ServerSession) Initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
 	ss.mu.Lock()
 	ss.initializeParams = params
 	ss.mu.Unlock()
