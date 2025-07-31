@@ -14,6 +14,7 @@ import (
 	"iter"
 	"maps"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -347,10 +348,13 @@ func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 		func() bool {
 			u, err := url.Parse(r.URI)
 			if err != nil {
-				panic(err) // url.Parse includes the URI in the error
-			}
-			if !u.IsAbs() {
-				panic(fmt.Errorf("URI %s needs a scheme", r.URI))
+				//panic(err) // url.Parse includes the URI in the error
+				fmt.Fprintf(os.Stderr, "invalid resource URI %q: %v\n", r.URI, err)
+			} else {
+				if !u.IsAbs() {
+					//panic(fmt.Errorf("URI %s needs a scheme", r.URI))
+					fmt.Fprintf(os.Stderr, "invalid resource URI %q: %v\n", r.URI, err)
+				}
 			}
 			s.resources.add(&serverResource{r, h})
 			return true
