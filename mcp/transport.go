@@ -422,15 +422,17 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	}
 
 	// Read the next byte to check if there is trailing data.
-	tr := make([]byte, 1)
-	_, err := in.Buffered().Read(tr)
-	if err != nil {
-		return nil, err
+	var tr [1]byte
+	n, err := in.Buffered().Read(tr[:])
+	if n > 0 {
+		// If read byte is not a newline, it is an error.
+		if tr[0] != '\n' {
+			return nil, fmt.Errorf("invalid trailing data at the end of stream")
+		}
 	}
-
-	// If the next byte is not a newline, it is an error.
-	if tr[0] != '\n' {
-		return nil, fmt.Errorf("invalid trailing data at the end of stream")
+	// Return error except for EOF
+	if err != nil && err != io.EOF {
+		return nil, err
 	}
 
 	msgs, batch, err := readBatch(raw)
