@@ -41,7 +41,6 @@ code_review
 	"id": 2,
 	"result": {
 		"capabilities": {
-			"completions": {},
 			"logging": {},
 			"prompts": {
 				"listChanged": true
