@@ -974,7 +974,8 @@ type ElicitParams struct {
 	Meta `json:"_meta,omitempty"`
 	// A human-readable message describing what information is being requested.
 	Message string `json:"message"`
-	// A JSON Schema object defining the structure of the requested data.
+	// A restricted subset of JSON Schema.
+	// Only top-level properties are allowed, without nesting.
 	RequestedSchema *jsonschema.Schema `json:"requestedSchema"`
 }
 
@@ -989,8 +990,8 @@ type ElicitResult struct {
 	Meta `json:"_meta,omitempty"`
 	// The action taken by the user: "accept", "decline", or "cancel".
 	Action string `json:"action"`
-	// The data provided by the user if action is "accept". This should conform
-	// to the requested schema.
+	// The submitted form data, only present when action is "accept".
+	// Contains values matching the requested schema.
 	Content map[string]any `json:"content,omitempty"`
 }
 
