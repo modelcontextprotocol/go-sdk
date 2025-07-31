@@ -238,9 +238,7 @@ func (s *Server) capabilities() *serverCapabilities {
 	defer s.mu.Unlock()
 
 	caps := &serverCapabilities{
-		// TODO(samthanawalla): check for completionHandler before advertising capability.
-		Completions: &completionCapabilities{},
-		Logging:     &loggingCapabilities{},
+		Logging: &loggingCapabilities{},
 	}
 	if s.opts.HasTools || s.tools.len() > 0 {
 		caps.Tools = &toolCapabilities{ListChanged: true}
@@ -253,6 +251,9 @@ func (s *Server) capabilities() *serverCapabilities {
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true
 		}
+	}
+	if s.opts.CompletionHandler != nil {
+		caps.Completions = &completionCapabilities{}
 	}
 	return caps
 }

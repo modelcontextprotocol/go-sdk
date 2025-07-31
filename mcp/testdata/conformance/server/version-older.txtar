@@ -18,7 +18,6 @@ support.
 	"id": 1,
 	"result": {
 		"capabilities": {
-			"completions": {},
 			"logging": {}
 		},
 		"protocolVersion": "2024-11-05",

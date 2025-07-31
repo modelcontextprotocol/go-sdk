@@ -18,7 +18,6 @@ response with its latest supported version.
 	"id": 1,
 	"result": {
 		"capabilities": {
-			"completions": {},
 			"logging": {}
 		},
 		"protocolVersion": "2025-06-18",
