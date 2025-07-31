@@ -20,15 +20,34 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
-// The value of the "$schema" keyword for the version that we can validate.
-const draft202012 = "https://json-schema.org/draft/2020-12/schema"
+// The values of the "$schema" keyword for the versions that we can validate.
+const (
+	draft07     = "http://json-schema.org/draft-07/schema#"
+	draft07Sec  = "https://json-schema.org/draft-07/schema#"
+	draft202012 = "https://json-schema.org/draft/2020-12/schema"
+)
+
+// isValidSchemaVersion checks if the given schema version is supported
+func isValidSchemaVersion(version string) bool {
+	return version == "" || version == draft07 || version == draft07Sec || version == draft202012
+}
+
+// isDraft07 checks if the schema version is draft-07
+func isDraft07(version string) bool {
+	return version == draft07 || version == draft07Sec
+}
+
+// isDraft202012 checks if the schema version is draft 2020-12
+func isDraft202012(version string) bool {
+	return version == "" || version == draft202012 // empty defaults to 2020-12
+}
 
 // Validate validates the instance, which must be a JSON value, against the schema.
 // It returns nil if validation is successful or an error if it is not.
 // If the schema type is "object", instance can be a map[string]any or a struct.
 func (rs *Resolved) Validate(instance any) error {
-	if s := rs.root.Schema; s != "" && s != draft202012 {
-		return fmt.Errorf("cannot validate version %s, only %s", s, draft202012)
+	if s := rs.root.Schema; !isValidSchemaVersion(s) {
+		return fmt.Errorf("cannot validate version %s, supported versions: draft-07 and draft 2020-12", s)
 	}
 	st := &state{rs: rs}
 	return st.validate(reflect.ValueOf(instance), st.rs.root, nil)
@@ -40,8 +59,8 @@ func (rs *Resolved) Validate(instance any) error {
 // TODO(jba): account for dynamic refs. This algorithm simple-mindedly
 // treats each schema with a default as its own root.
 func (rs *Resolved) validateDefaults() error {
-	if s := rs.root.Schema; s != "" && s != draft202012 {
-		return fmt.Errorf("cannot validate version %s, only %s", s, draft202012)
+	if s := rs.root.Schema; !isValidSchemaVersion(s) {
+		return fmt.Errorf("cannot validate version %s, supported versions: draft-07 and draft 2020-12", s)
 	}
 	st := &state{rs: rs}
 	for s := range rs.root.all() {
@@ -298,6 +317,8 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 	// arrays
 	// TODO(jba): consider arrays of structs.
 	if instance.Kind() == reflect.Array || instance.Kind() == reflect.Slice {
+		// Handle both draft-07 and draft 2020-12 array validation using the same logic
+		// Draft-07 items arrays are converted to prefixItems during unmarshaling
 		// https://json-schema.org/draft/2020-12/json-schema-core#section-10.3.1
 		// This validate call doesn't collect annotations for the items of the instance; they are separate
 		// instances in their own right.
@@ -312,6 +333,8 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 		}
 		anns.noteEndIndex(min(len(schema.PrefixItems), instance.Len()))
 
+		// For draft 2020-12: items applies to remaining items after prefixItems
+		// For draft-07: additionalItems applies to remaining items after items array
 		if schema.Items != nil {
 			for i := len(schema.PrefixItems); i < instance.Len(); i++ {
 				if err := st.validate(instance.Index(i), schema.Items, nil); err != nil {
@@ -319,6 +342,14 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 				}
 			}
 			// Note that all the items in this array have been validated.
+			anns.allItems = true
+		} else if schema.AdditionalItems != nil {
+			// Draft-07 style: use additionalItems for remaining items
+			for i := len(schema.PrefixItems); i < instance.Len(); i++ {
+				if err := st.validate(instance.Index(i), schema.AdditionalItems, nil); err != nil {
+					return err
+				}
+			}
 			anns.allItems = true
 		}
 
@@ -520,6 +551,43 @@ func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *an
 					err := st.validate(instance, ss, &anns)
 					if err != nil {
 						return err
+					}
+				}
+			}
+		}
+
+		// Draft-07 dependencies (combines both property and schema dependencies)
+		if schema.Dependencies != nil {
+			for dprop, dep := range schema.Dependencies {
+				if hasProperty(dprop) {
+					switch v := dep.(type) {
+					case []interface{}:
+						// Array of strings - property dependencies
+						var reqs []string
+						for _, item := range v {
+							if str, ok := item.(string); ok {
+								reqs = append(reqs, str)
+							}
+						}
+						if m := missingProperties(reqs); len(m) > 0 {
+							return fmt.Errorf("dependencies[%q]: missing properties %q", dprop, m)
+						}
+					case map[string]interface{}:
+						// Schema object - schema dependencies
+						// Convert map to Schema and resolve it properly
+						if data, err := json.Marshal(v); err == nil {
+							var depSchema Schema
+							if err := json.Unmarshal(data, &depSchema); err == nil {
+								// Resolve the dependency schema
+								resolved, err := depSchema.Resolve(nil)
+								if err != nil {
+									return fmt.Errorf("dependencies[%q]: failed to resolve schema: %w", dprop, err)
+								}
+								if err := resolved.Validate(instance.Interface()); err != nil {
+									return fmt.Errorf("dependencies[%q]: %w", dprop, err)
+								}
+							}
+						}
 					}
 				}
 			}

@@ -6,8 +6,8 @@
 Package jsonschema is an implementation of the [JSON Schema specification],
 a JSON-based format for describing the structure of JSON data.
 The package can be used to read schemas for code generation, and to validate
-data using the draft 2020-12 specification. Validation with other drafts
-or custom meta-schemas is not supported.
+data using the draft 2020-12 and draft-07 specifications. Validation with
+other drafts or custom meta-schemas is not supported.
 
 Construct a [Schema] as you would any Go struct (for example, by writing
 a struct literal), or unmarshal a JSON schema into a [Schema] in the usual

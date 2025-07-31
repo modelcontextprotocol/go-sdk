@@ -20,10 +20,10 @@ import (
 )
 
 // A Schema is a JSON schema object.
-// It corresponds to the 2020-12 draft, as described in https://json-schema.org/draft/2020-12,
-// specifically:
-// - https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-01
-// - https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-01
+// It supports both draft-07 and the 2020-12 draft specifications:
+//   - Draft-07: http://json-schema.org/draft-07/schema#
+//   - Draft 2020-12: https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-01
+//     and https://json-schema.org/draft/2020-12/draft-bhutton-json-schema-validation-01
 //
 // A Schema value may have non-zero values for more than one field:
 // all relevant non-zero fields are used for validation.
@@ -104,6 +104,9 @@ type Schema struct {
 	PropertyNames         *Schema             `json:"propertyNames,omitempty"`
 	UnevaluatedProperties *Schema             `json:"unevaluatedProperties,omitempty"`
 
+	// draft-07 specific - Dependencies field that was split in draft 2020-12
+	Dependencies map[string]any `json:"dependencies,omitempty"`
+
 	// logic
 	AllOf []*Schema `json:"allOf,omitempty"`
 	AnyOf []*Schema `json:"anyOf,omitempty"`
@@ -176,11 +179,24 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 	case s.Types != nil:
 		typ = s.Types
 	}
+
+	// For draft-07 compatibility: if we only have PrefixItems and no Items,
+	// marshal PrefixItems as "items" array, otherwise marshal Items as single schema
+	var items any
+	if len(s.PrefixItems) > 0 && s.Items == nil {
+		// This looks like a draft-07 items array converted to prefixItems
+		items = s.PrefixItems
+	} else if s.Items != nil {
+		items = s.Items
+	}
+
 	ms := struct {
-		Type any `json:"type,omitempty"`
+		Type  any `json:"type,omitempty"`
+		Items any `json:"items,omitempty"`
 		*schemaWithoutMethods
 	}{
 		Type:                 typ,
+		Items:                items,
 		schemaWithoutMethods: (*schemaWithoutMethods)(s),
 	}
 	return marshalStructWithMap(&ms, "Extra")
@@ -202,6 +218,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 
 	ms := struct {
 		Type          json.RawMessage `json:"type,omitempty"`
+		Items         json.RawMessage `json:"items,omitempty"`
 		Const         json.RawMessage `json:"const,omitempty"`
 		MinLength     *integer        `json:"minLength,omitempty"`
 		MaxLength     *integer        `json:"maxLength,omitempty"`
@@ -266,6 +283,34 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	set(&s.MaxProperties, ms.MaxProperties)
 	set(&s.MinContains, ms.MinContains)
 	set(&s.MaxContains, ms.MaxContains)
+
+	// Handle "items" field: can be either a schema or an array of schemas (draft-07)
+	if len(ms.Items) > 0 {
+		switch ms.Items[0] {
+		case '{':
+			// Single schema object
+			err = json.Unmarshal(ms.Items, &s.Items)
+		case '[':
+			// Array of schemas (draft-07 tuple validation)
+			// For draft-07, convert items array to prefixItems for compatibility
+			err = json.Unmarshal(ms.Items, &s.PrefixItems)
+		case 't', 'f':
+			// Boolean schema
+			var boolSchema bool
+			if err = json.Unmarshal(ms.Items, &boolSchema); err == nil {
+				if boolSchema {
+					s.Items = &Schema{}
+				} else {
+					s.Items = falseSchema()
+				}
+			}
+		default:
+			err = fmt.Errorf(`invalid value for "items": %q`, ms.Items)
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -342,6 +387,7 @@ func (s *Schema) everyChild(f func(*Schema) bool) bool {
 			}
 		}
 	}
+
 	return true
 }
 
