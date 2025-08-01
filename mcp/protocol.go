@@ -988,7 +988,10 @@ type ElicitResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
-	// The action taken by the user: "accept", "decline", or "cancel".
+	// The user action in response to the elicitation.
+	// - "accept": User submitted the form/confirmed the action
+	// - "decline": User explicitly declined the action
+	// - "cancel": User dismissed without making an explicit choice
 	Action string `json:"action"`
 	// The submitted form data, only present when action is "accept".
 	// Contains values matching the requested schema.
