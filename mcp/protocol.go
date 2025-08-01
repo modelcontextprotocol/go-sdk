@@ -968,11 +968,12 @@ func (*ResourceUpdatedNotificationParams) isParams() {}
 
 // TODO(jba): add CompleteRequest and related types.
 
+// A request from the server to elicit additional information from the user via the client.
 type ElicitParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
-	// A human-readable message describing what information is being requested.
+	// The message to present to the user.
 	Message string `json:"message"`
 	// A restricted subset of JSON Schema.
 	// Only top-level properties are allowed, without nesting.
