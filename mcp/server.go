@@ -215,7 +215,7 @@ func (s *Server) RemoveResources(uris ...string) {
 		func() bool { return s.resources.remove(uris...) })
 }
 
-// AddResourceTemplate adds a [ResourceTemplate] to the server, or replaces on with the same URI.
+// AddResourceTemplate adds a [ResourceTemplate] to the server, or replaces one with the same URI.
 // AddResourceTemplate panics if a URI template is invalid or not absolute (has an empty scheme).
 func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},

@@ -86,7 +86,7 @@ func defaultSendingMethodHandler[S Session](ctx context.Context, session S, meth
 	return res, nil
 }
 
-// Helper methods to avoid typed nil.
+// Helper method to avoid typed nil.
 func orZero[T any, P *U, U any](p P) T {
 	if p == nil {
 		var zero T
