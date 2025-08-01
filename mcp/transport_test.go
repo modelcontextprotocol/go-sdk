@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -49,5 +50,43 @@ func TestBatchFraming(t *testing.T) {
 		if got := got.(*jsonrpc.Request).ID.Raw(); got != want {
 			t.Errorf("got message #%d, want #%d", got, want)
 		}
+	}
+}
+
+func TestIOConnRead(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+
+		{
+			name:  "valid json input",
+			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}}`,
+			want:  "",
+		},
+
+		{
+			name: "newline at the end of first valid json input",
+			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}}
+			`,
+			want: "",
+		},
+		{
+			name:  "bad data at the end of first valid json input",
+			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}},`,
+			want:  "invalid trailing data at the end of stream",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := newIOConn(rwc{
+				rc: io.NopCloser(strings.NewReader(tt.input)),
+			})
+			_, err := tr.Read(context.Background())
+			if err != nil && err.Error() != tt.want {
+				t.Errorf("ioConn.Read() = %v, want %v", err.Error(), tt.want)
+			}
+		})
 	}
 }
