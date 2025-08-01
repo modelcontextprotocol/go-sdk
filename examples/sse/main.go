@@ -65,6 +65,6 @@ func main() {
 		default:
 			return nil
 		}
-	})
+	}, nil)
 	log.Fatal(http.ListenAndServe(addr, handler))
 }

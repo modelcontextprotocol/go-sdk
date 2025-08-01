@@ -35,8 +35,7 @@ const (
 type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 
-	sessionsMu sync.Mutex
-	sessions   map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
+	sessionStore ServerSessionStore[*StreamableServerTransport]
 }
 
 // StreamableHTTPOptions is a placeholder options struct for future
@@ -44,6 +43,7 @@ type StreamableHTTPHandler struct {
 type StreamableHTTPOptions struct {
 	// TODO: support configurable session ID generation (?)
 	// TODO: support session retention (?)
+	SessionStore ServerSessionStore[*StreamableServerTransport]
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -52,9 +52,16 @@ type StreamableHTTPOptions struct {
 // sessions. It is OK for getServer to return the same server multiple times.
 // If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
+	var sessionStore ServerSessionStore[*StreamableServerTransport]
+	if opts != nil {
+		sessionStore = opts.SessionStore
+	}
+	if sessionStore == nil {
+		sessionStore = NewMemoryServerSessionStore[*StreamableServerTransport]()
+	}
 	return &StreamableHTTPHandler{
-		getServer: getServer,
-		sessions:  make(map[string]*StreamableServerTransport),
+		getServer:    getServer,
+		sessionStore: sessionStore,
 	}
 }
 
@@ -65,13 +72,15 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 //
 // Should we allow passing in a session store? That would allow the handler to
 // be stateless.
-func (h *StreamableHTTPHandler) closeAll() {
-	h.sessionsMu.Lock()
-	defer h.sessionsMu.Unlock()
-	for _, s := range h.sessions {
-		s.Close()
+func (h *StreamableHTTPHandler) closeAll() error {
+	sessions, err := h.sessionStore.All()
+	if err != nil {
+		return err
 	}
-	h.sessions = nil
+	for session := range sessions {
+		session.Close()
+	}
+	return h.sessionStore.Reset()
 }
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -100,9 +109,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	var session *StreamableServerTransport
 	if id := req.Header.Get(sessionIDHeader); id != "" {
-		h.sessionsMu.Lock()
-		session, _ = h.sessions[id]
-		h.sessionsMu.Unlock()
+		var err error
+		session, err = h.sessionStore.Get(id)
+		if err != nil {
+			http.Error(w, "failed to get session", http.StatusInternalServerError)
+			return
+		}
 		if session == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
@@ -117,9 +129,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
-		h.sessionsMu.Lock()
-		delete(h.sessions, session.sessionID)
-		h.sessionsMu.Unlock()
+		err := h.sessionStore.Delete(session.sessionID)
+		if err != nil {
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
 		session.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -148,9 +162,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		h.sessionsMu.Lock()
-		h.sessions[s.sessionID] = s
-		h.sessionsMu.Unlock()
+		err := h.sessionStore.Set(s.sessionID, s)
+		if err != nil {
+			http.Error(w, "failed to save session", http.StatusInternalServerError)
+			return
+		}
 		session = s
 	}
 
