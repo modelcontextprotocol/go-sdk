@@ -338,7 +338,7 @@ type InitializeResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta         `json:"_meta,omitempty"`
-	Capabilities *serverCapabilities `json:"capabilities"`
+	Capabilities *ServerCapabilities `json:"capabilities"`
 	// Instructions describing how to use the server and its features.
 	//
 	// This can be used by clients to improve the LLM's understanding of available
@@ -971,19 +971,19 @@ type Implementation struct {
 }
 
 // Present if the server supports argument autocompletion suggestions.
-type completionCapabilities struct{}
+type CompletionCapabilities struct{}
 
 // Present if the server supports sending log messages to the client.
-type loggingCapabilities struct{}
+type LoggingCapabilities struct{}
 
 // Present if the server offers any prompt templates.
-type promptCapabilities struct {
+type PromptCapabilities struct {
 	// Whether this server supports notifications for changes to the prompt list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }
 
 // Present if the server offers any resources to read.
-type resourceCapabilities struct {
+type ResourceCapabilities struct {
 	// Whether this server supports notifications for changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
 	// Whether this server supports subscribing to resource updates.
@@ -993,23 +993,23 @@ type resourceCapabilities struct {
 // Capabilities that a server may support. Known capabilities are defined here,
 // in this schema, but this is not a closed set: any server can define its own,
 // additional capabilities.
-type serverCapabilities struct {
+type ServerCapabilities struct {
 	// Present if the server supports argument autocompletion suggestions.
-	Completions *completionCapabilities `json:"completions,omitempty"`
+	Completions *CompletionCapabilities `json:"completions,omitempty"`
 	// Experimental, non-standard capabilities that the server supports.
 	Experimental map[string]struct{} `json:"experimental,omitempty"`
 	// Present if the server supports sending log messages to the client.
-	Logging *loggingCapabilities `json:"logging,omitempty"`
+	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Present if the server offers any prompt templates.
-	Prompts *promptCapabilities `json:"prompts,omitempty"`
+	Prompts *PromptCapabilities `json:"prompts,omitempty"`
 	// Present if the server offers any resources to read.
-	Resources *resourceCapabilities `json:"resources,omitempty"`
+	Resources *ResourceCapabilities `json:"resources,omitempty"`
 	// Present if the server offers any tools to call.
-	Tools *toolCapabilities `json:"tools,omitempty"`
+	Tools *ToolCapabilities `json:"tools,omitempty"`
 }
 
 // Present if the server offers any tools to call.
-type toolCapabilities struct {
+type ToolCapabilities struct {
 	// Whether this server supports notifications for changes to the tool list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }

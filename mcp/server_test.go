@@ -236,13 +236,13 @@ func TestServerCapabilities(t *testing.T) {
 		name             string
 		configureServer  func(s *Server)
 		serverOpts       ServerOptions
-		wantCapabilities *serverCapabilities
+		wantCapabilities *ServerCapabilities
 	}{
 		{
 			name:            "No capabilities",
 			configureServer: func(s *Server) {},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
 			},
 		},
 		{
@@ -250,9 +250,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
-				Prompts: &promptCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Prompts: &PromptCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -260,9 +260,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -270,9 +270,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -288,9 +288,9 @@ func TestServerCapabilities(t *testing.T) {
 					return nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true, Subscribe: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true, Subscribe: true},
 			},
 		},
 		{
@@ -298,9 +298,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddTool(tool, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
-				Tools:   &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Tools:   &ToolCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -311,9 +311,9 @@ func TestServerCapabilities(t *testing.T) {
 					return nil, nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:     &loggingCapabilities{},
-				Completions: &completionCapabilities{},
+			wantCapabilities: &ServerCapabilities{
+				Logging:     &LoggingCapabilities{},
+				Completions: &CompletionCapabilities{},
 			},
 		},
 		{
@@ -335,12 +335,12 @@ func TestServerCapabilities(t *testing.T) {
 					return nil, nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Completions: &completionCapabilities{},
-				Logging:     &loggingCapabilities{},
-				Prompts:     &promptCapabilities{ListChanged: true},
-				Resources:   &resourceCapabilities{ListChanged: true, Subscribe: true},
-				Tools:       &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Completions: &CompletionCapabilities{},
+				Logging:     &LoggingCapabilities{},
+				Prompts:     &PromptCapabilities{ListChanged: true},
+				Resources:   &ResourceCapabilities{ListChanged: true, Subscribe: true},
+				Tools:       &ToolCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -351,11 +351,11 @@ func TestServerCapabilities(t *testing.T) {
 				HasResources: true,
 				HasTools:     true,
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Prompts:   &promptCapabilities{ListChanged: true},
-				Resources: &resourceCapabilities{ListChanged: true},
-				Tools:     &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Prompts:   &PromptCapabilities{ListChanged: true},
+				Resources: &ResourceCapabilities{ListChanged: true},
+				Tools:     &ToolCapabilities{ListChanged: true},
 			},
 		},
 	}

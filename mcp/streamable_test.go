@@ -409,9 +409,9 @@ func TestStreamableServerTransport(t *testing.T) {
 	// Predefined steps, to avoid repetition below.
 	initReq := req(1, methodInitialize, &InitializeParams{})
 	initResp := resp(1, &InitializeResult{
-		Capabilities: &serverCapabilities{
-			Logging: &loggingCapabilities{},
-			Tools:   &toolCapabilities{ListChanged: true},
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
@@ -891,9 +891,10 @@ func TestStreamableClientTransportApplicationJSON(t *testing.T) {
 		}
 	}
 	initResult := &InitializeResult{
-		Capabilities: &serverCapabilities{
-			Logging: &loggingCapabilities{},
-			Tools:   &toolCapabilities{ListChanged: true},
+		Capabilities: &ServerCapabilities{
+			Completions: &CompletionCapabilities{},
+			Logging:     &LoggingCapabilities{},
+			Tools:       &ToolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
