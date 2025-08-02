@@ -163,6 +163,8 @@ type ClientSession struct {
 	mcpConn          Connection
 }
 
+func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.initializeResult }
+
 func (cs *ClientSession) setConn(c Connection) {
 	cs.mcpConn = c
 }
