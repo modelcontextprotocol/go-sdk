@@ -78,11 +78,11 @@ func TestEndToEnd(t *testing.T) {
 		ProgressNotificationHandler: func(context.Context, *ServerSession, *ProgressNotificationParams) {
 			notificationChans["progress_server"] <- 0
 		},
-		SubscribeHandler: func(context.Context, *SubscribeParams) error {
+		SubscribeHandler: func(context.Context, *ServerSession, *SubscribeParams) error {
 			notificationChans["subscribe"] <- 0
 			return nil
 		},
-		UnsubscribeHandler: func(context.Context, *UnsubscribeParams) error {
+		UnsubscribeHandler: func(context.Context, *ServerSession, *UnsubscribeParams) error {
 			notificationChans["unsubscribe"] <- 0
 			return nil
 		},
