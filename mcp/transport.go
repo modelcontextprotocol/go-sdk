@@ -265,7 +265,9 @@ func (r rwc) Close() error {
 // See [msgBatch] for more discussion of message batching.
 type ioConn struct {
 	rwc io.ReadWriteCloser // the underlying stream
-	in  *json.Decoder      // a decoder bound to rwc
+
+	// incoming receives messages from the read loop started in [newIOConn].
+	incoming <-chan msgOrErr
 
 	// If outgoiBatch has a positive capacity, it will be used to batch requests
 	// and notifications before sending.
@@ -279,12 +281,47 @@ type ioConn struct {
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
 	batchMu sync.Mutex
 	batches map[jsonrpc2.ID]*msgBatch // lazily allocated
+
+	closeOnce sync.Once
+	closed    chan struct{}
+	closeErr  error
+}
+
+type msgOrErr struct {
+	msg json.RawMessage
+	err error
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	var (
+		incoming = make(chan msgOrErr)
+		closed   = make(chan struct{})
+	)
+	// Start a goroutine for reads, so that we can select on the incoming channel
+	// in [ioConn.Read] and unblock the read as soon as Close is called (see #224).
+	//
+	// This leaks a goroutine, but that is unavoidable since AFAIK there is no
+	// (easy and portable) way to guarantee that reads of stdin are unblocked
+	// when closed.
+	go func() {
+		dec := json.NewDecoder(rwc)
+		for {
+			var raw json.RawMessage
+			err := dec.Decode(&raw)
+			select {
+			case incoming <- msgOrErr{msg: raw, err: err}:
+			case <-closed:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	return &ioConn{
-		rwc: rwc,
-		in:  json.NewDecoder(rwc),
+		rwc:      rwc,
+		incoming: incoming,
+		closed:   closed,
 	}
 }
 
@@ -356,10 +393,8 @@ type msgBatch struct {
 }
 
 func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
-	return t.read(ctx, t.in)
-}
-
-func (t *ioConn) read(ctx context.Context, in *json.Decoder) (jsonrpc.Message, error) {
+	// As a matter of principle, enforce that reads on a closed context return an
+	// error.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -372,9 +407,20 @@ func (t *ioConn) read(ctx context.Context, in *json.Decoder) (jsonrpc.Message, e
 	}
 
 	var raw json.RawMessage
-	if err := in.Decode(&raw); err != nil {
-		return nil, err
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+
+	case v := <-t.incoming:
+		if v.err != nil {
+			return nil, v.err
+		}
+		raw = v.msg
+
+	case <-t.closed:
+		return nil, io.EOF
 	}
+
 	msgs, batch, err := readBatch(raw)
 	if err != nil {
 		return nil, err
@@ -431,6 +477,7 @@ func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 }
 
 func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	// As in [ioConn.Read], enforce that Writes on a closed context are an error.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -478,7 +525,11 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 }
 
 func (t *ioConn) Close() error {
-	return t.rwc.Close()
+	t.closeOnce.Do(func() {
+		t.closeErr = t.rwc.Close()
+		close(t.closed)
+	})
+	return t.closeErr
 }
 
 func marshalMessages[T jsonrpc.Message](msgs []T) ([]byte, error) {
