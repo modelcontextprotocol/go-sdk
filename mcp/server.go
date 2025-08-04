@@ -66,9 +66,9 @@ type ServerOptions struct {
 	// the session is automatically closed.
 	KeepAlive time.Duration
 	// Function called when a client session subscribes to a resource.
-	SubscribeHandler func(context.Context, *SubscribeParams) error
+	SubscribeHandler func(context.Context, *ServerSession, *SubscribeParams) error
 	// Function called when a client session unsubscribes from a resource.
-	UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
+	UnsubscribeHandler func(context.Context, *ServerSession, *UnsubscribeParams) error
 	// If true, advertises the prompts capability during initialization,
 	// even if no prompts have been registered.
 	HasPrompts bool
@@ -469,7 +469,7 @@ func (s *Server) subscribe(ctx context.Context, ss *ServerSession, params *Subsc
 	if s.opts.SubscribeHandler == nil {
 		return nil, fmt.Errorf("%w: server does not support resource subscriptions", jsonrpc2.ErrMethodNotFound)
 	}
-	if err := s.opts.SubscribeHandler(ctx, params); err != nil {
+	if err := s.opts.SubscribeHandler(ctx, ss, params); err != nil {
 		return nil, err
 	}
 
@@ -488,7 +488,7 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 
-	if err := s.opts.UnsubscribeHandler(ctx, params); err != nil {
+	if err := s.opts.UnsubscribeHandler(ctx, ss, params); err != nil {
 		return nil, err
 	}
 

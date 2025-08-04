@@ -281,10 +281,10 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {
+				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
 					return nil
 				},
 			},
@@ -325,10 +325,10 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddTool(tool, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, sp *SubscribeParams) error {
+				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
 					return nil
 				},
 				CompletionHandler: func(ctx context.Context, ss *ServerSession, params *CompleteParams) (*CompleteResult, error) {
