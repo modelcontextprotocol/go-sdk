@@ -776,9 +776,9 @@ If a server author wants to support resource subscriptions, they must provide ha
 type ServerOptions struct {
   ...
   // Function called when a client session subscribes to a resource.
-  SubscribeHandler func(context.Context, *SubscribeParams) error
+  SubscribeHandler func(context.Context, ss *ServerSession, *SubscribeParams) error
   // Function called when a client session unsubscribes from a resource.
-  UnsubscribeHandler func(context.Context, *UnsubscribeParams) error
+  UnsubscribeHandler func(context.Context, ss *ServerSession, *UnsubscribeParams) error
 }
 ```
 
