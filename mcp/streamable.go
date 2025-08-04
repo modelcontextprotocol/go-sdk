@@ -171,12 +171,15 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		session, err := server.Connect(req.Context(), transport)
+		_, err = server.Connect(req.Context(), transport, &ServerSessionOptions{
+			SessionID:    sessionID,
+			SessionState: state,
+			SessionStore: h.opts.SessionStore,
+		})
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed connection: %v", err), http.StatusInternalServerError)
 			return
 		}
-		session.InitSession(sessionID, state, h.opts.SessionStore)
 		h.transportMu.Lock()
 		h.transports[transport.sessionID] = transport
 		h.transportMu.Unlock()
