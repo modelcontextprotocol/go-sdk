@@ -536,7 +536,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 // bind implements the binder[*ServerSession] interface, so that Servers can
 // be connected using [connect].
 func (s *Server) bind(conn *jsonrpc2.Connection) *ServerSession {
-	ss := &ServerSession{conn: conn, server: s}
+	ss := &ServerSession{conn: conn, server: s, state: &SessionState{}}
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
@@ -619,17 +619,26 @@ type ServerSession struct {
 	initializeParams *InitializeParams
 	_initialized     bool
 	keepaliveCancel  context.CancelFunc
+	sessionID        string
+	state            *SessionState
+	store            SessionStore
 }
 
 func (ss *ServerSession) setConn(c Connection) {
-	ss.mcpConn = c
 }
 
-func (ss *ServerSession) ID() string {
-	if ss.mcpConn == nil {
-		return ""
-	}
-	return ss.mcpConn.SessionID()
+func (ss *ServerSession) ID() string { return ss.sessionID }
+
+// InitSession initializes the session with a session ID, state, and store.
+// If called, it must be called immediately after the session is connected.
+// If never called, the session will begin with a zero SessionState and no session
+// ID or store.
+func (ss *ServerSession) InitSession(sessionID string, state *SessionState, store SessionStore) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.sessionID = sessionID
+	ss.state = state
+	ss.store = store
 }
 
 // Ping pings the client.
@@ -653,7 +662,7 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // is below that of the last SetLevel.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
-	logLevel := ss.logLevel
+	logLevel := ss.state.LogLevel
 	ss.mu.Unlock()
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
@@ -767,8 +776,13 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
 	ss.mu.Lock()
-	ss.initializeParams = params
+	ss.state.InitializeParams = params
 	ss.mu.Unlock()
+	if ss.store != nil {
+		if err := ss.store.Store(ctx, ss.sessionID, ss.state); err != nil {
+			return nil, fmt.Errorf("storing session state: %w", err)
+		}
+	}
 
 	// If we support the client's version, reply with it. Otherwise, reply with our
 	// latest version.
@@ -791,10 +805,15 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 	return &emptyResult{}, nil
 }
 
-func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*emptyResult, error) {
+func (ss *ServerSession) setLevel(ctx context.Context, params *SetLevelParams) (*emptyResult, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.logLevel = params.Level
+	ss.state.LogLevel = params.Level
+	if ss.store != nil {
+		if err := ss.store.Store(ctx, ss.sessionID, ss.state); err != nil {
+			return nil, err
+		}
+	}
 	return &emptyResult{}, nil
 }
 
