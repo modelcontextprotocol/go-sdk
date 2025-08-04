@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -514,7 +515,8 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 // If no tools have been added, the server will not have the tool capability.
 // The same goes for other features like prompts and resources.
 func (s *Server) Run(ctx context.Context, t Transport) error {
-	ss, err := s.Connect(ctx, t)
+	// TODO: provide a way to pass ServerSessionOptions?
+	ss, err := s.Connect(ctx, t, nil)
 	if err != nil {
 		return err
 	}
@@ -536,7 +538,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 // bind implements the binder[*ServerSession] interface, so that Servers can
 // be connected using [connect].
 func (s *Server) bind(conn *jsonrpc2.Connection) *ServerSession {
-	ss := &ServerSession{conn: conn, server: s, state: &SessionState{}}
+	ss := &ServerSession{conn: conn, server: s}
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
@@ -557,14 +559,33 @@ func (s *Server) disconnect(cc *ServerSession) {
 	}
 }
 
+type ServerSessionOptions struct {
+	SessionID    string
+	SessionState *SessionState
+	SessionStore SessionStore
+}
+
 // Connect connects the MCP server over the given transport and starts handling
 // messages.
 //
 // It returns a connection object that may be used to terminate the connection
 // (with [Connection.Close]), or await client termination (with
 // [Connection.Wait]).
-func (s *Server) Connect(ctx context.Context, t Transport) (*ServerSession, error) {
-	return connect(ctx, t, s)
+func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOptions) (*ServerSession, error) {
+	if opts != nil && opts.SessionState == nil && opts.SessionStore != nil {
+		return nil, errors.New("ServerSessionOptions has store but no state")
+	}
+	ss, err := connect(ctx, t, s)
+	if err != nil {
+		return nil, err
+	}
+	if opts != nil {
+		ss.opts = *opts
+	}
+	if ss.opts.SessionState == nil {
+		ss.opts.SessionState = &SessionState{}
+	}
+	return ss, nil
 }
 
 func (ss *ServerSession) initialized(ctx context.Context, params *InitializedParams) (Result, error) {
@@ -572,7 +593,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	ss.mu.Lock()
-	hasParams := ss.initializeParams != nil
+	hasParams := ss.opts.SessionState.InitializeParams != nil
 	wasInitialized := ss._initialized
 	if hasParams {
 		ss._initialized = true
@@ -611,34 +632,21 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 // Call [ServerSession.Close] to close the connection, or await client
 // termination with [ServerSession.Wait].
 type ServerSession struct {
-	server           *Server
-	conn             *jsonrpc2.Connection
-	mcpConn          Connection
-	mu               sync.Mutex
-	logLevel         LoggingLevel
-	initializeParams *InitializeParams
-	_initialized     bool
-	keepaliveCancel  context.CancelFunc
-	sessionID        string
-	state            *SessionState
-	store            SessionStore
+	server          *Server
+	conn            *jsonrpc2.Connection
+	opts            ServerSessionOptions
+	mu              sync.Mutex
+	logLevel        LoggingLevel
+	_initialized    bool
+	keepaliveCancel context.CancelFunc
+	sessionID       string
 }
 
 func (ss *ServerSession) setConn(c Connection) {
 }
 
-func (ss *ServerSession) ID() string { return ss.sessionID }
-
-// InitSession initializes the session with a session ID, state, and store.
-// If called, it must be called immediately after the session is connected.
-// If never called, the session will begin with a zero SessionState and no session
-// ID or store.
-func (ss *ServerSession) InitSession(sessionID string, state *SessionState, store SessionStore) {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	ss.sessionID = sessionID
-	ss.state = state
-	ss.store = store
+func (ss *ServerSession) ID() string {
+	return ss.opts.SessionID
 }
 
 // Ping pings the client.
@@ -662,7 +670,7 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // is below that of the last SetLevel.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
+	logLevel := ss.opts.SessionState.LogLevel
 	ss.mu.Unlock()
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
@@ -776,10 +784,10 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
 	ss.mu.Lock()
-	ss.state.InitializeParams = params
+	ss.opts.SessionState.InitializeParams = params
 	ss.mu.Unlock()
-	if ss.store != nil {
-		if err := ss.store.Store(ctx, ss.sessionID, ss.state); err != nil {
+	if store := ss.opts.SessionStore; store != nil {
+		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
 			return nil, fmt.Errorf("storing session state: %w", err)
 		}
 	}
@@ -808,9 +816,9 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 func (ss *ServerSession) setLevel(ctx context.Context, params *SetLevelParams) (*emptyResult, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.state.LogLevel = params.Level
-	if ss.store != nil {
-		if err := ss.store.Store(ctx, ss.sessionID, ss.state); err != nil {
+	ss.opts.SessionState.LogLevel = params.Level
+	if store := ss.opts.SessionStore; store != nil {
+		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
 			return nil, err
 		}
 	}
