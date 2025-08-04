@@ -30,7 +30,6 @@ greet
 	"id": 1,
 	"result": {
 		"capabilities": {
-			"completions": {},
 			"logging": {},
 			"tools": {
 				"listChanged": true

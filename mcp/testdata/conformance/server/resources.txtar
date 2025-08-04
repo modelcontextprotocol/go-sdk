@@ -50,7 +50,6 @@ info.txt
 	"id": 1,
 	"result": {
 		"capabilities": {
-			"completions": {},
 			"logging": {},
 			"resources": {
 				"listChanged": true
