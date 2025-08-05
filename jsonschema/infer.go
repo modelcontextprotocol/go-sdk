@@ -9,6 +9,7 @@ package jsonschema
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/big"
 	"reflect"
 	"regexp"
@@ -19,8 +20,8 @@ import (
 
 // ForOptions are options for the [For] function.
 type ForOptions struct {
-	// If IgnoreInvalidTypes is true, fields that can't be represented as a JSON Schema
-	// are ignored instead of causing an error.
+	// If IgnoreInvalidTypes is true, fields that can't be represented as a JSON
+	// Schema are ignored instead of causing an error.
 	// This allows callers to adjust the resulting schema using custom knowledge.
 	// For example, an interface type where all the possible implementations are
 	// known can be described with "oneof".
@@ -77,15 +78,7 @@ func For[T any](opts *ForOptions) (*Schema, error) {
 	if opts == nil {
 		opts = &ForOptions{}
 	}
-	schemas := make(map[reflect.Type]*Schema)
-	// Add types from the standard library that have MarshalJSON methods.
-	ss := &Schema{Type: "string"}
-	schemas[reflect.TypeFor[time.Time]()] = ss
-	schemas[reflect.TypeFor[slog.Level]()] = ss
-	schemas[reflect.TypeFor[big.Int]()] = &Schema{Types: []string{"null", "string"}}
-	schemas[reflect.TypeFor[big.Rat]()] = ss
-	schemas[reflect.TypeFor[big.Float]()] = ss
-
+	schemas := maps.Clone(initialSchemaMap)
 	// Add types from the options. They override the default ones.
 	for v, s := range opts.TypeSchemas {
 		schemas[reflect.TypeOf(v)] = s
@@ -94,6 +87,20 @@ func For[T any](opts *ForOptions) (*Schema, error) {
 	if err != nil {
 		var z T
 		return nil, fmt.Errorf("For[%T](): %w", z, err)
+	}
+	return s, nil
+}
+
+// ForType is like [For], but takes a [reflect.Type]
+func ForType(t reflect.Type, opts *ForOptions) (*Schema, error) {
+	schemas := maps.Clone(initialSchemaMap)
+	// Add types from the options. They override the default ones.
+	for v, s := range opts.TypeSchemas {
+		schemas[reflect.TypeOf(v)] = s
+	}
+	s, err := forType(t, map[reflect.Type]bool{}, opts.IgnoreInvalidTypes, schemas)
+	if err != nil {
+		return nil, fmt.Errorf("ForType(%s): %w", t, err)
 	}
 	return s, nil
 }
@@ -228,6 +235,18 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, ignore bool, schemas ma
 	}
 	schemas[t] = s
 	return s, nil
+}
+
+// initialSchemaMap holds types from the standard library that have MarshalJSON methods.
+var initialSchemaMap = make(map[reflect.Type]*Schema)
+
+func init() {
+	ss := &Schema{Type: "string"}
+	initialSchemaMap[reflect.TypeFor[time.Time]()] = ss
+	initialSchemaMap[reflect.TypeFor[slog.Level]()] = ss
+	initialSchemaMap[reflect.TypeFor[big.Int]()] = &Schema{Types: []string{"null", "string"}}
+	initialSchemaMap[reflect.TypeFor[big.Rat]()] = ss
+	initialSchemaMap[reflect.TypeFor[big.Float]()] = ss
 }
 
 // Disallow jsonschema tag values beginning "WORD=", for future expansion.

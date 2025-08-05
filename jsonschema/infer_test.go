@@ -7,6 +7,7 @@ package jsonschema_test
 import (
 	"log/slog"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestFor(t *testing.T) {
 
 	run := func(t *testing.T, tt test) {
 		if diff := cmp.Diff(tt.want, tt.got, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
-			t.Fatalf("ForType mismatch (-want +got):\n%s", diff)
+			t.Fatalf("For mismatch (-want +got):\n%s", diff)
 		}
 		// These schemas should all resolve.
 		if _, err := tt.got.Resolve(nil); err != nil {
@@ -174,6 +175,40 @@ func TestFor(t *testing.T) {
 			t.Run(test.name, func(t *testing.T) { run(t, test) })
 		}
 	})
+}
+
+func TestForType(t *testing.T) {
+	type schema = jsonschema.Schema
+
+	// ForType is virtually identical to For. Just test that options are handled properly.
+	opts := &jsonschema.ForOptions{
+		IgnoreInvalidTypes: true,
+		TypeSchemas: map[any]*jsonschema.Schema{
+			custom(0): {Type: "custom"},
+		},
+	}
+
+	type S struct {
+		I int
+		F func()
+		C custom
+	}
+	got, err := jsonschema.ForType(reflect.TypeOf(S{}), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &schema{
+		Type: "object",
+		Properties: map[string]*schema{
+			"I": {Type: "integer"},
+			"C": {Type: "custom"},
+		},
+		Required:             []string{"I", "C"},
+		AdditionalProperties: falseSchema(),
+	}
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreUnexported(schema{})); diff != "" {
+		t.Fatalf("ForType mismatch (-want +got):\n%s", diff)
+	}
 }
 
 func forErr[T any]() error {
