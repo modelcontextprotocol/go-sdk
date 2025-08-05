@@ -153,8 +153,8 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 // methods can be used to send requests or notifications to the server. Create
 // a session by calling [Client.Connect].
 //
-// Call [ClientSession.Close] to close the connection, or await client
-// termination with [ServerSession.Wait].
+// Call [ClientSession.Close] to close the connection, or await server
+// termination with [ClientSession.Wait].
 type ClientSession struct {
 	conn             *jsonrpc2.Connection
 	client           *Client
