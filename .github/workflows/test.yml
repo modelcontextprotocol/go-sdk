@@ -1,11 +1,11 @@
 name: Test
 on:
   # Manual trigger
-  workflow_dispatch:  
+  workflow_dispatch:
   push:
     branches: main
   pull_request:
-  
+
 permissions:
   contents: read
 
@@ -13,10 +13,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - name: Set up Go
-      uses: actions/setup-go@v5
     - name: Check out code
       uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
     - name: Check formatting
       run: |
         unformatted=$(gofmt -l .)
@@ -26,18 +26,30 @@ jobs:
           exit 1
         fi
         echo "All Go files are properly formatted"
-  
+
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: [ '1.23', '1.24' ]
+        go: [ '1.23', '1.24', '1.25.0-rc.2' ]
     steps:
+    - name: Check out code
+      uses: actions/checkout@v4
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: ${{ matrix.go }}
-    - name: Check out code
-      uses: actions/checkout@v4
     - name: Test
       run: go test -v ./...
+
+  race-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Test with -race
+      run: go test -v -race ./...
