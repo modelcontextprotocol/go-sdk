@@ -456,8 +456,8 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 As an example, this code adds server-side logging:
 
 ```go
-func withLogging(h mcp.MethodHandler[*ServerSession]) mcp.MethodHandler[*ServerSession]{
-    return func(ctx context.Context, s *mcp.ServerSession, method string, params any) (res any, err error) {
+func withLogging(h mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession]{
+    return func(ctx context.Context, s *mcp.ServerSession, method string, params mcp.Params) (res mcp.Result, err error) {
         log.Printf("request: %s %v", method, params)
         defer func() { log.Printf("response: %v, %v", res, err) }()
         return h(ctx, s , method, params)
