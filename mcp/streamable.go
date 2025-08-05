@@ -267,9 +267,7 @@ type stream struct {
 
 	// streamRequests is the set of unanswered incoming RPCs for the stream.
 	//
-	// Lifecycle: requests values persist until the requests have been
-	// replied to by the server. Notably, NOT until they are sent to an HTTP
-	// response, as delivery is not guaranteed.
+	// Requests persist until their response data has been added to outgoing.
 	requests map[jsonrpc.ID]struct{}
 }
 
@@ -482,6 +480,7 @@ stream:
 		t.mu.Lock()
 		outgoing := stream.outgoing
 		stream.outgoing = nil
+		nOutstanding := len(stream.requests)
 		t.mu.Unlock()
 
 		for _, data := range outgoing {
@@ -493,9 +492,6 @@ stream:
 			}
 		}
 
-		t.mu.Lock()
-		nOutstanding := len(stream.requests)
-		t.mu.Unlock()
 		// If all requests have been handled and replied to, we should terminate this connection.
 		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
 		// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
