@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
-
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // The value of the "$schema" keyword for the version that we can validate.
@@ -74,7 +72,7 @@ type state struct {
 
 // validate validates the reflected value of the instance.
 func (st *state) validate(instance reflect.Value, schema *Schema, callerAnns *annotations) (err error) {
-	defer util.Wrapf(&err, "validating %s", st.rs.schemaString(schema))
+	defer wrapf(&err, "validating %s", st.rs.schemaString(schema))
 
 	// Maintain a stack for dynamic schema resolution.
 	st.stack = append(st.stack, schema) // push
@@ -613,7 +611,7 @@ func (rs *Resolved) ApplyDefaults(instancep any) error {
 // Leave this as a potentially recursive helper function, because we'll surely want
 // to apply defaults on sub-schemas someday.
 func (st *state) applyDefaults(instancep reflect.Value, schema *Schema) (err error) {
-	defer util.Wrapf(&err, "applyDefaults: schema %s, instance %v", st.rs.schemaString(schema), instancep)
+	defer wrapf(&err, "applyDefaults: schema %s, instance %v", st.rs.schemaString(schema), instancep)
 
 	schemaInfo := st.rs.resolvedInfos[schema]
 	instance := instancep.Elem()
