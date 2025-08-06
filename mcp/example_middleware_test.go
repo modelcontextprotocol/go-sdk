@@ -114,7 +114,7 @@ func Example_loggingMiddleware() {
 	ctx := context.Background()
 
 	// Connect server and client
-	serverSession, _ := server.Connect(ctx, serverTransport)
+	serverSession, _ := server.Connect(ctx, serverTransport, nil)
 	defer serverSession.Close()
 
 	clientSession, _ := client.Connect(ctx, clientTransport)

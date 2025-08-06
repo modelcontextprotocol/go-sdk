@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -514,7 +515,8 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 // If no tools have been added, the server will not have the tool capability.
 // The same goes for other features like prompts and resources.
 func (s *Server) Run(ctx context.Context, t Transport) error {
-	ss, err := s.Connect(ctx, t)
+	// TODO: provide a way to pass ServerSessionOptions?
+	ss, err := s.Connect(ctx, t, nil)
 	if err != nil {
 		return err
 	}
@@ -557,14 +559,33 @@ func (s *Server) disconnect(cc *ServerSession) {
 	}
 }
 
+type ServerSessionOptions struct {
+	SessionID    string
+	SessionState *SessionState
+	SessionStore SessionStore
+}
+
 // Connect connects the MCP server over the given transport and starts handling
 // messages.
 //
 // It returns a connection object that may be used to terminate the connection
 // (with [Connection.Close]), or await client termination (with
 // [Connection.Wait]).
-func (s *Server) Connect(ctx context.Context, t Transport) (*ServerSession, error) {
-	return connect(ctx, t, s)
+func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOptions) (*ServerSession, error) {
+	if opts != nil && opts.SessionState == nil && opts.SessionStore != nil {
+		return nil, errors.New("ServerSessionOptions has store but no state")
+	}
+	ss, err := connect(ctx, t, s)
+	if err != nil {
+		return nil, err
+	}
+	if opts != nil {
+		ss.opts = *opts
+	}
+	if ss.opts.SessionState == nil {
+		ss.opts.SessionState = &SessionState{}
+	}
+	return ss, nil
 }
 
 func (s *Server) callInitializedHandler(ctx context.Context, ss *ServerSession, params *InitializedParams) (Result, error) {
@@ -597,25 +618,20 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 // Call [ServerSession.Close] to close the connection, or await client
 // termination with [ServerSession.Wait].
 type ServerSession struct {
-	server           *Server
-	conn             *jsonrpc2.Connection
-	mcpConn          Connection
-	mu               sync.Mutex
-	logLevel         LoggingLevel
-	initializeParams *InitializeParams
-	initialized      bool
-	keepaliveCancel  context.CancelFunc
+	server *Server
+	conn   *jsonrpc2.Connection
+	opts   ServerSessionOptions
+
+	mu              sync.Mutex
+	initialized     bool
+	keepaliveCancel context.CancelFunc
 }
 
 func (ss *ServerSession) setConn(c Connection) {
-	ss.mcpConn = c
 }
 
 func (ss *ServerSession) ID() string {
-	if ss.mcpConn == nil {
-		return ""
-	}
-	return ss.mcpConn.SessionID()
+	return ss.opts.SessionID
 }
 
 // Ping pings the client.
@@ -639,7 +655,7 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // is below that of the last SetLevel.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
-	logLevel := ss.logLevel
+	logLevel := ss.opts.SessionState.LogLevel
 	ss.mu.Unlock()
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
@@ -753,8 +769,13 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
 	ss.mu.Lock()
-	ss.initializeParams = params
+	ss.opts.SessionState.InitializeParams = params
 	ss.mu.Unlock()
+	if store := ss.opts.SessionStore; store != nil {
+		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
+			return nil, fmt.Errorf("storing session state: %w", err)
+		}
+	}
 
 	// Mark the connection as initialized when this method exits.
 	// TODO: Technically, the server should not be considered initialized until it has
@@ -788,10 +809,15 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 	return &emptyResult{}, nil
 }
 
-func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*emptyResult, error) {
+func (ss *ServerSession) setLevel(ctx context.Context, params *SetLevelParams) (*emptyResult, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.logLevel = params.Level
+	ss.opts.SessionState.LogLevel = params.Level
+	if store := ss.opts.SessionStore; store != nil {
+		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
+			return nil, err
+		}
+	}
 	return &emptyResult{}, nil
 }
 
