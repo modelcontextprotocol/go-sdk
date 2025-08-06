@@ -371,3 +371,39 @@ func TestServerCapabilities(t *testing.T) {
 		})
 	}
 }
+
+func TestServerAddResourceTemplate(t *testing.T) {
+	tests := []struct {
+		name        string
+		template    string
+		expectPanic bool
+	}{
+		{"ValidFileTemplate", "file:///{a}/{b}", false},
+		{"ValidCustomScheme", "myproto:///{a}", false},
+		{"MissingScheme1", "://example.com/{path}", true},
+		{"MissingScheme2", "/api/v1/users/{id}", true},
+		{"EmptyVariable", "file:///{}/{b}", true},
+		{"UnclosedVariable", "file:///{a", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := ResourceTemplate{URITemplate: tt.template}
+
+			defer func() {
+				if r := recover(); r != nil {
+					if !tt.expectPanic {
+						t.Errorf("%s: unexpected panic: %v", tt.name, r)
+					}
+				} else {
+					if tt.expectPanic {
+						t.Errorf("%s: expected panic but did not panic", tt.name)
+					}
+				}
+			}()
+
+			s := NewServer(testImpl, nil)
+			s.AddResourceTemplate(&rt, nil)
+		})
+	}
+}
