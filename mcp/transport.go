@@ -308,6 +308,19 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 		for {
 			var raw json.RawMessage
 			err := dec.Decode(&raw)
+			// If decoding was successful, check for trailing data at the end of the stream.
+			if err == nil {
+				// Read the next byte to check if there is trailing data.
+				var tr [1]byte
+				if n, readErr := dec.Buffered().Read(tr[:]); n > 0 {
+					// If read byte is not a newline, it is an error.
+					if tr[0] != '\n' {
+						err = fmt.Errorf("invalid trailing data at the end of stream")
+					}
+				} else if readErr != nil && readErr != io.EOF {
+					err = readErr
+				}
+			}
 			select {
 			case incoming <- msgOrErr{msg: raw, err: err}:
 			case <-closed:
@@ -419,17 +432,6 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 
 	case <-t.closed:
 		return nil, io.EOF
-	}
-
-	// Read the next byte to check if there is trailing data.
-	var tr [1]byte
-	if n, err := in.Buffered().Read(tr[:]); n > 0 {
-		// If read byte is not a newline, it is an error.
-		if tr[0] != '\n' {
-			return nil, fmt.Errorf("invalid trailing data at the end of stream")
-		}
-	} else if err != nil && err != io.EOF {
-		return nil, err
 	}
 
 	msgs, batch, err := readBatch(raw)
