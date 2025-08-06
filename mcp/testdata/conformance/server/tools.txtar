@@ -59,9 +59,7 @@ greet
 							"type": "string"
 						}
 					},
-					"additionalProperties": {
-						"not": {}
-					}
+					"additionalProperties": false
 				},
 				"name": "greet"
 			}
