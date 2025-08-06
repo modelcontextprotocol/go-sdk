@@ -1,2 +1,1 @@
 github.com/modelcontextprotocol/go-sdk/jsonschema==>github.com/google/jsonschema-go
-regex:Copyright (20\d\d) The Go MCP SDK Authors==>Copyright \1 The JSON Schema Go Project Authors
