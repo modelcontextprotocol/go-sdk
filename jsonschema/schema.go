@@ -204,6 +204,7 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 	if err := s.basicChecks(); err != nil {
 		return nil, err
 	}
+
 	// Marshal either Type or Types as "type".
 	var typ any
 	switch {
@@ -219,7 +220,19 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 		Type:                 typ,
 		schemaWithoutMethods: (*schemaWithoutMethods)(s),
 	}
-	return marshalStructWithMap(&ms, "Extra")
+	bs, err := marshalStructWithMap(&ms, "Extra")
+	if err != nil {
+		return nil, err
+	}
+	// Marshal {} as true and {"not": {}} as false.
+	// It is wasteful to do this here instead of earlier, but much easier.
+	switch {
+	case bytes.Equal(bs, []byte(`{}`)):
+		bs = []byte("true")
+	case bytes.Equal(bs, []byte(`{"not":true}`)):
+		bs = []byte("false")
+	}
+	return bs, nil
 }
 
 func (s *Schema) UnmarshalJSON(data []byte) error {

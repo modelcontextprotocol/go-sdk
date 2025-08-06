@@ -54,9 +54,9 @@ func TestJSONRoundTrip(t *testing.T) {
 	for _, tt := range []struct {
 		in, want string
 	}{
-		{`true`, `{}`}, // boolean schemas become object schemas
-		{`false`, `{"not":{}}`},
-		{`{"type":"", "enum":null}`, `{}`}, // empty fields are omitted
+		{`true`, `true`},
+		{`false`, `false`},
+		{`{"type":"", "enum":null}`, `true`}, // empty fields are omitted
 		{`{"minimum":1}`, `{"minimum":1}`},
 		{`{"minimum":1.0}`, `{"minimum":1}`},     // floating-point integers lose their fractional part
 		{`{"minLength":1.0}`, `{"minLength":1}`}, // some floats are unmarshaled into ints, but you can't tell
