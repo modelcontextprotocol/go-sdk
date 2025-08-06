@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -773,6 +774,10 @@ type streamableClientConn struct {
 	err             error
 }
 
+func (c *streamableClientConn) httpClient() *http.Client {
+	return cmp.Or(c.authClient, c.opts.HTTPClient)
+}
+
 func (c *streamableClientConn) setProtocolVersion(s string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -865,22 +870,13 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 
 	// Use an HTTP client that does authentication, if there is one.
 	// Otherwise, use the one provided by the user.
-	client := s.authClient
-	if client == nil {
-		client = s.opts.HTTPClient
-	}
+	client := s.httpClient()
 	// TODO: Resource Indicators, as in
 	// https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#resource-parameter-implementation
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
-	bodyClosed := false // avoid a second call to Close: undefined behavior (see [io.Closer])
-	defer func() {
-		if resp != nil && !bodyClosed {
-			resp.Body.Close()
-		}
-	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		if client == s.authClient {
@@ -1055,7 +1051,7 @@ func (s *streamableClientConn) Close() error {
 				req.Header.Set(protocolVersionHeader, s.protocolVersion)
 			}
 			req.Header.Set(sessionIDHeader, s._sessionID)
-			if _, err := s.opts.HTTPClient.Do(req); err != nil {
+			if _, err := s.httpClient().Do(req); err != nil {
 				s.closeErr = err
 			}
 		}
@@ -1081,7 +1077,7 @@ func (s *streamableClientConn) establishSSE(lastEventID string) (*http.Response,
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	return s.opts.HTTPClient.Do(req)
+	return s.httpClient().Do(req)
 }
 
 // calculateReconnectDelay calculates a delay using exponential backoff with full jitter.
