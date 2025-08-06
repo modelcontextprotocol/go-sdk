@@ -184,3 +184,31 @@ func TestMarshalStructWithMap(t *testing.T) {
 		}
 	})
 }
+
+func TestJSONInfo(t *testing.T) {
+	type S struct {
+		A int
+		B int `json:","`
+		C int `json:"-"`
+		D int `json:"-,"`
+		E int `json:"echo"`
+		F int `json:"foxtrot,omitempty"`
+		g int `json:"golf"`
+	}
+	want := []jsonInfo{
+		{name: "A"},
+		{name: "B"},
+		{omit: true},
+		{name: "-"},
+		{name: "echo"},
+		{name: "foxtrot", settings: map[string]bool{"omitempty": true}},
+		{omit: true},
+	}
+	tt := reflect.TypeFor[S]()
+	for i := range tt.NumField() {
+		got := fieldJSONInfo(tt.Field(i))
+		if !reflect.DeepEqual(got, want[i]) {
+			t.Errorf("got %+v, want %+v", got, want[i])
+		}
+	}
+}

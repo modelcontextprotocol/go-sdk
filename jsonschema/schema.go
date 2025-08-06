@@ -15,8 +15,6 @@ import (
 	"math"
 	"reflect"
 	"slices"
-
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // A Schema is a JSON schema object.
@@ -411,9 +409,9 @@ var (
 
 func init() {
 	for _, sf := range reflect.VisibleFields(reflect.TypeFor[Schema]()) {
-		info := util.FieldJSONInfo(sf)
-		if !info.Omit {
-			schemaFieldInfos = append(schemaFieldInfos, structFieldInfo{sf, info.Name})
+		info := fieldJSONInfo(sf)
+		if !info.omit {
+			schemaFieldInfos = append(schemaFieldInfos, structFieldInfo{sf, info.name})
 		}
 	}
 	slices.SortFunc(schemaFieldInfos, func(i1, i2 structFieldInfo) int {

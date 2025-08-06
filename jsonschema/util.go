@@ -15,9 +15,8 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
-
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // Equal reports whether two Go values representing JSON values are equal according
@@ -410,11 +409,48 @@ func jsonNames(t reflect.Type) map[string]bool {
 			}
 			continue
 		}
-		info := util.FieldJSONInfo(field)
-		if !info.Omit {
-			m[info.Name] = true
+		info := fieldJSONInfo(field)
+		if !info.omit {
+			m[info.name] = true
 		}
 	}
 	jsonNamesMap.Store(t, m)
 	return m
+}
+
+type jsonInfo struct {
+	omit     bool            // unexported or first tag element is "-"
+	name     string          // Go field name or first tag element. Empty if omit is true.
+	settings map[string]bool // "omitempty", "omitzero", etc.
+}
+
+// fieldJSONInfo reports information about how encoding/json
+// handles the given struct field.
+// If the field is unexported, jsonInfo.omit is true and no other jsonInfo field
+// is populated.
+// If the field is exported and has no tag, then name is the field's name and all
+// other fields are false.
+// Otherwise, the information is obtained from the tag.
+func fieldJSONInfo(f reflect.StructField) jsonInfo {
+	if !f.IsExported() {
+		return jsonInfo{omit: true}
+	}
+	info := jsonInfo{name: f.Name}
+	if tag, ok := f.Tag.Lookup("json"); ok {
+		name, rest, found := strings.Cut(tag, ",")
+		// "-" means omit, but "-," means the name is "-"
+		if name == "-" && !found {
+			return jsonInfo{omit: true}
+		}
+		if name != "" {
+			info.name = name
+		}
+		if len(rest) > 0 {
+			info.settings = map[string]bool{}
+			for _, s := range strings.Split(rest, ",") {
+				info.settings[s] = true
+			}
+		}
+	}
+	return info
 }

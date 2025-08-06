@@ -14,8 +14,6 @@ import (
 	"reflect"
 	"regexp"
 	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // ForOptions are options for the [For] function.
@@ -192,8 +190,8 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, ignore bool, schemas ma
 
 		for i := range t.NumField() {
 			field := t.Field(i)
-			info := util.FieldJSONInfo(field)
-			if info.Omit {
+			info := fieldJSONInfo(field)
+			if info.omit {
 				continue
 			}
 			if s.Properties == nil {
@@ -216,9 +214,9 @@ func forType(t reflect.Type, seen map[reflect.Type]bool, ignore bool, schemas ma
 				}
 				fs.Description = tag
 			}
-			s.Properties[info.Name] = fs
-			if !info.Settings["omitempty"] && !info.Settings["omitzero"] {
-				s.Required = append(s.Required, info.Name)
+			s.Properties[info.name] = fs
+			if !info.settings["omitempty"] && !info.settings["omitzero"] {
+				s.Required = append(s.Required, info.name)
 			}
 		}
 

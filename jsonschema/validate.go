@@ -697,8 +697,8 @@ func properties(v reflect.Value) iter.Seq2[string, reflect.Value] {
 			for name, sf := range structPropertiesOf(v.Type()) {
 				val := v.FieldByIndex(sf.Index)
 				if val.IsZero() {
-					info := util.FieldJSONInfo(sf)
-					if info.Settings["omitempty"] || info.Settings["omitzero"] {
+					info := fieldJSONInfo(sf)
+					if info.settings["omitempty"] || info.settings["omitzero"] {
 						continue
 					}
 				}
@@ -750,9 +750,9 @@ func structPropertiesOf(t reflect.Type) propertyMap {
 	}
 	props := map[string]reflect.StructField{}
 	for _, sf := range reflect.VisibleFields(t) {
-		info := util.FieldJSONInfo(sf)
-		if !info.Omit {
-			props[info.Name] = sf
+		info := fieldJSONInfo(sf)
+		if !info.omit {
+			props[info.name] = sf
 		}
 	}
 	structProperties.Store(t, props)
