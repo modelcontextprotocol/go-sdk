@@ -20,10 +20,12 @@ import (
 type ToolHandler = ToolHandlerFor[map[string]any, any]
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error)
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
 
 // A rawToolHandler is like a ToolHandler, but takes the arguments as as json.RawMessage.
-type rawToolHandler = func(context.Context, *ServerSession, *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error)
+// Second arg is *Request[*ServerSession, *CallToolParamsFor[json.RawMessage]], but that creates
+// a cycle.
+type rawToolHandler = func(context.Context, any) (*CallToolResult, error)
 
 // A serverTool is a tool definition that is bound to a tool handler.
 type serverTool struct {
@@ -48,20 +50,25 @@ func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool
 		}
 	}
 
-	st.handler = func(ctx context.Context, ss *ServerSession, rparams *CallToolParamsFor[json.RawMessage]) (*CallToolResult, error) {
+	st.handler = func(ctx context.Context, areq any) (*CallToolResult, error) {
+		req := areq.(*ServerRequest[*CallToolParamsFor[json.RawMessage]])
 		var args In
-		if rparams.Arguments != nil {
-			if err := unmarshalSchema(rparams.Arguments, st.inputResolved, &args); err != nil {
+		if req.Params.Arguments != nil {
+			if err := unmarshalSchema(req.Params.Arguments, st.inputResolved, &args); err != nil {
 				return nil, err
 			}
 		}
 		// TODO(jba): future-proof this copy.
 		params := &CallToolParamsFor[In]{
-			Meta:      rparams.Meta,
-			Name:      rparams.Name,
+			Meta:      req.Params.Meta,
+			Name:      req.Params.Name,
 			Arguments: args,
 		}
-		res, err := h(ctx, ss, params)
+		// TODO(jba): improve copy
+		res, err := h(ctx, &ServerRequest[*CallToolParamsFor[In]]{
+			Session: req.Session,
+			Params:  params,
+		})
 		// TODO(rfindley): investigate why server errors are embedded in this strange way,
 		// rather than returned as jsonrpc2 server errors.
 		if err != nil {

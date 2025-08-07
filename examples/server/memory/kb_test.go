@@ -230,7 +230,7 @@ func TestSaveAndLoadGraph(t *testing.T) {
 
 			// Test malformed data handling
 			if fs, ok := s.(*fileStore); ok {
-				err := os.WriteFile(fs.path, []byte("invalid json"), 0600)
+				err := os.WriteFile(fs.path, []byte("invalid json"), 0o600)
 				if err != nil {
 					t.Fatalf("failed to write invalid json: %v", err)
 				}
@@ -450,7 +450,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			createResult, err := kb.CreateEntities(ctx, serverSession, createEntitiesParams)
+			createResult, err := kb.CreateEntities(ctx, requestFor(serverSession, createEntitiesParams))
 			if err != nil {
 				t.Fatalf("MCP CreateEntities failed: %v", err)
 			}
@@ -463,7 +463,7 @@ func TestMCPServerIntegration(t *testing.T) {
 
 			// Test ReadGraph through MCP
 			readParams := &mcp.CallToolParamsFor[struct{}]{}
-			readResult, err := kb.ReadGraph(ctx, serverSession, readParams)
+			readResult, err := kb.ReadGraph(ctx, requestFor(serverSession, readParams))
 			if err != nil {
 				t.Fatalf("MCP ReadGraph failed: %v", err)
 			}
@@ -487,7 +487,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			relationsResult, err := kb.CreateRelations(ctx, serverSession, createRelationsParams)
+			relationsResult, err := kb.CreateRelations(ctx, requestFor(serverSession, createRelationsParams))
 			if err != nil {
 				t.Fatalf("MCP CreateRelations failed: %v", err)
 			}
@@ -510,7 +510,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			obsResult, err := kb.AddObservations(ctx, serverSession, addObsParams)
+			obsResult, err := kb.AddObservations(ctx, requestFor(serverSession, addObsParams))
 			if err != nil {
 				t.Fatalf("MCP AddObservations failed: %v", err)
 			}
@@ -528,7 +528,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			searchResult, err := kb.SearchNodes(ctx, serverSession, searchParams)
+			searchResult, err := kb.SearchNodes(ctx, requestFor(serverSession, searchParams))
 			if err != nil {
 				t.Fatalf("MCP SearchNodes failed: %v", err)
 			}
@@ -546,7 +546,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			openResult, err := kb.OpenNodes(ctx, serverSession, openParams)
+			openResult, err := kb.OpenNodes(ctx, requestFor(serverSession, openParams))
 			if err != nil {
 				t.Fatalf("MCP OpenNodes failed: %v", err)
 			}
@@ -569,7 +569,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			deleteObsResult, err := kb.DeleteObservations(ctx, serverSession, deleteObsParams)
+			deleteObsResult, err := kb.DeleteObservations(ctx, requestFor(serverSession, deleteObsParams))
 			if err != nil {
 				t.Fatalf("MCP DeleteObservations failed: %v", err)
 			}
@@ -590,7 +590,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			deleteRelResult, err := kb.DeleteRelations(ctx, serverSession, deleteRelParams)
+			deleteRelResult, err := kb.DeleteRelations(ctx, requestFor(serverSession, deleteRelParams))
 			if err != nil {
 				t.Fatalf("MCP DeleteRelations failed: %v", err)
 			}
@@ -605,7 +605,7 @@ func TestMCPServerIntegration(t *testing.T) {
 				},
 			}
 
-			deleteEntResult, err := kb.DeleteEntities(ctx, serverSession, deleteEntParams)
+			deleteEntResult, err := kb.DeleteEntities(ctx, requestFor(serverSession, deleteEntParams))
 			if err != nil {
 				t.Fatalf("MCP DeleteEntities failed: %v", err)
 			}
@@ -614,7 +614,7 @@ func TestMCPServerIntegration(t *testing.T) {
 			}
 
 			// Verify final state
-			finalRead, err := kb.ReadGraph(ctx, serverSession, readParams)
+			finalRead, err := kb.ReadGraph(ctx, requestFor(serverSession, readParams))
 			if err != nil {
 				t.Fatalf("Final MCP ReadGraph failed: %v", err)
 			}
@@ -647,7 +647,7 @@ func TestMCPErrorHandling(t *testing.T) {
 				},
 			}
 
-			_, err := kb.AddObservations(ctx, serverSession, addObsParams)
+			_, err := kb.AddObservations(ctx, requestFor(serverSession, addObsParams))
 			if err == nil {
 				t.Errorf("expected MCP AddObservations to return error for non-existent entity")
 			} else {
@@ -678,7 +678,7 @@ func TestMCPResponseFormat(t *testing.T) {
 		},
 	}
 
-	result, err := kb.CreateEntities(ctx, serverSession, createParams)
+	result, err := kb.CreateEntities(ctx, requestFor(serverSession, createParams))
 	if err != nil {
 		t.Fatalf("CreateEntities failed: %v", err)
 	}
@@ -700,4 +700,8 @@ func TestMCPResponseFormat(t *testing.T) {
 	} else {
 		t.Errorf("expected Content[0] to be TextContent")
 	}
+}
+
+func requestFor[P mcp.Params](ss *mcp.ServerSession, p P) *mcp.ServerRequest[P] {
+	return &mcp.ServerRequest[P]{Session: ss, Params: p}
 }

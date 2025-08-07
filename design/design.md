@@ -431,12 +431,9 @@ We provide a mechanism to add MCP-level middleware on the both the client and se
 
 ```go
 // A MethodHandler handles MCP messages.
-// The params argument is an XXXParams struct pointer, such as *GetPromptParams.
-// For methods, a MethodHandler must return either an XXResult struct pointer and a nil error, or
-// nil with a non-nil error.
-// For notifications, a MethodHandler must return nil, nil.
-type MethodHandler[S Session] func(
-	ctx context.Context, _ *S, method string, params Params) (result Result, err error)
+// For methods, exactly one of the return values must be nil.
+// For notifications, both must be nil.
+type MethodHandler[S Session] func(ctx context.Context, method string, req *Request[S]) (result Result, err error)
 
 // Middleware is a function from MethodHandlers to MethodHandlers.
 type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
@@ -620,8 +617,9 @@ type Tool struct {
 	Name string                    `json:"name"`
 }
 
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error)
-type ToolHandler = ToolHandlerFor[map[string]any, any]
+// A ToolHandlerFor handles a call to tools/call with typed arguments and results.
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
+
 ```
 
 Add tools to a server with the `AddTool` method or function. The function is generic and infers schemas from the handler
@@ -671,8 +669,8 @@ type AddParams struct {
     Y int `json:"y"`
 }
 
-func addHandler(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[AddParams]) (*mcp.CallToolResultFor[int], error) {
-    return &mcp.CallToolResultFor[int]{StructuredContent: params.Arguments.X + params.Arguments.Y}, nil
+func addHandler(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddParams]]) (*mcp.CallToolResultFor[int], error) {
+    return &mcp.CallToolResultFor[int]{StructuredContent: req.Params.Arguments.X + req.Params.Arguments.Y}, nil
 }
 ```
 
@@ -688,8 +686,6 @@ Client sessions can call the spec method `ListTools` or an iterator method `Tool
 
 ```go
 func (cs *ClientSession) CallTool(context.Context, *CallToolParams[json.RawMessage]) (*CallToolResult, error)
-
-func CallTool[TArgs any](context.Context, *ClientSession, *CallToolParams[TArgs]) (*CallToolResult, error)
 ```
 
 **Differences from mcp-go**: We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want. The `jsonschema.For[T]` function can infer a schema from a Go struct. These combined features eliminate the need for variadic arguments to construct tool schemas.
@@ -775,10 +771,10 @@ If a server author wants to support resource subscriptions, they must provide ha
 ```go
 type ServerOptions struct {
   ...
-  // Function called when a client session subscribes to a resource.
-  SubscribeHandler func(context.Context, ss *ServerSession, *SubscribeParams) error
-  // Function called when a client session unsubscribes from a resource.
-  UnsubscribeHandler func(context.Context, ss *ServerSession, *UnsubscribeParams) error
+	// Function called when a client session subscribes to a resource.
+	SubscribeHandler func(context.Context, *ServerRequest[*SubscribeParams]) error
+	// Function called when a client session unsubscribes from a resource.
+	UnsubscribeHandler func(context.Context, *ServerRequest[*UnsubscribeParams]) error
 }
 ```
 
@@ -797,10 +793,10 @@ When a list of tools, prompts or resources changes as the result of an AddXXX or
 ```go
 type ClientOptions struct {
   ...
-  ToolListChangedHandler func(context.Context, *ClientSession, *ToolListChangedParams)
-  PromptListChangedHandler func(context.Context, *ClientSession, *PromptListChangedParams)
+	ToolListChangedHandler      func(context.Context, *ClientRequest[*ToolListChangedParams])
+	PromptListChangedHandler    func(context.Context, *ClientRequest[*PromptListChangedParams])
   // For both resources and resource templates.
-  ResourceListChangedHandler func(context.Context, *ClientSession, *ResourceListChangedParams)
+	ResourceListChangedHandler  func(context.Context, *ClientRequest[*ResourceListChangedParams])
 }
 ```
 
@@ -811,13 +807,10 @@ type ClientOptions struct {
 Clients call the spec method `Complete` to request completions. If a server installs a `CompletionHandler`, it will be called when the client sends a completion request.
 
 ```go
-// A CompletionHandler handles a call to completion/complete.
-type CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
-
 type ServerOptions struct {
   ...
   // If non-nil, called when a client sends a completion request.
-  CompletionHandler CompletionHandler
+	CompletionHandler func(context.Context, *ServerRequest[*CompleteParams]) (*CompleteResult, error)
 }
 ```
 

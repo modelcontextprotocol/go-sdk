@@ -231,8 +231,8 @@ func deepCopyThoughts(thoughts []*Thought) []*Thought {
 }
 
 // StartThinking begins a new sequential thinking session for a complex problem.
-func StartThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[StartThinkingArgs]) (*mcp.CallToolResultFor[any], error) {
-	args := params.Arguments
+func StartThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[StartThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+	args := req.Params.Arguments
 
 	sessionID := args.SessionID
 	if sessionID == "" {
@@ -266,8 +266,8 @@ func StartThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallT
 }
 
 // ContinueThinking adds the next thought step, revises a previous step, or creates a branch in the thinking process.
-func ContinueThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[ContinueThinkingArgs]) (*mcp.CallToolResultFor[any], error) {
-	args := params.Arguments
+func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ContinueThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+	args := req.Params.Arguments
 
 	// Handle revision of existing thought
 	if args.ReviseStep != nil {
@@ -395,8 +395,8 @@ func ContinueThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Ca
 }
 
 // ReviewThinking provides a complete review of the thinking process for a session.
-func ReviewThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[ReviewThinkingArgs]) (*mcp.CallToolResultFor[any], error) {
-	args := params.Arguments
+func ReviewThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ReviewThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+	args := req.Params.Arguments
 
 	// Get a snapshot of the session to avoid race conditions
 	sessionSnapshot, exists := store.SessionSnapshot(args.SessionID)
@@ -434,11 +434,11 @@ func ReviewThinking(ctx context.Context, ss *mcp.ServerSession, params *mcp.Call
 }
 
 // ThinkingHistory handles resource requests for thinking session data and history.
-func ThinkingHistory(ctx context.Context, ss *mcp.ServerSession, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
+func ThinkingHistory(ctx context.Context, req *mcp.ServerRequest[*mcp.ReadResourceParams]) (*mcp.ReadResourceResult, error) {
 	// Extract session ID from URI (e.g., "thinking://session_123")
-	u, err := url.Parse(params.URI)
+	u, err := url.Parse(req.Params.URI)
 	if err != nil {
-		return nil, fmt.Errorf("invalid thinking resource URI: %s", params.URI)
+		return nil, fmt.Errorf("invalid thinking resource URI: %s", req.Params.URI)
 	}
 	if u.Scheme != "thinking" {
 		return nil, fmt.Errorf("invalid thinking resource URI scheme: %s", u.Scheme)
@@ -456,7 +456,7 @@ func ThinkingHistory(ctx context.Context, ss *mcp.ServerSession, params *mcp.Rea
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{
 				{
-					URI:      params.URI,
+					URI:      req.Params.URI,
 					MIMEType: "application/json",
 					Text:     string(data),
 				},
@@ -478,7 +478,7 @@ func ThinkingHistory(ctx context.Context, ss *mcp.ServerSession, params *mcp.Rea
 	return &mcp.ReadResourceResult{
 		Contents: []*mcp.ResourceContents{
 			{
-				URI:      params.URI,
+				URI:      req.Params.URI,
 				MIMEType: "application/json",
 				Text:     string(data),
 			},

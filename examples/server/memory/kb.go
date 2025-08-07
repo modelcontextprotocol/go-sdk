@@ -84,7 +84,7 @@ func (fs *fileStore) Read() ([]byte, error) {
 
 // Write saves data to file with 0600 permissions.
 func (fs *fileStore) Write(data []byte) error {
-	if err := os.WriteFile(fs.path, data, 0600); err != nil {
+	if err := os.WriteFile(fs.path, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", fs.path, err)
 	}
 	return nil
@@ -431,10 +431,10 @@ func (k knowledgeBase) openNodes(names []string) (KnowledgeGraph, error) {
 	}, nil
 }
 
-func (k knowledgeBase) CreateEntities(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[CreateEntitiesArgs]) (*mcp.CallToolResultFor[CreateEntitiesResult], error) {
+func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateEntitiesArgs]]) (*mcp.CallToolResultFor[CreateEntitiesResult], error) {
 	var res mcp.CallToolResultFor[CreateEntitiesResult]
 
-	entities, err := k.createEntities(params.Arguments.Entities)
+	entities, err := k.createEntities(req.Params.Arguments.Entities)
 	if err != nil {
 		return nil, err
 	}
@@ -450,10 +450,10 @@ func (k knowledgeBase) CreateEntities(ctx context.Context, ss *mcp.ServerSession
 	return &res, nil
 }
 
-func (k knowledgeBase) CreateRelations(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[CreateRelationsArgs]) (*mcp.CallToolResultFor[CreateRelationsResult], error) {
+func (k knowledgeBase) CreateRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateRelationsArgs]]) (*mcp.CallToolResultFor[CreateRelationsResult], error) {
 	var res mcp.CallToolResultFor[CreateRelationsResult]
 
-	relations, err := k.createRelations(params.Arguments.Relations)
+	relations, err := k.createRelations(req.Params.Arguments.Relations)
 	if err != nil {
 		return nil, err
 	}
@@ -469,10 +469,10 @@ func (k knowledgeBase) CreateRelations(ctx context.Context, ss *mcp.ServerSessio
 	return &res, nil
 }
 
-func (k knowledgeBase) AddObservations(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[AddObservationsArgs]) (*mcp.CallToolResultFor[AddObservationsResult], error) {
+func (k knowledgeBase) AddObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddObservationsArgs]]) (*mcp.CallToolResultFor[AddObservationsResult], error) {
 	var res mcp.CallToolResultFor[AddObservationsResult]
 
-	observations, err := k.addObservations(params.Arguments.Observations)
+	observations, err := k.addObservations(req.Params.Arguments.Observations)
 	if err != nil {
 		return nil, err
 	}
@@ -488,10 +488,10 @@ func (k knowledgeBase) AddObservations(ctx context.Context, ss *mcp.ServerSessio
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteEntities(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[DeleteEntitiesArgs]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteEntitiesArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
-	err := k.deleteEntities(params.Arguments.EntityNames)
+	err := k.deleteEntities(req.Params.Arguments.EntityNames)
 	if err != nil {
 		return nil, err
 	}
@@ -503,10 +503,10 @@ func (k knowledgeBase) DeleteEntities(ctx context.Context, ss *mcp.ServerSession
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteObservations(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[DeleteObservationsArgs]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteObservationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
-	err := k.deleteObservations(params.Arguments.Deletions)
+	err := k.deleteObservations(req.Params.Arguments.Deletions)
 	if err != nil {
 		return nil, err
 	}
@@ -518,10 +518,10 @@ func (k knowledgeBase) DeleteObservations(ctx context.Context, ss *mcp.ServerSes
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteRelations(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[DeleteRelationsArgs]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteRelationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
-	err := k.deleteRelations(params.Arguments.Relations)
+	err := k.deleteRelations(req.Params.Arguments.Relations)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +533,7 @@ func (k knowledgeBase) DeleteRelations(ctx context.Context, ss *mcp.ServerSessio
 	return &res, nil
 }
 
-func (k knowledgeBase) ReadGraph(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[struct{}]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) ReadGraph(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[struct{}]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
 	graph, err := k.loadGraph()
@@ -549,10 +549,10 @@ func (k knowledgeBase) ReadGraph(ctx context.Context, ss *mcp.ServerSession, par
 	return &res, nil
 }
 
-func (k knowledgeBase) SearchNodes(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[SearchNodesArgs]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) SearchNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[SearchNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
-	graph, err := k.searchNodes(params.Arguments.Query)
+	graph, err := k.searchNodes(req.Params.Arguments.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -565,10 +565,10 @@ func (k knowledgeBase) SearchNodes(ctx context.Context, ss *mcp.ServerSession, p
 	return &res, nil
 }
 
-func (k knowledgeBase) OpenNodes(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[OpenNodesArgs]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) OpenNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[OpenNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
-	graph, err := k.openNodes(params.Arguments.Names)
+	graph, err := k.openNodes(req.Params.Arguments.Names)
 	if err != nil {
 		return nil, err
 	}

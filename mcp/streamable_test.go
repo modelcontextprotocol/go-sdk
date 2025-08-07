@@ -135,12 +135,12 @@ func TestClientReplay(t *testing.T) {
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
 	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+		func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			go func() {
 				bgCtx := context.Background()
 				// Send the first two messages immediately.
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg1"})
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
+				req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg1"})
+				req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
 
 				// Signal the test that it can now kill the proxy.
 				close(serverReadyToKillProxy)
@@ -148,8 +148,8 @@ func TestClientReplay(t *testing.T) {
 
 				// These messages should be queued for replay by the server after
 				// the client's connection drops.
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg3"})
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
+				req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg3"})
+				req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
 			}()
 			return &CallToolResult{}, nil
 		})
@@ -169,8 +169,8 @@ func TestClientReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ProgressNotificationHandler: func(ctx context.Context, cc *ClientSession, params *ProgressNotificationParams) {
-			notifications <- params.Message
+		ProgressNotificationHandler: func(ctx context.Context, req *ClientRequest[*ProgressNotificationParams]) {
+			notifications <- req.Params.Message
 		},
 	})
 	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil), nil)
@@ -235,9 +235,10 @@ func TestServerInitiatedSSE(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := NewClient(testImpl, &ClientOptions{ToolListChangedHandler: func(ctx context.Context, cc *ClientSession, params *ToolListChangedParams) {
-		notifications <- "toolListChanged"
-	},
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
+			notifications <- "toolListChanged"
+		},
 	})
 	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil), nil)
 	if err != nil {
@@ -245,7 +246,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	}
 	defer clientSession.Close()
 	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
 	receivedNotifications := readNotifications(t, ctx, notifications, 1)
@@ -508,9 +509,9 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
+			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
 				if test.tool != nil {
-					test.tool(t, ctx, ss)
+					test.tool(t, ctx, req.Session)
 				}
 				return &CallToolResultFor[any]{}, nil
 			})
@@ -821,14 +822,15 @@ func TestEventID(t *testing.T) {
 		})
 	}
 }
+
 func TestStreamableStateless(t *testing.T) {
 	// Test stateless mode behavior
 	ctx := context.Background()
 
 	// This version of sayHi doesn't make a ping request (we can't respond to
 	// that request from our client).
-	sayHi := func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
-		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
+	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
+		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)

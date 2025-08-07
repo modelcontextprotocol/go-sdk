@@ -18,10 +18,10 @@ type AddParams struct {
 	X, Y int
 }
 
-func Add(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[AddParams]) (*mcp.CallToolResultFor[any], error) {
+func Add(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddParams]]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("%d", params.Arguments.X+params.Arguments.Y)},
+			&mcp.TextContent{Text: fmt.Sprintf("%d", req.Params.Arguments.X+req.Params.Arguments.Y)},
 		},
 	}, nil
 }

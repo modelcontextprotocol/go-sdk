@@ -32,11 +32,11 @@ type hiParams struct {
 // TODO(jba): after schemas are stateless (WIP), this can be a variable.
 func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
-func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
-	if err := ss.Ping(ctx, nil); err != nil {
+func sayHi(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
+	if err := req.Session.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("ping failed: %v", err)
 	}
-	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
+	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
 }
 
 var codeReviewPrompt = &Prompt{
@@ -73,16 +73,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler:      func(context.Context, *ServerSession, *InitializedParams) { notificationChans["initialized"] <- 0 },
-		RootsListChangedHandler: func(context.Context, *ServerSession, *RootsListChangedParams) { notificationChans["roots"] <- 0 },
-		ProgressNotificationHandler: func(context.Context, *ServerSession, *ProgressNotificationParams) {
+		InitializedHandler: func(context.Context, *ServerRequest[*InitializedParams]) {
+			notificationChans["initialized"] <- 0
+		},
+		RootsListChangedHandler: func(context.Context, *ServerRequest[*RootsListChangedParams]) {
+			notificationChans["roots"] <- 0
+		},
+		ProgressNotificationHandler: func(context.Context, *ServerRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_server"] <- 0
 		},
-		SubscribeHandler: func(context.Context, *ServerSession, *SubscribeParams) error {
+		SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
 			notificationChans["subscribe"] <- 0
 			return nil
 		},
-		UnsubscribeHandler: func(context.Context, *ServerSession, *UnsubscribeParams) error {
+		UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
 			notificationChans["unsubscribe"] <- 0
 			return nil
 		},
@@ -93,7 +97,7 @@ func TestEndToEnd(t *testing.T) {
 		Description: "say hi",
 	}, sayHi)
 	s.AddTool(&Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
@@ -124,19 +128,25 @@ func TestEndToEnd(t *testing.T) {
 
 	loggingMessages := make(chan *LoggingMessageParams, 100) // big enough for all logging
 	opts := &ClientOptions{
-		CreateMessageHandler: func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
-		ToolListChangedHandler:     func(context.Context, *ClientSession, *ToolListChangedParams) { notificationChans["tools"] <- 0 },
-		PromptListChangedHandler:   func(context.Context, *ClientSession, *PromptListChangedParams) { notificationChans["prompts"] <- 0 },
-		ResourceListChangedHandler: func(context.Context, *ClientSession, *ResourceListChangedParams) { notificationChans["resources"] <- 0 },
-		LoggingMessageHandler: func(_ context.Context, _ *ClientSession, lm *LoggingMessageParams) {
-			loggingMessages <- lm
+		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
+			notificationChans["tools"] <- 0
 		},
-		ProgressNotificationHandler: func(context.Context, *ClientSession, *ProgressNotificationParams) {
+		PromptListChangedHandler: func(context.Context, *ClientRequest[*PromptListChangedParams]) {
+			notificationChans["prompts"] <- 0
+		},
+		ResourceListChangedHandler: func(context.Context, *ClientRequest[*ResourceListChangedParams]) {
+			notificationChans["resources"] <- 0
+		},
+		LoggingMessageHandler: func(_ context.Context, req *ClientRequest[*LoggingMessageParams]) {
+			loggingMessages <- req.Params
+		},
+		ProgressNotificationHandler: func(context.Context, *ClientRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_client"] <- 0
 		},
-		ResourceUpdatedHandler: func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams) {
+		ResourceUpdatedHandler: func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams]) {
 			notificationChans["resource_updated"] <- 0
 		},
 	}
@@ -500,8 +510,8 @@ var embeddedResources = map[string]string{
 	"info": "This is the MCP test server.",
 }
 
-func handleEmbeddedResource(_ context.Context, _ *ServerSession, params *ReadResourceParams) (*ReadResourceResult, error) {
-	u, err := url.Parse(params.URI)
+func handleEmbeddedResource(_ context.Context, req *ServerRequest[*ReadResourceParams]) (*ReadResourceResult, error) {
+	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +525,7 @@ func handleEmbeddedResource(_ context.Context, _ *ServerSession, params *ReadRes
 	}
 	return &ReadResourceResult{
 		Contents: []*ResourceContents{
-			{URI: params.URI, MIMEType: "text/plain", Text: text},
+			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
 		},
 	}, nil
 }
@@ -637,7 +647,7 @@ func TestCancellation(t *testing.T) {
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
 
-	slowRequest := func(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -816,17 +826,17 @@ func TestNoJSONNull(t *testing.T) {
 
 // traceCalls creates a middleware function that prints the method before and after each call
 // with the given prefix.
-func traceCalls[S Session](w io.Writer, prefix string) Middleware[S] {
-	return func(h MethodHandler[S]) MethodHandler[S] {
-		return func(ctx context.Context, sess S, method string, params Params) (Result, error) {
+func traceCalls[S Session](w io.Writer, prefix string) Middleware {
+	return func(h MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
 			fmt.Fprintf(w, "%s >%s\n", prefix, method)
 			defer fmt.Fprintf(w, "%s <%s\n", prefix, method)
-			return h(ctx, sess, method, params)
+			return h(ctx, method, req)
 		}
 	}
 }
 
-func nopHandler(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+func nopHandler(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 	return nil, nil
 }
 

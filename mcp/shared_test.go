@@ -23,7 +23,7 @@ func TestToolValidate(t *testing.T) {
 		P *int   `json:",omitempty"`
 	}
 
-	dummyHandler := func(context.Context, *ServerSession, *CallToolParamsFor[req]) (*CallToolResultFor[any], error) {
+	dummyHandler := func(context.Context, *ServerRequest[*CallToolParamsFor[req]]) (*CallToolResultFor[any], error) {
 		return nil, nil
 	}
 
@@ -73,8 +73,9 @@ func TestToolValidate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = st.handler(context.Background(), nil,
-				&CallToolParamsFor[json.RawMessage]{Arguments: json.RawMessage(raw)})
+			_, err = st.handler(context.Background(), &ServerRequest[*CallToolParamsFor[json.RawMessage]]{
+				Params: &CallToolParamsFor[json.RawMessage]{Arguments: json.RawMessage(raw)},
+			})
 			if err == nil && tt.want != "" {
 				t.Error("got success, wanted failure")
 			}
@@ -102,12 +103,12 @@ func TestNilParamsHandling(t *testing.T) {
 	type TestResult = *CallToolResultFor[string]
 
 	// Simple test handler
-	testHandler := func(ctx context.Context, ss *ServerSession, params TestParams) (TestResult, error) {
-		result := "processed: " + params.Arguments.Name
+	testHandler := func(ctx context.Context, req *ServerRequest[TestParams]) (TestResult, error) {
+		result := "processed: " + req.Params.Arguments.Name
 		return &CallToolResultFor[string]{StructuredContent: result}, nil
 	}
 
-	methodInfo := newMethodInfo(testHandler, missingParamsOK)
+	methodInfo := newServerMethodInfo(testHandler, missingParamsOK)
 
 	// Helper function to test that unmarshalParams doesn't panic and handles nil gracefully
 	mustNotPanic := func(t *testing.T, rawMsg json.RawMessage, expectNil bool) Params {
@@ -183,11 +184,11 @@ func TestNilParamsEdgeCases(t *testing.T) {
 	}
 	type TestParams = *CallToolParamsFor[TestArgs]
 
-	testHandler := func(ctx context.Context, ss *ServerSession, params TestParams) (*CallToolResultFor[string], error) {
+	testHandler := func(context.Context, *ServerRequest[TestParams]) (*CallToolResultFor[string], error) {
 		return &CallToolResultFor[string]{StructuredContent: "test"}, nil
 	}
 
-	methodInfo := newMethodInfo(testHandler, missingParamsOK)
+	methodInfo := newServerMethodInfo(testHandler, missingParamsOK)
 
 	// These should fail normally, not be treated as nil params
 	invalidCases := []json.RawMessage{
@@ -209,7 +210,7 @@ func TestNilParamsEdgeCases(t *testing.T) {
 
 	// Test that methods without missingParamsOK flag properly reject nil params
 	t.Run("reject_when_params_required", func(t *testing.T) {
-		methodInfoStrict := newMethodInfo(testHandler, 0) // No missingParamsOK flag
+		methodInfoStrict := newServerMethodInfo(testHandler, 0) // No missingParamsOK flag
 
 		testCases := []struct {
 			name   string

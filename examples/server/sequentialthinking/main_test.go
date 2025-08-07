@@ -31,7 +31,7 @@ func TestStartThinking(t *testing.T) {
 		Arguments: args,
 	}
 
-	result, err := StartThinking(ctx, nil, params)
+	result, err := StartThinking(ctx, requestFor(params))
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestContinueThinking(t *testing.T) {
 		Arguments: startArgs,
 	}
 
-	_, err := StartThinking(ctx, nil, startParams)
+	_, err := StartThinking(ctx, requestFor(startParams))
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestContinueThinking(t *testing.T) {
 		Arguments: continueArgs,
 	}
 
-	result, err := ContinueThinking(ctx, nil, continueParams)
+	result, err := ContinueThinking(ctx, requestFor(continueParams))
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -158,7 +158,7 @@ func TestContinueThinkingWithCompletion(t *testing.T) {
 		Arguments: startArgs,
 	}
 
-	_, err := StartThinking(ctx, nil, startParams)
+	_, err := StartThinking(ctx, requestFor(startParams))
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestContinueThinkingWithCompletion(t *testing.T) {
 		Arguments: continueArgs,
 	}
 
-	result, err := ContinueThinking(ctx, nil, continueParams)
+	result, err := ContinueThinking(ctx, requestFor(continueParams))
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -233,7 +233,7 @@ func TestContinueThinkingRevision(t *testing.T) {
 		Arguments: continueArgs,
 	}
 
-	result, err := ContinueThinking(ctx, nil, continueParams)
+	result, err := ContinueThinking(ctx, requestFor(continueParams))
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -289,7 +289,7 @@ func TestContinueThinkingBranching(t *testing.T) {
 		Arguments: continueArgs,
 	}
 
-	result, err := ContinueThinking(ctx, nil, continueParams)
+	result, err := ContinueThinking(ctx, requestFor(continueParams))
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -356,7 +356,7 @@ func TestReviewThinking(t *testing.T) {
 		Arguments: reviewArgs,
 	}
 
-	result, err := ReviewThinking(ctx, nil, reviewParams)
+	result, err := ReviewThinking(ctx, requestFor(reviewParams))
 	if err != nil {
 		t.Fatalf("ReviewThinking() error = %v", err)
 	}
@@ -431,7 +431,7 @@ func TestThinkingHistory(t *testing.T) {
 		URI: "thinking://sessions",
 	}
 
-	result, err := ThinkingHistory(ctx, nil, listParams)
+	result, err := ThinkingHistory(ctx, requestFor(listParams))
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -461,7 +461,7 @@ func TestThinkingHistory(t *testing.T) {
 		URI: "thinking://session1",
 	}
 
-	result, err = ThinkingHistory(ctx, nil, sessionParams)
+	result, err = ThinkingHistory(ctx, requestFor(sessionParams))
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -496,7 +496,7 @@ func TestInvalidOperations(t *testing.T) {
 		Arguments: continueArgs,
 	}
 
-	_, err := ContinueThinking(ctx, nil, continueParams)
+	_, err := ContinueThinking(ctx, requestFor(continueParams))
 	if err == nil {
 		t.Error("Expected error for non-existent session")
 	}
@@ -511,7 +511,7 @@ func TestInvalidOperations(t *testing.T) {
 		Arguments: reviewArgs,
 	}
 
-	_, err = ReviewThinking(ctx, nil, reviewParams)
+	_, err = ReviewThinking(ctx, requestFor(reviewParams))
 	if err == nil {
 		t.Error("Expected error for non-existent session in review")
 	}
@@ -541,8 +541,12 @@ func TestInvalidOperations(t *testing.T) {
 		Arguments: invalidReviseArgs,
 	}
 
-	_, err = ContinueThinking(ctx, nil, invalidReviseParams)
+	_, err = ContinueThinking(ctx, requestFor(invalidReviseParams))
 	if err == nil {
 		t.Error("Expected error for invalid revision step")
 	}
+}
+
+func requestFor[P mcp.Params](p P) *mcp.ServerRequest[P] {
+	return &mcp.ServerRequest[P]{Params: p}
 }
