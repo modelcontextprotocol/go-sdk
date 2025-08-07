@@ -281,10 +281,10 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
+				SubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *SubscribeParams]) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *UnsubscribeParams]) error {
 					return nil
 				},
 			},
@@ -307,7 +307,7 @@ func TestServerCapabilities(t *testing.T) {
 			name:            "With completions",
 			configureServer: func(s *Server) {},
 			serverOpts: ServerOptions{
-				CompletionHandler: func(ctx context.Context, ss *ServerSession, params *CompleteParams) (*CompleteResult, error) {
+				CompletionHandler: func(context.Context, *RequestFor[*ServerSession, *CompleteParams]) (*CompleteResult, error) {
 					return nil, nil
 				},
 			},
@@ -325,13 +325,13 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddTool(tool, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
+				SubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *SubscribeParams]) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *UnsubscribeParams]) error {
 					return nil
 				},
-				CompletionHandler: func(ctx context.Context, ss *ServerSession, params *CompleteParams) (*CompleteResult, error) {
+				CompletionHandler: func(context.Context, *RequestFor[*ServerSession, *CompleteParams]) (*CompleteResult, error) {
 					return nil, nil
 				},
 			},

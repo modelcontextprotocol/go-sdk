@@ -23,7 +23,7 @@ func TestToolValidate(t *testing.T) {
 		P *int   `json:",omitempty"`
 	}
 
-	dummyHandler := func(context.Context, *ServerSession, *CallToolParamsFor[req]) (*CallToolResultFor[any], error) {
+	dummyHandler := func(context.Context, *RequestFor[*ServerSession, *CallToolParamsFor[req]]) (*CallToolResultFor[any], error) {
 		return nil, nil
 	}
 
@@ -73,8 +73,9 @@ func TestToolValidate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = st.handler(context.Background(), nil,
-				&CallToolParamsFor[json.RawMessage]{Arguments: json.RawMessage(raw)})
+			_, err = st.handler(context.Background(), &RequestFor[*ServerSession, *CallToolParamsFor[json.RawMessage]]{
+				Params: &CallToolParamsFor[json.RawMessage]{Arguments: json.RawMessage(raw)},
+			})
 			if err == nil && tt.want != "" {
 				t.Error("got success, wanted failure")
 			}
@@ -102,8 +103,8 @@ func TestNilParamsHandling(t *testing.T) {
 	type TestResult = *CallToolResultFor[string]
 
 	// Simple test handler
-	testHandler := func(ctx context.Context, ss *ServerSession, params TestParams) (TestResult, error) {
-		result := "processed: " + params.Arguments.Name
+	testHandler := func(ctx context.Context, req *RequestFor[*ServerSession, TestParams]) (TestResult, error) {
+		result := "processed: " + req.Params.Arguments.Name
 		return &CallToolResultFor[string]{StructuredContent: result}, nil
 	}
 
@@ -183,7 +184,7 @@ func TestNilParamsEdgeCases(t *testing.T) {
 	}
 	type TestParams = *CallToolParamsFor[TestArgs]
 
-	testHandler := func(ctx context.Context, ss *ServerSession, params TestParams) (*CallToolResultFor[string], error) {
+	testHandler := func(context.Context, *RequestFor[*ServerSession, TestParams]) (*CallToolResultFor[string], error) {
 		return &CallToolResultFor[string]{StructuredContent: "test"}, nil
 	}
 
