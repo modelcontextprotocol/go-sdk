@@ -335,6 +335,9 @@ func setProgressToken(p Params, pt any) {
 
 // Params is a parameter (input) type for an MCP call or notification.
 type Params interface {
+	// mcpParams discourages implementation of Params outside of this package.
+	mcpParams()
+
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
@@ -356,6 +359,9 @@ type RequestParams interface {
 
 // Result is a result of an MCP call.
 type Result interface {
+	// mcpResult discourages implementation of Result outside of this package.
+	mcpResult()
+
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
@@ -366,6 +372,7 @@ type Result interface {
 // Those methods cannot return nil, because jsonrpc2 cannot handle nils.
 type emptyResult struct{}
 
+func (*emptyResult) mcpResult()              {}
 func (*emptyResult) GetMeta() map[string]any { panic("should never be called") }
 func (*emptyResult) SetMeta(map[string]any)  { panic("should never be called") }
 
