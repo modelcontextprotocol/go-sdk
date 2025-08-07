@@ -753,19 +753,16 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
 	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.initializeParams = params
-	ss.mu.Unlock()
 
 	// Mark the connection as initialized when this method exits.
-	// TODO: Technically, the server should not be considered initialized until it has
-	// *responded*, but we don't have adequate visibility into the jsonrpc2
-	// connection to implement that easily. In any case, once we've initialized
-	// here, we can handle requests.
-	defer func() {
-		ss.mu.Lock()
-		ss.initialized = true
-		ss.mu.Unlock()
-	}()
+	// TODO(#26): Technically, the server should not be considered initialized
+	// until it has *responded*, but since jsonrpc2 is currently serialized we
+	// can mark the session as initialized here. If we ever implement a
+	// concurrency model (#26), we need to guarantee that initialize is not
+	// handled concurrently to other requests.
+	ss.initialized = true
 
 	// If we support the client's version, reply with it. Otherwise, reply with our
 	// latest version.
