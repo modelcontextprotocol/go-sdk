@@ -567,11 +567,25 @@ func (s *Server) Connect(ctx context.Context, t Transport) (*ServerSession, erro
 	return connect(ctx, t, s)
 }
 
-func (s *Server) callInitializedHandler(ctx context.Context, ss *ServerSession, params *InitializedParams) (Result, error) {
-	if s.opts.KeepAlive > 0 {
-		ss.startKeepalive(s.opts.KeepAlive)
+func (ss *ServerSession) initialized(ctx context.Context, params *InitializedParams) (Result, error) {
+	if ss.server.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
-	return callNotificationHandler(ctx, s.opts.InitializedHandler, ss, params)
+	ss.mu.Lock()
+	hasParams := ss.initializeParams != nil
+	wasInitialized := ss._initialized
+	if hasParams {
+		ss._initialized = true
+	}
+	ss.mu.Unlock()
+
+	if !hasParams {
+		return nil, fmt.Errorf("%q before %q", notificationInitialized, methodInitialize)
+	}
+	if wasInitialized {
+		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
+	}
+	return callNotificationHandler(ctx, ss.server.opts.InitializedHandler, ss, params)
 }
 
 func (s *Server) callRootsListChangedHandler(ctx context.Context, ss *ServerSession, params *RootsListChangedParams) (Result, error) {
@@ -603,7 +617,7 @@ type ServerSession struct {
 	mu               sync.Mutex
 	logLevel         LoggingLevel
 	initializeParams *InitializeParams
-	initialized      bool
+	_initialized     bool
 	keepaliveCancel  context.CancelFunc
 }
 
@@ -702,7 +716,7 @@ var serverMethodInfos = map[string]methodInfo{
 	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), 0),
 	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), 0),
 	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), 0),
-	notificationInitialized:      newMethodInfo(serverMethod((*Server).callInitializedHandler), notification|missingParamsOK),
+	notificationInitialized:      newMethodInfo(sessionMethod((*ServerSession).initialized), notification|missingParamsOK),
 	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
 	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), notification),
 }
@@ -729,13 +743,13 @@ func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
-	initialized := ss.initialized
+	initialized := ss._initialized
 	ss.mu.Unlock()
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
 	switch req.Method {
-	case "initialize", "ping":
+	case methodInitialize, methodPing, notificationInitialized:
 	default:
 		if !initialized {
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
@@ -753,16 +767,8 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
 	ss.initializeParams = params
-
-	// Mark the connection as initialized when this method exits.
-	// TODO(#26): Technically, the server should not be considered initialized
-	// until it has *responded*, but since jsonrpc2 is currently serialized we
-	// can mark the session as initialized here. If we ever implement a
-	// concurrency model (#26), we need to guarantee that initialize is not
-	// handled concurrently to other requests.
-	ss.initialized = true
+	ss.mu.Unlock()
 
 	// If we support the client's version, reply with it. Otherwise, reply with our
 	// latest version.
