@@ -80,7 +80,7 @@ func verify(ctx context.Context, verifier TokenVerifier, opts *RequireBearerToke
 		// Note: quadratic, but N is small.
 		for _, s := range opts.Scopes {
 			if !slices.Contains(tokenInfo.Scopes, s) {
-				return nil, "insufficient scope", http.StatusUnauthorized
+				return nil, "insufficient scope", http.StatusForbidden
 			}
 		}
 	}
