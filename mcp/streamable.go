@@ -738,164 +738,201 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		ReconnectOptions: reconnOpts,
 		ctx:              connCtx,
 		cancel:           cancel,
+		failed:           make(chan struct{}),
 	}
-	// Start the persistent SSE listener right away.
-	// Section 2.2: The client MAY issue an HTTP GET to the MCP endpoint.
-	// This can be used to open an SSE stream, allowing the server to
-	// communicate to the client, without the client first sending data via HTTP POST.
-	go conn.handleSSE(nil, true)
-
 	return conn, nil
 }
 
 type streamableClientConn struct {
 	url              string
-	client           *http.Client
-	incoming         chan []byte
-	done             chan struct{}
 	ReconnectOptions *StreamableReconnectOptions
+	client           *http.Client
+	ctx              context.Context
+	cancel           context.CancelFunc
+	incoming         chan []byte
 
+	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
 	closeErr  error
-	ctx       context.Context
-	cancel    context.CancelFunc
+	done      chan struct{} // signal graceful termination
 
-	mu              sync.Mutex
-	protocolVersion string
-	_sessionID      string
-	err             error
+	// Logical reads are distributed across multiple http requests. Whenever any
+	// of them fails to process their response, we must break the connection, by
+	// failing the pending Read.
+	//
+	// Achieve this by storing the failure message, and signalling when reads are
+	// broken. See also [streamableClientConn.fail] and
+	// [streamableClientConn.failure].
+	failOnce sync.Once
+	_failure error
+	failed   chan struct{} // signal failure
+
+	// Guard the initialization state.
+	mu                sync.Mutex
+	initializedResult *InitializeResult
+	sessionID         string
 }
 
-func (c *streamableClientConn) setProtocolVersion(s string) {
+func (c *streamableClientConn) initialized(res *InitializeResult) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.protocolVersion = s
+	c.initializedResult = res
+	c.mu.Unlock()
+
+	// Start the persistent SSE listener as soon as we have the initialized
+	// result.
+	//
+	// § 2.2: The client MAY issue an HTTP GET to the MCP endpoint. This can be
+	// used to open an SSE stream, allowing the server to communicate to the
+	// client, without the client first sending data via HTTP POST.
+	//
+	// We have to wait for initialized, because until we've received
+	// initialized, we don't know whether the server requires a sessionID.
+	//
+	// § 2.5: A server using the Streamable HTTP transport MAY assign a session
+	// ID at initialization time, by including it in an Mcp-Session-Id header
+	// on the HTTP response containing the InitializeResult.
+	go c.handleSSE(nil, true)
+}
+
+// fail handles an asynchronous error while reading.
+//
+// If err is non-nil, it is terminal, and subsequent (or pending) Reads will
+// fail.
+func (c *streamableClientConn) fail(err error) {
+	if err != nil {
+		c.failOnce.Do(func() {
+			c._failure = err
+			close(c.failed)
+		})
+	}
+}
+
+func (c *streamableClientConn) failure() error {
+	select {
+	case <-c.failed:
+		return c._failure
+	default:
+		return nil
+	}
 }
 
 func (c *streamableClientConn) SessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c._sessionID
+	return c.sessionID
 }
 
 // Read implements the [Connection] interface.
-func (s *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
-	s.mu.Lock()
-	err := s.err
-	s.mu.Unlock()
-	if err != nil {
+func (c *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	if err := c.failure(); err != nil {
 		return nil, err
 	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-s.done:
+	case <-c.failed:
+		return nil, c.failure()
+	case <-c.done:
 		return nil, io.EOF
-	case data := <-s.incoming:
+	case data := <-c.incoming:
 		return jsonrpc2.DecodeMessage(data)
 	}
 }
 
 // Write implements the [Connection] interface.
-func (s *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
-	s.mu.Lock()
-	if s.err != nil {
-		s.mu.Unlock()
-		return s.err
-	}
-
-	sessionID := s._sessionID
-	if sessionID == "" {
-		// Hold lock for the first request.
-		defer s.mu.Unlock()
-	} else {
-		s.mu.Unlock()
-	}
-
-	gotSessionID, err := s.postMessage(ctx, sessionID, msg)
-	if err != nil {
-		if sessionID != "" {
-			// unlocked; lock to set err
-			s.mu.Lock()
-			defer s.mu.Unlock()
-		}
-		if s.err != nil {
-			s.err = err
-		}
+func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	if err := c.failure(); err != nil {
 		return err
 	}
 
-	if sessionID == "" {
-		// locked
-		s._sessionID = gotSessionID
-	}
-
-	return nil
-}
-
-// postMessage POSTs msg to the server and reads the response.
-// It returns the session ID from the response.
-func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg jsonrpc.Message) (string, error) {
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
 	if err != nil {
-		return "", err
-	}
-	if s.protocolVersion != "" {
-		req.Header.Set(protocolVersionHeader, s.protocolVersion)
-	}
-	if sessionID != "" {
-		req.Header.Set(sessionIDHeader, sessionID)
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	c.setMCPHeaders(req)
 
-	resp, err := s.client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TODO: do a best effort read of the body here, and format it in the error.
 		resp.Body.Close()
-		return "", fmt.Errorf("broken session: %v", resp.Status)
+		return fmt.Errorf("broken session: %v", resp.Status)
 	}
 
-	sessionID = resp.Header.Get(sessionIDHeader)
-	switch ct := resp.Header.Get("Content-Type"); ct {
-	case "text/event-stream":
-		// Section 2.1: The SSE stream is initiated after a POST.
-		go s.handleSSE(resp, false)
-	case "application/json":
-		body, err := io.ReadAll(resp.Body)
+	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
+		c.mu.Lock()
+		hadSessionID := c.sessionID
+		if hadSessionID == "" {
+			c.sessionID = sessionID
+		}
+		c.mu.Unlock()
+		if hadSessionID != "" && hadSessionID != sessionID {
+			resp.Body.Close()
+			return fmt.Errorf("mismatching session IDs %q and %q", hadSessionID, sessionID)
+		}
+	}
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
 		resp.Body.Close()
-		if err != nil {
-			return "", err
-		}
-		select {
-		case s.incoming <- body:
-		case <-s.done:
-			// The connection was closed by the client; exit gracefully.
-		}
-		return sessionID, nil
+		return nil
+	}
+
+	switch ct := resp.Header.Get("Content-Type"); ct {
+	case "application/json":
+		go c.handleJSON(resp)
+
+	case "text/event-stream":
+		go c.handleSSE(resp, false)
+
 	default:
 		resp.Body.Close()
-		return "", fmt.Errorf("unsupported content type %q", ct)
+		return fmt.Errorf("unsupported content type %q", ct)
 	}
-	return sessionID, nil
+	return nil
+}
+
+func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.initializedResult != nil {
+		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	}
+	if c.sessionID != "" {
+		req.Header.Set(sessionIDHeader, c.sessionID)
+	}
+}
+
+func (c *streamableClientConn) handleJSON(resp *http.Response) {
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	select {
+	case c.incoming <- body:
+	case <-c.done:
+		// The connection was closed by the client; exit gracefully.
+	}
 }
 
 // handleSSE manages the lifecycle of an SSE connection. It can be either
 // persistent (for the main GET listener) or temporary (for a POST response).
-func (s *streamableClientConn) handleSSE(initialResp *http.Response, persistent bool) {
+func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent bool) {
 	resp := initialResp
 	var lastEventID string
 	for {
-		eventID, clientClosed := s.processStream(resp)
+		eventID, clientClosed := c.processStream(resp)
 		lastEventID = eventID
 
 		// If the connection was closed by the client, we're done.
@@ -909,14 +946,10 @@ func (s *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, err := s.reconnect(lastEventID)
+		newResp, err := c.reconnect(lastEventID)
 		if err != nil {
-			// All reconnection attempts failed. Set the final error, close the
-			// connection, and exit the goroutine.
-			s.mu.Lock()
-			s.err = err
-			s.mu.Unlock()
-			s.Close()
+			// All reconnection attempts failed: fail the connection.
+			c.fail(err)
 			return
 		}
 
@@ -926,11 +959,12 @@ func (s *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 }
 
 // processStream reads from a single response body, sending events to the
-// incoming channel. It returns the ID of the last processed event, any error
-// that occurred, and a flag indicating if the connection was closed by the client.
-// If resp is nil, it returns "", false.
-func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID string, clientClosed bool) {
+// incoming channel. It returns the ID of the last processed event and a flag
+// indicating if the connection was closed by the client. If resp is nil, it
+// returns "", false.
+func (c *streamableClientConn) processStream(resp *http.Response) (lastEventID string, clientClosed bool) {
 	if resp == nil {
+		// TODO(rfindley): avoid this special handling.
 		return "", false
 	}
 
@@ -945,8 +979,8 @@ func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID s
 		}
 
 		select {
-		case s.incoming <- evt.Data:
-		case <-s.done:
+		case c.incoming <- evt.Data:
+		case <-c.done:
 			// The connection was closed by the client; exit gracefully.
 			return "", true
 		}
@@ -958,15 +992,15 @@ func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID s
 // reconnect handles the logic of retrying a connection with an exponential
 // backoff strategy. It returns a new, valid HTTP response if successful, or
 // an error if all retries are exhausted.
-func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, error) {
+func (c *streamableClientConn) reconnect(lastEventID string) (*http.Response, error) {
 	var finalErr error
 
-	for attempt := 0; attempt < s.ReconnectOptions.MaxRetries; attempt++ {
+	for attempt := 0; attempt < c.ReconnectOptions.MaxRetries; attempt++ {
 		select {
-		case <-s.done:
+		case <-c.done:
 			return nil, fmt.Errorf("connection closed by client during reconnect")
-		case <-time.After(calculateReconnectDelay(s.ReconnectOptions, attempt)):
-			resp, err := s.establishSSE(lastEventID)
+		case <-time.After(calculateReconnectDelay(c.ReconnectOptions, attempt)):
+			resp, err := c.establishSSE(lastEventID)
 			if err != nil {
 				finalErr = err // Store the error and try again.
 				continue
@@ -983,9 +1017,9 @@ func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 	}
 	// If the loop completes, all retries have failed.
 	if finalErr != nil {
-		return nil, fmt.Errorf("connection failed after %d attempts: %w", s.ReconnectOptions.MaxRetries, finalErr)
+		return nil, fmt.Errorf("connection failed after %d attempts: %w", c.ReconnectOptions.MaxRetries, finalErr)
 	}
-	return nil, fmt.Errorf("connection failed after %d attempts", s.ReconnectOptions.MaxRetries)
+	return nil, fmt.Errorf("connection failed after %d attempts", c.ReconnectOptions.MaxRetries)
 }
 
 // isResumable checks if an HTTP response indicates a valid SSE stream that can be processed.
@@ -999,48 +1033,40 @@ func isResumable(resp *http.Response) bool {
 }
 
 // Close implements the [Connection] interface.
-func (s *streamableClientConn) Close() error {
-	s.closeOnce.Do(func() {
+func (c *streamableClientConn) Close() error {
+	c.closeOnce.Do(func() {
 		// Cancel any hanging network requests.
-		s.cancel()
-		close(s.done)
+		c.cancel()
+		close(c.done)
 
-		req, err := http.NewRequest(http.MethodDelete, s.url, nil)
+		req, err := http.NewRequest(http.MethodDelete, c.url, nil)
 		if err != nil {
-			s.closeErr = err
+			c.closeErr = err
 		} else {
-			// TODO(jba): confirm that we don't need a lock here, or add locking.
-			if s.protocolVersion != "" {
-				req.Header.Set(protocolVersionHeader, s.protocolVersion)
-			}
-			req.Header.Set(sessionIDHeader, s._sessionID)
-			if _, err := s.client.Do(req); err != nil {
-				s.closeErr = err
+			c.setMCPHeaders(req)
+			if _, err := c.client.Do(req); err != nil {
+				c.closeErr = err
 			}
 		}
 	})
-	return s.closeErr
+	return c.closeErr
 }
 
 // establishSSE establishes the persistent SSE listening stream.
 // It is used for reconnect attempts using the Last-Event-ID header to
 // resume a broken stream where it left off.
-func (s *streamableClientConn) establishSSE(lastEventID string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, s.url, nil)
+func (c *streamableClientConn) establishSSE(lastEventID string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	if s._sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", s._sessionID)
-	}
-	s.mu.Unlock()
+	c.setMCPHeaders(req)
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	return s.client.Do(req)
+	return c.client.Do(req)
 }
 
 // calculateReconnectDelay calculates a delay using exponential backoff with full jitter.

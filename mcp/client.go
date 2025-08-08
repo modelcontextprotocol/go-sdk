@@ -134,8 +134,8 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
 	cs.initializeResult = res
-	if hc, ok := cs.mcpConn.(httpConnection); ok {
-		hc.setProtocolVersion(res.ProtocolVersion)
+	if hc, ok := cs.mcpConn.(clientConnection); ok {
+		hc.initialized(res)
 	}
 	if err := handleNotify(ctx, cs, notificationInitialized, &InitializedParams{}); err != nil {
 		_ = cs.Close()

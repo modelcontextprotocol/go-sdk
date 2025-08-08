@@ -60,10 +60,11 @@ type Connection interface {
 	SessionID() string
 }
 
-// An httpConnection is a [Connection] that runs over HTTP.
-type httpConnection interface {
+// A clientConnection is a [Connection] that is specific to the MCP client, and
+// so may receive information about the client session.
+type clientConnection interface {
 	Connection
-	setProtocolVersion(string)
+	initialized(*InitializeResult)
 }
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using

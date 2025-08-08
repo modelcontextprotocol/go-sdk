@@ -79,7 +79,7 @@ func TestStreamableTransports(t *testing.T) {
 	if sid == "" {
 		t.Error("empty session ID")
 	}
-	if g, w := session.mcpConn.(*streamableClientConn).protocolVersion, latestProtocolVersion; g != w {
+	if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
 		t.Fatalf("got protocol version %q, want %q", g, w)
 	}
 	// 4. The client calls the "greet" tool.
