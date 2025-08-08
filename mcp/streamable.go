@@ -273,7 +273,7 @@ func (t *StreamableServerTransport) Connect(context.Context) (Connection, error)
 	//
 	// It is always text/event-stream, since it must carry arbitrarily many
 	// messages.
-	t.connection.streams[0] = newStream(0, false)
+	t.connection.streams[""] = newStream("", false)
 	if t.connection.eventStore == nil {
 		t.connection.eventStore = NewMemoryEventStore(nil)
 	}
@@ -331,7 +331,7 @@ func (c *streamableServerConn) SessionID() string {
 // at any time.
 type stream struct {
 	// id is the logical ID for the stream, unique within a session.
-	// ID 0 is used for messages that don't correlate with an incoming request.
+	// an empty string is used for messages that don't correlate with an incoming request.
 	id StreamID
 
 	// jsonResponse records whether this stream should respond with application/json
@@ -379,9 +379,9 @@ func signalChanPtr() *chan struct{} {
 	return &c
 }
 
-// A StreamID identifies a stream of SSE events. It is unique within the stream's
+// A StreamID identifies a stream of SSE events. It is globally unique.
 // [ServerSession].
-type StreamID int64
+type StreamID string
 
 // We track the incoming request ID inside the handler context using
 // idContextValue, so that notifications and server->client calls that occur in
@@ -431,7 +431,7 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 // It returns an HTTP status code and error message.
 func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
-	id := StreamID(0)
+	id := StreamID("")
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
 	// that by -1. This is incremented just before each event is written, in streamResponse
 	// around L407.
@@ -459,7 +459,7 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 		return
 	}
 	defer stream.signal.Store(nil)
-	persistent := id == 0 // Only the special stream 0 is a hanging get.
+	persistent := id == "" // Only the special stream "" is a hanging get.
 	c.respondSSE(stream, w, req, lastIdx, persistent)
 }
 
@@ -517,7 +517,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// notifications or server->client requests made in the course of handling.
 	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream = newStream(StreamID(c.lastStreamID.Add(1)), c.jsonResponse)
+		stream = newStream(StreamID(randText()), c.jsonResponse)
 		c.mu.Lock()
 		c.streams[stream.id] = stream
 		stream.requests = requests
@@ -716,7 +716,7 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 //
 // See also [parseEventID].
 func formatEventID(sid StreamID, idx int) string {
-	return fmt.Sprintf("%d_%d", sid, idx)
+	return fmt.Sprintf("%s_%d", sid, idx)
 }
 
 // parseEventID parses a Last-Event-ID value into a logical stream id and
@@ -726,15 +726,12 @@ func formatEventID(sid StreamID, idx int) string {
 func parseEventID(eventID string) (sid StreamID, idx int, ok bool) {
 	parts := strings.Split(eventID, "_")
 	if len(parts) != 2 {
-		return 0, 0, false
+		return "", 0, false
 	}
-	stream, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || stream < 0 {
-		return 0, 0, false
-	}
-	idx, err = strconv.Atoi(parts[1])
+	stream := StreamID(parts[0])
+	idx, err := strconv.Atoi(parts[1])
 	if err != nil || idx < 0 {
-		return 0, 0, false
+		return "", 0, false
 	}
 	return StreamID(stream), idx, true
 }
@@ -775,7 +772,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	// Find the logical connection corresponding to this request.
 	//
 	// For messages sent outside of a request context, this is the default
-	// connection 0.
+	// connection "".
 	var forStream StreamID
 	if forRequest.IsValid() {
 		c.mu.Lock()
@@ -796,7 +793,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	stream := c.streams[forStream]
 	if stream == nil {
-		return fmt.Errorf("no stream with ID %d", forStream)
+		return fmt.Errorf("no stream with ID %s", forStream)
 	}
 
 	// Special case a few conditions where we fall back on stream 0 (the hanging GET):
@@ -806,11 +803,11 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	//
 	// TODO(rfindley): either of these, particularly the first, might be
 	// considered a bug in the server. Report it through a side-channel?
-	if len(stream.requests) == 0 && forStream != 0 || stream.jsonResponse && !isResponse {
-		stream = c.streams[0]
+	if len(stream.requests) == 0 && forStream != "" || stream.jsonResponse && !isResponse {
+		stream = c.streams[""]
 	}
 
-	// TODO: if there is nothing to send these messages to (as would happen, for example, if forConn == 0
+	// TODO: if there is nothing to send these messages to (as would happen, for example, if forConn == ""
 	// and the client never did a GET), then memory will grow without bound. Consider a mitigation.
 	stream.outgoing = append(stream.outgoing, data)
 	if isResponse {

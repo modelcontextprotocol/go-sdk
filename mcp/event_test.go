@@ -119,10 +119,10 @@ func TestMemoryEventStoreState(t *testing.T) {
 		{
 			"appends",
 			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
+				appendEvent(s, "S1", "1", "d1")
+				appendEvent(s, "S1", "2", "d2")
+				appendEvent(s, "S1", "1", "d3")
+				appendEvent(s, "S2", "8", "d4")
 			},
 			"S1 1 first=0 d1 d3; S1 2 first=0 d2; S2 8 first=0 d4",
 			8,
@@ -130,10 +130,10 @@ func TestMemoryEventStoreState(t *testing.T) {
 		{
 			"session close",
 			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
+				appendEvent(s, "S1", "1", "d1")
+				appendEvent(s, "S1", "2", "d2")
+				appendEvent(s, "S1", "1", "d3")
+				appendEvent(s, "S2", "8", "d4")
 				s.SessionClosed(ctx, "S1")
 			},
 			"S2 8 first=0 d4",
@@ -142,10 +142,10 @@ func TestMemoryEventStoreState(t *testing.T) {
 		{
 			"purge",
 			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
+				appendEvent(s, "S1", "1", "d1")
+				appendEvent(s, "S1", "2", "d2")
+				appendEvent(s, "S1", "1", "d3")
+				appendEvent(s, "S2", "8", "d4")
 				// We are using 8 bytes (d1,d2, d3, d4).
 				// To purge 6, we remove the first of each stream, leaving only d3.
 				s.SetMaxBytes(2)
@@ -157,15 +157,15 @@ func TestMemoryEventStoreState(t *testing.T) {
 		{
 			"purge append",
 			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
+				appendEvent(s, "S1", "1", "d1")
+				appendEvent(s, "S1", "2", "d2")
+				appendEvent(s, "S1", "1", "d3")
+				appendEvent(s, "S2", "8", "d4")
 				s.SetMaxBytes(2)
 				// Up to here, identical to the "purge" case.
 				// Each of these additions will result in a purge.
-				appendEvent(s, "S1", 2, "d5") // remove d3
-				appendEvent(s, "S1", 2, "d6") // remove d5
+				appendEvent(s, "S1", "2", "d5") // remove d3
+				appendEvent(s, "S1", "2", "d6") // remove d5
 			},
 			"S1 1 first=2; S1 2 first=2 d6; S2 8 first=1",
 			2,
@@ -173,15 +173,15 @@ func TestMemoryEventStoreState(t *testing.T) {
 		{
 			"purge resize append",
 			func(s *MemoryEventStore) {
-				appendEvent(s, "S1", 1, "d1")
-				appendEvent(s, "S1", 2, "d2")
-				appendEvent(s, "S1", 1, "d3")
-				appendEvent(s, "S2", 8, "d4")
+				appendEvent(s, "S1", "1", "d1")
+				appendEvent(s, "S1", "2", "d2")
+				appendEvent(s, "S1", "1", "d3")
+				appendEvent(s, "S2", "8", "d4")
 				s.SetMaxBytes(2)
 				// Up to here, identical to the "purge" case.
 				s.SetMaxBytes(6) // make room
-				appendEvent(s, "S1", 2, "d5")
-				appendEvent(s, "S1", 2, "d6")
+				appendEvent(s, "S1", "2", "d5")
+				appendEvent(s, "S1", "2", "d6")
 			},
 			// The other streams remain, because we may add to them.
 			"S1 1 first=1 d3; S1 2 first=1 d5 d6; S2 8 first=1",
@@ -206,10 +206,10 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryEventStore(nil)
 	s.SetMaxBytes(4)
-	s.Append(ctx, "S1", 1, []byte("d1"))
-	s.Append(ctx, "S1", 1, []byte("d2"))
-	s.Append(ctx, "S1", 1, []byte("d3"))
-	s.Append(ctx, "S1", 2, []byte("d4")) // will purge d1
+	s.Append(ctx, "S1", "1", []byte("d1"))
+	s.Append(ctx, "S1", "1", []byte("d2"))
+	s.Append(ctx, "S1", "1", []byte("d3"))
+	s.Append(ctx, "S1", "2", []byte("d4")) // will purge d1
 	want := "S1 1 first=1 d2 d3; S1 2 first=0 d4"
 	if got := s.debugString(); got != want {
 		t.Fatalf("got state %q, want %q", got, want)
@@ -222,14 +222,14 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 		want      []string
 		wantErr   string // if non-empty, error should contain this string
 	}{
-		{"S1", 1, 0, []string{"d2", "d3"}, ""},
-		{"S1", 1, 1, []string{"d3"}, ""},
-		{"S1", 1, 2, nil, ""},
-		{"S1", 2, 0, nil, ""},
-		{"S1", 3, 0, nil, "unknown stream ID"},
-		{"S2", 0, 0, nil, "unknown session ID"},
+		{"S1", "1", 0, []string{"d2", "d3"}, ""},
+		{"S1", "1", 1, []string{"d3"}, ""},
+		{"S1", "1", 2, nil, ""},
+		{"S1", "2", 0, nil, ""},
+		{"S1", "3", 0, nil, "unknown stream ID"},
+		{"S2", "0", 0, nil, "unknown session ID"},
 	} {
-		t.Run(fmt.Sprintf("%s-%d-%d", tt.sessionID, tt.streamID, tt.index), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s-%s-%d", tt.sessionID, tt.streamID, tt.index), func(t *testing.T) {
 			var got []string
 			for d, err := range s.After(ctx, tt.sessionID, tt.streamID, tt.index) {
 				if err != nil {

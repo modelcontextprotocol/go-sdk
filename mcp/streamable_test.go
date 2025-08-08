@@ -784,22 +784,23 @@ func TestEventID(t *testing.T) {
 		sid StreamID
 		idx int
 	}{
-		{0, 0},
-		{0, 1},
-		{1, 0},
-		{1, 1},
-		{1234, 5678},
+		{"0", 0},
+		{"0", 1},
+		{"1", 0},
+		{"1", 1},
+		{"", 1},
+		{"1234", 5678},
 	}
 
 	for _, test := range tests {
-		t.Run(fmt.Sprintf("%d_%d", test.sid, test.idx), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s_%d", test.sid, test.idx), func(t *testing.T) {
 			eventID := formatEventID(test.sid, test.idx)
 			gotSID, gotIdx, ok := parseEventID(eventID)
 			if !ok {
 				t.Fatalf("parseEventID(%q) failed, want ok", eventID)
 			}
 			if gotSID != test.sid || gotIdx != test.idx {
-				t.Errorf("parseEventID(%q) = %d, %d, want %d, %d", eventID, gotSID, gotIdx, test.sid, test.idx)
+				t.Errorf("parseEventID(%q) = %s, %d, want %s, %d", eventID, gotSID, gotIdx, test.sid, test.idx)
 			}
 		})
 	}
@@ -808,10 +809,7 @@ func TestEventID(t *testing.T) {
 		"",
 		"_",
 		"1_",
-		"_1",
-		"a_1",
 		"1_a",
-		"-1_1",
 		"1_-1",
 	}
 

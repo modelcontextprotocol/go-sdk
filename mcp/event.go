@@ -392,7 +392,7 @@ func (s *MemoryEventStore) debugString() string {
 				fmt.Fprintf(&b, "; ")
 			}
 			dl := sm[sid]
-			fmt.Fprintf(&b, "%s %d first=%d", sess, sid, dl.first)
+			fmt.Fprintf(&b, "%s %s first=%d", sess, sid, dl.first)
 			for _, d := range dl.data {
 				fmt.Fprintf(&b, " %s", d)
 			}
