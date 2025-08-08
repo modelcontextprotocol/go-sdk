@@ -22,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 const DefaultPageSize = 1000
@@ -220,7 +221,19 @@ func (s *Server) RemoveResources(uris ...string) {
 func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			// TODO: check template validity.
+			// Validate the URI template syntax
+			_, err := uritemplate.New(t.URITemplate)
+			if err != nil {
+				panic(fmt.Errorf("URI template %s is invalid: %v", t.URITemplate, err))
+			}
+			// Ensure the URI template has a valid scheme
+			u, err := url.Parse(t.URITemplate)
+			if err != nil {
+				panic(err) // url.Parse includes the URI in the error
+			}
+			if !u.IsAbs() {
+				panic(fmt.Errorf("URI template %s needs a scheme", t.URITemplate))
+			}
 			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
 		})
