@@ -38,9 +38,25 @@ type Transport interface {
 
 // A Connection is a logical bidirectional JSON-RPC connection.
 type Connection interface {
+	// Read reads the next message to process off the connection.
+	//
+	// Read need not be safe for concurrent use: Read is called in a
+	// concurrency-safe manner by the JSON-RPC library.
 	Read(context.Context) (jsonrpc.Message, error)
+
+	// Write writes a new message to the connection.
+	//
+	// Write may be called concurrently, as calls or reponses may occur
+	// concurrently in user code.
 	Write(context.Context, jsonrpc.Message) error
-	Close() error // may be called concurrently by both peers
+
+	// Close closes the connection. It is implicitly called whenever a Read or
+	// Write fails.
+	//
+	// Close may be called multiple times, potentially concurrently.
+	Close() error
+
+	// TODO(#148): remove SessionID from this interface.
 	SessionID() string
 }
 
@@ -264,7 +280,8 @@ func (r rwc) Close() error {
 //
 // See [msgBatch] for more discussion of message batching.
 type ioConn struct {
-	rwc io.ReadWriteCloser // the underlying stream
+	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
+	rwc     io.ReadWriteCloser // the underlying stream
 
 	// incoming receives messages from the read loop started in [newIOConn].
 	incoming <-chan msgOrErr
@@ -496,6 +513,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 		return ctx.Err()
 	default:
 	}
+
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 
 	// Batching support: if msg is a Response, it may have completed a batch, so
 	// check that first. Otherwise, it is a request or notification, and we may

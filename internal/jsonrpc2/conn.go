@@ -65,8 +65,7 @@ type Connection struct {
 	state   inFlightState // accessed only in updateInFlight
 	done    chan struct{} // closed (under stateMu) when state.closed is true and all goroutines have completed
 
-	writer chan Writer // 1-buffered; stores the writer when not in use
-
+	writer  Writer
 	handler Handler
 
 	onInternalError func(error)
@@ -214,12 +213,11 @@ func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
 	c := &Connection{
 		state:           inFlightState{closer: cfg.Closer},
 		done:            make(chan struct{}),
-		writer:          make(chan Writer, 1),
+		writer:          cfg.Writer,
 		onDone:          cfg.OnDone,
 		onInternalError: cfg.OnInternalError,
 	}
 	c.handler = cfg.Bind(c)
-	c.writer <- cfg.Writer
 	c.start(ctx, cfg.Reader, cfg.Preempter)
 	return c
 }
@@ -239,7 +237,6 @@ func bindConnection(bindCtx context.Context, rwc io.ReadWriteCloser, binder Bind
 	c := &Connection{
 		state:  inFlightState{closer: rwc},
 		done:   make(chan struct{}),
-		writer: make(chan Writer, 1),
 		onDone: onDone,
 	}
 	// It's tempting to set a finalizer on c to verify that the state has gone
@@ -259,7 +256,7 @@ func bindConnection(bindCtx context.Context, rwc io.ReadWriteCloser, binder Bind
 	}
 	c.onInternalError = options.OnInternalError
 
-	c.writer <- framer.Writer(rwc)
+	c.writer = framer.Writer(rwc)
 	reader := framer.Reader(rwc)
 	c.start(ctx, reader, options.Preempter)
 	return c
@@ -728,9 +725,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 // write is used by all things that write outgoing messages, including replies.
 // it makes sure that writes are atomic
 func (c *Connection) write(ctx context.Context, msg Message) error {
-	writer := <-c.writer
-	defer func() { c.writer <- writer }()
-	err := writer.Write(ctx, msg)
+	err := c.writer.Write(ctx, msg)
 
 	if err != nil && ctx.Err() == nil {
 		// The call to Write failed, and since ctx.Err() is nil we can't attribute

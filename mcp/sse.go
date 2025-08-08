@@ -155,7 +155,7 @@ func (t *SSEServerTransport) Connect(context.Context) (Connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sseServerConn{t}, nil
+	return &sseServerConn{t: t}, nil
 }
 
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -244,10 +244,10 @@ type sseServerConn struct {
 }
 
 // TODO(jba): get the session ID. (Not urgent because SSE transports have been removed from the spec.)
-func (s sseServerConn) SessionID() string { return "" }
+func (s *sseServerConn) SessionID() string { return "" }
 
 // Read implements jsonrpc2.Reader.
-func (s sseServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+func (s *sseServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -259,7 +259,7 @@ func (s sseServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 }
 
 // Write implements jsonrpc2.Writer.
-func (s sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+func (s *sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -288,7 +288,7 @@ func (s sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 // It must be safe to call Close more than once, as the close may
 // asynchronously be initiated by either the server closing its connection, or
 // by the hanging GET exiting.
-func (s sseServerConn) Close() error {
+func (s *sseServerConn) Close() error {
 	s.t.mu.Lock()
 	defer s.t.mu.Unlock()
 	if !s.t.closed {
