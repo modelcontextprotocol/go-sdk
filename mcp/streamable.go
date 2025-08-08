@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,7 +21,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2/authhandler"
 )
 
 const (
@@ -683,7 +686,7 @@ type StreamableReconnectOptions struct {
 }
 
 // DefaultReconnectOptions provides sensible defaults for reconnect logic.
-var DefaultReconnectOptions = &StreamableReconnectOptions{
+var DefaultReconnectOptions = StreamableReconnectOptions{
 	MaxRetries:   5,
 	growFactor:   1.5,
 	initialDelay: 1 * time.Second,
@@ -693,10 +696,18 @@ var DefaultReconnectOptions = &StreamableReconnectOptions{
 // StreamableClientTransportOptions provides options for the
 // [NewStreamableClientTransport] constructor.
 type StreamableClientTransportOptions struct {
-	// HTTPClient is the client to use for making HTTP requests. If nil,
-	// http.DefaultClient is used.
-	HTTPClient       *http.Client
-	ReconnectOptions *StreamableReconnectOptions
+	// ReconnectOptions control the transport's behavior when it is disconnected
+	// from the server.
+	ReconnectOptions StreamableReconnectOptions
+	// HTTPClient is the client to use for making unauthenticaed HTTP requests.
+	// If nil, http.DefaultClient is used.
+	// For authenticated requests, a shallow clone of the client will be used,
+	// with a different transport. The cookie jar will not be copied.
+	HTTPClient *http.Client
+	// AuthHandler is a function that handles the user interaction part of the OAuth 2.1 flow.
+	// It should prompt the user at the given URL and return the expected OAuth values.
+	// See [authhandler.AuthorizationHandler] for more.
+	AuthHandler authhandler.AuthorizationHandler
 }
 
 // NewStreamableClientTransport returns a new client transport that connects to
@@ -705,6 +716,12 @@ func NewStreamableClientTransport(url string, opts *StreamableClientTransportOpt
 	t := &StreamableClientTransport{url: url}
 	if opts != nil {
 		t.opts = *opts
+	}
+	if t.opts.HTTPClient == nil {
+		t.opts.HTTPClient = http.DefaultClient
+	}
+	if t.opts.ReconnectOptions == (StreamableReconnectOptions{}) {
+		t.opts.ReconnectOptions = DefaultReconnectOptions
 	}
 	return t
 }
@@ -718,26 +735,17 @@ func NewStreamableClientTransport(url string, opts *StreamableClientTransportOpt
 // When closed, the connection issues a DELETE request to terminate the logical
 // session.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.opts.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	reconnOpts := t.opts.ReconnectOptions
-	if reconnOpts == nil {
-		reconnOpts = DefaultReconnectOptions
-	}
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
 	connCtx, cancel := context.WithCancel(context.Background())
 	conn := &streamableClientConn{
-		url:              t.url,
-		client:           client,
-		incoming:         make(chan []byte, 100),
-		done:             make(chan struct{}),
-		ReconnectOptions: reconnOpts,
-		ctx:              connCtx,
-		cancel:           cancel,
+		url:      t.url,
+		opts:     t.opts,
+		incoming: make(chan []byte, 100),
+		done:     make(chan struct{}),
+		ctx:      connCtx,
+		cancel:   cancel,
 	}
 	// Start the persistent SSE listener right away.
 	// Section 2.2: The client MAY issue an HTTP GET to the MCP endpoint.
@@ -749,11 +757,11 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 }
 
 type streamableClientConn struct {
-	url              string
-	client           *http.Client
-	incoming         chan []byte
-	done             chan struct{}
-	ReconnectOptions *StreamableReconnectOptions
+	url        string
+	opts       StreamableClientTransportOptions
+	authClient *http.Client
+	incoming   chan []byte
+	done       chan struct{}
 
 	closeOnce sync.Once
 	closeErr  error
@@ -764,6 +772,10 @@ type streamableClientConn struct {
 	protocolVersion string
 	_sessionID      string
 	err             error
+}
+
+func (c *streamableClientConn) httpClient() *http.Client {
+	return cmp.Or(c.authClient, c.opts.HTTPClient)
 }
 
 func (c *streamableClientConn) setProtocolVersion(s string) {
@@ -833,9 +845,11 @@ func (s *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-// postMessage POSTs msg to the server and reads the response.
-// It returns the session ID from the response.
-func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg jsonrpc.Message) (string, error) {
+// postMessage makes a POST request to the server with msg as the body.
+// It returns the session ID.
+func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string, msg jsonrpc.Message) (_ string, err error) {
+	defer util.Wrapf(&err, "MCP client posting message, session ID %q", sessionID)
+
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
 		return "", err
@@ -854,14 +868,37 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
-	resp, err := s.client.Do(req)
+	// Use an HTTP client that does authentication, if there is one.
+	// Otherwise, use the one provided by the user.
+	client := s.httpClient()
+	// TODO: Resource Indicators, as in
+	// https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#resource-parameter-implementation
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		if client == s.authClient {
+			return "", errors.New("got StatusUnauthorized when already authorized")
+		}
+		tokenSource, err := doOauth(ctx, resp.Header, s.opts.HTTPClient, s.opts.AuthHandler)
+		if err != nil {
+			return "", err
+		}
+		s.authClient = newAuthClient(s.opts.HTTPClient, tokenSource)
+		resp.Body.Close() // because we're about to replace resp
+		resp, err = s.authClient.Do(req)
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", errors.New("got StatusUnauthorized just after authorization")
+		}
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TODO: do a best effort read of the body here, and format it in the error.
-		resp.Body.Close()
 		return "", fmt.Errorf("broken session: %v", resp.Status)
 	}
 
@@ -883,7 +920,6 @@ func (s *streamableClientConn) postMessage(ctx context.Context, sessionID string
 		}
 		return sessionID, nil
 	default:
-		resp.Body.Close()
 		return "", fmt.Errorf("unsupported content type %q", ct)
 	}
 	return sessionID, nil
@@ -960,12 +996,13 @@ func (s *streamableClientConn) processStream(resp *http.Response) (lastEventID s
 // an error if all retries are exhausted.
 func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, error) {
 	var finalErr error
+	maxRetries := s.opts.ReconnectOptions.MaxRetries
 
-	for attempt := 0; attempt < s.ReconnectOptions.MaxRetries; attempt++ {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		select {
 		case <-s.done:
 			return nil, fmt.Errorf("connection closed by client during reconnect")
-		case <-time.After(calculateReconnectDelay(s.ReconnectOptions, attempt)):
+		case <-time.After(calculateReconnectDelay(&s.opts.ReconnectOptions, attempt)):
 			resp, err := s.establishSSE(lastEventID)
 			if err != nil {
 				finalErr = err // Store the error and try again.
@@ -983,9 +1020,9 @@ func (s *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 	}
 	// If the loop completes, all retries have failed.
 	if finalErr != nil {
-		return nil, fmt.Errorf("connection failed after %d attempts: %w", s.ReconnectOptions.MaxRetries, finalErr)
+		return nil, fmt.Errorf("connection failed after %d attempts: %w", maxRetries, finalErr)
 	}
-	return nil, fmt.Errorf("connection failed after %d attempts", s.ReconnectOptions.MaxRetries)
+	return nil, fmt.Errorf("connection failed after %d attempts", maxRetries)
 }
 
 // isResumable checks if an HTTP response indicates a valid SSE stream that can be processed.
@@ -1014,7 +1051,7 @@ func (s *streamableClientConn) Close() error {
 				req.Header.Set(protocolVersionHeader, s.protocolVersion)
 			}
 			req.Header.Set(sessionIDHeader, s._sessionID)
-			if _, err := s.client.Do(req); err != nil {
+			if _, err := s.httpClient().Do(req); err != nil {
 				s.closeErr = err
 			}
 		}
@@ -1040,7 +1077,7 @@ func (s *streamableClientConn) establishSSE(lastEventID string) (*http.Response,
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	return s.client.Do(req)
+	return s.httpClient().Do(req)
 }
 
 // calculateReconnectDelay calculates a delay using exponential backoff with full jitter.
