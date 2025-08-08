@@ -57,7 +57,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			"missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer valid",
-			"insufficient scope", 401,
+			"insufficient scope", 403,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
