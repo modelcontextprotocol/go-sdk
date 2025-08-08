@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	host = flag.String("host", "localhost", "host to connect to/listen on")
-	port = flag.Int("port", 8000, "port number to connect to/listen on")
+	host  = flag.String("host", "localhost", "host to connect to/listen on")
+	port  = flag.Int("port", 8000, "port number to connect to/listen on")
 	proto = flag.String("proto", "http", "if set, use as proto:// part of URL (ignored for server)")
 )
 
@@ -46,7 +46,7 @@ func main() {
 
 	switch mode {
 	case "server":
-		if (*proto != "http") {
+		if *proto != "http" {
 			log.Fatalf("Server only works with 'http' (you passed proto=%s)", *proto)
 		}
 		runServer(fmt.Sprintf("%s:%d", *host, *port))
@@ -57,7 +57,6 @@ func main() {
 		flag.Usage()
 	}
 }
-
 
 // GetTimeParams defines the parameters for the cityTime tool.
 type GetTimeParams struct {
