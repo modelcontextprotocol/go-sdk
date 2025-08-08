@@ -55,14 +55,14 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
-	CreateMessageHandler func(context.Context, *RequestFor[*ClientSession, *CreateMessageParams]) (*CreateMessageResult, error)
+	CreateMessageHandler func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error)
 	// Handlers for notifications from the server.
-	ToolListChangedHandler      func(context.Context, *RequestFor[*ClientSession, *ToolListChangedParams])
-	PromptListChangedHandler    func(context.Context, *RequestFor[*ClientSession, *PromptListChangedParams])
-	ResourceListChangedHandler  func(context.Context, *RequestFor[*ClientSession, *ResourceListChangedParams])
-	ResourceUpdatedHandler      func(context.Context, *RequestFor[*ClientSession, *ResourceUpdatedNotificationParams])
-	LoggingMessageHandler       func(context.Context, *RequestFor[*ClientSession, *LoggingMessageParams])
-	ProgressNotificationHandler func(context.Context, *RequestFor[*ClientSession, *ProgressNotificationParams])
+	ToolListChangedHandler      func(context.Context, *ClientRequest[*ToolListChangedParams])
+	PromptListChangedHandler    func(context.Context, *ClientRequest[*PromptListChangedParams])
+	ResourceListChangedHandler  func(context.Context, *ClientRequest[*ResourceListChangedParams])
+	ResourceUpdatedHandler      func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams])
+	LoggingMessageHandler       func(context.Context, *ClientRequest[*LoggingMessageParams])
+	ProgressNotificationHandler func(context.Context, *ClientRequest[*ProgressNotificationParams])
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
@@ -235,7 +235,7 @@ func (c *Client) changeAndNotify(notification string, params Params, change func
 	notifySessions(sessions, notification, params)
 }
 
-func (c *Client) listRoots(_ context.Context, req *RequestFor[*ClientSession, *ListRootsParams]) (*ListRootsResult, error) {
+func (c *Client) listRoots(_ context.Context, req *ClientRequest[*ListRootsParams]) (*ListRootsResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -247,7 +247,7 @@ func (c *Client) listRoots(_ context.Context, req *RequestFor[*ClientSession, *L
 	}, nil
 }
 
-func (c *Client) createMessage(ctx context.Context, req *RequestFor[*ClientSession, *CreateMessageParams]) (*CreateMessageResult, error) {
+func (c *Client) createMessage(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
 		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support CreateMessage"}
@@ -291,16 +291,16 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 // TODO(rfindley): actually load and validate the protocol schema, rather than
 // curating these method flags.
 var clientMethodInfos = map[string]methodInfo{
-	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), 0),
-	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), missingParamsOK),
-	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
-	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), 0),
-	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
-	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
-	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
-	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
-	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
-	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), notification),
+	methodComplete:                  newClientMethodInfo(clientSessionMethod((*ClientSession).Complete), 0),
+	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
+	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
+	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
+	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
+	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
+	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
+	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
+	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
+	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
@@ -406,23 +406,35 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 	return err
 }
 
-func (c *Client) callToolChangedHandler(ctx context.Context, req *RequestFor[*ClientSession, *ToolListChangedParams]) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ToolListChangedHandler, req)
+func (c *Client) callToolChangedHandler(ctx context.Context, req *ClientRequest[*ToolListChangedParams]) (Result, error) {
+	if h := c.opts.ToolListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callPromptChangedHandler(ctx context.Context, req *RequestFor[*ClientSession, *PromptListChangedParams]) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.PromptListChangedHandler, req)
+func (c *Client) callPromptChangedHandler(ctx context.Context, req *ClientRequest[*PromptListChangedParams]) (Result, error) {
+	if h := c.opts.PromptListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callResourceChangedHandler(ctx context.Context, req *RequestFor[*ClientSession, *ResourceListChangedParams]) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ResourceListChangedHandler, req)
+func (c *Client) callResourceChangedHandler(ctx context.Context, req *ClientRequest[*ResourceListChangedParams]) (Result, error) {
+	if h := c.opts.ResourceListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *RequestFor[*ClientSession, *ResourceUpdatedNotificationParams]) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ResourceUpdatedHandler, req)
+func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ClientRequest[*ResourceUpdatedNotificationParams]) (Result, error) {
+	if h := c.opts.ResourceUpdatedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callLoggingHandler(ctx context.Context, req *RequestFor[*ClientSession, *LoggingMessageParams]) (Result, error) {
+func (c *Client) callLoggingHandler(ctx context.Context, req *ClientRequest[*LoggingMessageParams]) (Result, error) {
 	if h := c.opts.LoggingMessageHandler; h != nil {
 		h(ctx, req)
 	}
@@ -430,7 +442,10 @@ func (c *Client) callLoggingHandler(ctx context.Context, req *RequestFor[*Client
 }
 
 func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, params *ProgressNotificationParams) (Result, error) {
-	return callNotificationHandler(ctx, cs.client.opts.ProgressNotificationHandler, requestFor(cs, params))
+	if h := cs.client.opts.ProgressNotificationHandler; h != nil {
+		h(ctx, clientRequestFor(cs, params))
+	}
+	return nil, nil
 }
 
 // NotifyProgress sends a progress notification from the client to the server

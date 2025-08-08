@@ -122,7 +122,7 @@ func TestClientReplay(t *testing.T) {
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
 	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, req *RequestFor[*ServerSession, *CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			go func() {
 				bgCtx := context.Background()
 				// Send the first two messages immediately.
@@ -156,7 +156,7 @@ func TestClientReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ProgressNotificationHandler: func(ctx context.Context, req *RequestFor[*ClientSession, *ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(ctx context.Context, req *ClientRequest[*ProgressNotificationParams]) {
 			notifications <- req.Params.Message
 		},
 	})
@@ -223,7 +223,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ToolListChangedHandler: func(context.Context, *RequestFor[*ClientSession, *ToolListChangedParams]) {
+		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
 			notifications <- "toolListChanged"
 		},
 	})
@@ -233,7 +233,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	}
 	defer clientSession.Close()
 	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *RequestFor[*ServerSession, *CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
 	receivedNotifications := readNotifications(t, ctx, notifications, 1)
@@ -496,7 +496,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *RequestFor[*ServerSession, *CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
+			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
 				if test.tool != nil {
 					test.tool(t, ctx, req.Session)
 				}

@@ -32,7 +32,7 @@ type hiParams struct {
 // TODO(jba): after schemas are stateless (WIP), this can be a variable.
 func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
-func sayHi(ctx context.Context, req *RequestFor[*ServerSession, *CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
+func sayHi(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
 	if err := req.Session.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("ping failed: %v", err)
 	}
@@ -73,20 +73,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler: func(context.Context, *RequestFor[*ServerSession, *InitializedParams]) {
+		InitializedHandler: func(context.Context, *ServerRequest[*InitializedParams]) {
 			notificationChans["initialized"] <- 0
 		},
-		RootsListChangedHandler: func(context.Context, *RequestFor[*ServerSession, *RootsListChangedParams]) {
+		RootsListChangedHandler: func(context.Context, *ServerRequest[*RootsListChangedParams]) {
 			notificationChans["roots"] <- 0
 		},
-		ProgressNotificationHandler: func(context.Context, *RequestFor[*ServerSession, *ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(context.Context, *ServerRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_server"] <- 0
 		},
-		SubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *SubscribeParams]) error {
+		SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
 			notificationChans["subscribe"] <- 0
 			return nil
 		},
-		UnsubscribeHandler: func(context.Context, *RequestFor[*ServerSession, *UnsubscribeParams]) error {
+		UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
 			notificationChans["unsubscribe"] <- 0
 			return nil
 		},
@@ -97,7 +97,7 @@ func TestEndToEnd(t *testing.T) {
 		Description: "say hi",
 	}, sayHi)
 	s.AddTool(&Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *RequestFor[*ServerSession, *CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
@@ -128,25 +128,25 @@ func TestEndToEnd(t *testing.T) {
 
 	loggingMessages := make(chan *LoggingMessageParams, 100) // big enough for all logging
 	opts := &ClientOptions{
-		CreateMessageHandler: func(context.Context, *RequestFor[*ClientSession, *CreateMessageParams]) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
-		ToolListChangedHandler: func(context.Context, *RequestFor[*ClientSession, *ToolListChangedParams]) {
+		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
 			notificationChans["tools"] <- 0
 		},
-		PromptListChangedHandler: func(context.Context, *RequestFor[*ClientSession, *PromptListChangedParams]) {
+		PromptListChangedHandler: func(context.Context, *ClientRequest[*PromptListChangedParams]) {
 			notificationChans["prompts"] <- 0
 		},
-		ResourceListChangedHandler: func(context.Context, *RequestFor[*ClientSession, *ResourceListChangedParams]) {
+		ResourceListChangedHandler: func(context.Context, *ClientRequest[*ResourceListChangedParams]) {
 			notificationChans["resources"] <- 0
 		},
-		LoggingMessageHandler: func(_ context.Context, req *RequestFor[*ClientSession, *LoggingMessageParams]) {
+		LoggingMessageHandler: func(_ context.Context, req *ClientRequest[*LoggingMessageParams]) {
 			loggingMessages <- req.Params
 		},
-		ProgressNotificationHandler: func(context.Context, *RequestFor[*ClientSession, *ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(context.Context, *ClientRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_client"] <- 0
 		},
-		ResourceUpdatedHandler: func(context.Context, *RequestFor[*ClientSession, *ResourceUpdatedNotificationParams]) {
+		ResourceUpdatedHandler: func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams]) {
 			notificationChans["resource_updated"] <- 0
 		},
 	}
@@ -510,7 +510,7 @@ var embeddedResources = map[string]string{
 	"info": "This is the MCP test server.",
 }
 
-func handleEmbeddedResource(_ context.Context, req *RequestFor[*ServerSession, *ReadResourceParams]) (*ReadResourceResult, error) {
+func handleEmbeddedResource(_ context.Context, req *ServerRequest[*ReadResourceParams]) (*ReadResourceResult, error) {
 	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
@@ -647,7 +647,7 @@ func TestCancellation(t *testing.T) {
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
 
-	slowRequest := func(ctx context.Context, req *RequestFor[*ServerSession, *CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -836,7 +836,7 @@ func traceCalls[S Session](w io.Writer, prefix string) Middleware[S] {
 	}
 }
 
-func nopHandler(context.Context, *RequestFor[*ServerSession, *CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+func nopHandler(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 	return nil, nil
 }
 

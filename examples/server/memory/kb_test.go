@@ -702,6 +702,6 @@ func TestMCPResponseFormat(t *testing.T) {
 	}
 }
 
-func requestFor[P mcp.Params](ss *mcp.ServerSession, p P) *mcp.RequestFor[*mcp.ServerSession, P] {
-	return &mcp.RequestFor[*mcp.ServerSession, P]{Session: ss, Params: p}
+func requestFor[P mcp.Params](ss *mcp.ServerSession, p P) *mcp.ServerRequest[P] {
+	return &mcp.ServerRequest[P]{Session: ss, Params: p}
 }

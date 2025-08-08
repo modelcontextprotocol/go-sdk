@@ -51,24 +51,24 @@ type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
 	// If non-nil, called when "notifications/initialized" is received.
-	InitializedHandler func(context.Context, *RequestFor[*ServerSession, *InitializedParams])
+	InitializedHandler func(context.Context, *ServerRequest[*InitializedParams])
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
-	RootsListChangedHandler func(context.Context, *RequestFor[*ServerSession, *RootsListChangedParams])
+	RootsListChangedHandler func(context.Context, *ServerRequest[*RootsListChangedParams])
 	// If non-nil, called when "notifications/progress" is received.
-	ProgressNotificationHandler func(context.Context, *RequestFor[*ServerSession, *ProgressNotificationParams])
+	ProgressNotificationHandler func(context.Context, *ServerRequest[*ProgressNotificationParams])
 	// If non-nil, called when "completion/complete" is received.
-	CompletionHandler func(context.Context, *RequestFor[*ServerSession, *CompleteParams]) (*CompleteResult, error)
+	CompletionHandler func(context.Context, *ServerRequest[*CompleteParams]) (*CompleteResult, error)
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
 	// Function called when a client session subscribes to a resource.
-	SubscribeHandler func(context.Context, *RequestFor[*ServerSession, *SubscribeParams]) error
+	SubscribeHandler func(context.Context, *ServerRequest[*SubscribeParams]) error
 	// Function called when a client session unsubscribes from a resource.
-	UnsubscribeHandler func(context.Context, *RequestFor[*ServerSession, *UnsubscribeParams]) error
+	UnsubscribeHandler func(context.Context, *ServerRequest[*UnsubscribeParams]) error
 	// If true, advertises the prompts capability during initialization,
 	// even if no prompts have been registered.
 	HasPrompts bool
@@ -258,7 +258,7 @@ func (s *Server) capabilities() *serverCapabilities {
 	return caps
 }
 
-func (s *Server) complete(ctx context.Context, req *RequestFor[*ServerSession, *CompleteParams]) (Result, error) {
+func (s *Server) complete(ctx context.Context, req *ServerRequest[*CompleteParams]) (Result, error) {
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -287,7 +287,7 @@ func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	return slices.Values(clients)
 }
 
-func (s *Server) listPrompts(_ context.Context, req *RequestFor[*ServerSession, *ListPromptsParams]) (*ListPromptsResult, error) {
+func (s *Server) listPrompts(_ context.Context, req *ServerRequest[*ListPromptsParams]) (*ListPromptsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -301,7 +301,7 @@ func (s *Server) listPrompts(_ context.Context, req *RequestFor[*ServerSession, 
 	})
 }
 
-func (s *Server) getPrompt(ctx context.Context, req *RequestFor[*ServerSession, *GetPromptParams]) (*GetPromptResult, error) {
+func (s *Server) getPrompt(ctx context.Context, req *ServerRequest[*GetPromptParams]) (*GetPromptResult, error) {
 	s.mu.Lock()
 	prompt, ok := s.prompts.get(req.Params.Name)
 	s.mu.Unlock()
@@ -312,7 +312,7 @@ func (s *Server) getPrompt(ctx context.Context, req *RequestFor[*ServerSession, 
 	return prompt.handler(ctx, req.Session, req.Params)
 }
 
-func (s *Server) listTools(_ context.Context, req *RequestFor[*ServerSession, *ListToolsParams]) (*ListToolsResult, error) {
+func (s *Server) listTools(_ context.Context, req *ServerRequest[*ListToolsParams]) (*ListToolsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -326,7 +326,7 @@ func (s *Server) listTools(_ context.Context, req *RequestFor[*ServerSession, *L
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *RequestFor[*ServerSession, *CallToolParamsFor[json.RawMessage]]) (*CallToolResult, error) {
+func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParamsFor[json.RawMessage]]) (*CallToolResult, error) {
 	s.mu.Lock()
 	st, ok := s.tools.get(req.Params.Name)
 	s.mu.Unlock()
@@ -336,7 +336,7 @@ func (s *Server) callTool(ctx context.Context, req *RequestFor[*ServerSession, *
 	return st.handler(ctx, req)
 }
 
-func (s *Server) listResources(_ context.Context, req *RequestFor[*ServerSession, *ListResourcesParams]) (*ListResourcesResult, error) {
+func (s *Server) listResources(_ context.Context, req *ServerRequest[*ListResourcesParams]) (*ListResourcesResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -350,7 +350,7 @@ func (s *Server) listResources(_ context.Context, req *RequestFor[*ServerSession
 	})
 }
 
-func (s *Server) listResourceTemplates(_ context.Context, req *RequestFor[*ServerSession, *ListResourceTemplatesParams]) (*ListResourceTemplatesResult, error) {
+func (s *Server) listResourceTemplates(_ context.Context, req *ServerRequest[*ListResourceTemplatesParams]) (*ListResourceTemplatesResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -365,7 +365,7 @@ func (s *Server) listResourceTemplates(_ context.Context, req *RequestFor[*Serve
 		})
 }
 
-func (s *Server) readResource(ctx context.Context, req *RequestFor[*ServerSession, *ReadResourceParams]) (*ReadResourceResult, error) {
+func (s *Server) readResource(ctx context.Context, req *ServerRequest[*ReadResourceParams]) (*ReadResourceResult, error) {
 	uri := req.Params.URI
 	// Look up the resource URI in the lists of resources and resource templates.
 	// This is a security check as well as an information lookup.
@@ -430,7 +430,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 	if err != nil {
 		panic(err)
 	}
-	return func(ctx context.Context, req *RequestFor[*ServerSession, *ReadResourceParams]) (_ *ReadResourceResult, err error) {
+	return func(ctx context.Context, req *ServerRequest[*ReadResourceParams]) (_ *ReadResourceResult, err error) {
 		defer util.Wrapf(&err, "reading resource %s", req.Params.URI)
 
 		// TODO: use a memoizing API here.
@@ -465,7 +465,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	return nil
 }
 
-func (s *Server) subscribe(ctx context.Context, req *RequestFor[*ServerSession, *SubscribeParams]) (*emptyResult, error) {
+func (s *Server) subscribe(ctx context.Context, req *ServerRequest[*SubscribeParams]) (*emptyResult, error) {
 	if s.opts.SubscribeHandler == nil {
 		return nil, fmt.Errorf("%w: server does not support resource subscriptions", jsonrpc2.ErrMethodNotFound)
 	}
@@ -483,7 +483,7 @@ func (s *Server) subscribe(ctx context.Context, req *RequestFor[*ServerSession, 
 	return &emptyResult{}, nil
 }
 
-func (s *Server) unsubscribe(ctx context.Context, req *RequestFor[*ServerSession, *UnsubscribeParams]) (*emptyResult, error) {
+func (s *Server) unsubscribe(ctx context.Context, req *ServerRequest[*UnsubscribeParams]) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -585,15 +585,24 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if wasInitialized {
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
 	}
-	return callNotificationHandler(ctx, ss.server().opts.InitializedHandler, requestFor(ss, params))
+	if h := ss.server().opts.InitializedHandler; h != nil {
+		h(ctx, serverRequestFor(ss, params))
+	}
+	return nil, nil
 }
 
-func (s *Server) callRootsListChangedHandler(ctx context.Context, req *RequestFor[*ServerSession, *RootsListChangedParams]) (Result, error) {
-	return callNotificationHandler(ctx, s.opts.RootsListChangedHandler, req)
+func (s *Server) callRootsListChangedHandler(ctx context.Context, req *ServerRequest[*RootsListChangedParams]) (Result, error) {
+	if h := s.opts.RootsListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
 func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p *ProgressNotificationParams) (Result, error) {
-	return callNotificationHandler(ctx, ss.server().opts.ProgressNotificationHandler, requestFor(ss, p))
+	if h := ss.server().opts.ProgressNotificationHandler; h != nil {
+		h(ctx, serverRequestFor(ss, p))
+	}
+	return nil, nil
 }
 
 // NotifyProgress sends a progress notification from the server to the client
@@ -705,22 +714,22 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession]
 // TODO(rfindley): actually load and validate the protocol schema, rather than
 // curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
-	methodComplete:               newMethodInfo(serverMethod((*Server).complete), 0),
-	methodInitialize:             newMethodInfo(sessionMethod((*ServerSession).initialize), 0),
-	methodPing:                   newMethodInfo(sessionMethod((*ServerSession).ping), missingParamsOK),
-	methodListPrompts:            newMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
-	methodGetPrompt:              newMethodInfo(serverMethod((*Server).getPrompt), 0),
-	methodListTools:              newMethodInfo(serverMethod((*Server).listTools), missingParamsOK),
-	methodCallTool:               newMethodInfo(serverMethod((*Server).callTool), 0),
-	methodListResources:          newMethodInfo(serverMethod((*Server).listResources), missingParamsOK),
-	methodListResourceTemplates:  newMethodInfo(serverMethod((*Server).listResourceTemplates), missingParamsOK),
-	methodReadResource:           newMethodInfo(serverMethod((*Server).readResource), 0),
-	methodSetLevel:               newMethodInfo(sessionMethod((*ServerSession).setLevel), 0),
-	methodSubscribe:              newMethodInfo(serverMethod((*Server).subscribe), 0),
-	methodUnsubscribe:            newMethodInfo(serverMethod((*Server).unsubscribe), 0),
-	notificationInitialized:      newMethodInfo(sessionMethod((*ServerSession).initialized), notification|missingParamsOK),
-	notificationRootsListChanged: newMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
-	notificationProgress:         newMethodInfo(sessionMethod((*ServerSession).callProgressNotificationHandler), notification),
+	methodComplete:               newServerMethodInfo(serverMethod((*Server).complete), 0),
+	methodInitialize:             newServerMethodInfo(serverSessionMethod((*ServerSession).initialize), 0),
+	methodPing:                   newServerMethodInfo(serverSessionMethod((*ServerSession).ping), missingParamsOK),
+	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
+	methodGetPrompt:              newServerMethodInfo(serverMethod((*Server).getPrompt), 0),
+	methodListTools:              newServerMethodInfo(serverMethod((*Server).listTools), missingParamsOK),
+	methodCallTool:               newServerMethodInfo(serverMethod((*Server).callTool), 0),
+	methodListResources:          newServerMethodInfo(serverMethod((*Server).listResources), missingParamsOK),
+	methodListResourceTemplates:  newServerMethodInfo(serverMethod((*Server).listResourceTemplates), missingParamsOK),
+	methodReadResource:           newServerMethodInfo(serverMethod((*Server).readResource), 0),
+	methodSetLevel:               newServerMethodInfo(serverSessionMethod((*ServerSession).setLevel), 0),
+	methodSubscribe:              newServerMethodInfo(serverMethod((*Server).subscribe), 0),
+	methodUnsubscribe:            newServerMethodInfo(serverMethod((*Server).unsubscribe), 0),
+	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
+	notificationRootsListChanged: newServerMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
+	notificationProgress:         newServerMethodInfo(serverSessionMethod((*ServerSession).callProgressNotificationHandler), notification),
 }
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }

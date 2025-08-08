@@ -547,6 +547,6 @@ func TestInvalidOperations(t *testing.T) {
 	}
 }
 
-func requestFor[P mcp.Params](p P) *mcp.RequestFor[*mcp.ServerSession, P] {
-	return &mcp.RequestFor[*mcp.ServerSession, P]{Params: p}
+func requestFor[P mcp.Params](p P) *mcp.ServerRequest[P] {
+	return &mcp.ServerRequest[P]{Params: p}
 }

@@ -231,7 +231,7 @@ func deepCopyThoughts(thoughts []*Thought) []*Thought {
 }
 
 // StartThinking begins a new sequential thinking session for a complex problem.
-func StartThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[StartThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+func StartThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[StartThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
 	args := req.Params.Arguments
 
 	sessionID := args.SessionID
@@ -266,7 +266,7 @@ func StartThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, 
 }
 
 // ContinueThinking adds the next thought step, revises a previous step, or creates a branch in the thinking process.
-func ContinueThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[ContinueThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ContinueThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
 	args := req.Params.Arguments
 
 	// Handle revision of existing thought
@@ -395,7 +395,7 @@ func ContinueThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSessio
 }
 
 // ReviewThinking provides a complete review of the thinking process for a session.
-func ReviewThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[ReviewThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
+func ReviewThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ReviewThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
 	args := req.Params.Arguments
 
 	// Get a snapshot of the session to avoid race conditions
@@ -434,7 +434,7 @@ func ReviewThinking(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession,
 }
 
 // ThinkingHistory handles resource requests for thinking session data and history.
-func ThinkingHistory(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.ReadResourceParams]) (*mcp.ReadResourceResult, error) {
+func ThinkingHistory(ctx context.Context, req *mcp.ServerRequest[*mcp.ReadResourceParams]) (*mcp.ReadResourceResult, error) {
 	// Extract session ID from URI (e.g., "thinking://session_123")
 	u, err := url.Parse(req.Params.URI)
 	if err != nil {

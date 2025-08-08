@@ -198,7 +198,10 @@ type methodInfo struct {
 // - R: results
 
 // A typedMethodHandler is like a MethodHandler, but with type information.
-type typedMethodHandler[S Session, P Params, R Result] func(context.Context, *RequestFor[S, P]) (R, error)
+type (
+	typedClientMethodHandler[P Params, R Result] func(context.Context, *ClientRequest[P]) (R, error)
+	typedServerMethodHandler[P Params, R Result] func(context.Context, *ServerRequest[P]) (R, error)
+)
 
 type paramsPtr[T any] interface {
 	*T
@@ -212,11 +215,35 @@ const (
 	missingParamsOK                         // params may be missing or null
 )
 
+func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
+	mi := newMethodInfo[P, R](flags)
+	mi.handleMethod = MethodHandler[*ClientSession](func(ctx context.Context, _ string, req *Request[*ClientSession]) (Result, error) {
+		rf := &ClientRequest[P]{Session: req.Session}
+		if req.Params != nil {
+			rf.Params = req.Params.(P)
+		}
+		return d(ctx, rf)
+	})
+	return mi
+}
+
+func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHandler[P, R], flags methodFlags) methodInfo {
+	mi := newMethodInfo[P, R](flags)
+	mi.handleMethod = MethodHandler[*ServerSession](func(ctx context.Context, _ string, req *Request[*ServerSession]) (Result, error) {
+		rf := &ServerRequest[P]{Session: req.Session}
+		if req.Params != nil {
+			rf.Params = req.Params.(P)
+		}
+		return d(ctx, rf)
+	})
+	return mi
+}
+
 // newMethodInfo creates a methodInfo from a typedMethodHandler.
 //
 // If isRequest is set, the method is treated as a request rather than a
 // notification.
-func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHandler[S, P, R], flags methodFlags) methodInfo {
+func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInfo {
 	return methodInfo{
 		flags: flags,
 		unmarshalParams: func(m json.RawMessage) (Params, error) {
@@ -238,15 +265,6 @@ func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHand
 			}
 			return orZero[Params](p), nil
 		},
-		handleMethod: MethodHandler[S](func(ctx context.Context, _ string, req *Request[S]) (Result, error) {
-			rf := &RequestFor[S, P]{
-				Session: req.Session,
-			}
-			if req.Params != nil {
-				rf.Params = req.Params.(P)
-			}
-			return d(ctx, rf)
-		}),
 		// newResult is used on the send side, to construct the value to unmarshal the result into.
 		// R is a pointer to a result struct. There is no way to "unpointer" it without reflection.
 		// TODO(jba): explore generic approaches to this, perhaps by treating R in
@@ -257,25 +275,32 @@ func newMethodInfo[S Session, P paramsPtr[T], R Result, T any](d typedMethodHand
 
 // serverMethod is glue for creating a typedMethodHandler from a method on Server.
 func serverMethod[P Params, R Result](
-	f func(*Server, context.Context, *RequestFor[*ServerSession, P]) (R, error),
-) typedMethodHandler[*ServerSession, P, R] {
-	return func(ctx context.Context, req *RequestFor[*ServerSession, P]) (R, error) {
+	f func(*Server, context.Context, *ServerRequest[P]) (R, error),
+) typedServerMethodHandler[P, R] {
+	return func(ctx context.Context, req *ServerRequest[P]) (R, error) {
 		return f(req.Session.server(), ctx, req)
 	}
 }
 
 // clientMethod is glue for creating a typedMethodHandler from a method on Client.
 func clientMethod[P Params, R Result](
-	f func(*Client, context.Context, *RequestFor[*ClientSession, P]) (R, error),
-) typedMethodHandler[*ClientSession, P, R] {
-	return func(ctx context.Context, req *RequestFor[*ClientSession, P]) (R, error) {
+	f func(*Client, context.Context, *ClientRequest[P]) (R, error),
+) typedClientMethodHandler[P, R] {
+	return func(ctx context.Context, req *ClientRequest[P]) (R, error) {
 		return f(req.Session.client, ctx, req)
 	}
 }
 
-// sessionMethod is glue for creating a typedMethodHandler from a method on ServerSession.
-func sessionMethod[S Session, P Params, R Result](f func(S, context.Context, P) (R, error)) typedMethodHandler[S, P, R] {
-	return func(ctx context.Context, req *RequestFor[S, P]) (R, error) {
+// serverSessionMethod is glue for creating a typedServerMethodHandler from a method on ServerSession.
+func serverSessionMethod[P Params, R Result](f func(*ServerSession, context.Context, P) (R, error)) typedServerMethodHandler[P, R] {
+	return func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return f(req.Session, ctx, req.Params)
+	}
+}
+
+// clientSessionMethod is glue for creating a typedMethodHandler from a method on ServerSession.
+func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Context, P) (R, error)) typedClientMethodHandler[P, R] {
+	return func(ctx context.Context, req *ClientRequest[P]) (R, error) {
 		return f(req.Session, ctx, req.Params)
 	}
 }
@@ -286,13 +311,6 @@ const (
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	CodeUnsupportedMethod = -31001
 )
-
-func callNotificationHandler[S Session, P Params](ctx context.Context, h func(context.Context, *RequestFor[S, P]), req *RequestFor[S, P]) (Result, error) {
-	if h != nil {
-		h(ctx, req)
-	}
-	return nil, nil
-}
 
 // notifySessions calls Notify on all the sessions.
 // Should be called on a copy of the peer sessions.
@@ -349,17 +367,32 @@ type Request[S Session] struct {
 
 // A RequestFor is a method request with parameters and additional information, such as the session.
 // The parameters are typed; see [Request] for the untyped version.
-type RequestFor[S Session, P Params] struct {
-	Session S
+// type RequestFor[S Session, P Params] struct {
+// 	Session S
+// 	Params  P
+// 	// TODO: HTTPHeader http.Header
+// 	// TODO: auth.TokenInfo
+// }
+
+type ClientRequest[P Params] struct {
+	Session *ClientSession
 	Params  P
-	// TODO: HTTPHeader http.Header
-	// TODO: auth.TokenInfo
 }
 
-func (*RequestFor[S, P]) isRequest() {}
+type ServerRequest[P Params] struct {
+	Session *ServerSession
+	Params  P
+}
 
-func requestFor[S Session, P Params](s S, p P) *RequestFor[S, P] {
-	return &RequestFor[S, P]{Session: s, Params: p}
+func (*ClientRequest[P]) isRequest() {}
+func (*ServerRequest[P]) isRequest() {}
+
+func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
+	return &ServerRequest[P]{Session: s, Params: p}
+}
+
+func clientRequestFor[P Params](s *ClientSession, p P) *ClientRequest[P] {
+	return &ClientRequest[P]{Session: s, Params: p}
 }
 
 // Params is a parameter (input) type for an MCP call or notification.

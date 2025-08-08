@@ -16,7 +16,7 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[SayHiParams]]) (*mcp.CallToolResultFor[any], error) {
+func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[SayHiParams]]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: "Hi " + req.Params.Arguments.Name},

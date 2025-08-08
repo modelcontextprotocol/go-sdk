@@ -20,7 +20,7 @@ import (
 type ToolHandler = ToolHandlerFor[map[string]any, any]
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
-type ToolHandlerFor[In, Out any] func(context.Context, *RequestFor[*ServerSession, *CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
 
 // A rawToolHandler is like a ToolHandler, but takes the arguments as as json.RawMessage.
 // Second arg is *Request[*ServerSession, *CallToolParamsFor[json.RawMessage]], but that creates
@@ -51,7 +51,7 @@ func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool
 	}
 
 	st.handler = func(ctx context.Context, areq any) (*CallToolResult, error) {
-		req := areq.(*RequestFor[*ServerSession, *CallToolParamsFor[json.RawMessage]])
+		req := areq.(*ServerRequest[*CallToolParamsFor[json.RawMessage]])
 		var args In
 		if req.Params.Arguments != nil {
 			if err := unmarshalSchema(req.Params.Arguments, st.inputResolved, &args); err != nil {
@@ -65,7 +65,7 @@ func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool
 			Arguments: args,
 		}
 		// TODO(jba): improve copy
-		res, err := h(ctx, &RequestFor[*ServerSession, *CallToolParamsFor[In]]{
+		res, err := h(ctx, &ServerRequest[*CallToolParamsFor[In]]{
 			Session: req.Session,
 			Params:  params,
 		})

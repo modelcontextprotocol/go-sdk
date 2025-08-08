@@ -431,7 +431,7 @@ func (k knowledgeBase) openNodes(names []string) (KnowledgeGraph, error) {
 	}, nil
 }
 
-func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[CreateEntitiesArgs]]) (*mcp.CallToolResultFor[CreateEntitiesResult], error) {
+func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateEntitiesArgs]]) (*mcp.CallToolResultFor[CreateEntitiesResult], error) {
 	var res mcp.CallToolResultFor[CreateEntitiesResult]
 
 	entities, err := k.createEntities(req.Params.Arguments.Entities)
@@ -450,7 +450,7 @@ func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.RequestFor[*
 	return &res, nil
 }
 
-func (k knowledgeBase) CreateRelations(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[CreateRelationsArgs]]) (*mcp.CallToolResultFor[CreateRelationsResult], error) {
+func (k knowledgeBase) CreateRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateRelationsArgs]]) (*mcp.CallToolResultFor[CreateRelationsResult], error) {
 	var res mcp.CallToolResultFor[CreateRelationsResult]
 
 	relations, err := k.createRelations(req.Params.Arguments.Relations)
@@ -469,7 +469,7 @@ func (k knowledgeBase) CreateRelations(ctx context.Context, req *mcp.RequestFor[
 	return &res, nil
 }
 
-func (k knowledgeBase) AddObservations(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[AddObservationsArgs]]) (*mcp.CallToolResultFor[AddObservationsResult], error) {
+func (k knowledgeBase) AddObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddObservationsArgs]]) (*mcp.CallToolResultFor[AddObservationsResult], error) {
 	var res mcp.CallToolResultFor[AddObservationsResult]
 
 	observations, err := k.addObservations(req.Params.Arguments.Observations)
@@ -488,7 +488,7 @@ func (k knowledgeBase) AddObservations(ctx context.Context, req *mcp.RequestFor[
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteEntities(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[DeleteEntitiesArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteEntitiesArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
 	err := k.deleteEntities(req.Params.Arguments.EntityNames)
@@ -503,7 +503,7 @@ func (k knowledgeBase) DeleteEntities(ctx context.Context, req *mcp.RequestFor[*
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteObservations(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[DeleteObservationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteObservationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
 	err := k.deleteObservations(req.Params.Arguments.Deletions)
@@ -518,7 +518,7 @@ func (k knowledgeBase) DeleteObservations(ctx context.Context, req *mcp.RequestF
 	return &res, nil
 }
 
-func (k knowledgeBase) DeleteRelations(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[DeleteRelationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
+func (k knowledgeBase) DeleteRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteRelationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	var res mcp.CallToolResultFor[struct{}]
 
 	err := k.deleteRelations(req.Params.Arguments.Relations)
@@ -533,7 +533,7 @@ func (k knowledgeBase) DeleteRelations(ctx context.Context, req *mcp.RequestFor[
 	return &res, nil
 }
 
-func (k knowledgeBase) ReadGraph(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[struct{}]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) ReadGraph(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[struct{}]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
 	graph, err := k.loadGraph()
@@ -549,7 +549,7 @@ func (k knowledgeBase) ReadGraph(ctx context.Context, req *mcp.RequestFor[*mcp.S
 	return &res, nil
 }
 
-func (k knowledgeBase) SearchNodes(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[SearchNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) SearchNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[SearchNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
 	graph, err := k.searchNodes(req.Params.Arguments.Query)
@@ -565,7 +565,7 @@ func (k knowledgeBase) SearchNodes(ctx context.Context, req *mcp.RequestFor[*mcp
 	return &res, nil
 }
 
-func (k knowledgeBase) OpenNodes(ctx context.Context, req *mcp.RequestFor[*mcp.ServerSession, *mcp.CallToolParamsFor[OpenNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
+func (k knowledgeBase) OpenNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[OpenNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
 	var res mcp.CallToolResultFor[KnowledgeGraph]
 
 	graph, err := k.openNodes(req.Params.Arguments.Names)
