@@ -7,9 +7,11 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -34,6 +36,7 @@ const (
 // [MCP spec]: https://modelcontextprotocol.io/2025/03/26/streamable-http-transport.html
 type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
+	opts      StreamableHTTPOptions
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
@@ -44,6 +47,10 @@ type StreamableHTTPHandler struct {
 type StreamableHTTPOptions struct {
 	// TODO: support configurable session ID generation (?)
 	// TODO: support session retention (?)
+
+	// transportOptions sets the streamable server transport options to use when
+	// establishing a new session.
+	transportOptions *StreamableServerTransportOptions
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -52,10 +59,14 @@ type StreamableHTTPOptions struct {
 // sessions. It is OK for getServer to return the same server multiple times.
 // If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
-	return &StreamableHTTPHandler{
+	h := &StreamableHTTPHandler{
 		getServer: getServer,
 		sessions:  make(map[string]*StreamableServerTransport),
 	}
+	if opts != nil {
+		h.opts = *opts
+	}
+	return h
 }
 
 // closeAll closes all ongoing sessions.
@@ -134,7 +145,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	if session == nil {
-		s := NewStreamableServerTransport(randText(), nil)
+		s := NewStreamableServerTransport(randText(), h.opts.transportOptions)
 		server := h.getServer(req)
 		if server == nil {
 			// The getServer argument to NewStreamableHTTPHandler returned nil.
@@ -161,6 +172,15 @@ type StreamableServerTransportOptions struct {
 	// Storage for events, to enable stream resumption.
 	// If nil, a [MemoryEventStore] with the default maximum size will be used.
 	EventStore EventStore
+
+	// jsonResponse, if set, tells the server to prefer to respond to requests
+	// using application/json responses rather than text/event-stream.
+	//
+	// Specifically, responses will be application/json whenever incoming POST
+	// request contain only a single message. In this case, notifications or
+	// requests made within the context of a server request will be sent to the
+	// hanging GET request, if any.
+	jsonResponse bool
 }
 
 // NewStreamableServerTransport returns a new [StreamableServerTransport] with
@@ -182,7 +202,11 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 		streams:        make(map[StreamID]*stream),
 		requestStreams: make(map[jsonrpc.ID]StreamID),
 	}
-	t.streams[0] = newStream(0)
+	// Stream 0 corresponds to the hanging 'GET'.
+	//
+	// It is always text/event-stream, since it must carry arbitrarily many
+	// messages.
+	t.streams[0] = newStream(0, false)
 	if opts != nil {
 		t.opts = *opts
 	}
@@ -199,7 +223,7 @@ func (t *StreamableServerTransport) SessionID() string {
 // A StreamableServerTransport implements the [Transport] interface for a
 // single session.
 type StreamableServerTransport struct {
-	nextStreamID atomic.Int64 // incrementing next stream ID
+	lastStreamID atomic.Int64 // last stream ID used, atomically incremented
 
 	sessionID string
 	opts      StreamableServerTransportOptions
@@ -210,11 +234,12 @@ type StreamableServerTransport struct {
 	// Sessions are closed exactly once.
 	isDone bool
 
-	// Sessions can have multiple logical connections, corresponding to HTTP
-	// requests. Additionally, logical sessions may be resumed by subsequent HTTP
-	// requests, when the session is terminated unexpectedly.
+	// Sessions can have multiple logical connections (which we call streams),
+	// corresponding to HTTP requests. Additionally, streams may be resumed by
+	// subsequent HTTP requests, when the HTTP connection is terminated
+	// unexpectedly.
 	//
-	// Therefore, we use a logical connection ID to key the connection state, and
+	// Therefore, we use a logical stream ID to key the stream state, and
 	// perform the accounting described below when incoming HTTP requests are
 	// handled.
 
@@ -227,10 +252,9 @@ type StreamableServerTransport struct {
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
-	// Lifecycle: requestStreams persists for the duration of the session.
+	// Lifecycle: requestStreams persist for the duration of the session.
 	//
-	// TODO(rfindley): clean up once requests are handled. See the TODO for streams
-	// above.
+	// TODO: clean up once requests are handled. See the TODO for streams above.
 	requestStreams map[jsonrpc.ID]StreamID
 }
 
@@ -244,6 +268,12 @@ type stream struct {
 	// id is the logical ID for the stream, unique within a session.
 	// ID 0 is used for messages that don't correlate with an incoming request.
 	id StreamID
+
+	// jsonResponse records whether this stream should respond with application/json
+	// instead of text/event-stream.
+	//
+	// See [StreamableServerTransportOptions.jsonResponse].
+	jsonResponse bool
 
 	// signal is a 1-buffered channel, owned by an incoming HTTP request, that signals
 	// that there are messages available to write into the HTTP response.
@@ -271,10 +301,11 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
-func newStream(id StreamID) *stream {
+func newStream(id StreamID, jsonResponse bool) *stream {
 	return &stream{
-		id:       id,
-		requests: make(map[jsonrpc.ID]struct{}),
+		id:           id,
+		jsonResponse: jsonResponse,
+		requests:     make(map[jsonrpc.ID]struct{}),
 	}
 }
 
@@ -319,25 +350,23 @@ type idContextKey struct{}
 
 // ServeHTTP handles a single HTTP request for the session.
 func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	status := 0
-	message := ""
 	switch req.Method {
 	case http.MethodGet:
-		status, message = t.serveGET(w, req)
+		t.serveGET(w, req)
 	case http.MethodPost:
-		status, message = t.servePOST(w, req)
+		t.servePOST(w, req)
 	default:
 		// Should not be reached, as this is checked in StreamableHTTPHandler.ServeHTTP.
 		w.Header().Set("Allow", "GET, POST")
-		status = http.StatusMethodNotAllowed
-		message = "unsupported method"
-	}
-	if status != 0 && status != http.StatusOK {
-		http.Error(w, message, status)
+		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
 	}
 }
 
-func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) (int, string) {
+// serveGET streams messages to a hanging http GET, with stream ID and last
+// message parsed from the Last-Event-ID header.
+//
+// It returns an HTTP status code and error message.
+func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
 	id := StreamID(0)
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
@@ -349,7 +378,8 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 		var ok bool
 		id, lastIdx, ok = parseEventID(eid)
 		if !ok {
-			return http.StatusBadRequest, fmt.Sprintf("malformed Last-Event-ID %q", eid)
+			http.Error(w, fmt.Sprintf("malformed Last-Event-ID %q", eid), http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -357,31 +387,50 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 	stream, ok := t.streams[id]
 	t.mu.Unlock()
 	if !ok {
-		return http.StatusBadRequest, "unknown stream"
+		http.Error(w, "unknown stream", http.StatusBadRequest)
+		return
 	}
 	if !stream.signal.CompareAndSwap(nil, signalChanPtr()) {
 		// The CAS returned false, meaning that the comparison failed: stream.signal is not nil.
-		return http.StatusBadRequest, "stream ID conflicts with ongoing stream"
+		http.Error(w, "stream ID conflicts with ongoing stream", http.StatusConflict)
+		return
 	}
-	return t.streamResponse(stream, w, req, lastIdx)
+	defer stream.signal.Store(nil)
+	persistent := id == 0 // Only the special stream 0 is a hanging get.
+	t.respondSSE(stream, w, req, lastIdx, persistent)
 }
 
-func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) (int, string) {
+// servePOST handles an incoming message, and replies with either an outgoing
+// message stream or single response object, depending on whether the
+// jsonResponse option is set.
+//
+// It returns an HTTP status code and error message.
+func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) {
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
-		return http.StatusBadRequest, "can't send Last-Event-ID for POST request"
+		http.Error(w, "can't send Last-Event-ID for POST request", http.StatusBadRequest)
+		return
 	}
 
 	// Read incoming messages.
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return http.StatusBadRequest, "failed to read body"
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
 	}
 	if len(body) == 0 {
-		return http.StatusBadRequest, "POST requires a non-empty body"
+		http.Error(w, "POST requires a non-empty body", http.StatusBadRequest)
+		return
 	}
+	// TODO(#21): if the negotiated protocol version is 2025-06-18 or later,
+	// we should not allow batching here.
+	//
+	// This also requires access to the negotiated version, which would either be
+	// set by the MCP-Protocol-Version header, or would require peeking into the
+	// session.
 	incoming, _, err := readBatch(body)
 	if err != nil {
-		return http.StatusBadRequest, fmt.Sprintf("malformed payload: %v", err)
+		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
+		return
 	}
 	requests := make(map[jsonrpc.ID]struct{})
 	for _, msg := range incoming {
@@ -390,7 +439,8 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
 			if _, err := checkRequest(req, serverMethodInfos); err != nil {
-				return http.StatusBadRequest, err.Error()
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
 			}
 			if req.ID.IsValid() {
 				requests[req.ID] = struct{}{}
@@ -398,38 +448,83 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 		}
 	}
 
-	// Update accounting for this request.
-	stream := newStream(StreamID(t.nextStreamID.Add(1)))
-	t.mu.Lock()
-	t.streams[stream.id] = stream
+	var stream *stream // if non-nil, used to handle requests
+
+	// If we have requests, we need to handle responses along with any
+	// notifications or server->client requests made in the course of handling.
+	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream.requests = make(map[jsonrpc.ID]struct{})
+		stream = newStream(StreamID(t.lastStreamID.Add(1)), t.opts.jsonResponse)
+		t.mu.Lock()
+		t.streams[stream.id] = stream
+		stream.requests = requests
+		for reqID := range requests {
+			t.requestStreams[reqID] = stream.id
+		}
+		t.mu.Unlock()
+		stream.signal.Store(signalChanPtr())
 	}
-	for reqID := range requests {
-		t.requestStreams[reqID] = stream.id
-		stream.requests[reqID] = struct{}{}
-	}
-	t.mu.Unlock()
-	stream.signal.Store(signalChanPtr())
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
 		t.incoming <- msg
 	}
 
-	// TODO(rfindley): consider optimizing for a single incoming request, by
-	// responding with application/json when there is only a single message in
-	// the response.
-	// (But how would we know there is only a single message? For example, couldn't
-	//  a progress notification be sent before a response on the same context?)
-	return t.streamResponse(stream, w, req, -1)
+	if stream == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	if stream.jsonResponse {
+		t.respondJSON(stream, w, req)
+	} else {
+		t.respondSSE(stream, w, req, -1, false)
+	}
+}
+
+func (t *StreamableServerTransport) respondJSON(stream *stream, w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(sessionIDHeader, t.sessionID)
+
+	var msgs []json.RawMessage
+	ctx := req.Context()
+	for msg, ok := range t.messages(ctx, stream, false) {
+		if !ok {
+			if ctx.Err() != nil {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			} else {
+				http.Error(w, http.StatusText(http.StatusGone), http.StatusGone)
+				return
+			}
+		}
+		msgs = append(msgs, msg)
+	}
+	var data []byte
+	if len(msgs) == 1 {
+		data = []byte(msgs[0])
+	} else {
+		// TODO: add tests for batch responses, or disallow them entirely.
+		var err error
+		data, err = json.Marshal(msgs)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("internal error marshalling response: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	_, _ = w.Write(data) // ignore error: client disconnected
 }
 
 // lastIndex is the index of the last seen event if resuming, else -1.
-func (t *StreamableServerTransport) streamResponse(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int) (int, string) {
-	defer stream.signal.Store(nil)
-
+func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int, persistent bool) {
 	writes := 0
+
+	// Accept checked in [StreamableHTTPHandler]
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set(sessionIDHeader, t.sessionID)
 
 	// write one event containing data.
 	write := func(data []byte) bool {
@@ -448,10 +543,13 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 		return true
 	}
 
-	w.Header().Set(sessionIDHeader, t.sessionID)
-	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
-	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	w.Header().Set("Connection", "keep-alive")
+	errorf := func(code int, format string, args ...any) {
+		if writes == 0 {
+			http.Error(w, fmt.Sprintf(format, args...), code)
+		} else {
+			// TODO(#170): log when we add server-side logging
+		}
+	}
 
 	if lastIndex >= 0 {
 		// Resume.
@@ -464,65 +562,83 @@ func (t *StreamableServerTransport) streamResponse(stream *stream, w http.Respon
 				if errors.Is(err, ErrEventsPurged) {
 					status = http.StatusInsufficientStorage
 				}
-				return status, err.Error()
+				errorf(status, "failed to read events: %v", err)
+				return
 			}
 			// The iterator yields events beginning just after lastIndex, or it would have
 			// yielded an error.
 			if !write(data) {
-				return 0, ""
+				return
 			}
 		}
 	}
 
-stream:
 	// Repeatedly collect pending outgoing events and send them.
-	for {
-		t.mu.Lock()
-		outgoing := stream.outgoing
-		stream.outgoing = nil
-		nOutstanding := len(stream.requests)
-		t.mu.Unlock()
-
-		for _, data := range outgoing {
-			if err := t.opts.EventStore.Append(req.Context(), t.SessionID(), stream.id, data); err != nil {
-				return http.StatusInternalServerError, err.Error()
-			}
-			if !write(data) {
-				return 0, ""
-			}
-		}
-
-		// If all requests have been handled and replied to, we should terminate this connection.
-		// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
-		// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
-		// We only want to terminate POSTs, and GETs that are replaying. The general-purpose GET
-		// (stream ID 0) will never have requests, and should remain open indefinitely.
-		// TODO: implement the GET case.
-		if req.Method == http.MethodPost && nOutstanding == 0 {
-			if writes == 0 {
-				// Spec: If the server accepts the input, the server MUST return HTTP
-				// status code 202 Accepted with no body.
-				w.WriteHeader(http.StatusAccepted)
-			}
-			return 0, ""
-		}
-
-		select {
-		case <-*stream.signal.Load(): // there are new outgoing messages
-			// return to top of loop
-		case <-t.done: // session is closed
-			if writes == 0 {
-				return http.StatusGone, "session terminated"
-			}
-			break stream
-		case <-req.Context().Done():
-			if writes == 0 {
+	ctx := req.Context()
+	for msg, ok := range t.messages(ctx, stream, persistent) {
+		if !ok {
+			if ctx.Err() != nil && writes == 0 {
+				// This probably doesn't matter, but respond with NoContent if the client disconnected.
 				w.WriteHeader(http.StatusNoContent)
+			} else {
+				errorf(http.StatusGone, "stream terminated")
 			}
-			break stream
+			return
+		}
+		if err := t.opts.EventStore.Append(req.Context(), t.SessionID(), stream.id, msg); err != nil {
+			errorf(http.StatusInternalServerError, "storing event: %v", err.Error())
+			return
+		}
+		if !write(msg) {
+			return
 		}
 	}
-	return 0, ""
+}
+
+// messages iterates over messages sent to the current stream.
+//
+// The first iterated value is the received JSON message. The second iterated
+// value is an OK value indicating whether the stream terminated normally.
+//
+// If the stream did not terminate normally, it is either because ctx was
+// cancelled, or the connection is closed: check the ctx.Err() to differentiate
+// these cases.
+func (t *StreamableServerTransport) messages(ctx context.Context, stream *stream, persistent bool) iter.Seq2[json.RawMessage, bool] {
+	return func(yield func(json.RawMessage, bool) bool) {
+		for {
+			t.mu.Lock()
+			outgoing := stream.outgoing
+			stream.outgoing = nil
+			nOutstanding := len(stream.requests)
+			t.mu.Unlock()
+
+			for _, data := range outgoing {
+				if !yield(data, true) {
+					return
+				}
+			}
+
+			// If all requests have been handled and replied to, we should terminate this connection.
+			// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
+			// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
+			// We only want to terminate POSTs, and GETs that are replaying. The general-purpose GET
+			// (stream ID 0) will never have requests, and should remain open indefinitely.
+			if nOutstanding == 0 && !persistent {
+				return
+			}
+
+			select {
+			case <-*stream.signal.Load(): // there are new outgoing messages
+				// return to top of loop
+			case <-t.done: // session is closed
+				yield(nil, false)
+				return
+			case <-ctx.Done():
+				yield(nil, false)
+				return
+			}
+		}
+	}
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
@@ -582,7 +698,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		isResponse = true
 	} else {
 		// Otherwise, we check to see if it request was made in the context of an
-		// ongoing request. This may not be the case if the request way made with
+		// ongoing request. This may not be the case if the request was made with
 		// an unrelated context.
 		if v := ctx.Value(idContextKey{}); v != nil {
 			forRequest = v.(jsonrpc.ID)
@@ -593,10 +709,10 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	//
 	// For messages sent outside of a request context, this is the default
 	// connection 0.
-	var forConn StreamID
+	var forStream StreamID
 	if forRequest.IsValid() {
 		t.mu.Lock()
-		forConn = t.requestStreams[forRequest]
+		forStream = t.requestStreams[forRequest]
 		t.mu.Unlock()
 	}
 
@@ -611,15 +727,19 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		return errors.New("session is closed")
 	}
 
-	stream := t.streams[forConn]
+	stream := t.streams[forStream]
 	if stream == nil {
-		return fmt.Errorf("no stream with ID %d", forConn)
+		return fmt.Errorf("no stream with ID %d", forStream)
 	}
-	if len(stream.requests) == 0 && forConn != 0 {
-		// No outstanding requests for this connection, which means it is logically
-		// done. This is a sequencing violation from the server, so we should report
-		// a side-channel error here. Put the message on the general queue to avoid
-		// dropping messages.
+
+	// Special case a few conditions where we fall back on stream 0 (the hanging GET):
+	//
+	//  - if forStream is known, but the associated stream is logically complete
+	//  - if the stream is application/json, but the message is not a response
+	//
+	// TODO(rfindley): either of these, particularly the first, might be
+	// considered a bug in the server. Report it through a side-channel?
+	if len(stream.requests) == 0 && forStream != 0 || stream.jsonResponse && !isResponse {
 		stream = t.streams[0]
 	}
 

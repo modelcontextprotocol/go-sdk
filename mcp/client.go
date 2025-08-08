@@ -250,7 +250,7 @@ func (c *Client) listRoots(_ context.Context, _ *ClientSession, _ *ListRootsPara
 func (c *Client) createMessage(ctx context.Context, cs *ClientSession, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support CreateMessage"}
+		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support CreateMessage")
 	}
 	return c.opts.CreateMessageHandler(ctx, cs, params)
 }

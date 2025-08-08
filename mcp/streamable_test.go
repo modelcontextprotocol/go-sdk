@@ -35,77 +35,90 @@ func TestStreamableTransports(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 1. Create a server with a simple "greet" tool.
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
-	// cookie-checking middleware.
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	var header http.Header
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header = r.Header
-		cookie, err := r.Cookie("test-cookie")
-		if err != nil {
-			t.Errorf("missing cookie: %v", err)
-		} else if cookie.Value != "test-value" {
-			t.Errorf("got cookie %q, want %q", cookie.Value, "test-value")
-		}
-		handler.ServeHTTP(w, r)
-	}))
-	defer httpServer.Close()
+	for _, useJSON := range []bool{false, true} {
+		t.Run(fmt.Sprintf("JSONResponse=%v", useJSON), func(t *testing.T) {
+			// 1. Create a server with a simple "greet" tool.
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 
-	// 3. Create a client and connect it to the server using our StreamableClientTransport.
-	// Check that all requests honor a custom client.
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse(httpServer.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jar.SetCookies(u, []*http.Cookie{{Name: "test-cookie", Value: "test-value"}})
-	httpClient := &http.Client{Jar: jar}
-	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
-		HTTPClient: httpClient,
-	})
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	defer session.Close()
-	sid := session.ID()
-	if sid == "" {
-		t.Error("empty session ID")
-	}
-	if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
-		t.Fatalf("got protocol version %q, want %q", g, w)
-	}
-	// 4. The client calls the "greet" tool.
-	params := &CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "streamy"},
-	}
-	got, err := session.CallTool(ctx, params)
-	if err != nil {
-		t.Fatalf("CallTool() failed: %v", err)
-	}
-	if g := session.ID(); g != sid {
-		t.Errorf("session ID: got %q, want %q", g, sid)
-	}
-	if g, w := header.Get(protocolVersionHeader), latestProtocolVersion; g != w {
-		t.Errorf("got protocol version header %q, want %q", g, w)
-	}
+			// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
+			// cookie-checking middleware.
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+				transportOptions: &StreamableServerTransportOptions{jsonResponse: useJSON},
+			})
 
-	// 5. Verify that the correct response is received.
-	want := &CallToolResult{
-		Content: []Content{
-			&TextContent{Text: "hi streamy"},
-		},
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+			var (
+				headerMu   sync.Mutex
+				lastHeader http.Header
+			)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headerMu.Lock()
+				lastHeader = r.Header
+				headerMu.Unlock()
+				cookie, err := r.Cookie("test-cookie")
+				if err != nil {
+					t.Errorf("missing cookie: %v", err)
+				} else if cookie.Value != "test-value" {
+					t.Errorf("got cookie %q, want %q", cookie.Value, "test-value")
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			// 3. Create a client and connect it to the server using our StreamableClientTransport.
+			// Check that all requests honor a custom client.
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(httpServer.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jar.SetCookies(u, []*http.Cookie{{Name: "test-cookie", Value: "test-value"}})
+			httpClient := &http.Client{Jar: jar}
+			transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
+				HTTPClient: httpClient,
+			})
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			defer session.Close()
+			sid := session.ID()
+			if sid == "" {
+				t.Error("empty session ID")
+			}
+			if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
+				t.Fatalf("got protocol version %q, want %q", g, w)
+			}
+			// 4. The client calls the "greet" tool.
+			params := &CallToolParams{
+				Name:      "greet",
+				Arguments: map[string]any{"name": "streamy"},
+			}
+			got, err := session.CallTool(ctx, params)
+			if err != nil {
+				t.Fatalf("CallTool() failed: %v", err)
+			}
+			if g := session.ID(); g != sid {
+				t.Errorf("session ID: got %q, want %q", g, sid)
+			}
+			if g, w := lastHeader.Get(protocolVersionHeader), latestProtocolVersion; g != w {
+				t.Errorf("got protocol version header %q, want %q", g, w)
+			}
+
+			// 5. Verify that the correct response is received.
+			want := &CallToolResult{
+				Content: []Content{
+					&TextContent{Text: "hi streamy"},
+				},
+			}
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -745,6 +758,7 @@ func TestStreamableClientTransportApplicationJSON(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", "123")
 		w.Write(data)
 	}
 

@@ -275,6 +275,8 @@ func sessionMethod[S Session, P Params, R Result](f func(S, context.Context, P) 
 
 // Error codes
 const (
+	// TODO: should these be unexported?
+
 	CodeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	CodeUnsupportedMethod = -31001
