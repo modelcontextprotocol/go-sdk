@@ -318,9 +318,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// Start a goroutine for reads, so that we can select on the incoming channel
 	// in [ioConn.Read] and unblock the read as soon as Close is called (see #224).
 	//
-	// This leaks a goroutine, but that is unavoidable since AFAIK there is no
-	// (easy and portable) way to guarantee that reads of stdin are unblocked
-	// when closed.
+	// This leaks a goroutine if rwc.Read does not unblock after it is closed,
+	// but that is unavoidable since AFAIK there is no (easy and portable) way to
+	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
 		dec := json.NewDecoder(rwc)
 		for {

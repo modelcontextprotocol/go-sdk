@@ -129,7 +129,9 @@ func TestServerInterrupt(t *testing.T) {
 	}()
 
 	// send a signal to the server process to terminate it
-	cmd.Process.Signal(os.Interrupt)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 
 	// wait for the server to exit
 	// TODO: use synctest when available
@@ -162,6 +164,11 @@ func TestStdioContextCancellation(t *testing.T) {
 	}
 
 	// Sleep to make it more likely that the server is blocked in the read loop.
+	//
+	// This sleep isn't necessary for the test to pass, but *was* necessary for
+	// it to fail, before closing was fixed. Unfortunately, it is too invasive a
+	// change to have the jsonrpc2 package signal across packages when it is
+	// actually blocked in its read loop.
 	time.Sleep(100 * time.Millisecond)
 
 	onExit := make(chan struct{})
@@ -170,7 +177,9 @@ func TestStdioContextCancellation(t *testing.T) {
 		close(onExit)
 	}()
 
-	cmd.Process.Signal(os.Interrupt)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-time.After(5 * time.Second):
