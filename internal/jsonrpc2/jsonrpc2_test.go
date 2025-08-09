@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -143,6 +144,8 @@ func testConnection(t *testing.T, framer jsonrpc2.Framer) {
 		t.Run(test.Name(), func(t *testing.T) {
 			client, err := jsonrpc2.Dial(ctx,
 				listener.Dialer(), binder{framer, func(h *handler) {
+					// Sleep a little to a void a race with setting conn.writer in jsonrpc2.bindConnection.
+					time.Sleep(50 * time.Millisecond)
 					defer h.conn.Close()
 					test.Invoke(t, ctx, h)
 					if call, ok := test.(*call); ok {
