@@ -117,26 +117,26 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	var session *StreamableServerTransport
+	var transport *StreamableServerTransport
 	sessionID := req.Header.Get(sessionIDHeader)
 	if sessionID != "" {
 		h.transportMu.Lock()
-		session, _ = h.transports[sessionID]
+		transport, _ = h.transports[sessionID]
 		h.transportMu.Unlock()
 	}
 
 	// TODO(rfindley): simplify the locking so that each request has only one
 	// critical section.
 	if req.Method == http.MethodDelete {
-		if session == nil {
+		if transport == nil {
 			// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
 		h.transportMu.Lock()
-		delete(h.transports, session.sessionID)
+		delete(h.transports, transport.sessionID)
 		h.transportMu.Unlock()
-		session.Close()
+		transport.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -149,7 +149,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	if session == nil {
+	if transport == nil {
 		var state *SessionState
 		var err error
 		if sessionID != "" {
@@ -162,7 +162,6 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				http.Error(w, fmt.Sprintf("SessionStore.Load(%q): %v", sessionID, err), http.StatusInternalServerError)
 				return
 			}
-			session = NewStreamableServerTransport(sessionID, nil)
 		} else {
 			state = &SessionState{}
 			sessionID = randText()
@@ -170,8 +169,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				http.Error(w, fmt.Sprintf("SessionStore.Store, new session: %v", err), http.StatusInternalServerError)
 				return
 			}
-			session = NewStreamableServerTransport(sessionID, nil)
 		}
+		transport = NewStreamableServerTransport(sessionID, nil)
 		server := h.getServer(req)
 		if server == nil {
 			http.Error(w, "no server available", http.StatusBadRequest)
@@ -180,7 +179,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		_, err = server.Connect(req.Context(), session, &ServerSessionOptions{
+		// TODO: rename SessionOptions to ConnectOptions?
+		_, err = server.Connect(req.Context(), transport, &SessionOptions{
 			SessionID:    sessionID,
 			SessionState: state,
 			SessionStore: h.opts.SessionStore,
@@ -190,11 +190,14 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		h.transportMu.Lock()
-		h.transports[session.sessionID] = session
+		// Check in case another request with the same stored session ID got here first.
+		if _, ok := h.transports[transport.sessionID]; !ok {
+			h.transports[transport.sessionID] = transport
+		}
 		h.transportMu.Unlock()
 	}
 
-	session.ServeHTTP(w, req)
+	transport.ServeHTTP(w, req)
 }
 
 type StreamableServerTransportOptions struct {

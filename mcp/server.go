@@ -559,7 +559,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 	}
 }
 
-type ServerSessionOptions struct {
+type SessionOptions struct {
 	SessionID    string
 	SessionState *SessionState
 	SessionStore SessionStore
@@ -571,7 +571,7 @@ type ServerSessionOptions struct {
 // It returns a connection object that may be used to terminate the connection
 // (with [Connection.Close]), or await client termination (with
 // [Connection.Wait]).
-func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOptions) (*ServerSession, error) {
+func (s *Server) Connect(ctx context.Context, t Transport, opts *SessionOptions) (*ServerSession, error) {
 	if opts != nil && opts.SessionState == nil && opts.SessionStore != nil {
 		return nil, errors.New("ServerSessionOptions has store but no state")
 	}
@@ -634,7 +634,7 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 type ServerSession struct {
 	server          *Server
 	conn            *jsonrpc2.Connection
-	opts            ServerSessionOptions
+	opts            SessionOptions
 	mu              sync.Mutex
 	logLevel        LoggingLevel
 	_initialized    bool

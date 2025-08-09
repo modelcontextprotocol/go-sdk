@@ -135,7 +135,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Connect the server, and connect the client stream,
 	// but don't connect an actual client.
 	cTransport, sTransport := NewInMemoryTransports()
-	ss, err := s.Connect(ctx, sTransport)
+	ss, err := s.Connect(ctx, sTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
