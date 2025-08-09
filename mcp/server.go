@@ -513,6 +513,10 @@ func (s *Server) unsubscribe(ctx context.Context, ss *ServerSession, params *Uns
 // advertise the capability for tools, including the ability to send list-changed notifications.
 // If no tools have been added, the server will not have the tool capability.
 // The same goes for other features like prompts and resources.
+//
+// Run is a convenience for servers that handle a single session (or one session at a time).
+// It need not be called on servers that are used for multiple concurrent connections,
+// as with [StreamableHTTPHandler].
 func (s *Server) Run(ctx context.Context, t Transport) error {
 	ss, err := s.Connect(ctx, t)
 	if err != nil {
