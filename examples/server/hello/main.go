@@ -22,10 +22,10 @@ type HiArgs struct {
 	Name string `json:"name" jsonschema:"the name to say hi to"`
 }
 
-func SayHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[HiArgs]) (*mcp.CallToolResultFor[struct{}], error) {
+func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[HiArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
 	return &mcp.CallToolResultFor[struct{}]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
+			&mcp.TextContent{Text: "Hi " + req.Params.Arguments.Name},
 		},
 	}, nil
 }
@@ -69,8 +69,8 @@ var embeddedResources = map[string]string{
 	"info": "This is the hello example server.",
 }
 
-func handleEmbeddedResource(_ context.Context, _ *mcp.ServerSession, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
-	u, err := url.Parse(params.URI)
+func handleEmbeddedResource(_ context.Context, req *mcp.ServerRequest[*mcp.ReadResourceParams]) (*mcp.ReadResourceResult, error) {
+	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +84,7 @@ func handleEmbeddedResource(_ context.Context, _ *mcp.ServerSession, params *mcp
 	}
 	return &mcp.ReadResourceResult{
 		Contents: []*mcp.ResourceContents{
-			{URI: params.URI, MIMEType: "text/plain", Text: text},
+			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
 		},
 	}, nil
 }

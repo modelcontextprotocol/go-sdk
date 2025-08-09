@@ -32,33 +32,32 @@ func Example_loggingMiddleware() {
 	loggingMiddleware := func(next mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession] {
 		return func(
 			ctx context.Context,
-			session *mcp.ServerSession,
 			method string,
-			params mcp.Params,
+			req *mcp.Request[*mcp.ServerSession],
 		) (mcp.Result, error) {
 			logger.Info("MCP method started",
 				"method", method,
-				"session_id", session.ID(),
-				"has_params", params != nil,
+				"session_id", req.Session.ID(),
+				"has_params", req.Params != nil,
 			)
 
 			start := time.Now()
 
-			result, err := next(ctx, session, method, params)
+			result, err := next(ctx, method, req)
 
 			duration := time.Since(start)
 
 			if err != nil {
 				logger.Error("MCP method failed",
 					"method", method,
-					"session_id", session.ID(),
+					"session_id", req.Session.ID(),
 					"duration_ms", duration.Milliseconds(),
 					"err", err,
 				)
 			} else {
 				logger.Info("MCP method completed",
 					"method", method,
-					"session_id", session.ID(),
+					"session_id", req.Session.ID(),
 					"duration_ms", duration.Milliseconds(),
 					"has_result", result != nil,
 				)
@@ -90,10 +89,9 @@ func Example_loggingMiddleware() {
 		},
 		func(
 			ctx context.Context,
-			ss *mcp.ServerSession,
-			params *mcp.CallToolParamsFor[map[string]any],
+			req *mcp.ServerRequest[*mcp.CallToolParamsFor[map[string]any]],
 		) (*mcp.CallToolResultFor[any], error) {
-			name, ok := params.Arguments["name"].(string)
+			name, ok := req.Params.Arguments["name"].(string)
 			if !ok {
 				return nil, fmt.Errorf("name parameter is required and must be a string")
 			}

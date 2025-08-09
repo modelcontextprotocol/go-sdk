@@ -16,17 +16,17 @@ import (
 // a CompletionHandler to an MCP Server's options.
 func main() {
 	// Define your custom CompletionHandler logic.
-	myCompletionHandler := func(_ context.Context, _ *mcp.ServerSession, params *mcp.CompleteParams) (*mcp.CompleteResult, error) {
+	myCompletionHandler := func(_ context.Context, req *mcp.ServerRequest[*mcp.CompleteParams]) (*mcp.CompleteResult, error) {
 		// In a real application, you'd implement actual completion logic here.
 		// For this example, we return a fixed set of suggestions.
 		var suggestions []string
-		switch params.Ref.Type {
+		switch req.Params.Ref.Type {
 		case "ref/prompt":
 			suggestions = []string{"suggestion1", "suggestion2", "suggestion3"}
 		case "ref/resource":
 			suggestions = []string{"suggestion4", "suggestion5", "suggestion6"}
 		default:
-			return nil, fmt.Errorf("unrecognized content type %s", params.Ref.Type)
+			return nil, fmt.Errorf("unrecognized content type %s", req.Params.Ref.Type)
 		}
 
 		return &mcp.CompleteResult{
