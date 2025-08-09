@@ -60,11 +60,28 @@ type Connection interface {
 	SessionID() string
 }
 
-// A clientConnection is a [Connection] that is specific to the MCP client, and
-// so may receive information about the client session.
+// A ClientConnection is a [Connection] that is specific to the MCP client.
+//
+// If client connections implement this interface, they may receive information
+// about changes to the client session.
+//
+// TODO: should this interface be exported?
 type clientConnection interface {
 	Connection
-	initialized(*InitializeResult)
+
+	// SessionUpdated is called whenever the client session state changes.
+	sessionUpdated(clientSessionState)
+}
+
+// A serverConnection is a Connection that is specific to the MCP server.
+//
+// If server connections implement this interface, they receive information
+// about changes to the server session.
+//
+// TODO: should this interface be exported?
+type serverConnection interface {
+	Connection
+	sessionUpdated(ServerSessionState)
 }
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
@@ -102,37 +119,36 @@ func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport) {
 	return &InMemoryTransport{ioTransport{c1}}, &InMemoryTransport{ioTransport{c2}}
 }
 
-type binder[T handler] interface {
-	bind(*jsonrpc2.Connection) T
+type binder[T handler, State any] interface {
+	bind(Connection, *jsonrpc2.Connection, State) T
 	disconnect(T)
 }
 
 type handler interface {
 	handle(ctx context.Context, req *jsonrpc.Request) (any, error)
-	setConn(Connection)
 }
 
-func connect[H handler](ctx context.Context, t Transport, b binder[H]) (H, error) {
+func connect[H handler, State any](ctx context.Context, t Transport, b binder[H, State], s State) (H, error) {
 	var zero H
-	conn, err := t.Connect(ctx)
+	mcpConn, err := t.Connect(ctx)
 	if err != nil {
 		return zero, err
 	}
 	// If logging is configured, write message logs.
-	reader, writer := jsonrpc2.Reader(conn), jsonrpc2.Writer(conn)
+	reader, writer := jsonrpc2.Reader(mcpConn), jsonrpc2.Writer(mcpConn)
 	var (
 		h         H
 		preempter canceller
 	)
 	bind := func(conn *jsonrpc2.Connection) jsonrpc2.Handler {
-		h = b.bind(conn)
+		h = b.bind(mcpConn, conn, s)
 		preempter.conn = conn
 		return jsonrpc2.HandlerFunc(h.handle)
 	}
 	_ = jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
 		Reader:    reader,
 		Writer:    writer,
-		Closer:    conn,
+		Closer:    mcpConn,
 		Bind:      bind,
 		Preempter: &preempter,
 		OnDone: func() {
@@ -141,7 +157,6 @@ func connect[H handler](ctx context.Context, t Transport, b binder[H]) (H, error
 		OnInternalError: func(err error) { log.Printf("jsonrpc2 error: %v", err) },
 	})
 	assert(preempter.conn != nil, "unbound preempter")
-	h.setConn(conn)
 	return h, nil
 }
 

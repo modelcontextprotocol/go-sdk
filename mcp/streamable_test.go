@@ -81,7 +81,7 @@ func TestStreamableTransports(t *testing.T) {
 				HTTPClient: httpClient,
 			})
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport)
+			session, err := client.Connect(ctx, transport, nil)
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -173,7 +173,7 @@ func TestClientReplay(t *testing.T) {
 			notifications <- params.Message
 		},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil))
+	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil), nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 		notifications <- "toolListChanged"
 	},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil))
+	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil), nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -767,12 +767,12 @@ func TestStreamableClientTransportApplicationJSON(t *testing.T) {
 
 	transport := NewStreamableClientTransport(httpServer.URL, nil)
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer session.Close()
-	if diff := cmp.Diff(initResult, session.initializeResult); diff != "" {
+	if diff := cmp.Diff(initResult, session.state.InitializeResult); diff != "" {
 		t.Errorf("mismatch (-want, +got):\n%s", diff)
 	}
 }
@@ -820,4 +820,74 @@ func TestEventID(t *testing.T) {
 			}
 		})
 	}
+}
+func TestStreamableStateless(t *testing.T) {
+	// Test stateless mode behavior
+	ctx := context.Background()
+
+	// This version of sayHi doesn't make a ping request (we can't respond to
+	// that request from our client).
+	sayHi := func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
+		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+
+	// Test stateless mode.
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		GetSessionID: func() string { return "" },
+	})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	checkRequest := func(body string) {
+		// Verify we can call tools/list directly without initialization in stateless mode
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		// Verify that no session ID header is returned in stateless mode
+		if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
+			t.Errorf("%s = %s, want no session ID header", sessionIDHeader, sessionID)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Status code = %d; want successful response", resp.StatusCode)
+		}
+
+		var events []Event
+		for event, err := range scanEvents(resp.Body) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+		}
+		if len(events) != 1 {
+			t.Fatalf("got %d SSE events, want 1; events: %v", len(events), events)
+		}
+		msg, err := jsonrpc.DecodeMessage(events[0].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jsonResp, ok := msg.(*jsonrpc.Response)
+		if !ok {
+			t.Errorf("event is %T, want response", jsonResp)
+		}
+		if jsonResp.Error != nil {
+			t.Errorf("request failed: %v", jsonResp.Error)
+		}
+	}
+
+	checkRequest(`{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}`)
+
+	// Verify we can make another request without session ID
+	checkRequest(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"greet","arguments":{"name":"World"}}}`)
 }

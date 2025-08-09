@@ -81,7 +81,7 @@ func TestServerRunContextCancel(t *testing.T) {
 
 	// send a ping to the server to ensure it's running
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, clientTransport)
+	session, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestServerInterrupt(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	_, err := client.Connect(ctx, mcp.NewCommandTransport(cmd), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestCmdTransport(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

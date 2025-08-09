@@ -49,7 +49,7 @@ func TestSSEServer(t *testing.T) {
 			})
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, clientTransport)
+			cs, err := c.Connect(ctx, clientTransport, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

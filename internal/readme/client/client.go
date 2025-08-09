@@ -21,7 +21,7 @@ func main() {
 
 	// Connect to a server over stdin/stdout
 	transport := mcp.NewCommandTransport(exec.Command("myserver"))
-	session, err := client.Connect(ctx, transport)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

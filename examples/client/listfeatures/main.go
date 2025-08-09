@@ -41,7 +41,7 @@ func main() {
 	ctx := context.Background()
 	cmd := exec.Command(args[0], args[1:]...)
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
-	cs, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	cs, err := client.Connect(ctx, mcp.NewCommandTransport(cmd), nil)
 	if err != nil {
 		log.Fatal(err)
 	}

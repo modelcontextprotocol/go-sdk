@@ -42,9 +42,14 @@ type StreamableHTTPHandler struct {
 	sessions   map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
 }
 
-// StreamableHTTPOptions is a placeholder options struct for future
-// configuration of the StreamableHTTP handler.
+// StreamableHTTPOptions configures the StreamableHTTPHandler.
 type StreamableHTTPOptions struct {
+	// GetSessionID provides the next session ID to use for an incoming request.
+	//
+	// If GetSessionID returns an empty string, the session is 'stateless',
+	// meaning it is not persisted and no session validation is performed.
+	GetSessionID func() string
+
 	// TODO: support configurable session ID generation (?)
 	// TODO: support session retention (?)
 
@@ -65,6 +70,9 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	}
 	if opts != nil {
 		h.opts = *opts
+	}
+	if h.opts.GetSessionID == nil {
+		h.opts.GetSessionID = randText
 	}
 	return h
 }
@@ -138,6 +146,10 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
+		if req.Method == http.MethodGet && session == nil {
+			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
+			return
+		}
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
@@ -145,23 +157,42 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	if session == nil {
-		s := NewStreamableServerTransport(randText(), h.opts.transportOptions)
 		server := h.getServer(req)
 		if server == nil {
 			// The getServer argument to NewStreamableHTTPHandler returned nil.
 			http.Error(w, "no server available", http.StatusBadRequest)
 			return
 		}
+		sessionID := h.opts.GetSessionID()
+		s := NewStreamableServerTransport(sessionID, h.opts.transportOptions)
+
+		// To support stateless mode, we initialize the session with a default
+		// state, so that it doesn't reject subsequent requests.
+		var connectOpts *ServerSessionOptions
+		if sessionID == "" {
+			connectOpts = &ServerSessionOptions{
+				State: &ServerSessionState{
+					InitializeParams:  new(InitializeParams),
+					InitializedParams: new(InitializedParams),
+				},
+			}
+		}
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		if _, err := server.Connect(req.Context(), s); err != nil {
+		ss, err := server.Connect(req.Context(), s, connectOpts)
+		if err != nil {
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		h.sessionsMu.Lock()
-		h.sessions[s.sessionID] = s
-		h.sessionsMu.Unlock()
+		if sessionID == "" {
+			// Stateless mode: close the session when the request exits.
+			defer ss.Close() // close the fake session after handling the request
+		} else {
+			h.sessionsMu.Lock()
+			h.sessions[s.sessionID] = s
+			h.sessionsMu.Unlock()
+		}
 		session = s
 	}
 
@@ -485,7 +516,9 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 func (t *StreamableServerTransport) respondJSON(stream *stream, w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set(sessionIDHeader, t.sessionID)
+	if t.sessionID != "" {
+		w.Header().Set(sessionIDHeader, t.sessionID)
+	}
 
 	var msgs []json.RawMessage
 	ctx := req.Context()
@@ -524,7 +557,9 @@ func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWr
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set(sessionIDHeader, t.sessionID)
+	if t.sessionID != "" {
+		w.Header().Set(sessionIDHeader, t.sessionID)
+	}
 
 	// write one event containing data.
 	write := func(data []byte) bool {
@@ -893,9 +928,11 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
-func (c *streamableClientConn) initialized(res *InitializeResult) {
+var _ clientConnection = (*streamableClientConn)(nil)
+
+func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Lock()
-	c.initializedResult = res
+	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()
 
 	// Start the persistent SSE listener as soon as we have the initialized

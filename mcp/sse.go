@@ -221,7 +221,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
 	}
-	ss, err := server.Connect(req.Context(), transport)
+	ss, err := server.Connect(req.Context(), transport, nil)
 	if err != nil {
 		http.Error(w, "connection failed", http.StatusInternalServerError)
 		return

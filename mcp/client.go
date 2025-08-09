@@ -71,10 +71,11 @@ type ClientOptions struct {
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
-func (c *Client) bind(conn *jsonrpc2.Connection) *ClientSession {
-	cs := &ClientSession{
-		conn:   conn,
-		client: c,
+func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState) *ClientSession {
+	assert(mcpConn != nil && conn != nil, "nil connection")
+	cs := &ClientSession{conn: conn, mcpConn: mcpConn, client: c}
+	if state != nil {
+		cs.state = *state
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -101,6 +102,10 @@ func (e unsupportedProtocolVersionError) Error() string {
 	return fmt.Sprintf("unsupported protocol version: %q", e.version)
 }
 
+// ClientSessionOptions is reserved for future use.
+type ClientSessionOptions struct {
+}
+
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
 //
@@ -108,8 +113,8 @@ func (e unsupportedProtocolVersionError) Error() string {
 // when it is no longer needed. However, if the connection is closed by the
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
-func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c)
+func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptions) (cs *ClientSession, err error) {
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil))
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +138,9 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
-	cs.initializeResult = res
+	cs.state.InitializeResult = res
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
-		hc.initialized(res)
+		hc.sessionUpdated(cs.state)
 	}
 	if err := handleNotify(ctx, cs, notificationInitialized, &InitializedParams{}); err != nil {
 		_ = cs.Close()
@@ -156,22 +161,25 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 // Call [ClientSession.Close] to close the connection, or await server
 // termination with [ClientSession.Wait].
 type ClientSession struct {
-	conn             *jsonrpc2.Connection
-	client           *Client
-	initializeResult *InitializeResult
-	keepaliveCancel  context.CancelFunc
-	mcpConn          Connection
+	conn            *jsonrpc2.Connection
+	client          *Client
+	keepaliveCancel context.CancelFunc
+	mcpConn         Connection
+
+	// No mutex is (currently) required to guard the session state, because it is
+	// only set synchronously during Client.Connect.
+	state clientSessionState
 }
 
-func (cs *ClientSession) setConn(c Connection) {
-	cs.mcpConn = c
+type clientSessionState struct {
+	InitializeResult *InitializeResult
 }
 
 func (cs *ClientSession) ID() string {
-	if cs.mcpConn == nil {
-		return ""
+	if c, ok := cs.mcpConn.(hasSessionID); ok {
+		return c.SessionID()
 	}
-	return cs.mcpConn.SessionID()
+	return ""
 }
 
 // Close performs a graceful close of the connection, preventing new requests

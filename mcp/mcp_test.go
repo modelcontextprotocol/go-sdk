@@ -104,7 +104,7 @@ func TestEndToEnd(t *testing.T) {
 	s.AddResource(resource2, readHandler)
 
 	// Connect the server.
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestEndToEnd(t *testing.T) {
 	c.AddRoots(&Root{URI: "file://" + rootAbs})
 
 	// Connect the client.
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,13 +549,13 @@ func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *Clien
 	if config != nil {
 		config(s)
 	}
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestBatching(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	_, err := s.Connect(ctx, st)
+	_, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +608,7 @@ func TestBatching(t *testing.T) {
 	// 'initialize' to block. Therefore, we can only test with a size of 1.
 	// Since batching is being removed, we can probably just delete this.
 	const batchSize = 1
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestMiddleware(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +695,7 @@ func TestMiddleware(t *testing.T) {
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,13 +777,13 @@ func TestNoJSONNull(t *testing.T) {
 	ct = NewLoggingTransport(ct, &logbuf)
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +845,7 @@ func TestKeepAlive(t *testing.T) {
 	s := NewServer(testImpl, serverOpts)
 	AddTool(s, greetTool(), sayHi)
 
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,7 +855,7 @@ func TestKeepAlive(t *testing.T) {
 		KeepAlive: 100 * time.Millisecond,
 	}
 	c := NewClient(testImpl, clientOpts)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +889,7 @@ func TestKeepAliveFailure(t *testing.T) {
 	// Server without keepalive (to test one-sided keepalive)
 	s := NewServer(testImpl, nil)
 	AddTool(s, greetTool(), sayHi)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,7 +899,7 @@ func TestKeepAliveFailure(t *testing.T) {
 		KeepAlive: 50 * time.Millisecond,
 	}
 	c := NewClient(testImpl, clientOpts)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
