@@ -980,7 +980,8 @@ type ElicitParams struct {
 	RequestedSchema *jsonschema.Schema `json:"requestedSchema"`
 }
 
-func (x *ElicitParams) isParams()              {}
+func (x *ElicitParams) isParams() {}
+
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
