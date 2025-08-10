@@ -968,6 +968,7 @@ type ElicitParams struct {
 	RequestedSchema *jsonschema.Schema `json:"requestedSchema"`
 }
 
+func (*ElicitParams) isParams() {}
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -985,6 +986,8 @@ type ElicitResult struct {
 	// Contains values matching the requested schema.
 	Content map[string]any `json:"content,omitempty"`
 }
+
+func (*ElicitResult) isResult() {}
 
 // An Implementation describes the name and version of an MCP implementation, with an optional
 // title for UI representation.
