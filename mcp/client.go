@@ -59,7 +59,7 @@ type ClientOptions struct {
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// Handler for elicitation.
 	// Called when a server requests user input via Elicit.
-	ElicitationHandler func(context.Context, *ClientSession, *ElicitParams) (*ElicitResult, error)
+	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
 	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
@@ -285,7 +285,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		return nil, jsonrpc2.NewError(CodeInvalidParams, err.Error())
 	}
 
-	return c.opts.ElicitationHandler(ctx, req.Session, req.Params)
+	return c.opts.ElicitationHandler(ctx, req)
 }
 
 // validateElicitSchema validates that the schema only contains top-level properties without nesting.

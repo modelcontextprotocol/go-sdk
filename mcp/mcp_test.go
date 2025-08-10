@@ -132,6 +132,15 @@ func TestEndToEnd(t *testing.T) {
 		CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
+		ElicitationHandler: func(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{
+				Action: "accept",
+				Content: map[string]any{
+					"name":  "Test User",
+					"email": "test@example.com",
+				},
+			}, nil
+		},
 		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {
 			notificationChans["tools"] <- 0
 		},
@@ -472,6 +481,19 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("resource updated after unsubscription")
 		case <-time.After(time.Second):
 		}
+	})
+
+	t.Run("elicitation", func(t *testing.T) {
+		result, err := ss.Elicit(ctx, &ElicitParams{
+			Message: "Please provide information",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Action != "accept" {
+			t.Errorf("got action %q, want %q", result.Action, "accept")
+		}
+
 	})
 
 	// Disconnect.
@@ -904,6 +926,215 @@ func TestKeepAlive(t *testing.T) {
 	if textContent, ok := result.Content[0].(*TextContent); !ok || textContent.Text != "hi user" {
 		t.Fatalf("unexpected result: %v", result.Content[0])
 	}
+}
+
+func TestElicitationUnsupportedMethod(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	// Server
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	// Client without ElicitationHandler
+	c := NewClient(testImpl, &ClientOptions{
+		CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Test that elicitation fails when no handler is provided
+	_, err = ss.Elicit(ctx, &ElicitParams{
+		Message: "This should fail",
+		RequestedSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"test": {Type: "string"},
+			},
+		},
+	})
+
+	if err == nil {
+		t.Error("expected error when ElicitationHandler is not provided, got nil")
+	}
+	if code := errorCode(err); code != CodeUnsupportedMethod {
+		t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, CodeUnsupportedMethod)
+	}
+	if !strings.Contains(err.Error(), "does not support elicitation") {
+		t.Errorf("error should mention unsupported elicitation, got: %v", err)
+	}
+}
+
+func TestElicitationSchemaValidation(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Test nested schema rejection
+	nestedSchema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"user": {
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"name": {Type: "string"},
+				},
+			},
+		},
+	}
+
+	_, err = ss.Elicit(ctx, &ElicitParams{
+		Message:         "This should fail",
+		RequestedSchema: nestedSchema,
+	})
+	if err == nil {
+		t.Error("expected error for nested schema, got nil")
+	}
+	if code := errorCode(err); code != CodeInvalidParams {
+		t.Errorf("got error code %d, want %d", code, CodeInvalidParams)
+	}
+}
+
+func TestElicitationProgressToken(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	params := &ElicitParams{
+		Message: "Test progress token",
+		Meta:    Meta{},
+	}
+	params.SetProgressToken("test-token")
+
+	if token := params.GetProgressToken(); token != "test-token" {
+		t.Errorf("got progress token %v, want %q", token, "test-token")
+	}
+
+	_, err = ss.Elicit(ctx, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestElicitationCapabilityDeclaration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("with_handler", func(t *testing.T) {
+		ct, st := NewInMemoryTransports()
+
+		// Client with ElicitationHandler should declare capability
+		c := NewClient(testImpl, &ClientOptions{
+			ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+				return &ElicitResult{Action: "cancel"}, nil
+			},
+		})
+
+		s := NewServer(testImpl, nil)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// The client should have declared elicitation capability during initialization
+		// We can verify this worked by successfully making an elicitation call
+		result, err := ss.Elicit(ctx, &ElicitParams{
+			Message:         "Test capability",
+			RequestedSchema: &jsonschema.Schema{Type: "object"},
+		})
+		if err != nil {
+			t.Errorf("elicitation should work when capability is declared, got error: %v", err)
+		}
+		if result.Action != "cancel" {
+			t.Errorf("got action %q, want %q", result.Action, "cancel")
+		}
+	})
+
+	t.Run("without_handler", func(t *testing.T) {
+		ct, st := NewInMemoryTransports()
+
+		// Client without ElicitationHandler should not declare capability
+		c := NewClient(testImpl, &ClientOptions{
+			CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+				return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
+			},
+		})
+
+		s := NewServer(testImpl, nil)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Elicitation should fail with UnsupportedMethod
+		_, err = ss.Elicit(ctx, &ElicitParams{
+			Message:         "This should fail",
+			RequestedSchema: &jsonschema.Schema{Type: "object"},
+		})
+
+		if err == nil {
+			t.Error("expected UnsupportedMethod error when no capability declared")
+		}
+		if code := errorCode(err); code != CodeUnsupportedMethod {
+			t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, CodeUnsupportedMethod)
+		}
+	})
 }
 
 func TestKeepAliveFailure(t *testing.T) {

@@ -836,7 +836,7 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 
 // Elicit sends an elicitation request to the client asking for user input.
 func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*ElicitResult, error) {
-	return handleSend[*ElicitResult](ctx, ss, methodElicit, orZero[Params](params))
+	return handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
 }
 
 // Log sends a log message to the client.
