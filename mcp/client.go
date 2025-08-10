@@ -277,7 +277,7 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
 	if c.opts.ElicitationHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support elicitation"}
+		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support elicitation")
 	}
 	return c.opts.ElicitationHandler(ctx, req.Session, req.Params)
 }
