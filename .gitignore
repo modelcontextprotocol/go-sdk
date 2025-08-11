@@ -1,0 +1,95 @@
+# Go language
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.coverage
+coverage.txt
+coverage.html
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Build artifacts
+dist/
+build/
+bin/
+*.tmp
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (GoLand, IntelliJ IDEA, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS generated files
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.nfs*
+
+# Editor temporary files
+*.swp
+*.swo
+.#*
+\#*#
+*.orig
+*.rej
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.temp
+tmp/
+temp/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+debug.test
+__debug_bin
+
+# Crash log files
+crash.log
+
+# Profiling files
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+block.prof
+mutex.prof
