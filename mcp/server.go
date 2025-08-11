@@ -585,6 +585,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *SessionOptions)
 		return nil, err
 	}
 	var state *SessionState
+	ss.mu.Lock()
 	if opts != nil {
 		ss.sessionID = opts.SessionID
 		ss.store = opts.SessionStore
@@ -593,6 +594,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *SessionOptions)
 	if ss.store == nil {
 		ss.store = NewMemorySessionStore()
 	}
+	ss.mu.Unlock()
 	if state == nil {
 		state = &SessionState{}
 	}
@@ -665,10 +667,14 @@ func (ss *ServerSession) ID() string {
 }
 
 func (ss *ServerSession) loadState(ctx context.Context) (*SessionState, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	return ss.store.Load(ctx, ss.sessionID)
 }
 
 func (ss *ServerSession) storeState(ctx context.Context, state *SessionState) error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	return ss.store.Store(ctx, ss.sessionID, state)
 }
 
