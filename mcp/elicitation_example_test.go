@@ -1,0 +1,85 @@
+// Copyright 2025 The Go MCP SDK Authors. All rights reserved.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
+package mcp_test
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func Example_elicitation() {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+
+	// Create server
+	server := mcp.NewServer(&mcp.Implementation{Name: "config-server", Version: "v1.0.0"}, nil)
+
+	serverSession, err := server.Connect(ctx, serverTransport)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create client with elicitation handler
+	client := mcp.NewClient(&mcp.Implementation{Name: "config-client", Version: "v1.0.0"}, &mcp.ClientOptions{
+		ElicitationHandler: func(ctx context.Context, cs *mcp.ClientSession, params *mcp.ElicitParams) (*mcp.ElicitResult, error) {
+			fmt.Printf("Server requests: %s\n", params.Message)
+			
+			// In a real application, this would prompt the user for input
+			// Here we simulate user providing configuration data
+			return &mcp.ElicitResult{
+				Action: "accept",
+				Content: map[string]any{
+					"apiKey":     "sk-test123",
+					"maxRetries": float64(3),
+					"enableLogs": true,
+				},
+			}, nil
+		},
+	})
+
+	_, err = client.Connect(ctx, clientTransport)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Server requests user configuration via elicitation
+	configSchema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"apiKey":     {Type: "string", Description: "API key for authentication"},
+			"maxRetries": {Type: "number", Minimum: ptr(1.0), Maximum: ptr(10.0)},
+			"enableLogs": {Type: "boolean", Description: "Enable debug logging"},
+		},
+		Required: []string{"apiKey"},
+	}
+
+	result, err := serverSession.Elicit(ctx, &mcp.ElicitParams{
+		Message:         "Please provide your configuration settings",
+		RequestedSchema: configSchema,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if result.Action == "accept" {
+		fmt.Printf("Configuration received: API Key: %v, Max Retries: %.0f, Logs: %v\n",
+			result.Content["apiKey"],
+			result.Content["maxRetries"],
+			result.Content["enableLogs"])
+	}
+
+	// Output:
+	// Server requests: Please provide your configuration settings
+	// Configuration received: API Key: sk-test123, Max Retries: 3, Logs: true
+}
+
+// ptr is a helper function to create pointers for schema constraints
+func ptr[T any](v T) *T {
+	return &v
+}
