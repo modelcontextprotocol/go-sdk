@@ -87,36 +87,39 @@ type serverConnection interface {
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
 type StdioTransport struct {
-	ioTransport
 }
 
-// An ioTransport is a [Transport] that communicates using newline-delimited
-// JSON over an io.ReadWriteCloser.
-type ioTransport struct {
-	rwc io.ReadWriteCloser
-}
-
-func (t *ioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(t.rwc), nil
+// Connect implements the [Transport] interface.
+func (*StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
 }
 
 // NewStdioTransport constructs a transport that communicates over
 // stdin/stdout.
+//
+// Deprecated: use a StdioTransport literal.
+//
+//go:fix inline
 func NewStdioTransport() *StdioTransport {
-	return &StdioTransport{ioTransport{rwc{os.Stdin, os.Stdout}}}
+	return &StdioTransport{}
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
 type InMemoryTransport struct {
-	ioTransport
+	rwc io.ReadWriteCloser
 }
 
-// NewInMemoryTransports returns two InMemoryTransports that connect to each
+// Connect implements the [Transport] interface.
+func (t *InMemoryTransport) Connect(context.Context) (Connection, error) {
+	return newIOConn(t.rwc), nil
+}
+
+// NewInMemoryTransports returns two [InMemoryTransports] that connect to each
 // other.
 func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport) {
 	c1, c2 := net.Pipe()
-	return &InMemoryTransport{ioTransport{c1}}, &InMemoryTransport{ioTransport{c2}}
+	return &InMemoryTransport{c1}, &InMemoryTransport{c2}
 }
 
 type binder[T handler, State any] interface {
@@ -208,24 +211,28 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 // A LoggingTransport is a [Transport] that delegates to another transport,
 // writing RPC logs to an io.Writer.
 type LoggingTransport struct {
-	delegate Transport
-	w        io.Writer
+	Delegate Transport
+	Writer   io.Writer
 }
 
 // NewLoggingTransport creates a new LoggingTransport that delegates to the
 // provided transport, writing RPC logs to the provided io.Writer.
+//
+// Deprecated: use a LoggingTransport literal.
+//
+//go:fix inline
 func NewLoggingTransport(delegate Transport, w io.Writer) *LoggingTransport {
-	return &LoggingTransport{delegate, w}
+	return &LoggingTransport{Delegate: delegate, Writer: w}
 }
 
 // Connect connects the underlying transport, returning a [Connection] that writes
 // logs to the configured destination.
 func (t *LoggingTransport) Connect(ctx context.Context) (Connection, error) {
-	delegate, err := t.delegate.Connect(ctx)
+	delegate, err := t.Delegate.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &loggingConn{delegate, t.w}, nil
+	return &loggingConn{delegate, t.Writer}, nil
 }
 
 type loggingConn struct {

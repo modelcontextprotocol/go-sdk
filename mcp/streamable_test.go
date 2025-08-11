@@ -44,7 +44,7 @@ func TestStreamableTransports(t *testing.T) {
 			// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 			// cookie-checking middleware.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
-				transportOptions: &StreamableServerTransportOptions{jsonResponse: useJSON},
+				jsonResponse: useJSON,
 			})
 
 			var (

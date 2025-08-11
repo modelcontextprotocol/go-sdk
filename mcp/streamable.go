@@ -38,8 +38,8 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
-	sessionsMu sync.Mutex
-	sessions   map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
+	mu         sync.Mutex
+	transports map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
 }
 
 // StreamableHTTPOptions configures the StreamableHTTPHandler.
@@ -50,12 +50,10 @@ type StreamableHTTPOptions struct {
 	// meaning it is not persisted and no session validation is performed.
 	GetSessionID func() string
 
-	// TODO: support configurable session ID generation (?)
 	// TODO: support session retention (?)
 
-	// transportOptions sets the streamable server transport options to use when
-	// establishing a new session.
-	transportOptions *StreamableServerTransportOptions
+	// jsonResponse is forwarded to StreamableServerTransport.jsonResponse.
+	jsonResponse bool
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -65,8 +63,8 @@ type StreamableHTTPOptions struct {
 // If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
 	h := &StreamableHTTPHandler{
-		getServer: getServer,
-		sessions:  make(map[string]*StreamableServerTransport),
+		getServer:  getServer,
+		transports: make(map[string]*StreamableServerTransport),
 	}
 	if opts != nil {
 		h.opts = *opts
@@ -85,12 +83,12 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 // Should we allow passing in a session store? That would allow the handler to
 // be stateless.
 func (h *StreamableHTTPHandler) closeAll() {
-	h.sessionsMu.Lock()
-	defer h.sessionsMu.Unlock()
-	for _, s := range h.sessions {
-		s.Close()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.transports {
+		s.connection.Close()
 	}
-	h.sessions = nil
+	h.transports = nil
 }
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -119,9 +117,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	var session *StreamableServerTransport
 	if id := req.Header.Get(sessionIDHeader); id != "" {
-		h.sessionsMu.Lock()
-		session, _ = h.sessions[id]
-		h.sessionsMu.Unlock()
+		h.mu.Lock()
+		session, _ = h.transports[id]
+		h.mu.Unlock()
 		if session == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
@@ -136,10 +134,10 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
-		h.sessionsMu.Lock()
-		delete(h.sessions, session.sessionID)
-		h.sessionsMu.Unlock()
-		session.Close()
+		h.mu.Lock()
+		delete(h.transports, session.SessionID)
+		h.mu.Unlock()
+		session.connection.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -164,7 +162,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		sessionID := h.opts.GetSessionID()
-		s := NewStreamableServerTransport(sessionID, h.opts.transportOptions)
+		s := &StreamableServerTransport{SessionID: sessionID, jsonResponse: h.opts.jsonResponse}
 
 		// To support stateless mode, we initialize the session with a default
 		// state, so that it doesn't reject subsequent requests.
@@ -189,9 +187,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			// Stateless mode: close the session when the request exits.
 			defer ss.Close() // close the fake session after handling the request
 		} else {
-			h.sessionsMu.Lock()
-			h.sessions[s.sessionID] = s
-			h.sessionsMu.Unlock()
+			h.mu.Lock()
+			h.transports[s.SessionID] = s
+			h.mu.Unlock()
 		}
 		session = s
 	}
@@ -199,7 +197,31 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	session.ServeHTTP(w, req)
 }
 
+// StreamableServerTransportOptions configures the stramable server transport.
+//
+// Deprecated: use a StreamableServerTransport literal.
 type StreamableServerTransportOptions struct {
+	// Storage for events, to enable stream resumption.
+	// If nil, a [MemoryEventStore] with the default maximum size will be used.
+	EventStore EventStore
+}
+
+// A StreamableServerTransport implements the server side of the MCP streamable
+// transport.
+//
+// Each StreamableServerTransport may be connected (via [Server.Connect]) at
+// most once, since [StreamableServerTransport.ServeHTTP] serves messages to
+// the connected session.
+type StreamableServerTransport struct {
+	// SessionID is the ID of this session.
+	//
+	// If SessionID is the empty string, this is a 'stateless' session, which has
+	// limited ability to communicate with the client. Otherwise, the session ID
+	// must be globally unique, that is, different from any other session ID
+	// anywhere, past and future. (We recommend using a crypto random number
+	// generator to produce one, as with [crypto/rand.Text].)
+	SessionID string
+
 	// Storage for events, to enable stream resumption.
 	// If nil, a [MemoryEventStore] with the default maximum size will be used.
 	EventStore EventStore
@@ -212,22 +234,36 @@ type StreamableServerTransportOptions struct {
 	// requests made within the context of a server request will be sent to the
 	// hanging GET request, if any.
 	jsonResponse bool
+
+	//
+	connection *streamableServerConn
 }
 
 // NewStreamableServerTransport returns a new [StreamableServerTransport] with
 // the given session ID and options.
-// The session ID must be globally unique, that is, different from any other
-// session ID anywhere, past and future. (We recommend using a crypto random number
-// generator to produce one, as with [crypto/rand.Text].)
 //
-// A StreamableServerTransport implements the server-side of the streamable
-// transport.
+// Deprecated: use a StreamableServerTransport literal.
+//
+//go:fix inline.
 func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransportOptions) *StreamableServerTransport {
-	if opts == nil {
-		opts = &StreamableServerTransportOptions{}
-	}
 	t := &StreamableServerTransport{
-		sessionID:      sessionID,
+		SessionID: sessionID,
+	}
+	if opts != nil {
+		t.EventStore = opts.EventStore
+	}
+	return t
+}
+
+// Connect implements the [Transport] interface.
+func (t *StreamableServerTransport) Connect(context.Context) (Connection, error) {
+	if t.connection != nil {
+		return nil, fmt.Errorf("transport already connected")
+	}
+	t.connection = &streamableServerConn{
+		sessionID:      t.SessionID,
+		eventStore:     t.EventStore,
+		jsonResponse:   t.jsonResponse,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
 		streams:        make(map[StreamID]*stream),
@@ -237,29 +273,23 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 	//
 	// It is always text/event-stream, since it must carry arbitrarily many
 	// messages.
-	t.streams[0] = newStream(0, false)
-	if opts != nil {
-		t.opts = *opts
+	t.connection.streams[0] = newStream(0, false)
+	if t.connection.eventStore == nil {
+		t.connection.eventStore = NewMemoryEventStore(nil)
 	}
-	if t.opts.EventStore == nil {
-		t.opts.EventStore = NewMemoryEventStore(nil)
-	}
-	return t
+	return t.connection, nil
 }
 
-func (t *StreamableServerTransport) SessionID() string {
-	return t.sessionID
-}
+type streamableServerConn struct {
+	sessionID    string
+	jsonResponse bool
+	eventStore   EventStore
 
-// A StreamableServerTransport implements the [Transport] interface for a
-// single session.
-type StreamableServerTransport struct {
 	lastStreamID atomic.Int64 // last stream ID used, atomically incremented
 
-	sessionID string
-	opts      StreamableServerTransportOptions
-	incoming  chan jsonrpc.Message // messages from the client to the server
-	done      chan struct{}
+	opts     StreamableServerTransportOptions
+	incoming chan jsonrpc.Message // messages from the client to the server
+	done     chan struct{}
 
 	mu sync.Mutex
 	// Sessions are closed exactly once.
@@ -287,6 +317,10 @@ type StreamableServerTransport struct {
 	//
 	// TODO: clean up once requests are handled. See the TODO for streams above.
 	requestStreams map[jsonrpc.ID]StreamID
+}
+
+func (c *streamableServerConn) SessionID() string {
+	return c.sessionID
 }
 
 // A stream is a single logical stream of SSE events within a server session.
@@ -349,13 +383,6 @@ func signalChanPtr() *chan struct{} {
 // [ServerSession].
 type StreamID int64
 
-// Connect implements the [Transport] interface.
-//
-// TODO(rfindley): Connect should return a new object. (Why?)
-func (s *StreamableServerTransport) Connect(context.Context) (Connection, error) {
-	return s, nil
-}
-
 // We track the incoming request ID inside the handler context using
 // idContextValue, so that notifications and server->client calls that occur in
 // the course of handling incoming requests are correlated with the incoming
@@ -381,15 +408,20 @@ type idContextKey struct{}
 
 // ServeHTTP handles a single HTTP request for the session.
 func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if t.connection == nil {
+		http.Error(w, "transport not connected", http.StatusInternalServerError)
+		return
+	}
 	switch req.Method {
 	case http.MethodGet:
-		t.serveGET(w, req)
+		t.connection.serveGET(w, req)
 	case http.MethodPost:
-		t.servePOST(w, req)
+		t.connection.servePOST(w, req)
 	default:
 		// Should not be reached, as this is checked in StreamableHTTPHandler.ServeHTTP.
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
+		return
 	}
 }
 
@@ -397,7 +429,7 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 // message parsed from the Last-Event-ID header.
 //
 // It returns an HTTP status code and error message.
-func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Request) {
+func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
 	id := StreamID(0)
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
@@ -414,9 +446,9 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 		}
 	}
 
-	t.mu.Lock()
-	stream, ok := t.streams[id]
-	t.mu.Unlock()
+	c.mu.Lock()
+	stream, ok := c.streams[id]
+	c.mu.Unlock()
 	if !ok {
 		http.Error(w, "unknown stream", http.StatusBadRequest)
 		return
@@ -428,7 +460,7 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 	}
 	defer stream.signal.Store(nil)
 	persistent := id == 0 // Only the special stream 0 is a hanging get.
-	t.respondSSE(stream, w, req, lastIdx, persistent)
+	c.respondSSE(stream, w, req, lastIdx, persistent)
 }
 
 // servePOST handles an incoming message, and replies with either an outgoing
@@ -436,7 +468,7 @@ func (t *StreamableServerTransport) serveGET(w http.ResponseWriter, req *http.Re
 // jsonResponse option is set.
 //
 // It returns an HTTP status code and error message.
-func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.Request) {
+func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Request) {
 	if len(req.Header.Values("Last-Event-ID")) > 0 {
 		http.Error(w, "can't send Last-Event-ID for POST request", http.StatusBadRequest)
 		return
@@ -485,20 +517,20 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// notifications or server->client requests made in the course of handling.
 	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream = newStream(StreamID(t.lastStreamID.Add(1)), t.opts.jsonResponse)
-		t.mu.Lock()
-		t.streams[stream.id] = stream
+		stream = newStream(StreamID(c.lastStreamID.Add(1)), c.jsonResponse)
+		c.mu.Lock()
+		c.streams[stream.id] = stream
 		stream.requests = requests
 		for reqID := range requests {
-			t.requestStreams[reqID] = stream.id
+			c.requestStreams[reqID] = stream.id
 		}
-		t.mu.Unlock()
+		c.mu.Unlock()
 		stream.signal.Store(signalChanPtr())
 	}
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
-		t.incoming <- msg
+		c.incoming <- msg
 	}
 
 	if stream == nil {
@@ -507,22 +539,22 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	}
 
 	if stream.jsonResponse {
-		t.respondJSON(stream, w, req)
+		c.respondJSON(stream, w, req)
 	} else {
-		t.respondSSE(stream, w, req, -1, false)
+		c.respondSSE(stream, w, req, -1, false)
 	}
 }
 
-func (t *StreamableServerTransport) respondJSON(stream *stream, w http.ResponseWriter, req *http.Request) {
+func (c *streamableServerConn) respondJSON(stream *stream, w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "application/json")
-	if t.sessionID != "" {
-		w.Header().Set(sessionIDHeader, t.sessionID)
+	if c.sessionID != "" {
+		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
 
 	var msgs []json.RawMessage
 	ctx := req.Context()
-	for msg, ok := range t.messages(ctx, stream, false) {
+	for msg, ok := range c.messages(ctx, stream, false) {
 		if !ok {
 			if ctx.Err() != nil {
 				w.WriteHeader(http.StatusNoContent)
@@ -550,15 +582,15 @@ func (t *StreamableServerTransport) respondJSON(stream *stream, w http.ResponseW
 }
 
 // lastIndex is the index of the last seen event if resuming, else -1.
-func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int, persistent bool) {
+func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int, persistent bool) {
 	writes := 0
 
 	// Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Connection", "keep-alive")
-	if t.sessionID != "" {
-		w.Header().Set(sessionIDHeader, t.sessionID)
+	if c.sessionID != "" {
+		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
 
 	// write one event containing data.
@@ -588,7 +620,7 @@ func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWr
 
 	if lastIndex >= 0 {
 		// Resume.
-		for data, err := range t.opts.EventStore.After(req.Context(), t.SessionID(), stream.id, lastIndex) {
+		for data, err := range c.eventStore.After(req.Context(), c.SessionID(), stream.id, lastIndex) {
 			if err != nil {
 				// TODO: reevaluate these status codes.
 				// Maybe distinguish between storage errors, which are 500s, and missing
@@ -610,7 +642,7 @@ func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWr
 
 	// Repeatedly collect pending outgoing events and send them.
 	ctx := req.Context()
-	for msg, ok := range t.messages(ctx, stream, persistent) {
+	for msg, ok := range c.messages(ctx, stream, persistent) {
 		if !ok {
 			if ctx.Err() != nil && writes == 0 {
 				// This probably doesn't matter, but respond with NoContent if the client disconnected.
@@ -620,7 +652,7 @@ func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWr
 			}
 			return
 		}
-		if err := t.opts.EventStore.Append(req.Context(), t.SessionID(), stream.id, msg); err != nil {
+		if err := c.eventStore.Append(req.Context(), c.SessionID(), stream.id, msg); err != nil {
 			errorf(http.StatusInternalServerError, "storing event: %v", err.Error())
 			return
 		}
@@ -638,14 +670,14 @@ func (t *StreamableServerTransport) respondSSE(stream *stream, w http.ResponseWr
 // If the stream did not terminate normally, it is either because ctx was
 // cancelled, or the connection is closed: check the ctx.Err() to differentiate
 // these cases.
-func (t *StreamableServerTransport) messages(ctx context.Context, stream *stream, persistent bool) iter.Seq2[json.RawMessage, bool] {
+func (c *streamableServerConn) messages(ctx context.Context, stream *stream, persistent bool) iter.Seq2[json.RawMessage, bool] {
 	return func(yield func(json.RawMessage, bool) bool) {
 		for {
-			t.mu.Lock()
+			c.mu.Lock()
 			outgoing := stream.outgoing
 			stream.outgoing = nil
 			nOutstanding := len(stream.requests)
-			t.mu.Unlock()
+			c.mu.Unlock()
 
 			for _, data := range outgoing {
 				if !yield(data, true) {
@@ -665,7 +697,7 @@ func (t *StreamableServerTransport) messages(ctx context.Context, stream *stream
 			select {
 			case <-*stream.signal.Load(): // there are new outgoing messages
 				// return to top of loop
-			case <-t.done: // session is closed
+			case <-c.done: // session is closed
 				yield(nil, false)
 				return
 			case <-ctx.Done():
@@ -708,22 +740,22 @@ func parseEventID(eventID string) (sid StreamID, idx int, ok bool) {
 }
 
 // Read implements the [Connection] interface.
-func (t *StreamableServerTransport) Read(ctx context.Context) (jsonrpc.Message, error) {
+func (c *streamableServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case msg, ok := <-t.incoming:
+	case msg, ok := <-c.incoming:
 		if !ok {
 			return nil, io.EOF
 		}
 		return msg, nil
-	case <-t.done:
+	case <-c.done:
 		return nil, io.EOF
 	}
 }
 
 // Write implements the [Connection] interface.
-func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Message) error {
+func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// Find the incoming request that this write relates to, if any.
 	var forRequest jsonrpc.ID
 	isResponse := false
@@ -746,9 +778,9 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	// connection 0.
 	var forStream StreamID
 	if forRequest.IsValid() {
-		t.mu.Lock()
-		forStream = t.requestStreams[forRequest]
-		t.mu.Unlock()
+		c.mu.Lock()
+		forStream = c.requestStreams[forRequest]
+		c.mu.Unlock()
 	}
 
 	data, err := jsonrpc2.EncodeMessage(msg)
@@ -756,13 +788,13 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 		return err
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.isDone {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.isDone {
 		return errors.New("session is closed")
 	}
 
-	stream := t.streams[forStream]
+	stream := c.streams[forStream]
 	if stream == nil {
 		return fmt.Errorf("no stream with ID %d", forStream)
 	}
@@ -775,7 +807,7 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	// TODO(rfindley): either of these, particularly the first, might be
 	// considered a bug in the server. Report it through a side-channel?
 	if len(stream.requests) == 0 && forStream != 0 || stream.jsonResponse && !isResponse {
-		stream = t.streams[0]
+		stream = c.streams[0]
 	}
 
 	// TODO: if there is nothing to send these messages to (as would happen, for example, if forConn == 0
@@ -798,15 +830,15 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 }
 
 // Close implements the [Connection] interface.
-func (t *StreamableServerTransport) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.isDone {
-		t.isDone = true
-		close(t.done)
+func (c *streamableServerConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isDone {
+		c.isDone = true
+		close(c.done)
 		// TODO: find a way to plumb a context here, or an event store with a long-running
 		// close operation can take arbitrary time. Alternative: impose a fixed timeout here.
-		return t.opts.EventStore.SessionClosed(context.TODO(), t.sessionID)
+		return c.eventStore.SessionClosed(context.TODO(), c.sessionID)
 	}
 	return nil
 }
@@ -815,8 +847,9 @@ func (t *StreamableServerTransport) Close() error {
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
 type StreamableClientTransport struct {
-	url  string
-	opts StreamableClientTransportOptions
+	Endpoint         string
+	HTTPClient       *http.Client
+	ReconnectOptions *StreamableReconnectOptions
 }
 
 // StreamableReconnectOptions defines parameters for client reconnect attempts.
@@ -847,6 +880,8 @@ var DefaultReconnectOptions = &StreamableReconnectOptions{
 
 // StreamableClientTransportOptions provides options for the
 // [NewStreamableClientTransport] constructor.
+//
+// Deprecated: use a StremableClientTransport literal.
 type StreamableClientTransportOptions struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
@@ -856,10 +891,15 @@ type StreamableClientTransportOptions struct {
 
 // NewStreamableClientTransport returns a new client transport that connects to
 // the streamable HTTP server at the provided URL.
+//
+// Deprecated: use a StreamableClientTransport literal.
+//
+//go:fix inline
 func NewStreamableClientTransport(url string, opts *StreamableClientTransportOptions) *StreamableClientTransport {
-	t := &StreamableClientTransport{url: url}
+	t := &StreamableClientTransport{Endpoint: url}
 	if opts != nil {
-		t.opts = *opts
+		t.HTTPClient = opts.HTTPClient
+		t.ReconnectOptions = opts.ReconnectOptions
 	}
 	return t
 }
@@ -873,11 +913,11 @@ func NewStreamableClientTransport(url string, opts *StreamableClientTransportOpt
 // When closed, the connection issues a DELETE request to terminate the logical
 // session.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.opts.HTTPClient
+	client := t.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
-	reconnOpts := t.opts.ReconnectOptions
+	reconnOpts := t.ReconnectOptions
 	if reconnOpts == nil {
 		reconnOpts = DefaultReconnectOptions
 	}
@@ -886,7 +926,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// cancelling its blocking network operations, which prevents hangs on exit.
 	connCtx, cancel := context.WithCancel(context.Background())
 	conn := &streamableClientConn{
-		url:              t.url,
+		url:              t.Endpoint,
 		client:           client,
 		incoming:         make(chan []byte, 100),
 		done:             make(chan struct{}),
