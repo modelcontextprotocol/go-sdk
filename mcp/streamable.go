@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"iter"
 	"math"
 	"math/rand/v2"
@@ -35,11 +36,11 @@ const (
 //
 // [MCP spec]: https://modelcontextprotocol.io/2025/03/26/streamable-http-transport.html
 type StreamableHTTPHandler struct {
-	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
+	getServer func(*http.Request) *Server
 
-	sessionsMu sync.Mutex
-	sessions   map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
+	transportMu sync.Mutex
+	transports  map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
 }
 
 // StreamableHTTPOptions is a placeholder options struct for future
@@ -51,6 +52,10 @@ type StreamableHTTPOptions struct {
 	// transportOptions sets the streamable server transport options to use when
 	// establishing a new session.
 	transportOptions *StreamableServerTransportOptions
+
+	// SessionStore is the store for persistent sessions.
+	// If nil, sessions will be stored in memory.
+	SessionStore SessionStore
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -60,11 +65,14 @@ type StreamableHTTPOptions struct {
 // If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
 	h := &StreamableHTTPHandler{
-		getServer: getServer,
-		sessions:  make(map[string]*StreamableServerTransport),
+		getServer:  getServer,
+		transports: make(map[string]*StreamableServerTransport),
 	}
 	if opts != nil {
 		h.opts = *opts
+	}
+	if h.opts.SessionStore == nil {
+		h.opts.SessionStore = NewMemorySessionStore()
 	}
 	return h
 }
@@ -77,12 +85,12 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 // Should we allow passing in a session store? That would allow the handler to
 // be stateless.
 func (h *StreamableHTTPHandler) closeAll() {
-	h.sessionsMu.Lock()
-	defer h.sessionsMu.Unlock()
-	for _, s := range h.sessions {
-		s.Close()
+	h.transportMu.Lock()
+	defer h.transportMu.Unlock()
+	for _, t := range h.transports {
+		t.Close()
 	}
-	h.sessions = nil
+	h.transports = nil
 }
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -109,29 +117,26 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	var session *StreamableServerTransport
-	if id := req.Header.Get(sessionIDHeader); id != "" {
-		h.sessionsMu.Lock()
-		session, _ = h.sessions[id]
-		h.sessionsMu.Unlock()
-		if session == nil {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
+	var transport *StreamableServerTransport
+	sessionID := req.Header.Get(sessionIDHeader)
+	if sessionID != "" {
+		h.transportMu.Lock()
+		transport, _ = h.transports[sessionID]
+		h.transportMu.Unlock()
 	}
 
 	// TODO(rfindley): simplify the locking so that each request has only one
 	// critical section.
 	if req.Method == http.MethodDelete {
-		if session == nil {
+		if transport == nil {
 			// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
-		h.sessionsMu.Lock()
-		delete(h.sessions, session.sessionID)
-		h.sessionsMu.Unlock()
-		session.Close()
+		h.transportMu.Lock()
+		delete(h.transports, transport.sessionID)
+		h.transportMu.Unlock()
+		transport.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -144,28 +149,56 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	if session == nil {
-		s := NewStreamableServerTransport(randText(), h.opts.transportOptions)
+	if transport == nil {
+		var state *SessionState
+		var err error
+		if sessionID != "" {
+			// The session might be in the store.
+			state, err = h.opts.SessionStore.Load(req.Context(), sessionID)
+			if errors.Is(err, fs.ErrNotExist) {
+				http.Error(w, fmt.Sprintf("no session with ID %s", sessionID), http.StatusNotFound)
+				return
+			} else if err != nil {
+				http.Error(w, fmt.Sprintf("SessionStore.Load(%q): %v", sessionID, err), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// New session: store an empty state.
+			state = &SessionState{}
+			sessionID = newSessionID()
+			if err := h.opts.SessionStore.Store(req.Context(), sessionID, state); err != nil {
+				http.Error(w, fmt.Sprintf("SessionStore.Store, new session: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+		transport = NewStreamableServerTransport(sessionID, nil)
 		server := h.getServer(req)
 		if server == nil {
-			// The getServer argument to NewStreamableHTTPHandler returned nil.
 			http.Error(w, "no server available", http.StatusBadRequest)
 			return
 		}
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		if _, err := server.Connect(req.Context(), s); err != nil {
-			http.Error(w, "failed connection", http.StatusInternalServerError)
+		// TODO: rename SessionOptions to ConnectOptions?
+		_, err = server.Connect(req.Context(), transport, &SessionOptions{
+			SessionID:    sessionID,
+			SessionState: state,
+			SessionStore: h.opts.SessionStore,
+		})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed connection: %v", err), http.StatusInternalServerError)
 			return
 		}
-		h.sessionsMu.Lock()
-		h.sessions[s.sessionID] = s
-		h.sessionsMu.Unlock()
-		session = s
+		h.transportMu.Lock()
+		// Check in case another request with the same stored session ID got here first.
+		if _, ok := h.transports[transport.sessionID]; !ok {
+			h.transports[transport.sessionID] = transport
+		}
+		h.transportMu.Unlock()
 	}
 
-	session.ServeHTTP(w, req)
+	transport.ServeHTTP(w, req)
 }
 
 type StreamableServerTransportOptions struct {
@@ -1201,3 +1234,6 @@ func calculateReconnectDelay(opts *StreamableReconnectOptions, attempt int) time
 
 	return backoffDuration + jitter
 }
+
+// For testing.
+var newSessionID = randText

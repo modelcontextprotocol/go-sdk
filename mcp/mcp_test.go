@@ -104,7 +104,7 @@ func TestEndToEnd(t *testing.T) {
 	s.AddResource(resource2, readHandler)
 
 	// Connect the server.
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *Clien
 	if config != nil {
 		config(s)
 	}
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestBatching(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	_, err := s.Connect(ctx, st)
+	_, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestMiddleware(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestNoJSONNull(t *testing.T) {
 	ct = NewLoggingTransport(ct, &logbuf)
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +845,7 @@ func TestKeepAlive(t *testing.T) {
 	s := NewServer(testImpl, serverOpts)
 	AddTool(s, greetTool(), sayHi)
 
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +889,7 @@ func TestKeepAliveFailure(t *testing.T) {
 	// Server without keepalive (to test one-sided keepalive)
 	s := NewServer(testImpl, nil)
 	AddTool(s, greetTool(), sayHi)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,9 +236,10 @@ func TestServerInitiatedSSE(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := NewClient(testImpl, &ClientOptions{ToolListChangedHandler: func(ctx context.Context, cc *ClientSession, params *ToolListChangedParams) {
-		notifications <- "toolListChanged"
-	},
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(ctx context.Context, cc *ClientSession, params *ToolListChangedParams) {
+			notifications <- "toolListChanged"
+		},
 	})
 	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil))
 	if err != nil {
@@ -820,4 +822,88 @@ func TestEventID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDistributedSessionStore(t *testing.T) {
+	// To simulate a distributed server with a shared durable SessionStore, we use two distinct
+	// HTTP servers in memory with a shared MemorySessionStore, and two sessions with the same ID.
+
+	defer func(f func() string) {
+		newSessionID = f
+	}(newSessionID)
+	newSessionID = func() string { return "test-session" }
+
+	ctx := context.Background()
+
+	// Start a server with a single tool.
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[int], error) {
+		ss.Log(ctx, &LoggingMessageParams{
+			Level:  "info",
+			Logger: "tool",
+		})
+		return &CallToolResultFor[int]{StructuredContent: 3}, nil
+	})
+	// indexes are: SetLevel, CallTool.
+	for bits := range 1 << 2 {
+		t.Run(fmt.Sprintf("%04b", bits), func(t *testing.T) {
+			indexes := bitsToSlice(bits, 4)
+			opts := &StreamableHTTPOptions{SessionStore: NewMemorySessionStore()}
+			var urls []string
+			for range 2 {
+				handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+
+				defer handler.closeAll()
+				httpServer := httptest.NewServer(handler)
+				defer httpServer.Close()
+				urls = append(urls, httpServer.URL)
+			}
+
+			// The log handler will only be called in all cases if the SetLevel change is properly stored in the state.
+			logCalled := make(chan struct{})
+			logHandler := func(_ context.Context, _ *ClientSession, params *LoggingMessageParams) {
+				close(logCalled)
+			}
+
+			// Connect clients to each HTTP server.
+			var clientSessions []*ClientSession
+			for i := range 2 {
+				client := NewClient(testImpl, &ClientOptions{LoggingMessageHandler: logHandler})
+				// TODO: split initialization handshake between servers. This will send both init messages to the same one.
+				cs, err := client.Connect(ctx, NewStreamableClientTransport(urls[i], nil))
+				if err != nil {
+					t.Fatal(err)
+				}
+				clientSessions = append(clientSessions, cs)
+			}
+
+			clientSessions[indexes[0]].SetLevel(ctx, &SetLevelParams{Level: "info"})
+
+			res, err := clientSessions[indexes[1]].CallTool(ctx, &CallToolParams{Name: "tool"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The logging notification might arrive after CallTool returns.
+			select {
+			case <-logCalled:
+			case <-time.After(time.Second):
+				t.Error("log not called")
+			}
+			if g, w := res.StructuredContent, 3.0; g != w {
+				t.Errorf("result: got %v %[1]T, want %v %[2]T", g, w)
+			}
+		})
+	}
+}
+
+// bitsToSlice splits the low-order n bits of bits into a slice of individual bit values.
+// For example, 0101 => []int{0, 1, 0, 1}.
+func bitsToSlice(bits, n int) []int {
+	var ints []int
+	for range n {
+		ints = append(ints, bits&1)
+		bits >>= 1
+	}
+	slices.Reverse(ints)
+	return ints
 }
