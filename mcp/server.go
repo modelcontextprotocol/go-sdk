@@ -853,9 +853,6 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 }
 
 func (ss *ServerSession) setLevel(ctx context.Context, params *SetLevelParams) (*emptyResult, error) {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
 	state, err := ss.loadState(ctx)
 	if err != nil {
 		return nil, err
