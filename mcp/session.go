@@ -6,7 +6,8 @@ package mcp
 
 import (
 	"context"
-	"io/fs"
+	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -14,6 +15,9 @@ import (
 type SessionState struct {
 	// InitializeParams are the parameters from the initialize request.
 	InitializeParams *InitializeParams `json:"initializeParams"`
+	// Initialized reports whether the session received an "initialized" notification
+	// from the client.
+	Initialized bool
 
 	// LogLevel is the logging level for the session.
 	LogLevel LoggingLevel `json:"logLevel"`
@@ -21,10 +25,13 @@ type SessionState struct {
 	// TODO: resource subscriptions
 }
 
+// ErrNotSession indicates that a session is not in a SessionStore.
+var ErrNoSession = errors.New("no such session")
+
 // SessionStore is an interface for storing and retrieving session state.
 type SessionStore interface {
 	// Load retrieves the session state for the given session ID.
-	// If there is none, it returns nil, fs.ErrNotExist.
+	// If there is none, it returns nil and an error wrapping ErrNoSession.
 	Load(ctx context.Context, sessionID string) (*SessionState, error)
 	// Store saves the session state for the given session ID.
 	Store(ctx context.Context, sessionID string, state *SessionState) error
@@ -52,7 +59,7 @@ func (s *MemorySessionStore) Load(ctx context.Context, sessionID string) (*Sessi
 	defer s.mu.Unlock()
 	state, ok := s.store[sessionID]
 	if !ok {
-		return nil, fs.ErrNotExist
+		return nil, fmt.Errorf("session ID %q: %w", sessionID, ErrNoSession)
 	}
 	return state, nil
 }

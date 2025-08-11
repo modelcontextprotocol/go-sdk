@@ -560,17 +560,22 @@ func (s *Server) disconnect(cc *ServerSession) {
 }
 
 type SessionOptions struct {
-	SessionID    string
+	// SessionID is the session's unique ID.
+	SessionID string
+	// SessionState is the current state of the session. The default is the initial
+	// state.
 	SessionState *SessionState
+	// SessionStore stores SessionStates. By default it is a MemorySessionStore.
 	SessionStore SessionStore
 }
 
 // Connect connects the MCP server over the given transport and starts handling
 // messages.
+// It returns a [ServerSession] for interacting with a [Client].
 //
-// It returns a connection object that may be used to terminate the connection
-// (with [Connection.Close]), or await client termination (with
-// [Connection.Wait]).
+// [SessionOptions.SessionStore] should be nil only for single-session transports,
+// like [StdioTransport]. Multi-session transports, like [StreamableServerTransport],
+// must provide a [SessionStore].
 func (s *Server) Connect(ctx context.Context, t Transport, opts *SessionOptions) (*ServerSession, error) {
 	if opts != nil && opts.SessionState == nil && opts.SessionStore != nil {
 		return nil, errors.New("ServerSessionOptions has store but no state")
@@ -579,11 +584,21 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *SessionOptions)
 	if err != nil {
 		return nil, err
 	}
+	var state *SessionState
 	if opts != nil {
-		ss.opts = *opts
+		ss.sessionID = opts.SessionID
+		ss.store = opts.SessionStore
+		state = opts.SessionState
 	}
-	if ss.opts.SessionState == nil {
-		ss.opts.SessionState = &SessionState{}
+	if ss.store == nil {
+		ss.store = NewMemorySessionStore()
+	}
+	if state == nil {
+		state = &SessionState{}
+	}
+	// TODO(jba): This store is redundant with the one in StreamableHTTPHandler.ServeHTTP; dedup.
+	if err := ss.storeState(ctx, state); err != nil {
+		return nil, err
 	}
 	return ss, nil
 }
@@ -592,19 +607,20 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if ss.server.opts.KeepAlive > 0 {
 		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
-	ss.mu.Lock()
-	hasParams := ss.opts.SessionState.InitializeParams != nil
-	wasInitialized := ss._initialized
-	if hasParams {
-		ss._initialized = true
+	// TODO(jba): optimistic locking
+	state, err := ss.loadState(ctx)
+	if err != nil {
+		return nil, err
 	}
-	ss.mu.Unlock()
-
-	if !hasParams {
+	if state.InitializeParams == nil {
 		return nil, fmt.Errorf("%q before %q", notificationInitialized, methodInitialize)
 	}
-	if wasInitialized {
+	if state.Initialized {
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
+	}
+	state.Initialized = true
+	if err := ss.storeState(ctx, state); err != nil {
+		return nil, err
 	}
 	return callNotificationHandler(ctx, ss.server.opts.InitializedHandler, ss, params)
 }
@@ -634,19 +650,26 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 type ServerSession struct {
 	server          *Server
 	conn            *jsonrpc2.Connection
-	opts            SessionOptions
 	mu              sync.Mutex
 	logLevel        LoggingLevel
-	_initialized    bool
 	keepaliveCancel context.CancelFunc
 	sessionID       string
+	store           SessionStore
 }
 
 func (ss *ServerSession) setConn(c Connection) {
 }
 
 func (ss *ServerSession) ID() string {
-	return ss.opts.SessionID
+	return ss.sessionID
+}
+
+func (ss *ServerSession) loadState(ctx context.Context) (*SessionState, error) {
+	return ss.store.Load(ctx, ss.sessionID)
+}
+
+func (ss *ServerSession) storeState(ctx context.Context, state *SessionState) error {
+	return ss.store.Store(ctx, ss.sessionID, state)
 }
 
 // Ping pings the client.
@@ -669,16 +692,19 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // The message is not sent if the client has not called SetLevel, or if its level
 // is below that of the last SetLevel.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.opts.SessionState.LogLevel
-	ss.mu.Unlock()
-	if logLevel == "" {
+	// TODO: Loading the state on every log message can be expensive. Consider caching it briefly, perhaps for the
+	// duration of a request.
+	state, err := ss.loadState(ctx)
+	if err != nil {
+		return err
+	}
+	if state.LogLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
 		// TODO(jba): read other SDKs, possibly file an issue.
 		return nil
 	}
-	if compareLevels(params.Level, logLevel) < 0 {
+	if compareLevels(params.Level, state.LogLevel) < 0 {
 		return nil
 	}
 	return handleNotify(ctx, ss, notificationLoggingMessage, params)
@@ -759,16 +785,17 @@ func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
-	ss.mu.Lock()
-	initialized := ss._initialized
-	ss.mu.Unlock()
+	state, err := ss.loadState(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
 	default:
-		if !initialized {
+		if !state.Initialized {
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
 	}
@@ -776,6 +803,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// TODO(jba): pass the state down so that it doesn't get loaded again.
 	return handleReceive(ctx, ss, req)
 }
 
@@ -783,13 +811,18 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
-	ss.mu.Lock()
-	ss.opts.SessionState.InitializeParams = params
-	ss.mu.Unlock()
-	if store := ss.opts.SessionStore; store != nil {
-		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
-			return nil, fmt.Errorf("storing session state: %w", err)
-		}
+
+	// TODO(jba): optimistic locking
+	state, err := ss.loadState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.InitializeParams != nil {
+		return nil, fmt.Errorf("session %s already initialized", ss.sessionID)
+	}
+	state.InitializeParams = params
+	if err := ss.storeState(ctx, state); err != nil {
+		return nil, fmt.Errorf("storing session state: %w", err)
 	}
 
 	// If we support the client's version, reply with it. Otherwise, reply with our
@@ -816,11 +849,14 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 func (ss *ServerSession) setLevel(ctx context.Context, params *SetLevelParams) (*emptyResult, error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.opts.SessionState.LogLevel = params.Level
-	if store := ss.opts.SessionStore; store != nil {
-		if err := store.Store(ctx, ss.opts.SessionID, ss.opts.SessionState); err != nil {
-			return nil, err
-		}
+
+	state, err := ss.loadState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	state.LogLevel = params.Level
+	if err := ss.storeState(ctx, state); err != nil {
+		return nil, err
 	}
 	return &emptyResult{}, nil
 }

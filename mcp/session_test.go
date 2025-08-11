@@ -6,7 +6,7 @@ package mcp
 
 import (
 	"context"
-	"io/fs"
+	"errors"
 	"testing"
 )
 
@@ -39,8 +39,8 @@ func TestMemorySessionStore(t *testing.T) {
 	}
 
 	deletedState, err := store.Load(ctx, sessionID)
-	if err != fs.ErrNotExist {
-		t.Fatalf("Load() after Delete(): got %v, want fs.ErrNotExist", err)
+	if !errors.Is(err, ErrNoSession) {
+		t.Fatalf("Load() after Delete(): got %v, want ErrNoSession", err)
 	}
 	if deletedState != nil {
 		t.Error("Load() after Delete() returned non-nil state")

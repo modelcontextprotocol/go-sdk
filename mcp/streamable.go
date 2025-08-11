@@ -163,8 +163,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				return
 			}
 		} else {
+			// New session: store an empty state.
 			state = &SessionState{}
-			sessionID = randText()
+			sessionID = newSessionID()
 			if err := h.opts.SessionStore.Store(req.Context(), sessionID, state); err != nil {
 				http.Error(w, fmt.Sprintf("SessionStore.Store, new session: %v", err), http.StatusInternalServerError)
 				return
@@ -1233,3 +1234,6 @@ func calculateReconnectDelay(opts *StreamableReconnectOptions, attempt int) time
 
 	return backoffDuration + jitter
 }
+
+// For testing.
+var newSessionID = randText

@@ -112,14 +112,12 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 	return lh
 }
 
-// Enabled implements [slog.Handler.Enabled] by comparing level to the [ServerSession]'s level.
+// Enabled implements [slog.Handler.Enabled].
 func (h *LoggingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	// This is also checked in ServerSession.LoggingMessage, so checking it here
-	// is just an optimization that skips building the JSON.
-	h.ss.mu.Lock()
-	mcpLevel := h.ss.opts.SessionState.LogLevel
-	h.ss.mu.Unlock()
-	return level >= mcpLevelToSlog(mcpLevel)
+	// This is already checked in ServerSession.LoggingMessage. Checking it here
+	// would be an optimization that skips building the JSON, but it would
+	// end up loading the SessionState twice, so don't do it.
+	return true
 }
 
 // WithAttrs implements [slog.Handler.WithAttrs].
