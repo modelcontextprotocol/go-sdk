@@ -433,10 +433,10 @@ We provide a mechanism to add MCP-level middleware on the both the client and se
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
-type MethodHandler[S Session] func(ctx context.Context, method string, req *Request[S]) (result Result, err error)
+type MethodHandler func(ctx context.Context, method string, req Request) (result Result, err error)
 
 // Middleware is a function from MethodHandlers to MethodHandlers.
-type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
+type Middleware func(MethodHandler) MethodHandler
 
 // AddMiddleware wraps the client/server's current method handler using the provided
 // middleware. Middleware is applied from right to left, so that the first one
@@ -444,17 +444,17 @@ type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
 //
 // For example, AddMiddleware(m1, m2, m3) augments the server method handler as
 // m1(m2(m3(handler))).
-func (c *Client) AddSendingMiddleware(middleware ...Middleware[*ClientSession])
-func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession])
-func (s *Server) AddSendingMiddleware(middleware ...Middleware[*ServerSession])
-func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession])
+func (c *Client) AddSendingMiddleware(middleware ...Middleware)
+func (c *Client) AddReceivingMiddleware(middleware ...Middleware)
+func (s *Server) AddSendingMiddleware(middleware ...Middleware)
+func (s *Server) AddReceivingMiddleware(middleware ...Middleware)
 ```
 
 As an example, this code adds server-side logging:
 
 ```go
-func withLogging(h mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession]{
-    return func(ctx context.Context, s *mcp.ServerSession, method string, params mcp.Params) (res mcp.Result, err error) {
+func withLogging(h mcp.MethodHandler) mcp.MethodHandler{
+    return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
         log.Printf("request: %s %v", method, params)
         defer func() { log.Printf("response: %v, %v", res, err) }()
         return h(ctx, s , method, params)
