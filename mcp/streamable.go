@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -458,12 +459,13 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 	// This also requires access to the negotiated version, which would either be
 	// set by the MCP-Protocol-Version header, or would require peeking into the
 	// session.
-	incoming, _, err := readBatch(body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
+	incoming, _, err := readBatch(body)
 	requests := make(map[jsonrpc.ID]struct{})
+	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	for _, msg := range incoming {
 		if req, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -473,6 +475,7 @@ func (t *StreamableServerTransport) servePOST(w http.ResponseWriter, req *http.R
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			req.Meta = tokenInfo
 			if req.ID.IsValid() {
 				requests[req.ID] = struct{}{}
 			}
@@ -996,6 +999,10 @@ func (c *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error
 	}
 }
 
+// testAuth controls whether a fake Authorization header is added to outgoing requests.
+// TODO: replace with a better mechanism when client-side auth is in place.
+var testAuth = false
+
 // Write implements the [Connection] interface.
 func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if err := c.failure(); err != nil {
@@ -1013,6 +1020,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if testAuth {
+		req.Header.Set("Authorization", "Bearer foo")
+	}
 	c.setMCPHeaders(req)
 
 	resp, err := c.client.Do(req)
