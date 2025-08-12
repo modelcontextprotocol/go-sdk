@@ -536,7 +536,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
-		t := mcp.NewLoggingTransport(mcp.NewStdioTransport(), os.Stderr)
+		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
 		if err := server.Run(context.Background(), t); err != nil {
 			log.Printf("Server failed: %v", err)
 		}

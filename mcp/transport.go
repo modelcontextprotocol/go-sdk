@@ -211,8 +211,8 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 // A LoggingTransport is a [Transport] that delegates to another transport,
 // writing RPC logs to an io.Writer.
 type LoggingTransport struct {
-	Delegate Transport
-	Writer   io.Writer
+	Transport Transport
+	Writer    io.Writer
 }
 
 // NewLoggingTransport creates a new LoggingTransport that delegates to the
@@ -222,13 +222,13 @@ type LoggingTransport struct {
 //
 //go:fix inline
 func NewLoggingTransport(delegate Transport, w io.Writer) *LoggingTransport {
-	return &LoggingTransport{Delegate: delegate, Writer: w}
+	return &LoggingTransport{Transport: delegate, Writer: w}
 }
 
 // Connect connects the underlying transport, returning a [Connection] that writes
 // logs to the configured destination.
 func (t *LoggingTransport) Connect(ctx context.Context) (Connection, error) {
-	delegate, err := t.Delegate.Connect(ctx)
+	delegate, err := t.Transport.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}

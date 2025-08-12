@@ -28,7 +28,7 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	// Run the server over stdin/stdout, until the client disconnects
-	if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }

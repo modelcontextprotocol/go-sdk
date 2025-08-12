@@ -29,7 +29,7 @@ type CommandTransport struct {
 //
 //go:fix inline
 func NewCommandTransport(cmd *exec.Cmd) *CommandTransport {
-	return &CommandTransport{cmd}
+	return &CommandTransport{Command: cmd}
 }
 
 // Connect starts the command, and connects to it over stdin/stdout.

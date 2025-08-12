@@ -774,7 +774,7 @@ func TestNoJSONNull(t *testing.T) {
 
 	// Collect logs, to sanity check that we don't write JSON null anywhere.
 	var logbuf safeBuffer
-	ct = NewLoggingTransport(ct, &logbuf)
+	ct = &LoggingTransport{Transport: ct, Writer: &logbuf}
 
 	s := NewServer(testImpl, nil)
 	ss, err := s.Connect(ctx, st, nil)

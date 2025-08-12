@@ -58,7 +58,7 @@ func main() {
 		log.Printf("MCP handler listening at %s", *httpAddr)
 		http.ListenAndServe(*httpAddr, handler)
 	} else {
-		t := &mcp.LoggingTransport{Delegate: &mcp.StdioTransport{}, Writer: os.Stderr}
+		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
 		if err := server.Run(context.Background(), t); err != nil {
 			log.Printf("Server failed: %v", err)
 		}

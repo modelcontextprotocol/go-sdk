@@ -77,9 +77,10 @@ func TestStreamableTransports(t *testing.T) {
 			}
 			jar.SetCookies(u, []*http.Cookie{{Name: "test-cookie", Value: "test-value"}})
 			httpClient := &http.Client{Jar: jar}
-			transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
+			transport := &StreamableClientTransport{
+				Endpoint:   httpServer.URL,
 				HTTPClient: httpClient,
-			})
+			}
 			client := NewClient(testImpl, nil)
 			session, err := client.Connect(ctx, transport, nil)
 			if err != nil {
@@ -173,7 +174,7 @@ func TestClientReplay(t *testing.T) {
 			notifications <- params.Message
 		},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil), nil)
+	clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: proxy.URL}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 		notifications <- "toolListChanged"
 	},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil), nil)
+	clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -765,7 +766,7 @@ func TestStreamableClientTransportApplicationJSON(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(serverHandler))
 	defer httpServer.Close()
 
-	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {

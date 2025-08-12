@@ -49,7 +49,7 @@ func runServer() {
 
 	server := mcp.NewServer(testImpl, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
-	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -59,7 +59,7 @@ func runCancelContextServer() {
 	defer done()
 
 	server := mcp.NewServer(testImpl, nil)
-	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -116,7 +116,7 @@ func TestServerInterrupt(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, mcp.NewCommandTransport(cmd), nil)
+	_, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestCmdTransport(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd), nil)
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

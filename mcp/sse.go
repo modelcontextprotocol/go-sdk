@@ -347,8 +347,6 @@ type SSEClientTransportOptions struct {
 // NewSSEClientTransport returns a new client transport that connects to the
 // SSE server at the provided URL.
 //
-// NewSSEClientTransport panics if the given URL is invalid.
-//
 // Deprecated: use an SSEClientTransport literal.
 //
 //go:fix inline
