@@ -235,7 +235,7 @@ type StreamableServerTransport struct {
 	// hanging GET request, if any.
 	jsonResponse bool
 
-	//
+	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
 }
 
