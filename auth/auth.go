@@ -13,21 +13,40 @@ import (
 	"time"
 )
 
+// TokenInfo holds information from a bearer token.
 type TokenInfo struct {
 	Scopes     []string
 	Expiration time.Time
+	// TODO: add standard JWT fields
+	Extra map[string]any
 }
 
-type TokenVerifier func(ctx context.Context, token string) (*TokenInfo, error)
-
-type RequireBearerTokenOptions struct {
-	Scopes              []string
-	ResourceMetadataURL string
-}
-
+// The error that a TokenVerifier should return if the token cannot be verified.
 var ErrInvalidToken = errors.New("invalid token")
 
+// A TokenVerifier checks the validity of a bearer token, and extracts information
+// from it. If verification fails, it should return an error that unwraps to ErrInvalidToken.
+type TokenVerifier func(ctx context.Context, token string) (*TokenInfo, error)
+
+// RequireBearerTokenOptions are options for [RequireBearerToken].
+type RequireBearerTokenOptions struct {
+	// The URL for the resource server metadata OAuth flow, to be returned as part
+	// of the WWW-Authenticate header.
+	ResourceMetadataURL string
+	// The required scopes.
+	Scopes []string
+}
+
 type tokenInfoKey struct{}
+
+// TokenInfoFromContext returns the [TokenInfo] stored in ctx, or nil if none.
+func TokenInfoFromContext(ctx context.Context) *TokenInfo {
+	ti := ctx.Value(tokenInfoKey{})
+	if ti == nil {
+		return nil
+	}
+	return ti.(*TokenInfo)
+}
 
 // RequireBearerToken returns a piece of middleware that verifies a bearer token using the verifier.
 // If verification succeeds, the [TokenInfo] is added to the request's context and the request proceeds.
@@ -75,7 +94,7 @@ func verify(ctx context.Context, verifier TokenVerifier, opts *RequireBearerToke
 		return nil, err.Error(), http.StatusInternalServerError
 	}
 
-	// Check scopes.
+	// Check scopes. All must be present.
 	if opts != nil {
 		// Note: quadratic, but N is small.
 		for _, s := range opts.Scopes {

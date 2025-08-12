@@ -26,6 +26,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -1037,4 +1038,52 @@ func TestStreamableStateless(t *testing.T) {
 
 	// Verify we can make another request without session ID
 	checkRequest(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"greet","arguments":{"name":"World"}}}`)
+}
+
+func TestTokenInfo(t *testing.T) {
+	defer func(b bool) { testAuth = b }(testAuth)
+	testAuth = true
+	ctx := context.Background()
+
+	// Create a server with a tool that returns TokenInfo.
+	tokenInfo := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[struct{}]]) (*CallToolResultFor[any], error) {
+		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.TokenInfo)}}}, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
+
+	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	verifier := func(context.Context, string) (*auth.TokenInfo, error) {
+		return &auth.TokenInfo{
+			Scopes: []string{"scope"},
+			// Expiration is far, far in the future.
+			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
+		}, nil
+	}
+	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("missing content")
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok {
+		t.Fatal("not TextContent")
+	}
+	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC map[]}"; g != w {
+		t.Errorf("got %q, want %q", g, w)
+	}
 }
