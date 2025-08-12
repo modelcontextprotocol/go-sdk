@@ -280,6 +280,8 @@ const (
 	CodeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	CodeUnsupportedMethod = -31001
+	// The error code for invalid parameters (JSON-RPC 2.0 standard)
+	CodeInvalidParams = -32602
 )
 
 func callNotificationHandler[S Session, P any](ctx context.Context, h func(context.Context, S, *P), sess S, params *P) (Result, error) {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -56,6 +57,9 @@ type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
 	CreateMessageHandler func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error)
+	// Handler for elicitation.
+	// Called when a server requests user input via Elicit.
+	ElicitationHandler func(context.Context, *ClientSession, *ElicitParams) (*ElicitResult, error)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ClientSession, *ToolListChangedParams)
 	PromptListChangedHandler    func(context.Context, *ClientSession, *PromptListChangedParams)
@@ -123,6 +127,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 	caps.Roots.ListChanged = true
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}
+	}
+	if c.opts.ElicitationHandler != nil {
+		caps.Elicitation = &ElicitationCapabilities{}
 	}
 
 	params := &InitializeParams{
@@ -263,6 +270,50 @@ func (c *Client) createMessage(ctx context.Context, cs *ClientSession, params *C
 	return c.opts.CreateMessageHandler(ctx, cs, params)
 }
 
+func (c *Client) elicit(ctx context.Context, cs *ClientSession, params *ElicitParams) (*ElicitResult, error) {
+	if c.opts.ElicitationHandler == nil {
+		// TODO: wrap or annotate this error? Pick a standard code?
+		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support elicitation")
+	}
+	
+	// Validate that the requested schema only contains top-level properties without nesting
+	if err := validateElicitSchema(params.RequestedSchema); err != nil {
+		return nil, jsonrpc2.NewError(CodeInvalidParams, err.Error())
+	}
+	
+	return c.opts.ElicitationHandler(ctx, cs, params)
+}
+
+// validateElicitSchema validates that the schema only contains top-level properties without nesting.
+func validateElicitSchema(schema *jsonschema.Schema) error {
+	if schema == nil {
+		return nil // nil schema is allowed
+	}
+	
+	// Check if the schema has properties
+	if schema.Properties != nil {
+		for propName, propSchema := range schema.Properties {
+			if propSchema == nil {
+				continue
+			}
+			
+			// Check if this property has nested properties (not allowed)
+			if propSchema.Properties != nil && len(propSchema.Properties) > 0 {
+				return fmt.Errorf("elicit schema property %q contains nested properties, only top-level properties are allowed", propName)
+			}
+			
+			// Also check Items for arrays that might contain nested objects
+			if propSchema.Items != nil {
+				if propSchema.Items.Properties != nil && len(propSchema.Items.Properties) > 0 {
+					return fmt.Errorf("elicit schema property %q contains array items with nested properties, only top-level properties are allowed", propName)
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
 // AddSendingMiddleware wraps the current sending method handler using the provided
 // middleware. Middleware is applied from right to left, so that the first one is
 // executed first.
@@ -309,6 +360,7 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
 	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), notification),
+	methodElicit:                    newMethodInfo(clientMethod((*Client).elicit), missingParamsOK),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
