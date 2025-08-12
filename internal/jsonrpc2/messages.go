@@ -56,6 +56,9 @@ type Request struct {
 	Method string
 	// Params is either a struct or an array with the parameters of the method.
 	Params json.RawMessage
+	// Meta is additional information that does not appear on the wire. It can be
+	// used to pass information from the application to the underlying transport.
+	Meta any
 }
 
 // Response is a Message used as a reply to a call Request.
@@ -67,6 +70,9 @@ type Response struct {
 	Error error
 	// id of the request this is a response to.
 	ID ID
+	// Meta is additional information that does not appear on the wire. It can be
+	// used to pass information from the underlying transport to the application.
+	Meta any
 }
 
 // StringID creates a new string request identifier.
