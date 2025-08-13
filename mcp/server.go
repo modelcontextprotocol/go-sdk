@@ -760,6 +760,7 @@ var serverMethodInfos = map[string]methodInfo{
 	methodSetLevel:               newServerMethodInfo(serverSessionMethod((*ServerSession).setLevel), 0),
 	methodSubscribe:              newServerMethodInfo(serverMethod((*Server).subscribe), 0),
 	methodUnsubscribe:            newServerMethodInfo(serverMethod((*Server).unsubscribe), 0),
+	notificationCancelled:        newServerMethodInfo(serverSessionMethod((*ServerSession).cancel), notification|missingParamsOK),
 	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
 	notificationRootsListChanged: newServerMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
 	notificationProgress:         newServerMethodInfo(serverSessionMethod((*ServerSession).callProgressNotificationHandler), notification),
@@ -836,6 +837,15 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 
 func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error) {
 	return &emptyResult{}, nil
+}
+
+// cancel is a placeholder: cancellation is handled the jsonrpc2 package.
+//
+// It should never be invoked in practice because cancellation is preempted,
+// but having its signature here facilitates the construction of methodInfo
+// that can be used to validate incoming cancellation notifications.
+func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, error) {
+	return nil, nil
 }
 
 func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*emptyResult, error) {

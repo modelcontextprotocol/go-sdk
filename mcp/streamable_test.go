@@ -37,9 +37,26 @@ func TestStreamableTransports(t *testing.T) {
 
 	for _, useJSON := range []bool{false, true} {
 		t.Run(fmt.Sprintf("JSONResponse=%v", useJSON), func(t *testing.T) {
-			// 1. Create a server with a simple "greet" tool.
+			// Create a server with some simple tools.
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+			// The "hang" tool checks that context cancellation is propagated.
+			// It hangs until the context is cancelled.
+			var (
+				start     = make(chan struct{})
+				cancelled = make(chan struct{}, 1) // don't block the request
+			)
+			hang := func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+				start <- struct{}{}
+				select {
+				case <-ctx.Done():
+					cancelled <- struct{}{}
+				case <-time.After(5 * time.Second):
+					return nil, nil
+				}
+				return nil, nil
+			}
+			AddTool(server, &Tool{Name: "hang"}, hang)
 			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
@@ -60,7 +77,7 @@ func TestStreamableTransports(t *testing.T) {
 				return &CallToolResultFor[any]{}, nil
 			})
 
-			// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
+			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 			// cookie-checking middleware.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
 				jsonResponse: useJSON,
@@ -84,7 +101,7 @@ func TestStreamableTransports(t *testing.T) {
 			}))
 			defer httpServer.Close()
 
-			// 3. Create a client and connect it to the server using our StreamableClientTransport.
+			// Create a client and connect it to the server using our StreamableClientTransport.
 			// Check that all requests honor a custom client.
 			jar, err := cookiejar.New(nil)
 			if err != nil {
@@ -117,10 +134,13 @@ func TestStreamableTransports(t *testing.T) {
 			if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
 				t.Fatalf("got protocol version %q, want %q", g, w)
 			}
-			// 4. The client calls the "greet" tool.
+
+			// Verify the behavior of various tools.
+
+			// The "greet" tool should just work.
 			params := &CallToolParams{
 				Name:      "greet",
-				Arguments: map[string]any{"name": "streamy"},
+				Arguments: map[string]any{"name": "foo"},
 			}
 			got, err := session.CallTool(ctx, params)
 			if err != nil {
@@ -132,19 +152,26 @@ func TestStreamableTransports(t *testing.T) {
 			if g, w := lastHeader.Get(protocolVersionHeader), latestProtocolVersion; g != w {
 				t.Errorf("got protocol version header %q, want %q", g, w)
 			}
-
-			// 5. Verify that the correct response is received.
 			want := &CallToolResult{
-				Content: []Content{
-					&TextContent{Text: "hi streamy"},
-				},
+				Content: []Content{&TextContent{Text: "hi foo"}},
 			}
 			if diff := cmp.Diff(want, got); diff != "" {
 				t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
 			}
 
-			// 6. Run the "sampling" tool and verify that the streamable server can
-			// call tools.
+			// The "hang" tool should be cancellable.
+			ctx2, cancel := context.WithCancel(context.Background())
+			go session.CallTool(ctx2, &CallToolParams{Name: "hang"})
+			<-start
+			cancel()
+			select {
+			case <-cancelled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for cancellation")
+			}
+
+			// The "sampling" tool should be able to issue sampling requests during
+			// tool operation.
 			result, err := session.CallTool(ctx, &CallToolParams{
 				Name:      "sample",
 				Arguments: map[string]any{},

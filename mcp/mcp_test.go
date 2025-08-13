@@ -646,8 +646,7 @@ func TestCancellation(t *testing.T) {
 		start     = make(chan struct{})
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
-
-	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -658,7 +657,7 @@ func TestCancellation(t *testing.T) {
 		return nil, nil
 	}
 	_, cs := basicConnection(t, func(s *Server) {
-		s.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{}}, slowRequest)
+		AddTool(s, &Tool{Name: "slow"}, slowRequest)
 	})
 	defer cs.Close()
 

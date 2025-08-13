@@ -305,6 +305,7 @@ var clientMethodInfos = map[string]methodInfo{
 	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
 	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
 	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
+	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
 	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
 	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
 	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
@@ -342,6 +343,15 @@ func (cs *ClientSession) getConn() *jsonrpc2.Connection { return cs.conn }
 
 func (*ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
 	return &emptyResult{}, nil
+}
+
+// cancel is a placeholder: cancellation is handled the jsonrpc2 package.
+//
+// It should never be invoked in practice because cancellation is preempted,
+// but having its signature here facilitates the construction of methodInfo
+// that can be used to validate incoming cancellation notifications.
+func (*ClientSession) cancel(context.Context, *CancelledParams) (Result, error) {
+	return nil, nil
 }
 
 func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {

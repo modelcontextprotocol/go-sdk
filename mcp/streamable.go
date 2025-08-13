@@ -115,12 +115,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	var session *StreamableServerTransport
+	var transport *StreamableServerTransport
 	if id := req.Header.Get(sessionIDHeader); id != "" {
 		h.mu.Lock()
-		session, _ = h.transports[id]
+		transport, _ = h.transports[id]
 		h.mu.Unlock()
-		if session == nil {
+		if transport == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
@@ -129,22 +129,22 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	// TODO(rfindley): simplify the locking so that each request has only one
 	// critical section.
 	if req.Method == http.MethodDelete {
-		if session == nil {
+		if transport == nil {
 			// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
 		h.mu.Lock()
-		delete(h.transports, session.SessionID)
+		delete(h.transports, transport.SessionID)
 		h.mu.Unlock()
-		session.connection.Close()
+		transport.connection.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
-		if req.Method == http.MethodGet && session == nil {
+		if req.Method == http.MethodGet && transport == nil {
 			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
 			return
 		}
@@ -154,7 +154,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	if session == nil {
+	if transport == nil {
 		server := h.getServer(req)
 		if server == nil {
 			// The getServer argument to NewStreamableHTTPHandler returned nil.
@@ -191,10 +191,10 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.transports[s.SessionID] = s
 			h.mu.Unlock()
 		}
-		session = s
+		transport = s
 	}
 
-	session.ServeHTTP(w, req)
+	transport.ServeHTTP(w, req)
 }
 
 // StreamableServerTransportOptions configures the stramable server transport.
