@@ -98,9 +98,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	var jsonOK, streamOK bool
 	for _, c := range accept {
 		switch strings.TrimSpace(c) {
-		case "application/json":
+		case "application/json", "application/*":
 			jsonOK = true
-		case "text/event-stream":
+		case "text/event-stream", "text/*":
+			streamOK = true
+		case "*/*":
+			jsonOK = true
 			streamOK = true
 		}
 	}
