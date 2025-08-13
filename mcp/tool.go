@@ -97,11 +97,31 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 	var err error
 	if *sfield == nil {
 		*sfield, err = jsonschema.For[T](nil)
+		if err != nil {
+			return err
+		}
 	}
+	// Resolve operates with internal state and cannot be called twice on the same
+	// Schema instance. Deep-copy the schema before resolving to avoid mutating the
+	// original (which may be reused when adding the same tool again).
+	cloned, err := func(orig *jsonschema.Schema) (*jsonschema.Schema, error) {
+		if orig == nil {
+			return nil, nil
+		}
+		b, err := json.Marshal(orig)
+		if err != nil {
+			return nil, err
+		}
+		var cp jsonschema.Schema
+		if err := json.Unmarshal(b, &cp); err != nil {
+			return nil, err
+		}
+		return &cp, nil
+	}(*sfield)
 	if err != nil {
 		return err
 	}
-	*rfield, err = (*sfield).Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	*rfield, err = cloned.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
 	return err
 }
 

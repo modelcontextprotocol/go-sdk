@@ -938,4 +938,30 @@ func TestKeepAliveFailure(t *testing.T) {
 	t.Errorf("expected connection to be closed by keepalive, but it wasn't. Last error: %v", err)
 }
 
+func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
+	// Adding the same tool pointer twice should not panic and should not
+	// produce duplicates in the server's tool list.
+	_, cs := basicConnection(t, func(s *Server) {
+		tool := &Tool{Name: "dup", InputSchema: &jsonschema.Schema{}}
+		s.AddTool(tool, nopHandler)
+		s.AddTool(tool, nopHandler)
+	})
+	defer cs.Close()
+
+	ctx := context.Background()
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	for _, tt := range res.Tools {
+		if tt.Name == "dup" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one 'dup' tool, got %d", count)
+	}
+}
+
 var testImpl = &Implementation{Name: "test", Version: "v1.0.0"}
