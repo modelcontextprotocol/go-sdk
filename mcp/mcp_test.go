@@ -942,9 +942,13 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
 	_, cs := basicConnection(t, func(s *Server) {
-		tool := &Tool{Name: "dup", InputSchema: &jsonschema.Schema{}}
-		s.AddTool(tool, nopHandler)
-		s.AddTool(tool, nopHandler)
+		// Use two distinct Tool instances with the same name but different
+		// descriptions to ensure the second replaces the first
+		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
+		t1 := &Tool{Name: "dup", Description: "first", InputSchema: &jsonschema.Schema{}}
+		t2 := &Tool{Name: "dup", Description: "second", InputSchema: &jsonschema.Schema{}}
+		s.AddTool(t1, nopHandler)
+		s.AddTool(t2, nopHandler)
 	})
 	defer cs.Close()
 
@@ -954,13 +958,18 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
+	var gotDesc string
 	for _, tt := range res.Tools {
 		if tt.Name == "dup" {
 			count++
+			gotDesc = tt.Description
 		}
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly one 'dup' tool, got %d", count)
+	}
+	if gotDesc != "second" {
+		t.Fatalf("expected replaced tool to have description %q, got %q", "second", gotDesc)
 	}
 }
 
