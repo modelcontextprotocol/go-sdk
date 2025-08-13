@@ -40,7 +40,7 @@ func TestStreamableTransports(t *testing.T) {
 			// 1. Create a server with a simple "greet" tool.
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
+			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
 				// Try this on both the request context and a background context, so
