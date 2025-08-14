@@ -87,6 +87,27 @@ type LoggingHandler struct {
 	handler         slog.Handler
 }
 
+// discardHandler is a slog.Handler that drops all logs.
+type discardHandler struct{}
+
+func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
+func (discardHandler) WithAttrs([]slog.Attr) slog.Handler        { return discardHandler{} }
+func (discardHandler) WithGroup(string) slog.Handler             { return discardHandler{} }
+
+// ensureLogger returns l if non-nil, otherwise a discard logger.
+func ensureLogger(l *slog.Logger) *slog.Logger {
+	if l != nil {
+		return l
+	}
+	return slog.New(discardHandler{})
+}
+
+// internalLogger is used for package-internal logging where we don't have a
+// specific server/handler context. It defaults to a discard logger to avoid
+// unsolicited output from library code.
+var internalLogger = slog.New(discardHandler{})
+
 // NewLoggingHandler creates a [LoggingHandler] that logs to the given [ServerSession] using a
 // [slog.JSONHandler].
 func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingHandler {

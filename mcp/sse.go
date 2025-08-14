@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
@@ -47,6 +48,7 @@ type SSEHandler struct {
 
 	mu       sync.Mutex
 	sessions map[string]*SSEServerTransport
+	logger   *slog.Logger
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -68,8 +70,11 @@ func NewSSEHandler(getServer func(request *http.Request) *Server) *SSEHandler {
 	return &SSEHandler{
 		getServer: getServer,
 		sessions:  make(map[string]*SSEServerTransport),
+		logger:    internalLogger,
 	}
 }
+
+func (h *SSEHandler) ensureLogger() { h.logger = ensureLogger(h.logger) }
 
 // A SSEServerTransport is a logical SSE session created through a hanging GET
 // request.
@@ -100,6 +105,10 @@ type SSEServerTransport struct {
 	// Response is the hanging response body to the incoming GET request.
 	Response http.ResponseWriter
 
+	// logger is used for per-POST diagnostics and transport-level logs.
+	// If nil, logging is disabled.
+	logger *slog.Logger
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -114,6 +123,8 @@ type SSEServerTransport struct {
 	done   chan struct{} // closed when the connection is closed
 }
 
+func (t *SSEServerTransport) ensureLogger() { t.logger = ensureLogger(t.logger) }
+
 // NewSSEServerTransport creates a new SSE transport for the given messages
 // endpoint, and hanging GET response.
 //
@@ -124,11 +135,13 @@ func NewSSEServerTransport(endpoint string, w http.ResponseWriter) *SSEServerTra
 	return &SSEServerTransport{
 		Endpoint: endpoint,
 		Response: w,
+		logger:   ensureLogger(nil),
 	}
 }
 
 // ServeHTTP handles POST requests to the transport endpoint.
 func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	t.ensureLogger()
 	if t.incoming == nil {
 		http.Error(w, "session not connected", http.StatusInternalServerError)
 		return
@@ -137,6 +150,7 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	// Read and parse the message.
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
+		t.logger.Error("sse: failed to read body", "error", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -145,11 +159,13 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	// useful
 	msg, err := jsonrpc2.DecodeMessage(data)
 	if err != nil {
+		t.logger.Error("sse: failed to parse body", "error", err)
 		http.Error(w, "failed to parse body", http.StatusBadRequest)
 		return
 	}
 	if req, ok := msg.(*jsonrpc.Request); ok {
 		if _, err := checkRequest(req, serverMethodInfos); err != nil {
+			t.logger.Warn("sse: request validation failed", "error", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -158,6 +174,7 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	case t.incoming <- msg:
 		w.WriteHeader(http.StatusAccepted)
 	case <-t.done:
+		t.logger.Info("sse: session closed while posting message")
 		http.Error(w, "session closed", http.StatusBadRequest)
 	}
 }
@@ -181,6 +198,7 @@ func (t *SSEServerTransport) Connect(context.Context) (Connection, error) {
 }
 
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.ensureLogger()
 	sessionID := req.URL.Query().Get("sessionid")
 
 	// TODO: consider checking Content-Type here. For now, we are lax.
@@ -221,11 +239,24 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	sessionID = randText()
 	endpoint, err := req.URL.Parse("?sessionid=" + sessionID)
 	if err != nil {
+		h.logger.Error("sse: failed to create endpoint", "error", err)
 		http.Error(w, "internal error: failed to create endpoint", http.StatusInternalServerError)
 		return
 	}
 
-	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w}
+	// Determine the server instance and pick a logger for the transport.
+	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewSSEHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
+	}
+	// Prefer the server's logger if available; otherwise use the handler's.
+	lg := server.logger
+	if lg == nil {
+		lg = h.logger
+	}
+	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w, logger: ensureLogger(lg)}
 
 	// The session is terminated when the request exits.
 	h.mu.Lock()
@@ -236,15 +267,9 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		delete(h.sessions, sessionID)
 		h.mu.Unlock()
 	}()
-
-	server := h.getServer(req)
-	if server == nil {
-		// The getServer argument to NewSSEHandler returned nil.
-		http.Error(w, "no server available", http.StatusBadRequest)
-		return
-	}
 	ss, err := server.Connect(req.Context(), transport, nil)
 	if err != nil {
+		h.logger.Error("sse: server connect failed", "error", err)
 		http.Error(w, "connection failed", http.StatusInternalServerError)
 		return
 	}
