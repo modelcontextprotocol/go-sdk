@@ -22,7 +22,7 @@ func testToolHandler[In, Out any](context.Context, *ServerRequest[*CallToolParam
 
 func srvTool[In, Out any](t *testing.T, tool *Tool, handler TypedToolHandler[In, Out]) *serverTool {
 	t.Helper()
-	st, err := newTypedServerTool(tool, handler)
+	st, err := newServerTool(TypedTool(tool, handler))
 	if err != nil {
 		t.Fatal(err)
 	}

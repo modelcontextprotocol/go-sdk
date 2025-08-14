@@ -26,12 +26,7 @@ func TestStartThinking(t *testing.T) {
 		EstimatedSteps: 5,
 	}
 
-	params := &mcp.CallToolParamsFor[StartThinkingArgs]{
-		Name:      "start_thinking",
-		Arguments: args,
-	}
-
-	result, err := StartThinking(ctx, requestFor(params))
+	result, _, err := StartThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, args)
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -84,12 +79,7 @@ func TestContinueThinking(t *testing.T) {
 		EstimatedSteps: 3,
 	}
 
-	startParams := &mcp.CallToolParamsFor[StartThinkingArgs]{
-		Name:      "start_thinking",
-		Arguments: startArgs,
-	}
-
-	_, err := StartThinking(ctx, requestFor(startParams))
+	_, _, err := StartThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, startArgs)
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -100,12 +90,7 @@ func TestContinueThinking(t *testing.T) {
 		Thought:   "First thought: I need to understand the problem",
 	}
 
-	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: continueArgs,
-	}
-
-	result, err := ContinueThinking(ctx, requestFor(continueParams))
+	result, _, err := ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, continueArgs)
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -153,12 +138,7 @@ func TestContinueThinkingWithCompletion(t *testing.T) {
 		SessionID: "test_completion",
 	}
 
-	startParams := &mcp.CallToolParamsFor[StartThinkingArgs]{
-		Name:      "start_thinking",
-		Arguments: startArgs,
-	}
-
-	_, err := StartThinking(ctx, requestFor(startParams))
+	_, _, err := StartThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, startArgs)
 	if err != nil {
 		t.Fatalf("StartThinking() error = %v", err)
 	}
@@ -171,12 +151,7 @@ func TestContinueThinkingWithCompletion(t *testing.T) {
 		NextNeeded: &nextNeeded,
 	}
 
-	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: continueArgs,
-	}
-
-	result, err := ContinueThinking(ctx, requestFor(continueParams))
+	result, _, err := ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, continueArgs)
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -228,12 +203,7 @@ func TestContinueThinkingRevision(t *testing.T) {
 		ReviseStep: &reviseStep,
 	}
 
-	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: continueArgs,
-	}
-
-	result, err := ContinueThinking(ctx, requestFor(continueParams))
+	result, _, err := ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, continueArgs)
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -284,12 +254,7 @@ func TestContinueThinkingBranching(t *testing.T) {
 		CreateBranch: true,
 	}
 
-	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: continueArgs,
-	}
-
-	result, err := ContinueThinking(ctx, requestFor(continueParams))
+	result, _, err := ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, continueArgs)
 	if err != nil {
 		t.Fatalf("ContinueThinking() error = %v", err)
 	}
@@ -351,12 +316,7 @@ func TestReviewThinking(t *testing.T) {
 		SessionID: "test_review",
 	}
 
-	reviewParams := &mcp.CallToolParamsFor[ReviewThinkingArgs]{
-		Name:      "review_thinking",
-		Arguments: reviewArgs,
-	}
-
-	result, err := ReviewThinking(ctx, requestFor(reviewParams))
+	result, _, err := ReviewThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, reviewArgs)
 	if err != nil {
 		t.Fatalf("ReviewThinking() error = %v", err)
 	}
@@ -431,7 +391,7 @@ func TestThinkingHistory(t *testing.T) {
 		URI: "thinking://sessions",
 	}
 
-	result, err := ThinkingHistory(ctx, requestFor(listParams))
+	result, err := ThinkingHistory(ctx, &mcp.ServerRequest[*mcp.ReadResourceParams]{Params: listParams})
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -461,7 +421,7 @@ func TestThinkingHistory(t *testing.T) {
 		URI: "thinking://session1",
 	}
 
-	result, err = ThinkingHistory(ctx, requestFor(sessionParams))
+	result, err = ThinkingHistory(ctx, &mcp.ServerRequest[*mcp.ReadResourceParams]{Params: sessionParams})
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -491,12 +451,7 @@ func TestInvalidOperations(t *testing.T) {
 		Thought:   "Some thought",
 	}
 
-	continueParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: continueArgs,
-	}
-
-	_, err := ContinueThinking(ctx, requestFor(continueParams))
+	_, _, err := ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, continueArgs)
 	if err == nil {
 		t.Error("Expected error for non-existent session")
 	}
@@ -506,12 +461,7 @@ func TestInvalidOperations(t *testing.T) {
 		SessionID: "nonexistent",
 	}
 
-	reviewParams := &mcp.CallToolParamsFor[ReviewThinkingArgs]{
-		Name:      "review_thinking",
-		Arguments: reviewArgs,
-	}
-
-	_, err = ReviewThinking(ctx, requestFor(reviewParams))
+	_, _, err = ReviewThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, reviewArgs)
 	if err == nil {
 		t.Error("Expected error for non-existent session in review")
 	}
@@ -536,17 +486,8 @@ func TestInvalidOperations(t *testing.T) {
 		ReviseStep: &reviseStep,
 	}
 
-	invalidReviseParams := &mcp.CallToolParamsFor[ContinueThinkingArgs]{
-		Name:      "continue_thinking",
-		Arguments: invalidReviseArgs,
-	}
-
-	_, err = ContinueThinking(ctx, requestFor(invalidReviseParams))
+	_, _, err = ContinueThinking(ctx, &mcp.ServerRequest[*mcp.CallToolParams]{}, invalidReviseArgs)
 	if err == nil {
 		t.Error("Expected error for invalid revision step")
 	}
-}
-
-func requestFor[P mcp.Params](p P) *mcp.ServerRequest[P] {
-	return &mcp.ServerRequest[P]{Params: p}
 }

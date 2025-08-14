@@ -103,8 +103,7 @@ func (e unsupportedProtocolVersionError) Error() string {
 }
 
 // ClientSessionOptions is reserved for future use.
-type ClientSessionOptions struct {
-}
+type ClientSessionOptions struct{}
 
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.

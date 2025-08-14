@@ -33,7 +33,7 @@ func TestList(t *testing.T) {
 			if err != nil {
 				t.Fatal("ListTools() failed:", err)
 			}
-			if diff := cmp.Diff(wantTools, res.Tools, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			if diff := cmp.Diff(wantTools, res.Tools, cmpopts.IgnoreUnexported(ignoreUnexp...)); diff != "" {
 				t.Fatalf("ListTools() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -55,7 +55,7 @@ func TestList(t *testing.T) {
 			if err != nil {
 				t.Fatal("ListResources() failed:", err)
 			}
-			if diff := cmp.Diff(wantResources, res.Resources, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			if diff := cmp.Diff(wantResources, res.Resources, cmpopts.IgnoreUnexported(ignoreUnexp...)); diff != "" {
 				t.Fatalf("ListResources() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -76,7 +76,7 @@ func TestList(t *testing.T) {
 			if err != nil {
 				t.Fatal("ListResourceTemplates() failed:", err)
 			}
-			if diff := cmp.Diff(wantResourceTemplates, res.ResourceTemplates, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			if diff := cmp.Diff(wantResourceTemplates, res.ResourceTemplates, cmpopts.IgnoreUnexported(ignoreUnexp...)); diff != "" {
 				t.Fatalf("ListResourceTemplates() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -97,7 +97,7 @@ func TestList(t *testing.T) {
 			if err != nil {
 				t.Fatal("ListPrompts() failed:", err)
 			}
-			if diff := cmp.Diff(wantPrompts, res.Prompts, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+			if diff := cmp.Diff(wantPrompts, res.Prompts, cmpopts.IgnoreUnexported(ignoreUnexp...)); diff != "" {
 				t.Fatalf("ListPrompts() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -116,7 +116,7 @@ func testIterator[T any](t *testing.T, seq iter.Seq2[*T, error], want []*T) {
 		}
 		got = append(got, x)
 	}
-	if diff := cmp.Diff(want, got, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreUnexported(ignoreUnexp...)); diff != "" {
 		t.Fatalf("mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -124,3 +124,5 @@ func testIterator[T any](t *testing.T, seq iter.Seq2[*T, error], want []*T) {
 func testPromptHandler(context.Context, *mcp.ServerSession, *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
 	panic("not implemented")
 }
+
+var ignoreUnexp = []any{jsonschema.Schema{}, mcp.Tool{}}

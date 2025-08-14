@@ -63,11 +63,15 @@ func newServerTool(t *Tool, h ToolHandler) (*serverTool, error) {
 	}
 	// Ignore output schema.
 	st.handler = func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+		argsp := t.newArgs()
 		rawArgs := req.Params.Arguments.(json.RawMessage)
-		args := t.newArgs()
-		if err := unmarshalSchema(rawArgs, st.inputResolved, args); err != nil {
-			return nil, err
+		if rawArgs != nil {
+			if err := unmarshalSchema(rawArgs, st.inputResolved, argsp); err != nil {
+				return nil, err
+			}
 		}
+		// Dereference argsp.
+		args := reflect.ValueOf(argsp).Elem().Interface()
 		res, err := h(ctx, req, args)
 		// TODO(rfindley): investigate why server errors are embedded in this strange way,
 		// rather than returned as jsonrpc2 server errors.
@@ -83,19 +87,19 @@ func newServerTool(t *Tool, h ToolHandler) (*serverTool, error) {
 	return st, nil
 }
 
-// newTypedServerTool creates a serverTool from a tool and a handler.
-// If the tool doesn't have an input schema, it is inferred from In.
-// If the tool doesn't have an output schema and Out != any, it is inferred from Out.
-func newTypedServerTool[In, Out any](t *Tool, h TypedToolHandler[In, Out]) (*serverTool, error) {
+// newTypedToolHandler is a helper for [TypedTool].
+func newTypedToolHandler[In, Out any](t *Tool, h TypedToolHandler[In, Out]) (ToolHandler, error) {
 	assert(t.newArgs == nil, "newArgs is nil")
 	t.newArgs = func() any { var x In; return &x }
 
 	var err error
-	t.InputSchema, err = jsonschema.For[In](nil)
-	if err != nil {
-		return nil, err
+	if t.InputSchema == nil {
+		t.InputSchema, err = jsonschema.For[In](nil)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
+	if t.OutputSchema == nil && reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
 		t.OutputSchema, err = jsonschema.For[Out](nil)
 	}
 	if err != nil {
@@ -103,7 +107,11 @@ func newTypedServerTool[In, Out any](t *Tool, h TypedToolHandler[In, Out]) (*ser
 	}
 
 	toolHandler := func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, error) {
-		res, out, err := h(ctx, req, *args.(*In))
+		var inArg In
+		if args != nil {
+			inArg = args.(In)
+		}
+		res, out, err := h(ctx, req, inArg)
 		if err != nil {
 			return nil, err
 		}
@@ -112,10 +120,11 @@ func newTypedServerTool[In, Out any](t *Tool, h TypedToolHandler[In, Out]) (*ser
 		}
 		// TODO: return the serialized JSON in a TextContent block, as per spec?
 		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content
+		// But people may use res.Content for other things.
 		res.StructuredContent = out
 		return res, nil
 	}
-	return newServerTool(t, toolHandler)
+	return toolHandler, nil
 }
 
 // unmarshalSchema unmarshals data into v and validates the result according to
@@ -131,7 +140,7 @@ func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any)
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("unmarshaling: %w", err)
+		return fmt.Errorf("unmarshaling tool args %q into %T: %w", data, v, err)
 	}
 
 	// TODO: test with nil args.

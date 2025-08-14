@@ -147,18 +147,30 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	s.addServerTool(newServerTool(t, h))
 }
 
-// AddTool adds a [Tool] to the server, or replaces one with the same name.
-// If the tool's input schema is nil, it is set to the schema inferred from the In
-// type parameter, using [jsonschema.For].
-// If the tool's output schema is nil and the Out type parameter is not the empty
-// interface, then the output schema is set to the schema inferred from Out.
-// The Tool argument must not be modified after this call.
+// TypedTool returns a [Tool] and a [ToolHandler] from its arguments.
+// The argument Tool must not have been used in a previous call to [AddTool] or TypedTool.
+// It is returned with the following modifications:
+//   - If the tool doesn't have an input schema, it is inferred from In.
+//   - If the tool doesn't have an output schema and Out != any, it is inferred from Out.
 //
-// The handler should return the result as the second return value. The first return value,
-// a *CallToolResult, may be nil, or its fields other than StructuredContent may be
-// populated.
+// The returned tool must not be modified and should be used only with the returned ToolHandler.
+//
+// The argument handler should return the result as the second return value. The
+// first return value, a *CallToolResult, may be nil, or its fields may be populated.
+// TypedTool will populate the StructuredContent field with the second return value.
+// It does not populate the Content field with the serialized JSON of StructuredContent,
+// as suggested in the MCP specification. You can do so by wrapping the returned ToolHandler.
+func TypedTool[In, Out any](t *Tool, h TypedToolHandler[In, Out]) (*Tool, ToolHandler) {
+	th, err := newTypedToolHandler(t, h)
+	if err != nil {
+		panic(fmt.Sprintf("TypedTool for %q: %v", t.Name, err))
+	}
+	return t, th
+}
+
+// AddTool is a convenience for s.AddTool(TypedTool(t, h)).
 func AddTool[In, Out any](s *Server, t *Tool, h TypedToolHandler[In, Out]) {
-	s.addServerTool(newTypedServerTool(t, h))
+	s.AddTool(TypedTool(t, h))
 }
 
 func (s *Server) addServerTool(st *serverTool, err error) {

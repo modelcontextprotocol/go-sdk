@@ -646,7 +646,6 @@ func TestCancellation(t *testing.T) {
 		start     = make(chan struct{})
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
-
 	slowRequest := func(ctx context.Context, _ *ServerRequest[*CallToolParams], _ any) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
@@ -663,8 +662,18 @@ func TestCancellation(t *testing.T) {
 	defer cs.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
-	<-start
+	errc := make(chan error, 1)
+	go func() {
+		_, err := cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+		if err != nil {
+			errc <- err
+		}
+	}()
+	select {
+	case err := <-errc:
+		t.Fatalf("CallTool returned %v", err)
+	case <-start:
+	}
 	cancel()
 	select {
 	case <-cancelled:

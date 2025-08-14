@@ -431,152 +431,137 @@ func (k knowledgeBase) openNodes(names []string) (KnowledgeGraph, error) {
 	}, nil
 }
 
-func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateEntitiesArgs]]) (*mcp.CallToolResultFor[CreateEntitiesResult], error) {
-	var res mcp.CallToolResultFor[CreateEntitiesResult]
+func (k knowledgeBase) CreateEntities(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args CreateEntitiesArgs) (*mcp.CallToolResult, CreateEntitiesResult, error) {
+	var res mcp.CallToolResult
 
-	entities, err := k.createEntities(req.Params.Arguments.Entities)
+	entities, err := k.createEntities(args.Entities)
 	if err != nil {
-		return nil, err
+		return nil, CreateEntitiesResult{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Entities created successfully"},
 	}
 
-	res.StructuredContent = CreateEntitiesResult{
-		Entities: entities,
-	}
-
-	return &res, nil
+	return &res, CreateEntitiesResult{Entities: entities}, nil
 }
 
-func (k knowledgeBase) CreateRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateRelationsArgs]]) (*mcp.CallToolResultFor[CreateRelationsResult], error) {
-	var res mcp.CallToolResultFor[CreateRelationsResult]
+func (k knowledgeBase) CreateRelations(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args CreateRelationsArgs) (*mcp.CallToolResult, CreateRelationsResult, error) {
+	var res mcp.CallToolResult
 
-	relations, err := k.createRelations(req.Params.Arguments.Relations)
+	relations, err := k.createRelations(args.Relations)
 	if err != nil {
-		return nil, err
+		return nil, CreateRelationsResult{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Relations created successfully"},
 	}
 
-	res.StructuredContent = CreateRelationsResult{
-		Relations: relations,
-	}
-
-	return &res, nil
+	return &res, CreateRelationsResult{Relations: relations}, nil
 }
 
-func (k knowledgeBase) AddObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddObservationsArgs]]) (*mcp.CallToolResultFor[AddObservationsResult], error) {
-	var res mcp.CallToolResultFor[AddObservationsResult]
+func (k knowledgeBase) AddObservations(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args AddObservationsArgs) (*mcp.CallToolResult, AddObservationsResult, error) {
+	var res mcp.CallToolResult
 
-	observations, err := k.addObservations(req.Params.Arguments.Observations)
+	observations, err := k.addObservations(args.Observations)
 	if err != nil {
-		return nil, err
+		return nil, AddObservationsResult{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Observations added successfully"},
 	}
 
-	res.StructuredContent = AddObservationsResult{
+	return &res, AddObservationsResult{
 		Observations: observations,
-	}
-
-	return &res, nil
+	}, nil
 }
 
-func (k knowledgeBase) DeleteEntities(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteEntitiesArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
-	var res mcp.CallToolResultFor[struct{}]
+func (k knowledgeBase) DeleteEntities(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args DeleteEntitiesArgs) (*mcp.CallToolResult, any, error) {
+	var res mcp.CallToolResult
 
-	err := k.deleteEntities(req.Params.Arguments.EntityNames)
+	err := k.deleteEntities(args.EntityNames)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Entities deleted successfully"},
 	}
 
-	return &res, nil
+	return &res, nil, nil
 }
 
-func (k knowledgeBase) DeleteObservations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteObservationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
-	var res mcp.CallToolResultFor[struct{}]
+func (k knowledgeBase) DeleteObservations(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args DeleteObservationsArgs) (*mcp.CallToolResult, any, error) {
+	var res mcp.CallToolResult
 
-	err := k.deleteObservations(req.Params.Arguments.Deletions)
+	err := k.deleteObservations(args.Deletions)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Observations deleted successfully"},
 	}
 
-	return &res, nil
+	return &res, nil, nil
 }
 
-func (k knowledgeBase) DeleteRelations(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[DeleteRelationsArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
-	var res mcp.CallToolResultFor[struct{}]
+func (k knowledgeBase) DeleteRelations(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args DeleteRelationsArgs) (*mcp.CallToolResult, any, error) {
+	var res mcp.CallToolResult
 
-	err := k.deleteRelations(req.Params.Arguments.Relations)
+	err := k.deleteRelations(args.Relations)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Relations deleted successfully"},
 	}
 
-	return &res, nil
+	return &res, nil, nil
 }
 
-func (k knowledgeBase) ReadGraph(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[struct{}]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
-	var res mcp.CallToolResultFor[KnowledgeGraph]
+func (k knowledgeBase) ReadGraph(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args struct{}) (*mcp.CallToolResult, KnowledgeGraph, error) {
+	var res mcp.CallToolResult
 
 	graph, err := k.loadGraph()
 	if err != nil {
-		return nil, err
+		return nil, KnowledgeGraph{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Graph read successfully"},
 	}
 
-	res.StructuredContent = graph
-	return &res, nil
+	return &res, graph, nil
 }
 
-func (k knowledgeBase) SearchNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[SearchNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
-	var res mcp.CallToolResultFor[KnowledgeGraph]
+func (k knowledgeBase) SearchNodes(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args SearchNodesArgs) (*mcp.CallToolResult, KnowledgeGraph, error) {
+	var res mcp.CallToolResult
 
-	graph, err := k.searchNodes(req.Params.Arguments.Query)
+	graph, err := k.searchNodes(args.Query)
 	if err != nil {
-		return nil, err
+		return nil, KnowledgeGraph{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Nodes searched successfully"},
 	}
-
-	res.StructuredContent = graph
-	return &res, nil
+	return &res, graph, nil
 }
 
-func (k knowledgeBase) OpenNodes(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[OpenNodesArgs]]) (*mcp.CallToolResultFor[KnowledgeGraph], error) {
-	var res mcp.CallToolResultFor[KnowledgeGraph]
+func (k knowledgeBase) OpenNodes(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args OpenNodesArgs) (*mcp.CallToolResult, KnowledgeGraph, error) {
+	var res mcp.CallToolResult
 
-	graph, err := k.openNodes(req.Params.Arguments.Names)
+	graph, err := k.openNodes(args.Names)
 	if err != nil {
-		return nil, err
+		return nil, KnowledgeGraph{}, err
 	}
 
 	res.Content = []mcp.Content{
 		&mcp.TextContent{Text: "Nodes opened successfully"},
 	}
-
-	res.StructuredContent = graph
-	return &res, nil
+	return &res, graph, nil
 }

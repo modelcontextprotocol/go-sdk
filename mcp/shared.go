@@ -252,31 +252,35 @@ func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHan
 // notification.
 func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInfo {
 	return methodInfo{
-		flags: flags,
-		unmarshalParams: func(m json.RawMessage) (Params, error) {
-			var p P
-			if m != nil {
-				if err := json.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
-				}
-			}
-			// We must check missingParamsOK here, in addition to checkRequest, to
-			// catch the edge cases where "params" is set to JSON null.
-			// See also https://go.dev/issue/33835.
-			//
-			// We need to ensure that p is non-null to guard against crashes, as our
-			// internal code or externally provided handlers may assume that params
-			// is non-null.
-			if flags&missingParamsOK == 0 && p == nil {
-				return nil, fmt.Errorf("%w: missing required \"params\"", jsonrpc2.ErrInvalidRequest)
-			}
-			return orZero[Params](p), nil
-		},
+		flags:           flags,
+		unmarshalParams: unmarshalParamsFunc[P](flags),
 		// newResult is used on the send side, to construct the value to unmarshal the result into.
 		// R is a pointer to a result struct. There is no way to "unpointer" it without reflection.
 		// TODO(jba): explore generic approaches to this, perhaps by treating R in
 		// the signature as the unpointered type.
 		newResult: func() Result { return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R) },
+	}
+}
+
+func unmarshalParamsFunc[P paramsPtr[T], T any](flags methodFlags) func(m json.RawMessage) (Params, error) {
+	return func(m json.RawMessage) (Params, error) {
+		var p P
+		if m != nil {
+			if err := json.Unmarshal(m, &p); err != nil {
+				return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+			}
+		}
+		// We must check missingParamsOK here, in addition to checkRequest, to
+		// catch the edge cases where "params" is set to JSON null.
+		// See also https://go.dev/issue/33835.
+		//
+		// We need to ensure that p is non-null to guard against crashes, as our
+		// internal code or externally provided handlers may assume that params
+		// is non-null.
+		if flags&missingParamsOK == 0 && p == nil {
+			return nil, fmt.Errorf("%w: missing required \"params\"", jsonrpc2.ErrInvalidRequest)
+		}
+		return orZero[Params](p), nil
 	}
 }
 

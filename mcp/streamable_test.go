@@ -40,6 +40,23 @@ func TestStreamableTransports(t *testing.T) {
 			// 1. Create a server with a simple "greet" tool.
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+			// The "hang" tool checks that context cancellation is propagated.
+			// It hangs until the context is cancelled.
+			var (
+				start     = make(chan struct{})
+				cancelled = make(chan struct{}, 1) // don't block the request
+			)
+			hang := func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
+				start <- struct{}{}
+				select {
+				case <-ctx.Done():
+					cancelled <- struct{}{}
+				case <-time.After(5 * time.Second):
+					return nil, nil, nil
+				}
+				return nil, nil, nil
+			}
+			AddTool(server, &Tool{Name: "hang"}, hang)
 			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
