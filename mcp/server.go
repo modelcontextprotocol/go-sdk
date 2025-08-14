@@ -171,6 +171,15 @@ func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 
 func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
 	defer util.Wrapf(&err, "adding tool %q", t.Name)
+	// If the exact same Tool pointer has already been registered under this name,
+	// avoid rebuilding schemas and re-registering. This prevents duplicate
+	// registration from causing errors (and unnecessary work).
+	s.mu.Lock()
+	if existing, ok := s.tools.get(t.Name); ok && existing.tool == t {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
 	st, err := newServerTool(t, h)
 	if err != nil {
 		return err
