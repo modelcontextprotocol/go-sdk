@@ -324,7 +324,7 @@ type stream struct {
 
 	// outgoing is the list of outgoing messages, enqueued by server methods that
 	// write notifications and responses, and dequeued by streamResponse.
-	outgoing [][]byte
+	outgoing outgoingBuffer
 
 	// streamRequests is the set of unanswered incoming RPCs for the stream.
 	//
@@ -332,11 +332,129 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
+// outgoingBuffer defines a common interface for storing outgoing messages.
+// This allows us to use either a circular or bounded buffer.
+type outgoingBuffer interface {
+	// tryAdd attempts to add a message to the buffer.
+	// It returns true if the message was added successfully.
+	// It returns false if the buffer was full and couldn't accept the message.
+	tryAdd(msg []byte) bool
+
+	// drain removes and returns all currently buffered messages.
+	drain() [][]byte
+
+	// close signals that no more messages will be sent.
+	close()
+}
+
+// boundedBuffer implements buffer using a buffered channel.
+type boundedBuffer struct {
+	ch chan []byte
+}
+
+func (b *boundedBuffer) tryAdd(msg []byte) bool {
+	select {
+	case b.ch <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *boundedBuffer) drain() [][]byte {
+	var messages [][]byte
+	for {
+		select {
+		case msg, ok := <-b.ch:
+			if !ok {
+				return messages
+			}
+			messages = append(messages, msg)
+		default:
+			return messages
+		}
+	}
+}
+
+func (b *boundedBuffer) close() {
+	close(b.ch)
+}
+
+// circularBuffer implements buffer using a circular buffer.
+type circularBuffer struct {
+	mu       sync.Mutex
+	messages [][]byte
+	head     int // Index to write next
+	tail     int // Index to read next
+	size     int // Current number of items in buffer
+	capacity int
+}
+
+func (b *circularBuffer) tryAdd(msg []byte) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Place the new item at the current head position.
+	b.messages[b.head] = msg
+
+	// Move the head pointer forward, wrapping around.
+	b.head = (b.head + 1) % b.capacity
+
+	if b.size == b.capacity {
+		// If the buffer was already full, the tail also moves forward
+		// because we just overwrote the oldest item.
+		b.tail = (b.tail + 1) % b.capacity
+	} else {
+		// If the buffer wasn't full, its size just increased.
+		b.size++
+	}
+	return true
+}
+
+func (b *circularBuffer) drain() [][]byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.size == 0 {
+		return nil
+	}
+	out := make([][]byte, b.size)
+
+	// Copy items in the correct FIFO order (from tail to head).
+	for i := 0; i < b.size; i++ {
+		// Calculate the index starting from the tail and wrapping around.
+		idx := (b.tail + i) % b.capacity
+		out[i] = b.messages[idx]
+	}
+	// Reset the buffer's state to empty.
+	b.head = 0
+	b.tail = 0
+	b.size = 0
+	return out
+}
+
+func (b *circularBuffer) close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.messages = nil
+}
+
+const outgoingBufferLimit = 500
+
 func newStream(id StreamID, jsonResponse bool) *stream {
+	var outgoing outgoingBuffer
+	// The notification stream(stream 0) can overwrite old messages.
+	if id == 0 {
+		outgoing = &circularBuffer{messages: make([][]byte, outgoingBufferLimit), capacity: outgoingBufferLimit}
+	} else {
+		outgoing = &boundedBuffer{
+			ch: make(chan []byte, outgoingBufferLimit),
+		}
+	}
 	return &stream{
 		id:           id,
 		jsonResponse: jsonResponse,
 		requests:     make(map[jsonrpc.ID]struct{}),
+		outgoing:     outgoing,
 	}
 }
 
@@ -642,12 +760,10 @@ func (t *StreamableServerTransport) messages(ctx context.Context, stream *stream
 	return func(yield func(json.RawMessage, bool) bool) {
 		for {
 			t.mu.Lock()
-			outgoing := stream.outgoing
-			stream.outgoing = nil
 			nOutstanding := len(stream.requests)
 			t.mu.Unlock()
 
-			for _, data := range outgoing {
+			for _, data := range stream.outgoing.drain() {
 				if !yield(data, true) {
 					return
 				}
@@ -777,10 +893,9 @@ func (t *StreamableServerTransport) Write(ctx context.Context, msg jsonrpc.Messa
 	if len(stream.requests) == 0 && forStream != 0 || stream.jsonResponse && !isResponse {
 		stream = t.streams[0]
 	}
-
-	// TODO: if there is nothing to send these messages to (as would happen, for example, if forConn == 0
-	// and the client never did a GET), then memory will grow without bound. Consider a mitigation.
-	stream.outgoing = append(stream.outgoing, data)
+	if ok := stream.outgoing.tryAdd(data); !ok {
+		return fmt.Errorf("stream is full: %d", forStream)
+	}
 	if isResponse {
 		// Once we've put the reply on the queue, it's no longer outstanding.
 		delete(stream.requests, forRequest)
@@ -804,6 +919,10 @@ func (t *StreamableServerTransport) Close() error {
 	if !t.isDone {
 		t.isDone = true
 		close(t.done)
+		for _, stream := range t.streams {
+			stream.outgoing.close()
+		}
+		t.streams = nil
 		// TODO: find a way to plumb a context here, or an event store with a long-running
 		// close operation can take arbitrary time. Alternative: impose a fixed timeout here.
 		return t.opts.EventStore.SessionClosed(context.TODO(), t.sessionID)

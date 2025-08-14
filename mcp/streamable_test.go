@@ -891,3 +891,203 @@ func TestStreamableStateless(t *testing.T) {
 	// Verify we can make another request without session ID
 	checkRequest(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"greet","arguments":{"name":"World"}}}`)
 }
+
+// TestSlowClient simulates a client that is slow because the server sends
+// messages faster than they can be processed.
+func TestSlowClient(t *testing.T) {
+	// Verifies the client's reconnect logic is triggered by a server-side write failure.
+	// The test floods the server's message buffer, causing the write for the final
+	// POST response to fail. This fatal error should terminate the stream, forcing
+	// the client to attempt a reconnection.
+	t.Run("TestReconnectOnFullBuffer", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		numMessagesToSend := 10000
+
+		// 1. Set up a server with a tool that sends a burst of notifications.
+		server := NewServer(testImpl, nil)
+		httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+		defer httpServer.Close()
+		AddTool(server, &Tool{Name: "spam"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResult, error) {
+			for i := range numMessagesToSend {
+				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{
+					Message: fmt.Sprintf("msg %d", i),
+				}); err != nil {
+					wantErr := "stream is full"
+					if !strings.Contains(err.Error(), "stream is full") {
+						t.Errorf("NotifyProgress error mismatch: expected %v but got %q", wantErr, err)
+					}
+					return &CallToolResult{}, err
+				}
+			}
+			return &CallToolResult{}, nil
+		})
+
+		// 2. Set up a client to receive the notifications.
+		client := NewClient(testImpl, nil)
+		clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer clientSession.Close()
+
+		// 3. Trigger the spam.
+		_, err = clientSession.CallTool(ctx, &CallToolParams{Name: "spam"})
+		// 4. Verify that we get a failed reconnect due to write failures.
+		if err == nil {
+			t.Fatalf("clientSession.CallTool succeeded, but expected an error")
+		}
+		// This causes a 410 error which is unresumable.
+		wantErr := "reconnection failed with unresumable status"
+		if !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("CallTool error mismatch: expected %v but got %q", wantErr, err)
+		}
+	})
+
+	// Verifies that the circular notification buffer correctly overwrites the oldest messages.
+	// When the buffer's capacity is exceeded, the client is expected to receive only
+	// the final outgoingBufferLimit messages that were sent.
+	t.Run("TestCircularBufferOverwrites", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var wg sync.WaitGroup
+		receivedNotifications := make(chan string, outgoingBufferLimit)
+		defer close(receivedNotifications)
+
+		// 1. Set up a server with a tool that triggers many background notifications.
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "backgroundSpam"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResult, error) {
+			defer wg.Done()
+			// Send more messages than the circular buffer can hold.
+			for i := range outgoingBufferLimit + 5 {
+				// Use a separate context to cause the message to be sent on stream 0.
+				err := ss.NotifyProgress(context.Background(), &ProgressNotificationParams{Message: fmt.Sprintf("msg %d", i)})
+				if err != nil {
+					t.Errorf("NotifyProgress(): unexpected failure during message send: %v", err)
+				}
+			}
+			return &CallToolResult{}, nil
+		})
+
+		httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+		defer httpServer.Close()
+
+		// 2. Set up a client that connects and listens for notifications.
+		client := NewClient(testImpl, &ClientOptions{
+			ProgressNotificationHandler: func(ctx context.Context, cs *ClientSession, params *ProgressNotificationParams) {
+				receivedNotifications <- params.Message
+			},
+		})
+		clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer clientSession.Close()
+
+		// 3. Trigger the background spam and wait for the server to send all messages.
+		wg.Add(1)
+		if _, err := clientSession.CallTool(ctx, &CallToolParams{Name: "backgroundSpam"}); err != nil {
+			t.Fatalf("CallTool failed: %v", err)
+		}
+		wg.Wait()
+
+		// Check that the received messages are the last ones sent.
+		var wantNotifications []string
+		for i := 5; i < outgoingBufferLimit+5; i++ {
+			wantNotifications = append(wantNotifications, fmt.Sprintf("msg %d", i))
+		}
+		got := readNotifications(t, ctx, receivedNotifications, len(wantNotifications))
+		if diff := cmp.Diff(wantNotifications, got); diff != "" {
+			t.Errorf("received notifications mismatch (-want +got):\n%s", diff)
+		}
+		if len(receivedNotifications) > 0 {
+			t.Errorf("expected no more notifications, but got %d", len(receivedNotifications))
+		}
+	})
+}
+
+func TestCircularBuffer(t *testing.T) {
+	const capacity = 3
+	newCircularBuffer := func() circularBuffer {
+		return circularBuffer{messages: make([][]byte, capacity), capacity: capacity}
+	}
+
+	t.Run("addAndDrain", func(t *testing.T) {
+		buf := newCircularBuffer()
+		buf.tryAdd([]byte("A"))
+		buf.tryAdd([]byte("B"))
+
+		want := [][]byte{[]byte("A"), []byte("B")}
+		if diff := cmp.Diff(want, buf.drain()); diff != "" {
+			t.Errorf("buf.drain() mismatch (-want +got):\n%s", diff)
+		}
+		if secondDrain := buf.drain(); len(secondDrain) != 0 {
+			t.Errorf("expected buffer to be empty, but got %v", secondDrain)
+		}
+	})
+
+	t.Run("tryAddToFullBuffer", func(t *testing.T) {
+		buf := newCircularBuffer()
+		for i := range 3 {
+			if !buf.tryAdd([]byte(fmt.Sprintf("%d", i))) {
+				t.Error("expected buf.tryAdd() to succeed, but it failed")
+			}
+		}
+
+		// Should succeed by overwriting the oldest item ("0").
+		if !buf.tryAdd([]byte("3")) {
+			t.Error("expected buf.tryAdd() to succeed on a circularBuffer, but it failed")
+		}
+		// The new contents should reflect the overwrite.
+		want := [][]byte{[]byte("1"), []byte("2"), []byte("3")}
+		if diff := cmp.Diff(want, buf.drain()); diff != "" {
+			t.Errorf("buf.drain() mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+func TestBoundedBuffer(t *testing.T) {
+	const capacity = 3
+	newBoundedBuffer := func() boundedBuffer {
+		return boundedBuffer{ch: make(chan []byte, capacity)}
+	}
+	t.Run("addAndDrain", func(t *testing.T) {
+		buf := newBoundedBuffer()
+		msg1 := []byte("hello")
+		msg2 := []byte("world")
+
+		buf.tryAdd(msg1)
+		buf.tryAdd(msg2)
+
+		want := [][]byte{msg1, msg2}
+
+		if diff := cmp.Diff(want, buf.drain()); diff != "" {
+			t.Errorf("buf.drain() mismatch (-want +got):\n%s", diff)
+		}
+
+		// After draining, the buffer should be empty.
+		if seconddrain := buf.drain(); len(seconddrain) != 0 {
+			t.Errorf("expected buffer to be empty after drain, but got %v", seconddrain)
+		}
+	})
+
+	t.Run("tryAddToFullBuffer", func(t *testing.T) {
+		buf := newBoundedBuffer()
+		// Fill the buffer to capacity.
+		for i := range 3 {
+			if !buf.tryAdd([]byte(fmt.Sprintf("%d", i))) {
+				t.Error("expected buf.tryAdd() to succeed, but it failed")
+			}
+		}
+		// tryAdd should fail (return false) because the channel buffer is full.
+		if buf.tryAdd([]byte("3")) {
+			t.Error("expected tryAdd to fail on a full boundedBuffer, but it succeeded")
+		}
+		// drain should still contain the original 3 items.
+		want := [][]byte{[]byte("0"), []byte("1"), []byte("2")}
+		if diff := cmp.Diff(want, buf.drain()); diff != "" {
+			t.Errorf("buf.drain() mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
