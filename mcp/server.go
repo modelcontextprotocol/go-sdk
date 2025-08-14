@@ -355,6 +355,8 @@ func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParam
 	if !ok {
 		return nil, fmt.Errorf("%s: unknown tool %q", jsonrpc2.ErrInvalidParams, req.Params.Name)
 	}
+	// TODO: if handler returns nil content, it will serialize as null.
+	// Add a test and fix.
 	return st.handler(ctx, req)
 }
 

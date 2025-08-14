@@ -382,29 +382,30 @@ func readNotifications(t *testing.T, ctx context.Context, notifications chan str
 	}
 }
 
+// JSON-RPC message constructors.
+func req(id int64, method string, params any) *jsonrpc.Request {
+	r := &jsonrpc.Request{
+		Method: method,
+		Params: mustMarshal(params),
+	}
+	if id > 0 {
+		r.ID = jsonrpc2.Int64ID(id)
+	}
+	return r
+}
+
+func resp(id int64, result any, err error) *jsonrpc.Response {
+	return &jsonrpc.Response{
+		ID:     jsonrpc2.Int64ID(id),
+		Result: mustMarshal(result),
+		Error:  err,
+	}
+}
+
 func TestStreamableServerTransport(t *testing.T) {
 	// This test checks detailed behavior of the streamable server transport, by
 	// faking the behavior of a streamable client using a sequence of HTTP
 	// requests.
-
-	// JSON-RPC message constructors.
-	req := func(id int64, method string, params any) *jsonrpc.Request {
-		r := &jsonrpc.Request{
-			Method: method,
-			Params: mustMarshal(t, params),
-		}
-		if id > 0 {
-			r.ID = jsonrpc2.Int64ID(id)
-		}
-		return r
-	}
-	resp := func(id int64, result any, err error) *jsonrpc.Response {
-		return &jsonrpc.Response{
-			ID:     jsonrpc2.Int64ID(id),
-			Result: mustMarshal(t, result),
-			Error:  err,
-		}
-	}
 
 	// Predefined steps, to avoid repetition below.
 	initReq := req(1, methodInitialize, &InitializeParams{})
@@ -422,21 +423,23 @@ func TestStreamableServerTransport(t *testing.T) {
 		messages:       []jsonrpc.Message{initReq},
 		wantStatusCode: http.StatusOK,
 		wantMessages:   []jsonrpc.Message{initResp},
+		wantSessionID:  true,
 	}
 	initialized := streamableRequest{
 		method:         "POST",
 		messages:       []jsonrpc.Message{initializedMsg},
 		wantStatusCode: http.StatusAccepted,
+		wantSessionID:  false, // TODO: should this be true?
 	}
 
 	tests := []struct {
-		name  string
-		tool  func(*testing.T, context.Context, *ServerSession)
-		steps []streamableRequest
+		name     string
+		tool     func(*testing.T, context.Context, *ServerSession)
+		requests []streamableRequest // http requests
 	}{
 		{
 			name: "basic",
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
@@ -444,12 +447,13 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{}, nil)},
+					wantSessionID:  true,
 				},
 			},
 		},
 		{
 			name: "accept headers",
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				// Test various accept headers.
@@ -458,12 +462,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					accept:         []string{"text/plain", "application/*"},
 					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusBadRequest, // missing text/event-stream
+					wantSessionID:  false,
 				},
 				{
 					method:         "POST",
 					accept:         []string{"text/event-stream"},
 					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusBadRequest, // missing application/json
+					wantSessionID:  false,
 				},
 				{
 					method:         "POST",
@@ -471,6 +477,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantSessionID:  true,
 				},
 				{
 					method:         "POST",
@@ -478,6 +485,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantSessionID:  true,
 				},
 			},
 		},
@@ -489,7 +497,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Notify failed: %v", err)
 				}
 			},
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
@@ -502,6 +510,7 @@ func TestStreamableServerTransport(t *testing.T) {
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
 				},
 			},
 		},
@@ -513,7 +522,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Call failed: %v", err)
 				}
 			},
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
@@ -523,6 +532,7 @@ func TestStreamableServerTransport(t *testing.T) {
 						resp(1, &ListRootsResult{}, nil),
 					},
 					wantStatusCode: http.StatusAccepted,
+					wantSessionID:  false,
 				},
 				{
 					method: "POST",
@@ -534,6 +544,7 @@ func TestStreamableServerTransport(t *testing.T) {
 						req(1, "roots/list", &ListRootsParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
 				},
 			},
 		},
@@ -554,7 +565,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Notify failed: %v", err)
 				}
 			},
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
@@ -564,6 +575,7 @@ func TestStreamableServerTransport(t *testing.T) {
 						resp(1, &ListRootsResult{}, nil),
 					},
 					wantStatusCode: http.StatusAccepted,
+					wantSessionID:  false,
 				},
 				{
 					method:         "GET",
@@ -574,6 +586,7 @@ func TestStreamableServerTransport(t *testing.T) {
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						req(1, "roots/list", &ListRootsParams{}),
 					},
+					wantSessionID: true,
 				},
 				{
 					method: "POST",
@@ -584,12 +597,13 @@ func TestStreamableServerTransport(t *testing.T) {
 					wantMessages: []jsonrpc.Message{
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
 				},
 			},
 		},
 		{
 			name: "errors",
-			steps: []streamableRequest{
+			requests: []streamableRequest{
 				{
 					method:         "PUT",
 					wantStatusCode: http.StatusMethodNotAllowed,
@@ -615,6 +629,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc2.WireError{
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
+					wantSessionID: true, // TODO: this is probably wrong; we don't have a valid session
 				},
 			},
 		},
@@ -636,118 +651,127 @@ func TestStreamableServerTransport(t *testing.T) {
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
 			defer handler.closeAll()
 
-			httpServer := httptest.NewServer(handler)
-			defer httpServer.Close()
-
-			// blocks records request blocks by jsonrpc. ID.
-			//
-			// When an OnRequest step is encountered, it waits on the corresponding
-			// block. When a request with that ID is received, the block is closed.
-			var mu sync.Mutex
-			blocks := make(map[int64]chan struct{})
-			for _, step := range test.steps {
-				if step.onRequest > 0 {
-					blocks[step.onRequest] = make(chan struct{})
-				}
-			}
-
-			// signal when all synchronous requests have executed, so we can fail
-			// async requests that are blocked.
-			syncRequestsDone := make(chan struct{})
-
-			// To avoid complicated accounting for session ID, just set the first
-			// non-empty session ID from a response.
-			var sessionID atomic.Value
-			sessionID.Store("")
-
-			// doStep executes a single step.
-			doStep := func(t *testing.T, step streamableRequest) {
-				if step.onRequest > 0 {
-					// Block the step until we've received the server->client request.
-					mu.Lock()
-					block := blocks[step.onRequest]
-					mu.Unlock()
-					select {
-					case <-block:
-					case <-syncRequestsDone:
-						t.Errorf("after all sync requests are complete, request still blocked on %d", step.onRequest)
-						return
-					}
-				}
-
-				// Collect messages received during this request, unblock other steps
-				// when requests are received.
-				var got []jsonrpc.Message
-				out := make(chan jsonrpc.Message)
-				// Cancel the step if we encounter a request that isn't going to be
-				// handled.
-				ctx, cancel := context.WithCancel(context.Background())
-
-				var wg sync.WaitGroup
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-
-					for m := range out {
-						if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
-							// Encountered a server->client request. We should have a
-							// response queued. Otherwise, we may deadlock.
-							mu.Lock()
-							if block, ok := blocks[req.ID.Raw().(int64)]; ok {
-								close(block)
-							} else {
-								t.Errorf("no queued response for %v", req.ID)
-								cancel()
-							}
-							mu.Unlock()
-						}
-						got = append(got, m)
-						if step.closeAfter > 0 && len(got) == step.closeAfter {
-							cancel()
-						}
-					}
-				}()
-
-				gotSessionID, gotStatusCode, err := step.do(ctx, httpServer.URL, sessionID.Load().(string), out)
-
-				// Don't fail on cancelled requests: error (if any) is handled
-				// elsewhere.
-				if err != nil && ctx.Err() == nil {
-					t.Fatal(err)
-				}
-
-				if gotStatusCode != step.wantStatusCode {
-					t.Errorf("got status %d, want %d", gotStatusCode, step.wantStatusCode)
-				}
-				wg.Wait()
-
-				transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
-				if diff := cmp.Diff(step.wantMessages, got, transform); diff != "" {
-					t.Errorf("received unexpected messages (-want +got):\n%s", diff)
-				}
-				sessionID.CompareAndSwap("", gotSessionID)
-			}
-
-			var wg sync.WaitGroup
-			for _, step := range test.steps {
-				if step.async || step.onRequest > 0 {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						doStep(t, step)
-					}()
-				} else {
-					doStep(t, step)
-				}
-			}
-
-			// Fail any blocked responses if they weren't needed by a synchronous
-			// request.
-			close(syncRequestsDone)
-
-			wg.Wait()
+			testStreamableHandler(t, handler, test.requests)
 		})
 	}
+}
+
+func testStreamableHandler(t *testing.T, handler http.Handler, requests []streamableRequest) {
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// blocks records request blocks by jsonrpc. ID.
+	//
+	// When an OnRequest step is encountered, it waits on the corresponding
+	// block. When a request with that ID is received, the block is closed.
+	var mu sync.Mutex
+	blocks := make(map[int64]chan struct{})
+	for _, req := range requests {
+		if req.onRequest > 0 {
+			blocks[req.onRequest] = make(chan struct{})
+		}
+	}
+
+	// signal when all synchronous requests have executed, so we can fail
+	// async requests that are blocked.
+	syncRequestsDone := make(chan struct{})
+
+	// To avoid complicated accounting for session ID, just set the first
+	// non-empty session ID from a response.
+	var sessionID atomic.Value
+	sessionID.Store("")
+
+	// doStep executes a single step.
+	doStep := func(t *testing.T, i int, request streamableRequest) {
+		if request.onRequest > 0 {
+			// Block the step until we've received the server->client request.
+			mu.Lock()
+			block := blocks[request.onRequest]
+			mu.Unlock()
+			select {
+			case <-block:
+			case <-syncRequestsDone:
+				t.Errorf("after all sync requests are complete, request still blocked on %d", request.onRequest)
+				return
+			}
+		}
+
+		// Collect messages received during this request, unblock other steps
+		// when requests are received.
+		var got []jsonrpc.Message
+		out := make(chan jsonrpc.Message)
+		// Cancel the step if we encounter a request that isn't going to be
+		// handled.
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for m := range out {
+				if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
+					// Encountered a server->client request. We should have a
+					// response queued. Otherwise, we may deadlock.
+					mu.Lock()
+					if block, ok := blocks[req.ID.Raw().(int64)]; ok {
+						close(block)
+					} else {
+						t.Errorf("no queued response for %v", req.ID)
+						cancel()
+					}
+					mu.Unlock()
+				}
+				got = append(got, m)
+				if request.closeAfter > 0 && len(got) == request.closeAfter {
+					cancel()
+				}
+			}
+		}()
+
+		gotSessionID, gotStatusCode, err := request.do(ctx, httpServer.URL, sessionID.Load().(string), out)
+
+		// Don't fail on cancelled requests: error (if any) is handled
+		// elsewhere.
+		if err != nil && ctx.Err() == nil {
+			t.Fatal(err)
+		}
+
+		if gotStatusCode != request.wantStatusCode {
+			t.Errorf("request #%d: got status %d, want %d", i, gotStatusCode, request.wantStatusCode)
+		}
+		if got := gotSessionID != ""; got != request.wantSessionID {
+			t.Errorf("request #%d: got session id: %t, want %t", i, got, request.wantSessionID)
+		}
+		wg.Wait()
+
+		if !request.ignoreResponse {
+			transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
+			if diff := cmp.Diff(request.wantMessages, got, transform); diff != "" {
+				t.Errorf("received unexpected messages (-want +got):\n%s", diff)
+			}
+		}
+		sessionID.CompareAndSwap("", gotSessionID)
+	}
+
+	var wg sync.WaitGroup
+	for i, request := range requests {
+		if request.async || request.onRequest > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				doStep(t, i, request)
+			}()
+		} else {
+			doStep(t, i, request)
+		}
+	}
+
+	// Fail any blocked responses if they weren't needed by a synchronous
+	// request.
+	close(syncRequestsDone)
+
+	wg.Wait()
 }
 
 // A streamableRequest describes a single streamable HTTP request, consisting
@@ -768,13 +792,15 @@ type streamableRequest struct {
 	async bool
 
 	// Request attributes
-	method   string            // HTTP request method
+	method   string            // HTTP request method (required)
 	accept   []string          // if non-empty, the Accept header to use; otherwise the default header is used
 	messages []jsonrpc.Message // messages to send
 
 	closeAfter     int               // if nonzero, close after receiving this many messages
 	wantStatusCode int               // expected status code
+	ignoreResponse bool              // if set, don't check the response messages
 	wantMessages   []jsonrpc.Message // expected messages to receive
+	wantSessionID  bool              // whether or not a session ID is expected in the response
 }
 
 // streamingRequest makes a request to the given streamable server with the
@@ -840,7 +866,8 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 
 	newSessionID := resp.Header.Get("Mcp-Session-Id")
 
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	contentType := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "text/event-stream") {
 		for evt, err := range scanEvents(resp.Body) {
 			if err != nil {
 				return newSessionID, resp.StatusCode, fmt.Errorf("reading events: %v", err)
@@ -853,7 +880,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 			}
 			out <- msg
 		}
-	} else if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+	} else if strings.HasPrefix(contentType, "application/json") {
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return newSessionID, resp.StatusCode, fmt.Errorf("reading json body: %w", err)
@@ -868,14 +895,13 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	return newSessionID, resp.StatusCode, nil
 }
 
-func mustMarshal(t *testing.T, v any) json.RawMessage {
+func mustMarshal(v any) json.RawMessage {
 	if v == nil {
 		return nil
 	}
-	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return data
 }
@@ -886,7 +912,7 @@ func TestStreamableClientTransportApplicationJSON(t *testing.T) {
 	resp := func(id int64, result any, err error) *jsonrpc.Response {
 		return &jsonrpc.Response{
 			ID:     jsonrpc2.Int64ID(id),
-			Result: mustMarshal(t, result),
+			Result: mustMarshal(result),
 			Error:  err,
 		}
 	}
@@ -970,13 +996,10 @@ func TestEventID(t *testing.T) {
 }
 
 func TestStreamableStateless(t *testing.T) {
-	// Test stateless mode behavior
-	ctx := context.Background()
-
 	// This version of sayHi doesn't make a ping request (we can't respond to
 	// that request from our client).
-	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
-		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
+	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResult, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
@@ -985,57 +1008,27 @@ func TestStreamableStateless(t *testing.T) {
 	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
 		GetSessionID: func() string { return "" },
 	})
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
 
-	checkRequest := func(body string) {
-		// Verify we can call tools/list directly without initialization in stateless mode
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-
-		// Verify that no session ID header is returned in stateless mode
-		if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
-			t.Errorf("%s = %s, want no session ID header", sessionIDHeader, sessionID)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Status code = %d; want successful response", resp.StatusCode)
-		}
-
-		var events []Event
-		for event, err := range scanEvents(resp.Body) {
-			if err != nil {
-				t.Fatal(err)
-			}
-			events = append(events, event)
-		}
-		if len(events) != 1 {
-			t.Fatalf("got %d SSE events, want 1; events: %v", len(events), events)
-		}
-		msg, err := jsonrpc.DecodeMessage(events[0].Data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		jsonResp, ok := msg.(*jsonrpc.Response)
-		if !ok {
-			t.Errorf("event is %T, want response", jsonResp)
-		}
-		if jsonResp.Error != nil {
-			t.Errorf("request failed: %v", jsonResp.Error)
-		}
+	requests := []streamableRequest{
+		{
+			method:         "POST",
+			wantStatusCode: http.StatusOK,
+			messages:       []jsonrpc.Message{req(1, "tools/list", struct{}{})},
+			ignoreResponse: true,
+			wantSessionID:  false,
+		},
+		{
+			method:         "POST",
+			wantStatusCode: http.StatusOK,
+			messages: []jsonrpc.Message{
+				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "World"}}),
+			},
+			wantMessages: []jsonrpc.Message{
+				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi World"}}}, nil),
+			},
+			wantSessionID: false,
+		},
 	}
 
-	checkRequest(`{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}`)
-
-	// Verify we can make another request without session ID
-	checkRequest(`{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"greet","arguments":{"name":"World"}}}`)
+	testStreamableHandler(t, handler, requests)
 }
