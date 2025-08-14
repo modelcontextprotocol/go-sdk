@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,31 +23,37 @@ func TestContentUnmarshalNil(t *testing.T) {
 		name    string
 		json    string
 		content interface{}
+		want    interface{}
 	}{
 		{
 			name:    "CallToolResult nil Content",
 			json:    `{"content":[{"type":"text","text":"hello"}]}`,
 			content: &mcp.CallToolResult{},
+			want:    &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "hello"}}},
 		},
 		{
 			name:    "CreateMessageResult nil Content",
 			json:    `{"content":{"type":"text","text":"hello"},"model":"test","role":"user"}`,
 			content: &mcp.CreateMessageResult{},
+			want:    &mcp.CreateMessageResult{Content: &mcp.TextContent{Text: "hello"}, Model: "test", Role: "user"},
 		},
 		{
 			name:    "PromptMessage nil Content",
 			json:    `{"content":{"type":"text","text":"hello"},"role":"user"}`,
 			content: &mcp.PromptMessage{},
+			want:    &mcp.PromptMessage{Content: &mcp.TextContent{Text: "hello"}, Role: "user"},
 		},
 		{
 			name:    "SamplingMessage nil Content",
 			json:    `{"content":{"type":"text","text":"hello"},"role":"user"}`,
 			content: &mcp.SamplingMessage{},
+			want:    &mcp.SamplingMessage{Content: &mcp.TextContent{Text: "hello"}, Role: "user"},
 		},
 		{
 			name:    "CallToolResultFor nil Content",
 			json:    `{"content":[{"type":"text","text":"hello"}]}`,
 			content: &mcp.CallToolResultFor[string]{},
+			want:    &mcp.CallToolResultFor[string]{Content: []mcp.Content{&mcp.TextContent{Text: "hello"}}},
 		},
 	}
 
@@ -65,42 +72,8 @@ func TestContentUnmarshalNil(t *testing.T) {
 			}
 
 			// Verify that the Content field was properly populated
-			switch v := tt.content.(type) {
-			case *mcp.CallToolResult:
-				if len(v.Content) == 0 {
-					t.Error("CallToolResult.Content was not populated")
-				}
-				if _, ok := v.Content[0].(*mcp.TextContent); !ok {
-					t.Error("CallToolResult.Content[0] is not TextContent")
-				}
-			case *mcp.CallToolResultFor[string]:
-				if len(v.Content) == 0 {
-					t.Error("CallToolResultFor.Content was not populated")
-				}
-				if _, ok := v.Content[0].(*mcp.TextContent); !ok {
-					t.Error("CallToolResultFor.Content[0] is not TextContent")
-				}
-			case *mcp.CreateMessageResult:
-				if v.Content == nil {
-					t.Error("CreateMessageResult.Content was not populated")
-				}
-				if _, ok := v.Content.(*mcp.TextContent); !ok {
-					t.Error("CreateMessageResult.Content is not TextContent")
-				}
-			case *mcp.PromptMessage:
-				if v.Content == nil {
-					t.Error("PromptMessage.Content was not populated")
-				}
-				if _, ok := v.Content.(*mcp.TextContent); !ok {
-					t.Error("PromptMessage.Content is not TextContent")
-				}
-			case *mcp.SamplingMessage:
-				if v.Content == nil {
-					t.Error("SamplingMessage.Content was not populated")
-				}
-				if _, ok := v.Content.(*mcp.TextContent); !ok {
-					t.Error("SamplingMessage.Content is not TextContent")
-				}
+			if cmp.Diff(tt.want, tt.content) != "" {
+				t.Errorf("Content is not equal: %v", cmp.Diff(tt.content, tt.content))
 			}
 		})
 	}
