@@ -32,11 +32,11 @@ type hiParams struct {
 // TODO(jba): after schemas are stateless (WIP), this can be a variable.
 func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
-func sayHi(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
+func sayHi(ctx context.Context, req *ServerRequest[*CallToolParams], args hiParams) (*CallToolResult, any, error) {
 	if err := req.Session.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("ping failed: %v", err)
+		return nil, nil, fmt.Errorf("ping failed: %v", err)
 	}
-	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
+	return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + args.Name}}}, nil, nil
 }
 
 var codeReviewPrompt = &Prompt{
@@ -97,7 +97,7 @@ func TestEndToEnd(t *testing.T) {
 		Description: "say hi",
 	}, sayHi)
 	s.AddTool(&Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParams], any) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
@@ -647,7 +647,7 @@ func TestCancellation(t *testing.T) {
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
 
-	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+	slowRequest := func(ctx context.Context, _ *ServerRequest[*CallToolParams], _ any) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -836,7 +836,7 @@ func traceCalls[S Session](w io.Writer, prefix string) Middleware {
 	}
 }
 
-func nopHandler(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+func nopHandler(context.Context, *ServerRequest[*CallToolParams], any) (*CallToolResult, error) {
 	return nil, nil
 }
 

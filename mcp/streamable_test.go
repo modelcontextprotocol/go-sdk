@@ -40,7 +40,7 @@ func TestStreamableTransports(t *testing.T) {
 			// 1. Create a server with a simple "greet" tool.
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
 				// Try this on both the request context and a background context, so
@@ -51,13 +51,13 @@ func TestStreamableTransports(t *testing.T) {
 				} {
 					res, err := req.Session.CreateMessage(ctx, &CreateMessageParams{})
 					if err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 					if g, w := res.Model, "aModel"; g != w {
-						return nil, fmt.Errorf("got %q, want %q", g, w)
+						return nil, nil, fmt.Errorf("got %q, want %q", g, w)
 					}
 				}
-				return &CallToolResultFor[any]{}, nil
+				return &CallToolResult{}, nil, nil
 			})
 
 			// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
@@ -172,7 +172,7 @@ func TestClientReplay(t *testing.T) {
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
 	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, error) {
 			go func() {
 				bgCtx := context.Background()
 				// Send the first two messages immediately.
@@ -283,7 +283,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	}
 	defer clientSession.Close()
 	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParams], any) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
 	receivedNotifications := readNotifications(t, ctx, notifications, 1)
@@ -546,11 +546,11 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
+			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
 				if test.tool != nil {
 					test.tool(t, ctx, req.Session)
 				}
-				return &CallToolResultFor[any]{}, nil
+				return &CallToolResult{}, nil, nil
 			})
 
 			// Start the streamable handler.
@@ -866,8 +866,8 @@ func TestStreamableStateless(t *testing.T) {
 
 	// This version of sayHi doesn't make a ping request (we can't respond to
 	// that request from our client).
-	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
-		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
+	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParams], args hiParams) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + args.Name}}}, nil, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)

@@ -18,12 +18,12 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[SayHiParams]) (*CallToolResultFor[any], error) {
-	return &CallToolResultFor[any]{
+func SayHi(ctx context.Context, req *ServerRequest[*CallToolParams], args SayHiParams) (*CallToolResult, any, error) {
+	return &CallToolResult{
 		Content: []Content{
-			&TextContent{Text: "Hi " + params.Name},
+			&TextContent{Text: "Hi " + args.Name},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func TestFeatureSetOrder(t *testing.T) {
@@ -45,7 +45,7 @@ func TestFeatureSetOrder(t *testing.T) {
 		fs := newFeatureSet(func(t *Tool) string { return t.Name })
 		fs.add(tc.tools...)
 		got := slices.Collect(fs.all())
-		if diff := cmp.Diff(got, tc.want, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+		if diff := cmp.Diff(got, tc.want, cmpopts.IgnoreUnexported(jsonschema.Schema{}, Tool{})); diff != "" {
 			t.Errorf("expected %v, got %v, (-want +got):\n%s", tc.want, got, diff)
 		}
 	}
@@ -69,7 +69,7 @@ func TestFeatureSetAbove(t *testing.T) {
 		fs := newFeatureSet(func(t *Tool) string { return t.Name })
 		fs.add(tc.tools...)
 		got := slices.Collect(fs.above(tc.above))
-		if diff := cmp.Diff(got, tc.want, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
+		if diff := cmp.Diff(got, tc.want, cmpopts.IgnoreUnexported(jsonschema.Schema{}, Tool{})); diff != "" {
 			t.Errorf("expected %v, got %v, (-want +got):\n%s", tc.want, got, diff)
 		}
 	}

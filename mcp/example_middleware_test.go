@@ -89,15 +89,16 @@ func Example_loggingMiddleware() {
 		},
 		func(
 			ctx context.Context,
-			req *mcp.ServerRequest[*mcp.CallToolParamsFor[map[string]any]],
-		) (*mcp.CallToolResultFor[any], error) {
-			name, ok := req.Params.Arguments["name"].(string)
+			req *mcp.ServerRequest[*mcp.CallToolParams],
+			args any,
+		) (*mcp.CallToolResult, error) {
+			name, ok := args.(map[string]any)["name"].(string)
 			if !ok {
 				return nil, fmt.Errorf("name parameter is required and must be a string")
 			}
 
 			message := fmt.Sprintf("Hello, %s!", name)
-			return &mcp.CallToolResultFor[any]{
+			return &mcp.CallToolResult{
 				Content: []mcp.Content{
 					&mcp.TextContent{Text: message},
 				},

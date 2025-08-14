@@ -408,10 +408,6 @@ func (r *ServerRequest[P]) GetSession() Session { return r.Session }
 func (r *ClientRequest[P]) GetParams() Params { return r.Params }
 func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
-func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
-	return &ServerRequest[P]{Session: s, Params: p}
-}
-
 func clientRequestFor[P Params](s *ClientSession, p P) *ClientRequest[P] {
 	return &ClientRequest[P]{Session: s, Params: p}
 }

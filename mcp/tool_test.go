@@ -16,13 +16,13 @@ import (
 )
 
 // testToolHandler is used for type inference in TestNewServerTool.
-func testToolHandler[In, Out any](context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error) {
+func testToolHandler[In, Out any](context.Context, *ServerRequest[*CallToolParams], In) (*CallToolResult, Out, error) {
 	panic("not implemented")
 }
 
-func srvTool[In, Out any](t *testing.T, tool *Tool, handler ToolHandlerFor[In, Out]) *serverTool {
+func srvTool[In, Out any](t *testing.T, tool *Tool, handler TypedToolHandler[In, Out]) *serverTool {
 	t.Helper()
-	st, err := newServerTool(tool, handler)
+	st, err := newTypedServerTool(tool, handler)
 	if err != nil {
 		t.Fatal(err)
 	}
