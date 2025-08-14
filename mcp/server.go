@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"iter"
 	"maps"
@@ -145,16 +144,7 @@ func (s *Server) RemovePrompts(names ...string) {
 // or one where any input is valid, set [Tool.InputSchema] to the empty schema,
 // &jsonschema.Schema{}.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
-	if t.InputSchema == nil {
-		// This prevents the tool author from forgetting to write a schema where
-		// one should be provided. If we papered over this by supplying the empty
-		// schema, then every input would be validated and the problem wouldn't be
-		// discovered until runtime, when the LLM sent bad data.
-		panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
-	}
-	if err := addToolErr(s, t, h); err != nil {
-		panic(err)
-	}
+	s.addServerTool(newServerTool(t, h))
 }
 
 // AddTool adds a [Tool] to the server, or replaces one with the same name.
@@ -163,17 +153,17 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 // If the tool's output schema is nil and the Out type parameter is not the empty
 // interface, then the output schema is set to the schema inferred from Out.
 // The Tool argument must not be modified after this call.
-func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	if err := addToolErr(s, t, h); err != nil {
-		panic(err)
-	}
+//
+// The handler should return the result as the second return value. The first return value,
+// a *CallToolResult, may be nil, or its fields other than StructuredContent may be
+// populated.
+func AddTool[In, Out any](s *Server, t *Tool, h TypedToolHandler[In, Out]) {
+	s.addServerTool(newTypedServerTool(t, h))
 }
 
-func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
-	defer util.Wrapf(&err, "adding tool %q", t.Name)
-	st, err := newServerTool(t, h)
+func (s *Server) addServerTool(st *serverTool, err error) {
 	if err != nil {
-		return err
+		panic(fmt.Sprintf("adding tool %q: %v", st.tool.Name, err))
 	}
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
@@ -181,7 +171,6 @@ func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err
 	// TODO: Surface notify error here? best not, in case we need to batch.
 	s.changeAndNotify(notificationToolListChanged, &ToolListChangedParams{},
 		func() bool { s.tools.add(st); return true })
-	return nil
 }
 
 // RemoveTools removes the tools with the given names.
@@ -326,7 +315,7 @@ func (s *Server) listTools(_ context.Context, req *ServerRequest[*ListToolsParam
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParamsFor[json.RawMessage]]) (*CallToolResult, error) {
+func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 	s.mu.Lock()
 	st, ok := s.tools.get(req.Params.Name)
 	s.mu.Unlock()
@@ -612,7 +601,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
-		h(ctx, serverRequestFor(ss, params))
+		h(ctx, newServerRequest(ss, params))
 	}
 	return nil, nil
 }
@@ -626,7 +615,7 @@ func (s *Server) callRootsListChangedHandler(ctx context.Context, req *ServerReq
 
 func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p *ProgressNotificationParams) (Result, error) {
 	if h := ss.server.opts.ProgressNotificationHandler; h != nil {
-		h(ctx, serverRequestFor(ss, p))
+		h(ctx, newServerRequest(ss, p))
 	}
 	return nil, nil
 }

@@ -208,6 +208,7 @@ func TestCompleteReference(t *testing.T) {
 		})
 	}
 }
+
 func TestCompleteParams(t *testing.T) {
 	// Define test cases specifically for Marshalling
 	marshalTests := []struct {
@@ -514,13 +515,15 @@ func TestContentUnmarshal(t *testing.T) {
 	var got CallToolResult
 	roundtrip(ctr, &got)
 
-	ctrf := &CallToolResultFor[int]{
-		Meta:              Meta{"m": true},
-		Content:           content,
-		IsError:           true,
-		StructuredContent: 3,
+	ctrf := &CallToolResult{
+		Meta:    Meta{"m": true},
+		Content: content,
+		IsError: true,
+		// Ints become floats with zero fractional part when unmarshaled.
+		// The jsoncschema package will validate these against a schema with type "integer".
+		StructuredContent: float64(3),
 	}
-	var gotf CallToolResultFor[int]
+	var gotf CallToolResult
 	roundtrip(ctrf, &gotf)
 
 	pm := &PromptMessage{
