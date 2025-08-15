@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -157,7 +156,9 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnDone: func() {
 			b.disconnect(h)
 		},
-		OnInternalError: func(err error) { log.Printf("jsonrpc2 error: %v", err) },
+		OnInternalError: func(err error) {
+			internalLogger.Error("jsonrpc2 internal error", "error", err)
+		},
 	})
 	assert(preempter.conn != nil, "unbound preempter")
 	return h, nil
