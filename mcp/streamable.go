@@ -38,17 +38,28 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// TODO: we should store the ServerSession along with the transport, because
+	// we need to cancel keepalive requests when closing the transport.
 	transports map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
 }
 
 // StreamableHTTPOptions configures the StreamableHTTPHandler.
 type StreamableHTTPOptions struct {
 	// GetSessionID provides the next session ID to use for an incoming request.
+	// If nil, a default randomly generated ID will be used.
 	//
-	// If GetSessionID returns an empty string, the session is 'stateless',
-	// meaning it is not persisted and no session validation is performed.
+	// As a special case, if GetSessionID returns the empty string, the
+	// Mcp-Session-Id header will not be set.
 	GetSessionID func() string
+
+	// Stateless controls whether the session is 'stateless'.
+	//
+	// A stateless server does not validate the Mcp-Session-Id header, and uses a
+	// temporary session with default initialization parameters. Any
+	// server->client request is rejected immediately as there's no way for the
+	// client to respond.
+	Stateless bool
 
 	// TODO: support session retention (?)
 
@@ -118,36 +129,39 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
+	sessionID := req.Header.Get(sessionIDHeader)
 	var transport *StreamableServerTransport
-	if id := req.Header.Get(sessionIDHeader); id != "" {
+	if sessionID != "" {
 		h.mu.Lock()
-		transport = h.transports[id]
+		transport, _ = h.transports[sessionID]
 		h.mu.Unlock()
-		if transport == nil {
+		if transport == nil && !h.opts.Stateless {
+			// In stateless mode we allow a missing transport.
+			//
+			// A synthetic transport will be created below for the transient session.
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
 	}
 
-	// TODO(rfindley): simplify the locking so that each request has only one
-	// critical section.
 	if req.Method == http.MethodDelete {
-		if transport == nil {
-			// => Mcp-Session-Id was not set; else we'd have returned NotFound above.
+		if sessionID == "" {
 			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
-		h.mu.Lock()
-		delete(h.transports, transport.SessionID)
-		h.mu.Unlock()
-		transport.connection.Close()
+		if transport != nil { // transport may be nil in stateless mode
+			h.mu.Lock()
+			delete(h.transports, transport.SessionID)
+			h.mu.Unlock()
+			transport.connection.Close()
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
-		if req.Method == http.MethodGet && transport == nil {
+		if req.Method == http.MethodGet && sessionID == "" {
 			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
 			return
 		}
@@ -164,37 +178,83 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "no server available", http.StatusBadRequest)
 			return
 		}
-		sessionID := h.opts.GetSessionID()
-		s := &StreamableServerTransport{SessionID: sessionID, jsonResponse: h.opts.jsonResponse}
+		if sessionID == "" {
+			// In stateless mode, sessionID may be nonempty even if there's no
+			// existing transport.
+			sessionID = h.opts.GetSessionID()
+		}
+		transport = &StreamableServerTransport{
+			SessionID:    sessionID,
+			Stateless:    h.opts.Stateless,
+			jsonResponse: h.opts.jsonResponse,
+		}
 
 		// To support stateless mode, we initialize the session with a default
 		// state, so that it doesn't reject subsequent requests.
 		var connectOpts *ServerSessionOptions
-		if sessionID == "" {
+		if h.opts.Stateless {
+			// Peek at the body to see if it is initialize or initialized.
+			// We want those to be handled as usual.
+			var hasInitialize, hasInitialized bool
+			{
+				// TODO: verify that this allows protocol version negotiation for
+				// stateless servers.
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					http.Error(w, "failed to read body", http.StatusBadRequest)
+					return
+				}
+				req.Body.Close()
+
+				// Reset the body so that it can be read later.
+				req.Body = io.NopCloser(bytes.NewBuffer(body))
+
+				msgs, _, err := readBatch(body)
+				if err == nil {
+					for _, msg := range msgs {
+						if req, ok := msg.(*jsonrpc.Request); ok {
+							switch req.Method {
+							case methodInitialize:
+								hasInitialize = true
+							case notificationInitialized:
+								hasInitialized = true
+							}
+						}
+					}
+				}
+			}
+
+			// If we don't have InitializeParams or InitializedParams in the request,
+			// set the initial state to a default value.
+			state := new(ServerSessionState)
+			if !hasInitialize {
+				state.InitializeParams = new(InitializeParams)
+			}
+			if !hasInitialized {
+				state.InitializedParams = new(InitializedParams)
+			}
 			connectOpts = &ServerSessionOptions{
-				State: &ServerSessionState{
-					InitializeParams:  new(InitializeParams),
-					InitializedParams: new(InitializedParams),
-				},
+				State: state,
 			}
 		}
+
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		ss, err := server.Connect(req.Context(), s, connectOpts)
+		ss, err := server.Connect(req.Context(), transport, connectOpts)
 		if err != nil {
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		if sessionID == "" {
+		if h.opts.Stateless {
 			// Stateless mode: close the session when the request exits.
 			defer ss.Close() // close the fake session after handling the request
 		} else {
+			// Otherwise, save the transport so that it can be reused
 			h.mu.Lock()
-			h.transports[s.SessionID] = s
+			h.transports[transport.SessionID] = transport
 			h.mu.Unlock()
 		}
-		transport = s
 	}
 
 	transport.ServeHTTP(w, req)
@@ -224,6 +284,13 @@ type StreamableServerTransport struct {
 	// anywhere, past and future. (We recommend using a crypto random number
 	// generator to produce one, as with [crypto/rand.Text].)
 	SessionID string
+
+	// Stateless controls whether the eventstore is 'Stateless'. Servers sessions
+	// connected to a stateless transport are disallowed from making outgoing
+	// requests.
+	//
+	// See also [StreamableHTTPOptions.Stateless].
+	Stateless bool
 
 	// Storage for events, to enable stream resumption.
 	// If nil, a [MemoryEventStore] with the default maximum size will be used.
@@ -265,6 +332,7 @@ func (t *StreamableServerTransport) Connect(context.Context) (Connection, error)
 	}
 	t.connection = &streamableServerConn{
 		sessionID:      t.SessionID,
+		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
 		jsonResponse:   t.jsonResponse,
 		incoming:       make(chan jsonrpc.Message, 10),
@@ -285,6 +353,7 @@ func (t *StreamableServerTransport) Connect(context.Context) (Connection, error)
 
 type streamableServerConn struct {
 	sessionID    string
+	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
 
@@ -755,6 +824,10 @@ func (c *streamableServerConn) Read(ctx context.Context) (jsonrpc.Message, error
 
 // Write implements the [Connection] interface.
 func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() && (c.stateless || c.sessionID == "") {
+		// Requests aren't possible with stateless servers, or when there's no session ID.
+		return fmt.Errorf("%w: stateless servers cannot make requests", jsonrpc2.ErrRejected)
+	}
 	// Find the incoming request that this write relates to, if any.
 	var forRequest jsonrpc.ID
 	isResponse := false

@@ -739,7 +739,23 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 // write is used by all things that write outgoing messages, including replies.
 // it makes sure that writes are atomic
 func (c *Connection) write(ctx context.Context, msg Message) error {
-	err := c.writer.Write(ctx, msg)
+	var err error
+	// Fail writes immediately if the connection is shutting down.
+	//
+	// TODO(rfindley): should we allow cancellation notifations through? It could
+	// be the case that writes can still succeed.
+	c.updateInFlight(func(s *inFlightState) {
+		err = s.shuttingDown(ErrServerClosing)
+	})
+	if err == nil {
+		err = c.writer.Write(ctx, msg)
+	}
+
+	// For rejected requests, we don't set the writeErr (which would break the
+	// connection). They can just be returned to the caller.
+	if errors.Is(err, ErrRejected) {
+		return err
+	}
 
 	if err != nil && ctx.Err() == nil {
 		// The call to Write failed, and since ctx.Err() is nil we can't attribute

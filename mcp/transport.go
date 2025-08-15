@@ -40,8 +40,8 @@ type Transport interface {
 type Connection interface {
 	// Read reads the next message to process off the connection.
 	//
-	// Read need not be safe for concurrent use: Read is called in a
-	// concurrency-safe manner by the JSON-RPC library.
+	// Connections must allow Read to be called concurrently with Close. In
+	// particular, calling Close should unblock a Read waiting for input.
 	Read(context.Context) (jsonrpc.Message, error)
 
 	// Write writes a new message to the connection.
