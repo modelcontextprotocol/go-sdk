@@ -602,9 +602,6 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 		// params are non-nil.
 		params = new(InitializedParams)
 	}
-	if ss.server.opts.KeepAlive > 0 {
-		ss.startKeepalive(ss.server.opts.KeepAlive)
-	}
 	var wasInit, wasInitd bool
 	ss.updateState(func(state *ServerSessionState) {
 		wasInit = state.InitializeParams != nil
@@ -619,6 +616,9 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	}
 	if wasInitd {
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
+	}
+	if ss.server.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
