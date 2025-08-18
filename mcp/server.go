@@ -857,7 +857,7 @@ func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, erro
 	return nil, nil
 }
 
-func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*emptyResult, error) {
+func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelParams) (*emptyResult, error) {
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})

@@ -826,7 +826,7 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type SetLevelParams struct {
+type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -836,9 +836,9 @@ type SetLevelParams struct {
 	Level LoggingLevel `json:"level"`
 }
 
-func (x *SetLevelParams) isParams()              {}
-func (x *SetLevelParams) GetProgressToken() any  { return getProgressToken(x) }
-func (x *SetLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
+func (x *SetLoggingLevelParams) isParams()              {}
+func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // Definition for a tool the client can call.
 type Tool struct {

@@ -404,7 +404,7 @@ func TestEndToEnd(t *testing.T) {
 
 			// Nothing should be logged until the client sets a level.
 			mustLog("info", "before")
-			if err := cs.SetLevel(ctx, &SetLevelParams{Level: "warning"}); err != nil {
+			if err := cs.SetLoggingLevel(ctx, &SetLoggingLevelParams{Level: "warning"}); err != nil {
 				t.Fatal(err)
 			}
 			mustLog("warning", want[0].Data)

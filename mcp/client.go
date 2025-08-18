@@ -103,8 +103,7 @@ func (e unsupportedProtocolVersionError) Error() string {
 }
 
 // ClientSessionOptions is reserved for future use.
-type ClientSessionOptions struct {
-}
+type ClientSessionOptions struct{}
 
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
@@ -398,7 +397,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
-func (cs *ClientSession) SetLevel(ctx context.Context, params *SetLevelParams) error {
+func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
