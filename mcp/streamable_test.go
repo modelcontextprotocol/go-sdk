@@ -193,8 +193,8 @@ func TestStreamableTransports(t *testing.T) {
 // outage.
 func TestClientReplay(t *testing.T) {
 	for _, test := range []clientReplayTest{
-		{"default", nil, true},
-		{"no retries", &StreamableReconnectOptions{}, false},
+		{"default", 0, true},
+		{"no retries", -1, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testClientReplay(t, test)
@@ -204,7 +204,7 @@ func TestClientReplay(t *testing.T) {
 
 type clientReplayTest struct {
 	name          string
-	options       *StreamableReconnectOptions
+	maxRetries    int
 	wantRecovered bool
 }
 
@@ -258,8 +258,8 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 		},
 	})
 	clientSession, err := client.Connect(ctx, &StreamableClientTransport{
-		Endpoint:         proxy.URL,
-		ReconnectOptions: test.options,
+		Endpoint:   proxy.URL,
+		MaxRetries: test.maxRetries,
 	}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
