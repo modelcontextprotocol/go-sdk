@@ -14,23 +14,18 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// A ToolHandler handles a call to tools/call.
+// A RawToolHandler handles a call to tools/call.
 // [CallToolParams.Arguments] will contain a map[string]any that has been validated
 // against the input schema.
-type ToolHandler = ToolHandlerFor[map[string]any, any]
+type RawToolHandler = ToolHandlerFor[json.RawMessage, any]
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
 type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
 
-// A rawToolHandler is like a ToolHandler, but takes the arguments as as json.RawMessage.
-// Second arg is *Request[*ServerSession, *CallToolParamsFor[json.RawMessage]], but that creates
-// a cycle.
-type rawToolHandler = func(context.Context, any) (*CallToolResult, error)
-
 // A serverTool is a tool definition that is bound to a tool handler.
 type serverTool struct {
 	tool    *Tool
-	handler rawToolHandler
+	handler RawToolHandler
 	// Resolved tool schemas. Set in newServerTool.
 	inputResolved, outputResolved *jsonschema.Resolved
 }

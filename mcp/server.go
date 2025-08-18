@@ -138,13 +138,16 @@ func (s *Server) RemovePrompts(names ...string) {
 		func() bool { return s.prompts.remove(names...) })
 }
 
-// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// AddRawTool adds a [Tool] to the server, or replaces one with the same name.
 // The Tool argument must not be modified after this call.
 //
 // The tool's input schema must be non-nil. For a tool that takes no input,
 // or one where any input is valid, set [Tool.InputSchema] to the empty schema,
 // &jsonschema.Schema{}.
-func (s *Server) AddTool(t *Tool, h ToolHandler) {
+//
+// Tools constructed in this way do not unmarshal or validate their input.
+// Most people will want to use [AddTool] instead.
+func (s *Server) AddRawTool(t *Tool, h RawToolHandler) {
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
 		// one should be provided. If we papered over this by supplying the empty
@@ -157,16 +160,21 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	}
 }
 
-// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// TypedTool returns a shallow copy of t along with a RawToolHandler. Both can be
+// passed to [Server.AddRawTool].
+//
 // If the tool's input schema is nil, it is set to the schema inferred from the In
 // type parameter, using [jsonschema.For].
 // If the tool's output schema is nil and the Out type parameter is not the empty
 // interface, then the output schema is set to the schema inferred from Out.
-// The Tool argument must not be modified after this call.
+func TypedTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, RawToolHandler) {
+	// TODO
+	return nil, nil
+}
+
+// AddTool is a convenience for s.AddRawTool(TypedTool(t, h)).
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	if err := addToolErr(s, t, h); err != nil {
-		panic(err)
-	}
+	s.AddRawTool(TypedTool(t, h))
 }
 
 func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
