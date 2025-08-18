@@ -329,16 +329,19 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
+	if req.IsCall() {
+		jsonrpc2.Async(ctx)
+	}
 	return handleReceive(ctx, cs, req)
 }
 
-func (cs *ClientSession) sendingMethodHandler() methodHandler {
+func (cs *ClientSession) sendingMethodHandler() MethodHandler {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
 	return cs.client.sendingMethodHandler_
 }
 
-func (cs *ClientSession) receivingMethodHandler() methodHandler {
+func (cs *ClientSession) receivingMethodHandler() MethodHandler {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
 	return cs.client.receivingMethodHandler_

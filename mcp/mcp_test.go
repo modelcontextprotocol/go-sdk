@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -549,31 +550,47 @@ func errorCode(err error) int64 {
 //
 // The caller should cancel either the client connection or server connection
 // when the connections are no longer needed.
-func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *ClientSession) {
+func basicConnection(t *testing.T, config func(*Server)) (*ClientSession, *ServerSession) {
+	return basicClientServerConnection(t, nil, nil, config)
+}
+
+// basicClientServerConnection creates a basic connection between client and
+// server. If either client or server is nil, empty implementations are used.
+//
+// The provided function may be used to configure features on the resulting
+// server, prior to connection.
+//
+// The caller should cancel either the client connection or server connection
+// when the connections are no longer needed.
+func basicClientServerConnection(t *testing.T, client *Client, server *Server, config func(*Server)) (*ClientSession, *ServerSession) {
 	t.Helper()
 
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
-	s := NewServer(testImpl, nil)
-	if config != nil {
-		config(s)
+	if server == nil {
+		server = NewServer(testImpl, nil)
 	}
-	ss, err := s.Connect(ctx, st, nil)
+	if config != nil {
+		config(server)
+	}
+	ss, err := server.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, nil)
+	if client == nil {
+		client = NewClient(testImpl, nil)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ss, cs
+	return cs, ss
 }
 
 func TestServerClosing(t *testing.T) {
-	cc, cs := basicConnection(t, func(s *Server) {
+	cs, ss := basicConnection(t, func(s *Server) {
 		AddTool(s, greetTool(), sayHi)
 	})
 	defer cs.Close()
@@ -593,7 +610,7 @@ func TestServerClosing(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("after connecting: %v", err)
 	}
-	cc.Close()
+	ss.Close()
 	wg.Wait()
 	if _, err := cs.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
@@ -656,7 +673,7 @@ func TestCancellation(t *testing.T) {
 		}
 		return nil, nil
 	}
-	_, cs := basicConnection(t, func(s *Server) {
+	cs, _ := basicConnection(t, func(s *Server) {
 		AddTool(s, &Tool{Name: "slow"}, slowRequest)
 	})
 	defer cs.Close()
@@ -940,7 +957,7 @@ func TestKeepAliveFailure(t *testing.T) {
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
-	_, cs := basicConnection(t, func(s *Server) {
+	cs, _ := basicConnection(t, func(s *Server) {
 		// Use two distinct Tool instances with the same name but different
 		// descriptions to ensure the second replaces the first
 		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
@@ -969,6 +986,100 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	}
 	if gotDesc != "second" {
 		t.Fatalf("expected replaced tool to have description %q, got %q", "second", gotDesc)
+	}
+}
+
+func TestSynchronousNotifications(t *testing.T) {
+	var toolsChanged atomic.Bool
+	clientOpts := &ClientOptions{
+		ToolListChangedHandler: func(ctx context.Context, req *ClientRequest[*ToolListChangedParams]) {
+			toolsChanged.Store(true)
+		},
+		CreateMessageHandler: func(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+			if !toolsChanged.Load() {
+				return nil, fmt.Errorf("didn't get a tools changed notification")
+			}
+			// TODO(rfindley): investigate the error returned from this test if
+			// CreateMessageResult is new(CreateMessageResult): it's a mysterious
+			// unmarshalling error that we should improve.
+			return &CreateMessageResult{Content: &TextContent{}}, nil
+		},
+	}
+	client := NewClient(testImpl, clientOpts)
+
+	var rootsChanged atomic.Bool
+	serverOpts := &ServerOptions{
+		RootsListChangedHandler: func(_ context.Context, req *ServerRequest[*RootsListChangedParams]) {
+			rootsChanged.Store(true)
+		},
+	}
+	server := NewServer(testImpl, serverOpts)
+	cs, ss := basicClientServerConnection(t, client, server, func(s *Server) {
+		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			if !rootsChanged.Load() {
+				return nil, fmt.Errorf("didn't get root change notification")
+			}
+			return new(CallToolResult), nil
+		})
+	})
+
+	t.Run("from client", func(t *testing.T) {
+		client.AddRoots(&Root{Name: "myroot", URI: "file://foo"})
+		res, err := cs.CallTool(context.Background(), &CallToolParams{Name: "tool"})
+		if err != nil {
+			t.Fatalf("CallTool failed: %v", err)
+		}
+		if res.IsError {
+			t.Errorf("tool error: %v", res.Content[0].(*TextContent).Text)
+		}
+	})
+
+	t.Run("from server", func(t *testing.T) {
+		server.RemoveTools("tool")
+		if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
+			t.Errorf("CreateMessage failed: %v", err)
+		}
+	})
+}
+
+func TestNoDistributedDeadlock(t *testing.T) {
+	// This test verifies that calls are asynchronous, and so it's not possible
+	// to have a distributed deadlock.
+	//
+	// The setup creates potential deadlock for both the client and server: the
+	// client sends a call to tool1, which itself calls createMessage, which in
+	// turn calls tool2, which calls ping.
+	//
+	// If the server were not asynchronous, the call to tool2 would hang. If the
+	// client were not asynchronous, the call to ping would hang.
+	//
+	// Such a scenario is unlikely in practice, but is still theoretically
+	// possible, and in any case making tool calls asynchronous by default
+	// delegates synchronization to the user.
+	clientOpts := &ClientOptions{
+		CreateMessageHandler: func(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+			req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"})
+			return &CreateMessageResult{Content: &TextContent{}}, nil
+		},
+	}
+	client := NewClient(testImpl, clientOpts)
+	cs, _ := basicClientServerConnection(t, client, nil, func(s *Server) {
+		AddTool(s, &Tool{Name: "tool1"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			req.Session.CreateMessage(ctx, new(CreateMessageParams))
+			return new(CallToolResult), nil
+		})
+		AddTool(s, &Tool{Name: "tool2"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			req.Session.Ping(ctx, nil)
+			return new(CallToolResult), nil
+		})
+	})
+	defer cs.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "tool1"}); err != nil {
+		// should not deadlock
+		t.Fatalf("CallTool failed: %v", err)
 	}
 }
 

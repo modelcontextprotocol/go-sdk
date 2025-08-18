@@ -779,14 +779,14 @@ func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return cli
 
 func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo { return serverMethodInfos }
 
-func (ss *ServerSession) sendingMethodHandler() methodHandler {
+func (ss *ServerSession) sendingMethodHandler() MethodHandler {
 	s := ss.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sendingMethodHandler_
 }
 
-func (ss *ServerSession) receivingMethodHandler() methodHandler {
+func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 	s := ss.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -801,6 +801,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	ss.mu.Lock()
 	initialized := ss.state.InitializedParams != nil
 	ss.mu.Unlock()
+
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
@@ -811,6 +812,14 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
 	}
+
+	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
+	// notifications synchronously, except for 'initialize' which shouldn't be
+	// asynchronous to other
+	if req.IsCall() && req.Method != methodInitialize {
+		jsonrpc2.Async(ctx)
+	}
+
 	// For the streamable transport, we need the request ID to correlate
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.

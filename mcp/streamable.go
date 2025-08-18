@@ -509,7 +509,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if req.ID.IsValid() {
+			if req.IsCall() {
 				requests[req.ID] = struct{}{}
 			}
 		}

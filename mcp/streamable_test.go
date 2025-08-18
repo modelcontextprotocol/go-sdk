@@ -689,7 +689,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					defer wg.Done()
 
 					for m := range out {
-						if req, ok := m.(*jsonrpc.Request); ok && req.ID.IsValid() {
+						if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
 							// Encountered a server->client request. We should have a
 							// response queued. Otherwise, we may deadlock.
 							mu.Lock()

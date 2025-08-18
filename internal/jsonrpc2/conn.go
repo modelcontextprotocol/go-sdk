@@ -374,6 +374,46 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 	return ac
 }
 
+// Async, signals that the current jsonrpc2 request may be handled
+// asynchronously to subsequent requests, when ctx is the request context.
+//
+// Async must be called at most once on each request's context (and its
+// descendants).
+func Async(ctx context.Context) {
+	if r, ok := ctx.Value(asyncKey).(*releaser); ok {
+		r.release(false)
+	}
+}
+
+type asyncKeyType struct{}
+
+var asyncKey = asyncKeyType{}
+
+// A releaser implements concurrency safe 'releasing' of async requests. (A
+// request is released when it is allowed to run concurrent with other
+// requests, via a call to [Async].)
+type releaser struct {
+	mu       sync.Mutex
+	ch       chan struct{}
+	released bool
+}
+
+// release closes the associated channel. If soft is set, multiple calls to
+// release are allowed.
+func (r *releaser) release(soft bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.released {
+		if !soft {
+			panic("jsonrpc2.Async called multiple times")
+		}
+	} else {
+		close(r.ch)
+		r.released = true
+	}
+}
+
 type AsyncCall struct {
 	id       ID
 	ready    chan struct{} // closed after response has been set
@@ -423,28 +463,6 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 		return nil
 	}
 	return json.Unmarshal(ac.response.Result, result)
-}
-
-// Respond delivers a response to an incoming Call.
-//
-// Respond must be called exactly once for any message for which a handler
-// returns ErrAsyncResponse. It must not be called for any other message.
-func (c *Connection) Respond(id ID, result any, err error) error {
-	var req *incomingRequest
-	c.updateInFlight(func(s *inFlightState) {
-		req = s.incomingByID[id]
-	})
-	if req == nil {
-		return c.internalErrorf("Request not found for ID %v", id)
-	}
-
-	if err == ErrAsyncResponse {
-		// Respond is supposed to supply the asynchronous response, so it would be
-		// confusing to call Respond with an error that promises to call Respond
-		// again.
-		err = c.internalErrorf("Respond called with ErrAsyncResponse for %q", req.Method)
-	}
-	return c.processResult("Respond", req, result, err)
 }
 
 // Cancel cancels the Context passed to the Handle call for the inbound message
@@ -576,11 +594,6 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 	if preempter != nil {
 		result, err := preempter.Preempt(req.ctx, req.Request)
 
-		if req.IsCall() && errors.Is(err, ErrAsyncResponse) {
-			// This request will remain in flight until Respond is called for it.
-			return
-		}
-
 		if !errors.Is(err, ErrNotHandled) {
 			c.processResult("Preempt", req, result, err)
 			return
@@ -655,19 +668,20 @@ func (c *Connection) handleAsync() {
 			continue
 		}
 
-		result, err := c.handler.Handle(req.ctx, req.Request)
-		c.processResult(c.handler, req, result, err)
+		releaser := &releaser{ch: make(chan struct{})}
+		ctx := context.WithValue(req.ctx, asyncKey, releaser)
+		go func() {
+			defer releaser.release(true)
+			result, err := c.handler.Handle(ctx, req.Request)
+			c.processResult(c.handler, req, result, err)
+		}()
+		<-releaser.ch
 	}
 }
 
 // processResult processes the result of a request and, if appropriate, sends a response.
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
 	switch err {
-	case ErrAsyncResponse:
-		if !req.IsCall() {
-			return c.internalErrorf("%#v returned ErrAsyncResponse for a %q Request without an ID", from, req.Method)
-		}
-		return nil // This request is still in flight, so don't record the result yet.
 	case ErrNotHandled, ErrMethodNotFound:
 		// Add detail describing the unhandled method.
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)

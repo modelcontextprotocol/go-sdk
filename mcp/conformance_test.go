@@ -183,7 +183,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				return nil, err, false
 			}
 			serverMessages = append(serverMessages, msg)
-			if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				// Pair up the next outgoing response with this request.
 				// We assume requests arrive in the same order every time.
 				if len(outResponses) == 0 {
@@ -201,8 +201,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Synthetic peer interacts with real peer.
 	for _, req := range outRequests {
 		writeMsg(req)
-		if req.ID.IsValid() {
-			// A request (as opposed to a notification). Wait for the response.
+		if req.IsCall() {
+			// A call (as opposed to a notification). Wait for the response.
 			res, err, ok := nextResponse()
 			if err != nil {
 				t.Fatalf("reading server messages failed: %v", err)
