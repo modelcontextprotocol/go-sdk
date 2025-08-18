@@ -511,7 +511,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			req.Extra = tokenInfo
+			req.Extra = &RequestExtra{TokenInfo: tokenInfo}
 			if req.ID.IsValid() {
 				requests[req.ID] = struct{}{}
 			}

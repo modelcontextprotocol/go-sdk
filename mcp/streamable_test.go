@@ -1047,7 +1047,7 @@ func TestTokenInfo(t *testing.T) {
 
 	// Create a server with a tool that returns TokenInfo.
 	tokenInfo := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[struct{}]]) (*CallToolResultFor[any], error) {
-		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.TokenInfo)}}}, nil
+		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)

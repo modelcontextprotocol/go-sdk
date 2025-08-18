@@ -133,8 +133,8 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 	}
 
 	mh := session.receivingMethodHandler().(MethodHandler)
-	ti, _ := jreq.Extra.(*RequestExtra)
-	req := info.newRequest(session, params, ti)
+	re, _ := jreq.Extra.(*RequestExtra)
+	req := info.newRequest(session, params, re)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
@@ -181,7 +181,7 @@ type methodInfo struct {
 	// Unmarshal params from the wire into a Params struct.
 	// Used on the receive side.
 	unmarshalParams func(json.RawMessage) (Params, error)
-	newRequest      func(Session, Params, *auth.TokenInfo) Request
+	newRequest      func(Session, Params, *RequestExtra) Request
 	// Run the code when a call to the method is received.
 	// Used on the receive side.
 	handleMethod methodHandler
@@ -216,7 +216,7 @@ const (
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, _ *auth.TokenInfo) Request {
+	mi.newRequest = func(s Session, p Params, _ *RequestExtra) Request {
 		r := &ClientRequest[P]{Session: s.(*ClientSession)}
 		if p != nil {
 			r.Params = p.(P)
@@ -231,8 +231,8 @@ func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHan
 
 func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, ti *auth.TokenInfo) Request {
-		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: RequestExtra{TokenInfo: ti}}
+	mi.newRequest = func(s Session, p Params, re *RequestExtra) Request {
+		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -395,7 +395,7 @@ type ClientRequest[P Params] struct {
 type ServerRequest[P Params] struct {
 	Session *ServerSession
 	Params  P
-	Extra   RequestExtra
+	Extra   *RequestExtra
 }
 
 // RequestExtra is extra information included in requests, typically from

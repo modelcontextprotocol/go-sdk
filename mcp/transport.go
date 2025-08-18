@@ -86,8 +86,7 @@ type serverConnection interface {
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct {
-}
+type StdioTransport struct{}
 
 // Connect implements the [Transport] interface.
 func (*StdioTransport) Connect(context.Context) (Connection, error) {
