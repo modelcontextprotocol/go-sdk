@@ -49,6 +49,9 @@ type StreamableHTTPOptions struct {
 	// GetSessionID provides the next session ID to use for an incoming request.
 	// If nil, a default randomly generated ID will be used.
 	//
+	// Session IDs should be globally unique across the scope of the server,
+	// which may span multiple processes in the case of distributed servers.
+	//
 	// As a special case, if GetSessionID returns the empty string, the
 	// Mcp-Session-Id header will not be set.
 	GetSessionID func() string
@@ -58,7 +61,9 @@ type StreamableHTTPOptions struct {
 	// A stateless server does not validate the Mcp-Session-Id header, and uses a
 	// temporary session with default initialization parameters. Any
 	// server->client request is rejected immediately as there's no way for the
-	// client to respond.
+	// client to respond. Server->Client notifications may reach the client if
+	// they are made in the context of an incoming request, as described in the
+	// documentation for [StreamableServerTransport].
 	Stateless bool
 
 	// TODO: support session retention (?)
@@ -133,12 +138,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	var transport *StreamableServerTransport
 	if sessionID != "" {
 		h.mu.Lock()
-		transport, _ = h.transports[sessionID]
+		transport = h.transports[sessionID]
 		h.mu.Unlock()
 		if transport == nil && !h.opts.Stateless {
-			// In stateless mode we allow a missing transport.
+			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
+			// validation, we require that the session ID matches a known session.
 			//
-			// A synthetic transport will be created below for the transient session.
+			// In stateless mode, a temporary transport is be created below.
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
@@ -201,7 +207,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				// stateless servers.
 				body, err := io.ReadAll(req.Body)
 				if err != nil {
-					http.Error(w, "failed to read body", http.StatusBadRequest)
+					http.Error(w, "failed to read body", http.StatusInternalServerError)
 					return
 				}
 				req.Body.Close()
@@ -272,9 +278,22 @@ type StreamableServerTransportOptions struct {
 // A StreamableServerTransport implements the server side of the MCP streamable
 // transport.
 //
-// Each StreamableServerTransport may be connected (via [Server.Connect]) at
+// Each StreamableServerTransport must be connected (via [Server.Connect]) at
 // most once, since [StreamableServerTransport.ServeHTTP] serves messages to
 // the connected session.
+//
+// Reads from the streamable server connection receive messages from http POST
+// requests from the client. Writes to the streamable server connection are
+// sent either to the hanging POST response, or to the hanging GET, according
+// to the following rules:
+//   - JSON-RPC responses to incoming requests are always routed to the
+//     appropriate HTTP response.
+//   - Requests or notifications made with a context.Context value derived from
+//     an incoming request handler, are routed to the HTTP response
+//     corresponding to that request, unless it has already terminated, in
+//     which case they are routed to the hanging GET.
+//   - Requests or notifications made with a detached context.Context value are
+//     routed to the hanging GET.
 type StreamableServerTransport struct {
 	// SessionID is the ID of this session.
 	//
@@ -285,7 +304,7 @@ type StreamableServerTransport struct {
 	// generator to produce one, as with [crypto/rand.Text].)
 	SessionID string
 
-	// Stateless controls whether the eventstore is 'Stateless'. Servers sessions
+	// Stateless controls whether the eventstore is 'Stateless'. Server sessions
 	// connected to a stateless transport are disallowed from making outgoing
 	// requests.
 	//
@@ -1225,9 +1244,18 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 			c.fail(err)
 			return
 		}
-
-		// Reconnection was successful. Continue the loop with the new response.
 		resp = newResp
+		if resp.StatusCode == http.StatusMethodNotAllowed && persistent {
+			// The server doesn't support the hanging GET.
+			resp.Body.Close()
+			return
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			c.fail(fmt.Errorf("failed to reconnect: %v", http.StatusText(resp.StatusCode)))
+			return
+		}
+		// Reconnection was successful. Continue the loop with the new response.
 	}
 }
 
@@ -1295,13 +1323,6 @@ func (c *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 				finalErr = err // Store the error and try again.
 				continue
 			}
-
-			if !isResumable(resp) {
-				// The server indicated we should not continue.
-				resp.Body.Close()
-				return nil, fmt.Errorf("reconnection failed with unresumable status: %s", resp.Status)
-			}
-
 			return resp, nil
 		}
 	}
@@ -1310,16 +1331,6 @@ func (c *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 		return nil, fmt.Errorf("connection failed after %d attempts: %w", c.maxRetries, finalErr)
 	}
 	return nil, fmt.Errorf("connection failed after %d attempts", c.maxRetries)
-}
-
-// isResumable checks if an HTTP response indicates a valid SSE stream that can be processed.
-func isResumable(resp *http.Response) bool {
-	// Per the spec, a 405 response means the server doesn't support SSE streams at this endpoint.
-	if resp.StatusCode == http.StatusMethodNotAllowed {
-		return false
-	}
-
-	return strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 }
 
 // Close implements the [Connection] interface.
@@ -1361,8 +1372,11 @@ func (c *streamableClientConn) establishSSE(lastEventID string) (*http.Response,
 
 // calculateReconnectDelay calculates a delay using exponential backoff with full jitter.
 func calculateReconnectDelay(attempt int) time.Duration {
+	if attempt == 0 {
+		return 0
+	}
 	// Calculate the exponential backoff using the grow factor.
-	backoffDuration := time.Duration(float64(reconnectInitialDelay) * math.Pow(reconnectGrowFactor, float64(attempt)))
+	backoffDuration := time.Duration(float64(reconnectInitialDelay) * math.Pow(reconnectGrowFactor, float64(attempt-1)))
 	// Cap the backoffDuration at maxDelay.
 	backoffDuration = min(backoffDuration, reconnectMaxDelay)
 

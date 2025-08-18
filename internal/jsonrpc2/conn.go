@@ -742,8 +742,8 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 	var err error
 	// Fail writes immediately if the connection is shutting down.
 	//
-	// TODO(rfindley): should we allow cancellation notifations through? It could
-	// be the case that writes can still succeed.
+	// TODO(rfindley): should we allow cancellation notifications through? It
+	// could be the case that writes can still succeed.
 	c.updateInFlight(func(s *inFlightState) {
 		err = s.shuttingDown(ErrServerClosing)
 	})
