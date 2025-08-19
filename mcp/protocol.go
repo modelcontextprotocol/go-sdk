@@ -14,7 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Optional annotations for the client. The client can use annotations to inform
@@ -78,6 +78,8 @@ type CallToolResultFor[Out any] struct {
 	IsError bool `json:"isError,omitempty"`
 }
 
+func (*CallToolResultFor[Out]) isResult() {}
+
 // UnmarshalJSON handles the unmarshalling of content into the Content
 // interface.
 func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
@@ -97,6 +99,7 @@ func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (x *CallToolParamsFor[Out]) isParams()              {}
 func (x *CallToolParamsFor[Out]) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParamsFor[Out]) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -114,6 +117,7 @@ type CancelledParams struct {
 	RequestID any `json:"requestId"`
 }
 
+func (x *CancelledParams) isParams()              {}
 func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -207,6 +211,8 @@ type CompleteParams struct {
 	Ref      *CompleteReference     `json:"ref"`
 }
 
+func (*CompleteParams) isParams() {}
+
 type CompletionResultDetails struct {
 	HasMore bool     `json:"hasMore,omitempty"`
 	Total   int      `json:"total,omitempty"`
@@ -220,6 +226,8 @@ type CompleteResult struct {
 	Meta       `json:"_meta,omitempty"`
 	Completion CompletionResultDetails `json:"completion"`
 }
+
+func (*CompleteResult) isResult() {}
 
 type CreateMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -245,6 +253,7 @@ type CreateMessageParams struct {
 	Temperature  float64 `json:"temperature,omitempty"`
 }
 
+func (x *CreateMessageParams) isParams()              {}
 func (x *CreateMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -264,6 +273,7 @@ type CreateMessageResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
+func (*CreateMessageResult) isResult() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
 	var wire struct {
@@ -291,6 +301,7 @@ type GetPromptParams struct {
 	Name string `json:"name"`
 }
 
+func (x *GetPromptParams) isParams()              {}
 func (x *GetPromptParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *GetPromptParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -304,6 +315,8 @@ type GetPromptResult struct {
 	Messages    []*PromptMessage `json:"messages"`
 }
 
+func (*GetPromptResult) isResult() {}
+
 type InitializeParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -315,6 +328,7 @@ type InitializeParams struct {
 	ProtocolVersion string `json:"protocolVersion"`
 }
 
+func (x *InitializeParams) isParams()              {}
 func (x *InitializeParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializeParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -324,7 +338,7 @@ type InitializeResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta         `json:"_meta,omitempty"`
-	Capabilities *serverCapabilities `json:"capabilities"`
+	Capabilities *ServerCapabilities `json:"capabilities"`
 	// Instructions describing how to use the server and its features.
 	//
 	// This can be used by clients to improve the LLM's understanding of available
@@ -338,12 +352,15 @@ type InitializeResult struct {
 	ServerInfo      *Implementation `json:"serverInfo"`
 }
 
+func (*InitializeResult) isResult() {}
+
 type InitializedParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *InitializedParams) isParams()              {}
 func (x *InitializedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -356,6 +373,7 @@ type ListPromptsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+func (x *ListPromptsParams) isParams()              {}
 func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListPromptsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
@@ -371,6 +389,7 @@ type ListPromptsResult struct {
 	Prompts    []*Prompt `json:"prompts"`
 }
 
+func (x *ListPromptsResult) isResult()              {}
 func (x *ListPromptsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourceTemplatesParams struct {
@@ -382,6 +401,7 @@ type ListResourceTemplatesParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+func (x *ListResourceTemplatesParams) isParams()              {}
 func (x *ListResourceTemplatesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourceTemplatesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourceTemplatesParams) cursorPtr() *string     { return &x.Cursor }
@@ -397,6 +417,7 @@ type ListResourceTemplatesResult struct {
 	ResourceTemplates []*ResourceTemplate `json:"resourceTemplates"`
 }
 
+func (x *ListResourceTemplatesResult) isResult()              {}
 func (x *ListResourceTemplatesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourcesParams struct {
@@ -408,6 +429,7 @@ type ListResourcesParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+func (x *ListResourcesParams) isParams()              {}
 func (x *ListResourcesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourcesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourcesParams) cursorPtr() *string     { return &x.Cursor }
@@ -423,6 +445,7 @@ type ListResourcesResult struct {
 	Resources  []*Resource `json:"resources"`
 }
 
+func (x *ListResourcesResult) isResult()              {}
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListRootsParams struct {
@@ -431,6 +454,7 @@ type ListRootsParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *ListRootsParams) isParams()              {}
 func (x *ListRootsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -444,6 +468,8 @@ type ListRootsResult struct {
 	Roots []*Root `json:"roots"`
 }
 
+func (*ListRootsResult) isResult() {}
+
 type ListToolsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -453,6 +479,7 @@ type ListToolsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+func (x *ListToolsParams) isParams()              {}
 func (x *ListToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListToolsParams) cursorPtr() *string     { return &x.Cursor }
@@ -468,6 +495,7 @@ type ListToolsResult struct {
 	Tools      []*Tool `json:"tools"`
 }
 
+func (x *ListToolsResult) isResult()              {}
 func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 // The severity of a log message.
@@ -489,6 +517,7 @@ type LoggingMessageParams struct {
 	Logger string `json:"logger,omitempty"`
 }
 
+func (x *LoggingMessageParams) isParams()              {}
 func (x *LoggingMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -550,6 +579,7 @@ type PingParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *PingParams) isParams()              {}
 func (x *PingParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PingParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -568,6 +598,8 @@ type ProgressNotificationParams struct {
 	// Total number of items to process (or total progress required), if known.
 	Total float64 `json:"total,omitempty"`
 }
+
+func (*ProgressNotificationParams) isParams() {}
 
 // A prompt or prompt template that the server offers.
 type Prompt struct {
@@ -606,6 +638,7 @@ type PromptListChangedParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *PromptListChangedParams) isParams()              {}
 func (x *PromptListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PromptListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -646,6 +679,7 @@ type ReadResourceParams struct {
 	URI string `json:"uri"`
 }
 
+func (x *ReadResourceParams) isParams()              {}
 func (x *ReadResourceParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -656,6 +690,8 @@ type ReadResourceResult struct {
 	Meta     `json:"_meta,omitempty"`
 	Contents []*ResourceContents `json:"contents"`
 }
+
+func (*ReadResourceResult) isResult() {}
 
 // A known resource that the server is capable of reading.
 type Resource struct {
@@ -697,6 +733,7 @@ type ResourceListChangedParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *ResourceListChangedParams) isParams()              {}
 func (x *ResourceListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ResourceListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -754,6 +791,7 @@ type RootsListChangedParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *RootsListChangedParams) isParams()              {}
 func (x *RootsListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -788,7 +826,7 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type SetLevelParams struct {
+type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -798,8 +836,9 @@ type SetLevelParams struct {
 	Level LoggingLevel `json:"level"`
 }
 
-func (x *SetLevelParams) GetProgressToken() any  { return getProgressToken(x) }
-func (x *SetLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
+func (x *SetLoggingLevelParams) isParams()              {}
+func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // Definition for a tool the client can call.
 type Tool struct {
@@ -873,6 +912,7 @@ type ToolListChangedParams struct {
 	Meta `json:"_meta,omitempty"`
 }
 
+func (x *ToolListChangedParams) isParams()              {}
 func (x *ToolListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ToolListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -886,6 +926,8 @@ type SubscribeParams struct {
 	URI string `json:"uri"`
 }
 
+func (*SubscribeParams) isParams() {}
+
 // Sent from the client to request cancellation of resources/updated
 // notifications from the server. This should follow a previous
 // resources/subscribe request.
@@ -897,6 +939,8 @@ type UnsubscribeParams struct {
 	URI string `json:"uri"`
 }
 
+func (*UnsubscribeParams) isParams() {}
+
 // A notification from the server to the client, informing it that a resource
 // has changed and may need to be read again. This should only be sent if the
 // client previously sent a resources/subscribe request.
@@ -907,6 +951,8 @@ type ResourceUpdatedNotificationParams struct {
 	// The URI of the resource that has been updated. This might be a sub-resource of the one that the client actually subscribed to.
 	URI string `json:"uri"`
 }
+
+func (*ResourceUpdatedNotificationParams) isParams() {}
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -925,19 +971,19 @@ type Implementation struct {
 }
 
 // Present if the server supports argument autocompletion suggestions.
-type completionCapabilities struct{}
+type CompletionCapabilities struct{}
 
 // Present if the server supports sending log messages to the client.
-type loggingCapabilities struct{}
+type LoggingCapabilities struct{}
 
 // Present if the server offers any prompt templates.
-type promptCapabilities struct {
+type PromptCapabilities struct {
 	// Whether this server supports notifications for changes to the prompt list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }
 
 // Present if the server offers any resources to read.
-type resourceCapabilities struct {
+type ResourceCapabilities struct {
 	// Whether this server supports notifications for changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
 	// Whether this server supports subscribing to resource updates.
@@ -947,23 +993,23 @@ type resourceCapabilities struct {
 // Capabilities that a server may support. Known capabilities are defined here,
 // in this schema, but this is not a closed set: any server can define its own,
 // additional capabilities.
-type serverCapabilities struct {
+type ServerCapabilities struct {
 	// Present if the server supports argument autocompletion suggestions.
-	Completions *completionCapabilities `json:"completions,omitempty"`
+	Completions *CompletionCapabilities `json:"completions,omitempty"`
 	// Experimental, non-standard capabilities that the server supports.
 	Experimental map[string]struct{} `json:"experimental,omitempty"`
 	// Present if the server supports sending log messages to the client.
-	Logging *loggingCapabilities `json:"logging,omitempty"`
+	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Present if the server offers any prompt templates.
-	Prompts *promptCapabilities `json:"prompts,omitempty"`
+	Prompts *PromptCapabilities `json:"prompts,omitempty"`
 	// Present if the server offers any resources to read.
-	Resources *resourceCapabilities `json:"resources,omitempty"`
+	Resources *ResourceCapabilities `json:"resources,omitempty"`
 	// Present if the server offers any tools to call.
-	Tools *toolCapabilities `json:"tools,omitempty"`
+	Tools *ToolCapabilities `json:"tools,omitempty"`
 }
 
 // Present if the server offers any tools to call.
-type toolCapabilities struct {
+type ToolCapabilities struct {
 	// Whether this server supports notifications for changes to the tool list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }

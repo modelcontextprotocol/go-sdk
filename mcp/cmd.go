@@ -16,7 +16,7 @@ import (
 // A CommandTransport is a [Transport] that runs a command and communicates
 // with it over stdin/stdout, using newline-delimited JSON.
 type CommandTransport struct {
-	cmd *exec.Cmd
+	Command *exec.Cmd
 }
 
 // NewCommandTransport returns a [CommandTransport] that runs the given command
@@ -24,25 +24,29 @@ type CommandTransport struct {
 //
 // The resulting transport takes ownership of the command, starting it during
 // [CommandTransport.Connect], and stopping it when the connection is closed.
+//
+// Deprecated: use a CommandTransport literal.
+//
+//go:fix inline
 func NewCommandTransport(cmd *exec.Cmd) *CommandTransport {
-	return &CommandTransport{cmd}
+	return &CommandTransport{Command: cmd}
 }
 
 // Connect starts the command, and connects to it over stdin/stdout.
 func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
-	stdout, err := t.cmd.StdoutPipe()
+	stdout, err := t.Command.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
 	stdout = io.NopCloser(stdout) // close the connection by closing stdin, not stdout
-	stdin, err := t.cmd.StdinPipe()
+	stdin, err := t.Command.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-	if err := t.cmd.Start(); err != nil {
+	if err := t.Command.Start(); err != nil {
 		return nil, err
 	}
-	return newIOConn(&pipeRWC{t.cmd, stdout, stdin}), nil
+	return newIOConn(&pipeRWC{t.Command, stdout, stdin}), nil
 }
 
 // A pipeRWC is an io.ReadWriteCloser that communicates with a subprocess over

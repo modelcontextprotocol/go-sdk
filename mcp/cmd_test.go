@@ -49,7 +49,7 @@ func runServer() {
 
 	server := mcp.NewServer(testImpl, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
-	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -59,7 +59,7 @@ func runCancelContextServer() {
 	defer done()
 
 	server := mcp.NewServer(testImpl, nil)
-	if err := server.Run(ctx, mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -81,7 +81,7 @@ func TestServerRunContextCancel(t *testing.T) {
 
 	// send a ping to the server to ensure it's running
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, clientTransport)
+	session, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestServerInterrupt(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	_, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,9 @@ func TestServerInterrupt(t *testing.T) {
 	}()
 
 	// send a signal to the server process to terminate it
-	cmd.Process.Signal(os.Interrupt)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 
 	// wait for the server to exit
 	// TODO: use synctest when available
@@ -162,6 +164,11 @@ func TestStdioContextCancellation(t *testing.T) {
 	}
 
 	// Sleep to make it more likely that the server is blocked in the read loop.
+	//
+	// This sleep isn't necessary for the test to pass, but *was* necessary for
+	// it to fail, before closing was fixed. Unfortunately, it is too invasive a
+	// change to have the jsonrpc2 package signal across packages when it is
+	// actually blocked in its read loop.
 	time.Sleep(100 * time.Millisecond)
 
 	onExit := make(chan struct{})
@@ -170,7 +177,9 @@ func TestStdioContextCancellation(t *testing.T) {
 		close(onExit)
 	}()
 
-	cmd.Process.Signal(os.Interrupt)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-time.After(5 * time.Second):
@@ -189,7 +198,7 @@ func TestCmdTransport(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

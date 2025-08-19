@@ -38,11 +38,12 @@ code_review
     "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
   }
 }
-{"jsonrpc":"2.0", "id": 3, "method": "notifications/initialized"}
-{"jsonrpc":"2.0", "method":"ping"}
-{"jsonrpc":"2.0", "id": 4, "method": "logging/setLevel"}
-{"jsonrpc":"2.0", "id": 5, "method": "completion/complete"}
-{"jsonrpc":"2.0", "id": 4, "method": "logging/setLevel", "params": null}
+{ "jsonrpc":"2.0", "id": 3, "method": "notifications/initialized" }
+{ "jsonrpc":"2.0", "method": "notifications/initialized" }
+{ "jsonrpc":"2.0", "method":"ping" }
+{ "jsonrpc":"2.0", "id": 4, "method": "logging/setLevel" }
+{ "jsonrpc":"2.0", "id": 5, "method": "completion/complete" }
+{ "jsonrpc":"2.0", "id": 4, "method": "logging/setLevel", "params": null }
 
 -- server --
 {

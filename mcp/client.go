@@ -24,8 +24,8 @@ type Client struct {
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
 	sessions                []*ClientSession
-	sendingMethodHandler_   MethodHandler[*ClientSession]
-	receivingMethodHandler_ MethodHandler[*ClientSession]
+	sendingMethodHandler_   MethodHandler
+	receivingMethodHandler_ MethodHandler
 }
 
 // NewClient creates a new [Client].
@@ -55,14 +55,14 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
-	CreateMessageHandler func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error)
+	CreateMessageHandler func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error)
 	// Handlers for notifications from the server.
-	ToolListChangedHandler      func(context.Context, *ClientSession, *ToolListChangedParams)
-	PromptListChangedHandler    func(context.Context, *ClientSession, *PromptListChangedParams)
-	ResourceListChangedHandler  func(context.Context, *ClientSession, *ResourceListChangedParams)
-	ResourceUpdatedHandler      func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams)
-	LoggingMessageHandler       func(context.Context, *ClientSession, *LoggingMessageParams)
-	ProgressNotificationHandler func(context.Context, *ClientSession, *ProgressNotificationParams)
+	ToolListChangedHandler      func(context.Context, *ClientRequest[*ToolListChangedParams])
+	PromptListChangedHandler    func(context.Context, *ClientRequest[*PromptListChangedParams])
+	ResourceListChangedHandler  func(context.Context, *ClientRequest[*ResourceListChangedParams])
+	ResourceUpdatedHandler      func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams])
+	LoggingMessageHandler       func(context.Context, *ClientRequest[*LoggingMessageParams])
+	ProgressNotificationHandler func(context.Context, *ClientRequest[*ProgressNotificationParams])
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
@@ -71,10 +71,11 @@ type ClientOptions struct {
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
-func (c *Client) bind(conn *jsonrpc2.Connection) *ClientSession {
-	cs := &ClientSession{
-		conn:   conn,
-		client: c,
+func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState) *ClientSession {
+	assert(mcpConn != nil && conn != nil, "nil connection")
+	cs := &ClientSession{conn: conn, mcpConn: mcpConn, client: c}
+	if state != nil {
+		cs.state = *state
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -101,6 +102,9 @@ func (e unsupportedProtocolVersionError) Error() string {
 	return fmt.Sprintf("unsupported protocol version: %q", e.version)
 }
 
+// ClientSessionOptions is reserved for future use.
+type ClientSessionOptions struct{}
+
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
 //
@@ -108,8 +112,8 @@ func (e unsupportedProtocolVersionError) Error() string {
 // when it is no longer needed. However, if the connection is closed by the
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
-func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c)
+func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptions) (cs *ClientSession, err error) {
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil))
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +129,8 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 		ClientInfo:      c.impl,
 		Capabilities:    caps,
 	}
-	res, err := handleSend[*InitializeResult](ctx, cs, methodInitialize, params)
+	req := &ClientRequest[*InitializeParams]{Session: cs, Params: params}
+	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
@@ -133,11 +138,12 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
-	cs.initializeResult = res
-	if hc, ok := cs.mcpConn.(httpConnection); ok {
-		hc.setProtocolVersion(res.ProtocolVersion)
+	cs.state.InitializeResult = res
+	if hc, ok := cs.mcpConn.(clientConnection); ok {
+		hc.sessionUpdated(cs.state)
 	}
-	if err := handleNotify(ctx, cs, notificationInitialized, &InitializedParams{}); err != nil {
+	req2 := &ClientRequest[*InitializedParams]{Session: cs, Params: &InitializedParams{}}
+	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
 		_ = cs.Close()
 		return nil, err
 	}
@@ -156,22 +162,31 @@ func (c *Client) Connect(ctx context.Context, t Transport) (cs *ClientSession, e
 // Call [ClientSession.Close] to close the connection, or await server
 // termination with [ClientSession.Wait].
 type ClientSession struct {
-	conn             *jsonrpc2.Connection
-	client           *Client
-	initializeResult *InitializeResult
-	keepaliveCancel  context.CancelFunc
-	mcpConn          Connection
+	conn            *jsonrpc2.Connection
+	client          *Client
+	keepaliveCancel context.CancelFunc
+	mcpConn         Connection
+
+	// No mutex is (currently) required to guard the session state, because it is
+	// only set synchronously during Client.Connect.
+	state clientSessionState
 }
+
+type clientSessionState struct {
+	InitializeResult *InitializeResult
+}
+
+func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
 
 func (cs *ClientSession) setConn(c Connection) {
 	cs.mcpConn = c
 }
 
 func (cs *ClientSession) ID() string {
-	if cs.mcpConn == nil {
-		return ""
+	if c, ok := cs.mcpConn.(hasSessionID); ok {
+		return c.SessionID()
 	}
-	return cs.mcpConn.SessionID()
+	return ""
 }
 
 // Close performs a graceful close of the connection, preventing new requests
@@ -208,7 +223,7 @@ func (c *Client) AddRoots(roots ...*Root) {
 	if len(roots) == 0 {
 		return
 	}
-	c.changeAndNotify(notificationRootsListChanged, &RootsListChangedParams{},
+	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { c.roots.add(roots...); return true })
 }
 
@@ -217,14 +232,14 @@ func (c *Client) AddRoots(roots ...*Root) {
 // It is not an error to remove a nonexistent root.
 // TODO: notification
 func (c *Client) RemoveRoots(uris ...string) {
-	c.changeAndNotify(notificationRootsListChanged, &RootsListChangedParams{},
+	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { return c.roots.remove(uris...) })
 }
 
 // changeAndNotify is called when a feature is added or removed.
 // It calls change, which should do the work and report whether a change actually occurred.
 // If there was a change, it notifies a snapshot of the sessions.
-func (c *Client) changeAndNotify(notification string, params Params, change func() bool) {
+func changeAndNotify[P Params](c *Client, notification string, params P, change func() bool) {
 	var sessions []*ClientSession
 	// Lock for the change, but not for the notification.
 	c.mu.Lock()
@@ -235,7 +250,7 @@ func (c *Client) changeAndNotify(notification string, params Params, change func
 	notifySessions(sessions, notification, params)
 }
 
-func (c *Client) listRoots(_ context.Context, _ *ClientSession, _ *ListRootsParams) (*ListRootsResult, error) {
+func (c *Client) listRoots(_ context.Context, req *ClientRequest[*ListRootsParams]) (*ListRootsResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -247,12 +262,12 @@ func (c *Client) listRoots(_ context.Context, _ *ClientSession, _ *ListRootsPara
 	}, nil
 }
 
-func (c *Client) createMessage(ctx context.Context, cs *ClientSession, params *CreateMessageParams) (*CreateMessageResult, error) {
+func (c *Client) createMessage(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, &jsonrpc2.WireError{Code: CodeUnsupportedMethod, Message: "client does not support CreateMessage"}
+		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support CreateMessage")
 	}
-	return c.opts.CreateMessageHandler(ctx, cs, params)
+	return c.opts.CreateMessageHandler(ctx, req)
 }
 
 // AddSendingMiddleware wraps the current sending method handler using the provided
@@ -264,7 +279,7 @@ func (c *Client) createMessage(ctx context.Context, cs *ClientSession, params *C
 //
 // Sending middleware is called when a request is sent. It is useful for tasks
 // such as tracing, metrics, and adding progress tokens.
-func (c *Client) AddSendingMiddleware(middleware ...Middleware[*ClientSession]) {
+func (c *Client) AddSendingMiddleware(middleware ...Middleware) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	addMiddleware(&c.sendingMethodHandler_, middleware)
@@ -279,7 +294,7 @@ func (c *Client) AddSendingMiddleware(middleware ...Middleware[*ClientSession]) 
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
-func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]) {
+func (c *Client) AddReceivingMiddleware(middleware ...Middleware) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	addMiddleware(&c.receivingMethodHandler_, middleware)
@@ -291,16 +306,17 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession]
 // TODO(rfindley): actually load and validate the protocol schema, rather than
 // curating these method flags.
 var clientMethodInfos = map[string]methodInfo{
-	methodComplete:                  newMethodInfo(sessionMethod((*ClientSession).Complete), 0),
-	methodPing:                      newMethodInfo(sessionMethod((*ClientSession).ping), missingParamsOK),
-	methodListRoots:                 newMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
-	methodCreateMessage:             newMethodInfo(clientMethod((*Client).createMessage), 0),
-	notificationToolListChanged:     newMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
-	notificationPromptListChanged:   newMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
-	notificationResourceListChanged: newMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
-	notificationResourceUpdated:     newMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
-	notificationLoggingMessage:      newMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
-	notificationProgress:            newMethodInfo(sessionMethod((*ClientSession).callProgressNotificationHandler), notification),
+	methodComplete:                  newClientMethodInfo(clientSessionMethod((*ClientSession).Complete), 0),
+	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
+	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
+	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
+	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
+	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
+	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
+	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
+	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
+	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
+	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
@@ -334,25 +350,38 @@ func (*ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
 	return &emptyResult{}, nil
 }
 
+// cancel is a placeholder: cancellation is handled the jsonrpc2 package.
+//
+// It should never be invoked in practice because cancellation is preempted,
+// but having its signature here facilitates the construction of methodInfo
+// that can be used to validate incoming cancellation notifications.
+func (*ClientSession) cancel(context.Context, *CancelledParams) (Result, error) {
+	return nil, nil
+}
+
+func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
+	return &ClientRequest[P]{Session: cs, Params: params}
+}
+
 // Ping makes an MCP "ping" request to the server.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, cs, methodPing, orZero[Params](params))
+	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
 // ListPrompts lists prompts that are currently available on the server.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	return handleSend[*ListPromptsResult](ctx, cs, methodListPrompts, orZero[Params](params))
+	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
-	return handleSend[*GetPromptResult](ctx, cs, methodGetPrompt, orZero[Params](params))
+	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	return handleSend[*ListToolsResult](ctx, cs, methodListTools, orZero[Params](params))
+	return handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 }
 
 // CallTool calls the tool with the given name and arguments.
@@ -365,72 +394,87 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	return handleSend[*CallToolResult](ctx, cs, methodCallTool, params)
+	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
-func (cs *ClientSession) SetLevel(ctx context.Context, params *SetLevelParams) error {
-	_, err := handleSend[*emptyResult](ctx, cs, methodSetLevel, orZero[Params](params))
+func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
+	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	return handleSend[*ListResourcesResult](ctx, cs, methodListResources, orZero[Params](params))
+	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	return handleSend[*ListResourceTemplatesResult](ctx, cs, methodListResourceTemplates, orZero[Params](params))
+	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	return handleSend[*ReadResourceResult](ctx, cs, methodReadResource, orZero[Params](params))
+	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
-	return handleSend[*CompleteResult](ctx, cs, methodComplete, orZero[Params](params))
+	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Subscribe sends a "resources/subscribe" request to the server, asking for
 // notifications when the specified resource changes.
 func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, cs, methodSubscribe, orZero[Params](params))
+	_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
 // Unsubscribe sends a "resources/unsubscribe" request to the server, cancelling
 // a previous subscription.
 func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, cs, methodUnsubscribe, orZero[Params](params))
+	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
-func (c *Client) callToolChangedHandler(ctx context.Context, s *ClientSession, params *ToolListChangedParams) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ToolListChangedHandler, s, params)
+func (c *Client) callToolChangedHandler(ctx context.Context, req *ClientRequest[*ToolListChangedParams]) (Result, error) {
+	if h := c.opts.ToolListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callPromptChangedHandler(ctx context.Context, s *ClientSession, params *PromptListChangedParams) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.PromptListChangedHandler, s, params)
+func (c *Client) callPromptChangedHandler(ctx context.Context, req *ClientRequest[*PromptListChangedParams]) (Result, error) {
+	if h := c.opts.PromptListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callResourceChangedHandler(ctx context.Context, s *ClientSession, params *ResourceListChangedParams) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ResourceListChangedHandler, s, params)
+func (c *Client) callResourceChangedHandler(ctx context.Context, req *ClientRequest[*ResourceListChangedParams]) (Result, error) {
+	if h := c.opts.ResourceListChangedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callResourceUpdatedHandler(ctx context.Context, s *ClientSession, params *ResourceUpdatedNotificationParams) (Result, error) {
-	return callNotificationHandler(ctx, c.opts.ResourceUpdatedHandler, s, params)
+func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ClientRequest[*ResourceUpdatedNotificationParams]) (Result, error) {
+	if h := c.opts.ResourceUpdatedHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
 }
 
-func (c *Client) callLoggingHandler(ctx context.Context, cs *ClientSession, params *LoggingMessageParams) (Result, error) {
+func (c *Client) callLoggingHandler(ctx context.Context, req *ClientRequest[*LoggingMessageParams]) (Result, error) {
 	if h := c.opts.LoggingMessageHandler; h != nil {
-		h(ctx, cs, params)
+		h(ctx, req)
 	}
 	return nil, nil
 }
 
 func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, params *ProgressNotificationParams) (Result, error) {
-	return callNotificationHandler(ctx, cs.client.opts.ProgressNotificationHandler, cs, params)
+	if h := cs.client.opts.ProgressNotificationHandler; h != nil {
+		h(ctx, clientRequestFor(cs, params))
+	}
+	return nil, nil
 }
 
 // NotifyProgress sends a progress notification from the client to the server
@@ -438,7 +482,7 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 // This can be used if the client is performing a long-running task that was
 // initiated by the server
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, cs, notificationProgress, params)
+	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Tools provides an iterator for all tools available on the server,

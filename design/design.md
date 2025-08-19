@@ -100,11 +100,7 @@ The `CommandTransport` is the client side of the stdio transport, and connects b
 ```go
 // A CommandTransport is a [Transport] that runs a command and communicates
 // with it over stdin/stdout, using newline-delimited JSON.
-type CommandTransport struct { /* unexported fields */ }
-
-// NewCommandTransport returns a [CommandTransport] that runs the given command
-// and communicates with it over stdin/stdout.
-func NewCommandTransport(cmd *exec.Command) *CommandTransport
+type CommandTransport struct { Command *exec.Command }
 
 // Connect starts the command, and connects to it over stdin/stdout.
 func (*CommandTransport) Connect(ctx context.Context) (Connection, error) {
@@ -115,9 +111,7 @@ The `StdioTransport` is the server side of the stdio transport, and connects by 
 ```go
 // A StdioTransport is a [Transport] that communicates using newline-delimited
 // JSON over stdin/stdout.
-type StdioTransport struct { /* unexported fields */ }
-
-func NewStdioTransport() *StdioTransport
+type StdioTransport struct { }
 
 func (t *StdioTransport) Connect(context.Context) (Connection, error)
 ```
@@ -127,6 +121,8 @@ func (t *StdioTransport) Connect(context.Context) (Connection, error)
 The HTTP transport APIs are even more asymmetrical. Since connections are initiated via HTTP requests, the client developer will create a transport, but the server developer will typically install an HTTP handler. Internally, the HTTP handler will create a logical transport for each new client connection.
 
 Importantly, since they serve many connections, the HTTP handlers must accept a callback to get an MCP server for each new session. As described below, MCP servers can optionally connect to multiple clients. This allows customization of per-session servers: if the MCP server is stateless, the user can return the same MCP server for each connection. On the other hand, if any per-session customization is required, it is possible by returning a different `Server` instance for each connection.
+
+Both the SSE and Streamable HTTP server transports are http.Handlers which serve messages to their associated connection. Consequently, they can be connected at most once.
 
 ```go
 // SSEHTTPHandler is an http.Handler that serves SSE-based MCP sessions as defined by
@@ -153,26 +149,10 @@ By default, the SSE handler creates messages endpoints with the `?sessionId=...`
 ```go
 // A SSEServerTransport is a logical SSE session created through a hanging GET
 // request.
-//
-// When connected, it returns the following [Connection] implementation:
-//   - Writes are SSE 'message' events to the GET response.
-//   - Reads are received from POSTs to the session endpoint, via
-//     [SSEServerTransport.ServeHTTP].
-//   - Close terminates the hanging GET.
-type SSEServerTransport struct { /* ... */ }
-
-// NewSSEServerTransport creates a new SSE transport for the given messages
-// endpoint, and hanging GET response.
-//
-// Use [SSEServerTransport.Connect] to initiate the flow of messages.
-//
-// The transport is itself an [http.Handler]. It is the caller's responsibility
-// to ensure that the resulting transport serves HTTP requests on the given
-// session endpoint.
-//
-// Most callers should instead use an [SSEHandler], which transparently handles
-// the delegation to SSEServerTransports.
-func NewSSEServerTransport(endpoint string, w http.ResponseWriter) *SSEServerTransport
+type SSEServerTransport struct {
+    Endpoint string
+    Response http.ResponseWriter
+}
 
 // ServeHTTP handles POST requests to the transport endpoint.
 func (*SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
@@ -185,19 +165,13 @@ func (*SSEServerTransport) Connect(context.Context) (Connection, error)
 The SSE client transport is simpler, and hopefully self-explanatory.
 
 ```go
-type SSEClientTransport struct { /* ... */ }
-
-// SSEClientTransportOptions provides options for the [NewSSEClientTransport]
-// constructor.
-type SSEClientTransportOptions struct {
+type SSEClientTransport struct {
+	// Endpoint is the SSE endpoint to connect to.
+	Endpoint string
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
 }
-
-// NewSSEClientTransport returns a new client transport that connects to the
-// SSE server at the provided URL.
-func NewSSEClientTransport(url string, opts *SSEClientTransportOptions) (*SSEClientTransport, error)
 
 // Connect connects through the client endpoint.
 func (*SSEClientTransport) Connect(ctx context.Context) (Connection, error)
@@ -218,23 +192,22 @@ func (*StreamableHTTPHandler) Close() error
 // session ID, not an endpoint, along with the HTTP response for the request
 // that created the session. It is the caller's responsibility to delegate
 // requests to this session.
-type StreamableServerTransport struct { /* ... */ }
-func NewStreamableServerTransport(sessionID string) *StreamableServerTransport
+type StreamableServerTransport struct {
+	// SessionID is the ID of this session.
+	SessionID string
+	// Storage for events, to enable stream resumption.
+	EventStore EventStore
+}
 func (*StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 func (*StreamableServerTransport) Connect(context.Context) (Connection, error)
 
 // The streamable client handles reconnection transparently to the user.
-type StreamableClientTransport struct { /* ... */ }
-
-// StreamableClientTransportOptions provides options for the
-// [NewStreamableClientTransport] constructor.
-type StreamableClientTransportOptions struct {
-	// HTTPClient is the client to use for making HTTP requests. If nil,
-	// http.DefaultClient is used.
-	HTTPClient *http.Client
+type StreamableClientTransport struct {
+	Endpoint         string
+	HTTPClient       *http.Client
+	ReconnectOptions *StreamableReconnectOptions
 }
 
-func NewStreamableClientTransport(url string, opts *StreamableClientTransportOptions) *StreamableClientTransport
 func (*StreamableClientTransport) Connect(context.Context) (Connection, error)
 ```
 
@@ -257,8 +230,10 @@ func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport)
 
 // A LoggingTransport is a [Transport] that delegates to another transport,
 // writing RPC logs to an io.Writer.
-type LoggingTransport struct { /* ... */ }
-func NewLoggingTransport(delegate Transport, w io.Writer) *LoggingTransport
+type LoggingTransport struct { 
+    Delegate Transport
+    Writer   io.Writer
+}
 ```
 
 ### Protocol types
@@ -358,7 +333,9 @@ Here's an example of these APIs from the client side:
 ```go
 client := mcp.NewClient(&mcp.Implementation{Name:"mcp-client", Version:"v1.0.0"}, nil)
 // Connect to a server over stdin/stdout
-transport := mcp.NewCommandTransport(exec.Command("myserver"))
+transport := &mcp.CommandTransport{
+    Command: exec.Command("myserver"},
+}
 session, err := client.Connect(ctx, transport)
 if err != nil { ... }
 // Call a tool on the server.
@@ -374,7 +351,7 @@ A server that can handle that client call would look like this:
 server := mcp.NewServer(&mcp.Implementation{Name:"greeter", Version:"v1.0.0"}, nil)
 mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 // Run the server over stdin/stdout, until the client disconnects.
-if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
+if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
     log.Fatal(err)
 }
 ```
@@ -431,15 +408,12 @@ We provide a mechanism to add MCP-level middleware on the both the client and se
 
 ```go
 // A MethodHandler handles MCP messages.
-// The params argument is an XXXParams struct pointer, such as *GetPromptParams.
-// For methods, a MethodHandler must return either an XXResult struct pointer and a nil error, or
-// nil with a non-nil error.
-// For notifications, a MethodHandler must return nil, nil.
-type MethodHandler[S Session] func(
-	ctx context.Context, _ *S, method string, params Params) (result Result, err error)
+// For methods, exactly one of the return values must be nil.
+// For notifications, both must be nil.
+type MethodHandler func(ctx context.Context, method string, req Request) (result Result, err error)
 
 // Middleware is a function from MethodHandlers to MethodHandlers.
-type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
+type Middleware func(MethodHandler) MethodHandler
 
 // AddMiddleware wraps the client/server's current method handler using the provided
 // middleware. Middleware is applied from right to left, so that the first one
@@ -447,17 +421,17 @@ type Middleware[S Session] func(MethodHandler[S]) MethodHandler[S]
 //
 // For example, AddMiddleware(m1, m2, m3) augments the server method handler as
 // m1(m2(m3(handler))).
-func (c *Client) AddSendingMiddleware(middleware ...Middleware[*ClientSession])
-func (c *Client) AddReceivingMiddleware(middleware ...Middleware[*ClientSession])
-func (s *Server) AddSendingMiddleware(middleware ...Middleware[*ServerSession])
-func (s *Server) AddReceivingMiddleware(middleware ...Middleware[*ServerSession])
+func (c *Client) AddSendingMiddleware(middleware ...Middleware)
+func (c *Client) AddReceivingMiddleware(middleware ...Middleware)
+func (s *Server) AddSendingMiddleware(middleware ...Middleware)
+func (s *Server) AddReceivingMiddleware(middleware ...Middleware)
 ```
 
 As an example, this code adds server-side logging:
 
 ```go
-func withLogging(h mcp.MethodHandler[*mcp.ServerSession]) mcp.MethodHandler[*mcp.ServerSession]{
-    return func(ctx context.Context, s *mcp.ServerSession, method string, params mcp.Params) (res mcp.Result, err error) {
+func withLogging(h mcp.MethodHandler) mcp.MethodHandler{
+    return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
         log.Printf("request: %s %v", method, params)
         defer func() { log.Printf("response: %v, %v", res, err) }()
         return h(ctx, s , method, params)
@@ -620,8 +594,9 @@ type Tool struct {
 	Name string                    `json:"name"`
 }
 
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerSession, *CallToolParamsFor[In]) (*CallToolResultFor[Out], error)
-type ToolHandler = ToolHandlerFor[map[string]any, any]
+// A ToolHandlerFor handles a call to tools/call with typed arguments and results.
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
+
 ```
 
 Add tools to a server with the `AddTool` method or function. The function is generic and infers schemas from the handler
@@ -671,8 +646,8 @@ type AddParams struct {
     Y int `json:"y"`
 }
 
-func addHandler(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[AddParams]) (*mcp.CallToolResultFor[int], error) {
-    return &mcp.CallToolResultFor[int]{StructuredContent: params.Arguments.X + params.Arguments.Y}, nil
+func addHandler(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddParams]]) (*mcp.CallToolResultFor[int], error) {
+    return &mcp.CallToolResultFor[int]{StructuredContent: req.Params.Arguments.X + req.Params.Arguments.Y}, nil
 }
 ```
 
@@ -688,8 +663,6 @@ Client sessions can call the spec method `ListTools` or an iterator method `Tool
 
 ```go
 func (cs *ClientSession) CallTool(context.Context, *CallToolParams[json.RawMessage]) (*CallToolResult, error)
-
-func CallTool[TArgs any](context.Context, *ClientSession, *CallToolParams[TArgs]) (*CallToolResult, error)
 ```
 
 **Differences from mcp-go**: We provide a full JSON Schema implementation for validating tool input schemas against incoming arguments. The `jsonschema.Schema` type provides exported features for all keywords in the JSON Schema draft2020-12 spec. Tool definers can use it to construct any schema they want. The `jsonschema.For[T]` function can infer a schema from a Go struct. These combined features eliminate the need for variadic arguments to construct tool schemas.
@@ -775,10 +748,10 @@ If a server author wants to support resource subscriptions, they must provide ha
 ```go
 type ServerOptions struct {
   ...
-  // Function called when a client session subscribes to a resource.
-  SubscribeHandler func(context.Context, ss *ServerSession, *SubscribeParams) error
-  // Function called when a client session unsubscribes from a resource.
-  UnsubscribeHandler func(context.Context, ss *ServerSession, *UnsubscribeParams) error
+	// Function called when a client session subscribes to a resource.
+	SubscribeHandler func(context.Context, *ServerRequest[*SubscribeParams]) error
+	// Function called when a client session unsubscribes from a resource.
+	UnsubscribeHandler func(context.Context, *ServerRequest[*UnsubscribeParams]) error
 }
 ```
 
@@ -797,10 +770,10 @@ When a list of tools, prompts or resources changes as the result of an AddXXX or
 ```go
 type ClientOptions struct {
   ...
-  ToolListChangedHandler func(context.Context, *ClientSession, *ToolListChangedParams)
-  PromptListChangedHandler func(context.Context, *ClientSession, *PromptListChangedParams)
+	ToolListChangedHandler      func(context.Context, *ClientRequest[*ToolListChangedParams])
+	PromptListChangedHandler    func(context.Context, *ClientRequest[*PromptListChangedParams])
   // For both resources and resource templates.
-  ResourceListChangedHandler func(context.Context, *ClientSession, *ResourceListChangedParams)
+	ResourceListChangedHandler  func(context.Context, *ClientRequest[*ResourceListChangedParams])
 }
 ```
 
@@ -811,13 +784,10 @@ type ClientOptions struct {
 Clients call the spec method `Complete` to request completions. If a server installs a `CompletionHandler`, it will be called when the client sends a completion request.
 
 ```go
-// A CompletionHandler handles a call to completion/complete.
-type CompletionHandler func(context.Context, *ServerSession, *CompleteParams) (*CompleteResult, error)
-
 type ServerOptions struct {
   ...
   // If non-nil, called when a client sends a completion request.
-  CompletionHandler CompletionHandler
+	CompletionHandler func(context.Context, *ServerRequest[*CompleteParams]) (*CompleteResult, error)
 }
 ```
 

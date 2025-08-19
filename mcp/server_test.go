@@ -9,9 +9,10 @@ import (
 	"log"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type testItem struct {
@@ -236,13 +237,13 @@ func TestServerCapabilities(t *testing.T) {
 		name             string
 		configureServer  func(s *Server)
 		serverOpts       ServerOptions
-		wantCapabilities *serverCapabilities
+		wantCapabilities *ServerCapabilities
 	}{
 		{
 			name:            "No capabilities",
 			configureServer: func(s *Server) {},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
 			},
 		},
 		{
@@ -250,9 +251,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
-				Prompts: &promptCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Prompts: &PromptCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -260,9 +261,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -270,9 +271,9 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -281,16 +282,16 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
+				SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
 					return nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Resources: &resourceCapabilities{ListChanged: true, Subscribe: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Resources: &ResourceCapabilities{ListChanged: true, Subscribe: true},
 			},
 		},
 		{
@@ -298,22 +299,22 @@ func TestServerCapabilities(t *testing.T) {
 			configureServer: func(s *Server) {
 				s.AddTool(tool, nil)
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging: &loggingCapabilities{},
-				Tools:   &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Tools:   &ToolCapabilities{ListChanged: true},
 			},
 		},
 		{
 			name:            "With completions",
 			configureServer: func(s *Server) {},
 			serverOpts: ServerOptions{
-				CompletionHandler: func(ctx context.Context, ss *ServerSession, params *CompleteParams) (*CompleteResult, error) {
+				CompletionHandler: func(context.Context, *ServerRequest[*CompleteParams]) (*CompleteResult, error) {
 					return nil, nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:     &loggingCapabilities{},
-				Completions: &completionCapabilities{},
+			wantCapabilities: &ServerCapabilities{
+				Logging:     &LoggingCapabilities{},
+				Completions: &CompletionCapabilities{},
 			},
 		},
 		{
@@ -325,22 +326,22 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddTool(tool, nil)
 			},
 			serverOpts: ServerOptions{
-				SubscribeHandler: func(ctx context.Context, _ *ServerSession, sp *SubscribeParams) error {
+				SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
 					return nil
 				},
-				UnsubscribeHandler: func(ctx context.Context, _ *ServerSession, up *UnsubscribeParams) error {
+				UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
 					return nil
 				},
-				CompletionHandler: func(ctx context.Context, ss *ServerSession, params *CompleteParams) (*CompleteResult, error) {
+				CompletionHandler: func(context.Context, *ServerRequest[*CompleteParams]) (*CompleteResult, error) {
 					return nil, nil
 				},
 			},
-			wantCapabilities: &serverCapabilities{
-				Completions: &completionCapabilities{},
-				Logging:     &loggingCapabilities{},
-				Prompts:     &promptCapabilities{ListChanged: true},
-				Resources:   &resourceCapabilities{ListChanged: true, Subscribe: true},
-				Tools:       &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Completions: &CompletionCapabilities{},
+				Logging:     &LoggingCapabilities{},
+				Prompts:     &PromptCapabilities{ListChanged: true},
+				Resources:   &ResourceCapabilities{ListChanged: true, Subscribe: true},
+				Tools:       &ToolCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -351,11 +352,11 @@ func TestServerCapabilities(t *testing.T) {
 				HasResources: true,
 				HasTools:     true,
 			},
-			wantCapabilities: &serverCapabilities{
-				Logging:   &loggingCapabilities{},
-				Prompts:   &promptCapabilities{ListChanged: true},
-				Resources: &resourceCapabilities{ListChanged: true},
-				Tools:     &toolCapabilities{ListChanged: true},
+			wantCapabilities: &ServerCapabilities{
+				Logging:   &LoggingCapabilities{},
+				Prompts:   &PromptCapabilities{ListChanged: true},
+				Resources: &ResourceCapabilities{ListChanged: true},
+				Tools:     &ToolCapabilities{ListChanged: true},
 			},
 		},
 	}
@@ -405,5 +406,53 @@ func TestServerAddResourceTemplate(t *testing.T) {
 			s := NewServer(testImpl, nil)
 			s.AddResourceTemplate(&rt, nil)
 		})
+	}
+}
+
+// TestServerSessionkeepaliveCancelOverwritten is to verify that `ServerSession.keepaliveCancel` is assigned exactly once,
+// ensuring that only a single goroutine is responsible for the session's keepalive ping mechanism.
+func TestServerSessionkeepaliveCancelOverwritten(t *testing.T) {
+	// Set KeepAlive to a long duration to ensure the keepalive
+	// goroutine stays alive for the duration of the test without actually sending
+	// ping requests, since we don't have a real client connection established.
+	server := NewServer(testImpl, &ServerOptions{KeepAlive: 5 * time.Second})
+	ss := &ServerSession{server: server}
+
+	// 1. Initialize the session.
+	_, err := ss.initialize(context.Background(), &InitializeParams{})
+	if err != nil {
+		t.Fatalf("ServerSession initialize failed: %v", err)
+	}
+
+	// 2. Call 'initialized' for the first time. This should start the keepalive mechanism.
+	_, err = ss.initialized(context.Background(), &InitializedParams{})
+	if err != nil {
+		t.Fatalf("First initialized call failed: %v", err)
+	}
+	if ss.keepaliveCancel == nil {
+		t.Fatalf("expected ServerSession.keepaliveCancel to be set after the first call of initialized")
+	}
+
+	// Save the cancel function and use defer to ensure resources are cleaned up.
+	firstCancel := ss.keepaliveCancel
+	defer firstCancel()
+
+	// 3. Manually set the field to nil.
+	// Do this to facilitate the test's core assertion. The goal is to verify that
+	// 'ss.keepaliveCancel' is not assigned a second time. By setting it to nil,
+	// we can easily check after the next call if a new keepalive goroutine was started.
+	ss.keepaliveCancel = nil
+
+	// 4. Call 'initialized' for the second time. This should return an error.
+	_, err = ss.initialized(context.Background(), &InitializedParams{})
+	if err == nil {
+		t.Fatalf("Expected 'duplicate initialized received' error on second call, got nil")
+	}
+
+	// 5. Re-check the field to ensure it remains nil.
+	// Since 'initialized' correctly returned an error and did not call
+	// 'startKeepalive', the field should remain unchanged.
+	if ss.keepaliveCancel != nil {
+		t.Fatal("expected ServerSession.keepaliveCancel to be nil after we manually niled it and re-initialized")
 	}
 }

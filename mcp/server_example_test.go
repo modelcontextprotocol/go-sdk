@@ -16,10 +16,10 @@ type SayHiParams struct {
 	Name string `json:"name"`
 }
 
-func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[SayHiParams]) (*mcp.CallToolResultFor[any], error) {
+func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[SayHiParams]]) (*mcp.CallToolResultFor[any], error) {
 	return &mcp.CallToolResultFor[any]{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + params.Arguments.Name},
+			&mcp.TextContent{Text: "Hi " + req.Params.Arguments.Name},
 		},
 	}, nil
 }
@@ -31,13 +31,13 @@ func ExampleServer() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 
-	serverSession, err := server.Connect(ctx, serverTransport)
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client"}, nil)
-	clientSession, err := client.Connect(ctx, clientTransport)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,11 +62,11 @@ func createSessions(ctx context.Context) (*mcp.ClientSession, *mcp.ServerSession
 	server := mcp.NewServer(testImpl, nil)
 	client := mcp.NewClient(testImpl, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	serverSession, err := server.Connect(ctx, serverTransport)
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	clientSession, err := client.Connect(ctx, clientTransport)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 type hiParams struct {
@@ -32,11 +32,11 @@ type hiParams struct {
 // TODO(jba): after schemas are stateless (WIP), this can be a variable.
 func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
-func sayHi(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[hiParams]) (*CallToolResultFor[any], error) {
-	if err := ss.Ping(ctx, nil); err != nil {
+func sayHi(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResultFor[any], error) {
+	if err := req.Session.Ping(ctx, nil); err != nil {
 		return nil, fmt.Errorf("ping failed: %v", err)
 	}
-	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + params.Arguments.Name}}}, nil
+	return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
 }
 
 var codeReviewPrompt = &Prompt{
@@ -73,16 +73,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler:      func(context.Context, *ServerSession, *InitializedParams) { notificationChans["initialized"] <- 0 },
-		RootsListChangedHandler: func(context.Context, *ServerSession, *RootsListChangedParams) { notificationChans["roots"] <- 0 },
-		ProgressNotificationHandler: func(context.Context, *ServerSession, *ProgressNotificationParams) {
+		InitializedHandler: func(context.Context, *ServerRequest[*InitializedParams]) {
+			notificationChans["initialized"] <- 0
+		},
+		RootsListChangedHandler: func(context.Context, *ServerRequest[*RootsListChangedParams]) {
+			notificationChans["roots"] <- 0
+		},
+		ProgressNotificationHandler: func(context.Context, *ServerRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_server"] <- 0
 		},
-		SubscribeHandler: func(context.Context, *ServerSession, *SubscribeParams) error {
+		SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
 			notificationChans["subscribe"] <- 0
 			return nil
 		},
-		UnsubscribeHandler: func(context.Context, *ServerSession, *UnsubscribeParams) error {
+		UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
 			notificationChans["unsubscribe"] <- 0
 			return nil
 		},
@@ -93,7 +97,7 @@ func TestEndToEnd(t *testing.T) {
 		Description: "say hi",
 	}, sayHi)
 	s.AddTool(&Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 			return nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
@@ -104,7 +108,7 @@ func TestEndToEnd(t *testing.T) {
 	s.AddResource(resource2, readHandler)
 
 	// Connect the server.
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,19 +128,25 @@ func TestEndToEnd(t *testing.T) {
 
 	loggingMessages := make(chan *LoggingMessageParams, 100) // big enough for all logging
 	opts := &ClientOptions{
-		CreateMessageHandler: func(context.Context, *ClientSession, *CreateMessageParams) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
-		ToolListChangedHandler:     func(context.Context, *ClientSession, *ToolListChangedParams) { notificationChans["tools"] <- 0 },
-		PromptListChangedHandler:   func(context.Context, *ClientSession, *PromptListChangedParams) { notificationChans["prompts"] <- 0 },
-		ResourceListChangedHandler: func(context.Context, *ClientSession, *ResourceListChangedParams) { notificationChans["resources"] <- 0 },
-		LoggingMessageHandler: func(_ context.Context, _ *ClientSession, lm *LoggingMessageParams) {
-			loggingMessages <- lm
+		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
+			notificationChans["tools"] <- 0
 		},
-		ProgressNotificationHandler: func(context.Context, *ClientSession, *ProgressNotificationParams) {
+		PromptListChangedHandler: func(context.Context, *ClientRequest[*PromptListChangedParams]) {
+			notificationChans["prompts"] <- 0
+		},
+		ResourceListChangedHandler: func(context.Context, *ClientRequest[*ResourceListChangedParams]) {
+			notificationChans["resources"] <- 0
+		},
+		LoggingMessageHandler: func(_ context.Context, req *ClientRequest[*LoggingMessageParams]) {
+			loggingMessages <- req.Params
+		},
+		ProgressNotificationHandler: func(context.Context, *ClientRequest[*ProgressNotificationParams]) {
 			notificationChans["progress_client"] <- 0
 		},
-		ResourceUpdatedHandler: func(context.Context, *ClientSession, *ResourceUpdatedNotificationParams) {
+		ResourceUpdatedHandler: func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams]) {
 			notificationChans["resource_updated"] <- 0
 		},
 	}
@@ -148,7 +158,7 @@ func TestEndToEnd(t *testing.T) {
 	c.AddRoots(&Root{URI: "file://" + rootAbs})
 
 	// Connect the client.
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +404,7 @@ func TestEndToEnd(t *testing.T) {
 
 			// Nothing should be logged until the client sets a level.
 			mustLog("info", "before")
-			if err := cs.SetLevel(ctx, &SetLevelParams{Level: "warning"}); err != nil {
+			if err := cs.SetLoggingLevel(ctx, &SetLoggingLevelParams{Level: "warning"}); err != nil {
 				t.Fatal(err)
 			}
 			mustLog("warning", want[0].Data)
@@ -500,8 +510,8 @@ var embeddedResources = map[string]string{
 	"info": "This is the MCP test server.",
 }
 
-func handleEmbeddedResource(_ context.Context, _ *ServerSession, params *ReadResourceParams) (*ReadResourceResult, error) {
-	u, err := url.Parse(params.URI)
+func handleEmbeddedResource(_ context.Context, req *ServerRequest[*ReadResourceParams]) (*ReadResourceResult, error) {
+	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +525,7 @@ func handleEmbeddedResource(_ context.Context, _ *ServerSession, params *ReadRes
 	}
 	return &ReadResourceResult{
 		Contents: []*ResourceContents{
-			{URI: params.URI, MIMEType: "text/plain", Text: text},
+			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
 		},
 	}, nil
 }
@@ -549,13 +559,13 @@ func basicConnection(t *testing.T, config func(*Server)) (*ServerSession, *Clien
 	if config != nil {
 		config(s)
 	}
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +608,7 @@ func TestBatching(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	_, err := s.Connect(ctx, st)
+	_, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +618,7 @@ func TestBatching(t *testing.T) {
 	// 'initialize' to block. Therefore, we can only test with a size of 1.
 	// Since batching is being removed, we can probably just delete this.
 	const batchSize = 1
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,8 +646,7 @@ func TestCancellation(t *testing.T) {
 		start     = make(chan struct{})
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
-
-	slowRequest := func(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -648,7 +657,7 @@ func TestCancellation(t *testing.T) {
 		return nil, nil
 	}
 	_, cs := basicConnection(t, func(s *Server) {
-		s.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{}}, slowRequest)
+		AddTool(s, &Tool{Name: "slow"}, slowRequest)
 	})
 	defer cs.Close()
 
@@ -668,7 +677,7 @@ func TestMiddleware(t *testing.T) {
 	ct, st := NewInMemoryTransports()
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +704,7 @@ func TestMiddleware(t *testing.T) {
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,16 +783,16 @@ func TestNoJSONNull(t *testing.T) {
 
 	// Collect logs, to sanity check that we don't write JSON null anywhere.
 	var logbuf safeBuffer
-	ct = NewLoggingTransport(ct, &logbuf)
+	ct = &LoggingTransport{Transport: ct, Writer: &logbuf}
 
 	s := NewServer(testImpl, nil)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -816,17 +825,17 @@ func TestNoJSONNull(t *testing.T) {
 
 // traceCalls creates a middleware function that prints the method before and after each call
 // with the given prefix.
-func traceCalls[S Session](w io.Writer, prefix string) Middleware[S] {
-	return func(h MethodHandler[S]) MethodHandler[S] {
-		return func(ctx context.Context, sess S, method string, params Params) (Result, error) {
+func traceCalls[S Session](w io.Writer, prefix string) Middleware {
+	return func(h MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
 			fmt.Fprintf(w, "%s >%s\n", prefix, method)
 			defer fmt.Fprintf(w, "%s <%s\n", prefix, method)
-			return h(ctx, sess, method, params)
+			return h(ctx, method, req)
 		}
 	}
 }
 
-func nopHandler(context.Context, *ServerSession, *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
+func nopHandler(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
 	return nil, nil
 }
 
@@ -845,7 +854,7 @@ func TestKeepAlive(t *testing.T) {
 	s := NewServer(testImpl, serverOpts)
 	AddTool(s, greetTool(), sayHi)
 
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,7 +864,7 @@ func TestKeepAlive(t *testing.T) {
 		KeepAlive: 100 * time.Millisecond,
 	}
 	c := NewClient(testImpl, clientOpts)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +898,7 @@ func TestKeepAliveFailure(t *testing.T) {
 	// Server without keepalive (to test one-sided keepalive)
 	s := NewServer(testImpl, nil)
 	AddTool(s, greetTool(), sayHi)
-	ss, err := s.Connect(ctx, st)
+	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,7 +908,7 @@ func TestKeepAliveFailure(t *testing.T) {
 		KeepAlive: 50 * time.Millisecond,
 	}
 	c := NewClient(testImpl, clientOpts)
-	cs, err := c.Connect(ctx, ct)
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -926,6 +935,41 @@ func TestKeepAliveFailure(t *testing.T) {
 	}
 
 	t.Errorf("expected connection to be closed by keepalive, but it wasn't. Last error: %v", err)
+}
+
+func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
+	// Adding the same tool pointer twice should not panic and should not
+	// produce duplicates in the server's tool list.
+	_, cs := basicConnection(t, func(s *Server) {
+		// Use two distinct Tool instances with the same name but different
+		// descriptions to ensure the second replaces the first
+		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
+		t1 := &Tool{Name: "dup", Description: "first", InputSchema: &jsonschema.Schema{}}
+		t2 := &Tool{Name: "dup", Description: "second", InputSchema: &jsonschema.Schema{}}
+		s.AddTool(t1, nopHandler)
+		s.AddTool(t2, nopHandler)
+	})
+	defer cs.Close()
+
+	ctx := context.Background()
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var gotDesc string
+	for _, tt := range res.Tools {
+		if tt.Name == "dup" {
+			count++
+			gotDesc = tt.Description
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one 'dup' tool, got %d", count)
+	}
+	if gotDesc != "second" {
+		t.Fatalf("expected replaced tool to have description %q, got %q", "second", gotDesc)
+	}
 }
 
 var testImpl = &Implementation{Name: "test", Version: "v1.0.0"}
