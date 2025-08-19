@@ -178,10 +178,6 @@ type clientSessionState struct {
 
 func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
 
-func (cs *ClientSession) setConn(c Connection) {
-	cs.mcpConn = c
-}
-
 func (cs *ClientSession) ID() string {
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
 		return c.SessionID()

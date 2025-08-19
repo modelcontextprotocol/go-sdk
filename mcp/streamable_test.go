@@ -539,10 +539,10 @@ func TestStreamableServerTransport(t *testing.T) {
 		},
 		{
 			name: "background",
-			tool: func(t *testing.T, ctx context.Context, ss *ServerSession) {
+			tool: func(t *testing.T, _ context.Context, ss *ServerSession) {
 				// Perform operations on a background context, and ensure the client
 				// receives it.
-				ctx = context.Background()
+				ctx := context.Background()
 				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}

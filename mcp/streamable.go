@@ -121,7 +121,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	var transport *StreamableServerTransport
 	if id := req.Header.Get(sessionIDHeader); id != "" {
 		h.mu.Lock()
-		transport, _ = h.transports[id]
+		transport = h.transports[id]
 		h.mu.Unlock()
 		if transport == nil {
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -288,9 +288,6 @@ type streamableServerConn struct {
 	jsonResponse bool
 	eventStore   EventStore
 
-	lastStreamID atomic.Int64 // last stream ID used, atomically incremented
-
-	opts     StreamableServerTransportOptions
 	incoming chan jsonrpc.Message // messages from the client to the server
 	done     chan struct{}
 

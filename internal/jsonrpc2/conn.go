@@ -719,10 +719,10 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		} else if err != nil {
 			err = fmt.Errorf("%w: %q notification failed: %v", ErrInternal, req.Method, err)
 		}
-		if err != nil {
-			// TODO: can/should we do anything with this error beyond writing it to the event log?
-			// (Is this the right label to attach to the log?)
-		}
+	}
+	if err != nil {
+		// TODO: can/should we do anything with this error beyond writing it to the event log?
+		// (Is this the right label to attach to the log?)
 	}
 
 	// Cancel the request to free any associated resources.
