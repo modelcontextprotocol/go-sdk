@@ -24,9 +24,14 @@ func TestList(t *testing.T) {
 	t.Run("tools", func(t *testing.T) {
 		var wantTools []*mcp.Tool
 		for _, name := range []string{"apple", "banana", "cherry"} {
-			t := &mcp.Tool{Name: name, Description: name + " tool"}
-			wantTools = append(wantTools, t)
-			mcp.AddTool(server, t, SayHi)
+			tt := &mcp.Tool{Name: name, Description: name + " tool"}
+			mcp.AddTool(server, tt, SayHi)
+			is, err := jsonschema.For[SayHiParams](nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.InputSchema = is
+			wantTools = append(wantTools, tt)
 		}
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListTools(ctx, nil)

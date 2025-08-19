@@ -13,90 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
-
-// testToolHandler is used for type inference in TestNewServerTool.
-func testToolHandler[In, Out any](context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error) {
-	panic("not implemented")
-}
-
-func srvTool[In, Out any](t *testing.T, tool *Tool, handler ToolHandlerFor[In, Out]) *serverTool {
-	t.Helper()
-	st, err := newServerTool(tool, handler)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return st
-}
-
-func TestNewServerTool(t *testing.T) {
-	type (
-		Name struct {
-			Name string `json:"name"`
-		}
-		Size struct {
-			Size int `json:"size"`
-		}
-	)
-
-	nameSchema := &jsonschema.Schema{
-		Type:     "object",
-		Required: []string{"name"},
-		Properties: map[string]*jsonschema.Schema{
-			"name": {Type: "string"},
-		},
-		AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
-	}
-	sizeSchema := &jsonschema.Schema{
-		Type:     "object",
-		Required: []string{"size"},
-		Properties: map[string]*jsonschema.Schema{
-			"size": {Type: "integer"},
-		},
-		AdditionalProperties: &jsonschema.Schema{Not: new(jsonschema.Schema)},
-	}
-
-	tests := []struct {
-		tool            *serverTool
-		wantIn, wantOut *jsonschema.Schema
-	}{
-		{
-			srvTool(t, &Tool{Name: "basic"}, testToolHandler[Name, Size]),
-			nameSchema,
-			sizeSchema,
-		},
-		{
-			srvTool(t, &Tool{
-				Name:        "in untouched",
-				InputSchema: &jsonschema.Schema{},
-			}, testToolHandler[Name, Size]),
-			&jsonschema.Schema{},
-			sizeSchema,
-		},
-		{
-			srvTool(t, &Tool{Name: "out untouched", OutputSchema: &jsonschema.Schema{}}, testToolHandler[Name, Size]),
-			nameSchema,
-			&jsonschema.Schema{},
-		},
-		{
-			srvTool(t, &Tool{Name: "nil out"}, testToolHandler[Name, any]),
-			nameSchema,
-			nil,
-		},
-	}
-	for _, test := range tests {
-		if diff := cmp.Diff(test.wantIn, test.tool.tool.InputSchema, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
-			t.Errorf("newServerTool(%q) input schema mismatch (-want +got):\n%s", test.tool.tool.Name, diff)
-		}
-		if diff := cmp.Diff(test.wantOut, test.tool.tool.OutputSchema, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
-			t.Errorf("newServerTool(%q) output schema mismatch (-want +got):\n%s", test.tool.tool.Name, diff)
-		}
-	}
-}
 
 func TestUnmarshalSchema(t *testing.T) {
 	schema := &jsonschema.Schema{
@@ -142,16 +61,16 @@ func TestToolErrorHandling(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	// Create a tool that returns a structured error
-	structuredErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResultFor[any], error) {
-		return nil, &jsonrpc2.WireError{
+	structuredErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
+		return nil, nil, &jsonrpc2.WireError{
 			Code:    CodeInvalidParams,
 			Message: "internal server error",
 		}
 	}
 
 	// Create a tool that returns a regular error
-	regularErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResultFor[any], error) {
-		return nil, fmt.Errorf("tool execution failed")
+	regularErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
+		return nil, nil, fmt.Errorf("tool execution failed")
 	}
 
 	AddTool(server, &Tool{Name: "error_tool", Description: "returns structured error"}, structuredErrorHandler)
@@ -201,7 +120,6 @@ func TestToolErrorHandling(t *testing.T) {
 			Name:      "regular_error_tool",
 			Arguments: map[string]any{},
 		})
-
 		// Should not get an error at the protocol level
 		if err != nil {
 			t.Fatalf("unexpected protocol error: %v", err)

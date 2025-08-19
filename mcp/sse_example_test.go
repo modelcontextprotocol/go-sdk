@@ -18,12 +18,12 @@ type AddParams struct {
 	X, Y int
 }
 
-func Add(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[AddParams]]) (*mcp.CallToolResultFor[any], error) {
-	return &mcp.CallToolResultFor[any]{
+func Add(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args AddParams) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("%d", req.Params.Arguments.X+req.Params.Arguments.Y)},
+			&mcp.TextContent{Text: fmt.Sprintf("%d", args.X+args.Y)},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func ExampleSSEHandler() {

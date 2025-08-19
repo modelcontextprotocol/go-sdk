@@ -9,97 +9,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
 // A ToolHandler handles a call to tools/call.
 // [CallToolParams.Arguments] will contain a map[string]any that has been validated
 // against the input schema.
-type ToolHandler = ToolHandlerFor[map[string]any, any]
+type ToolHandler func(context.Context, *ServerRequest[*CallToolParams]) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParamsFor[In]]) (*CallToolResultFor[Out], error)
-
-// A rawToolHandler is like a ToolHandler, but takes the arguments as as json.RawMessage.
-// Second arg is *Request[*ServerSession, *CallToolParamsFor[json.RawMessage]], but that creates
-// a cycle.
-type rawToolHandler = func(context.Context, any) (*CallToolResult, error)
+type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParams], In) (*CallToolResult, Out, error)
 
 // A serverTool is a tool definition that is bound to a tool handler.
 type serverTool struct {
 	tool    *Tool
-	handler rawToolHandler
-	// Resolved tool schemas. Set in newServerTool.
-	inputResolved, outputResolved *jsonschema.Resolved
-}
-
-// newServerTool creates a serverTool from a tool and a handler.
-// If the tool doesn't have an input schema, it is inferred from In.
-// If the tool doesn't have an output schema and Out != any, it is inferred from Out.
-func newServerTool[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*serverTool, error) {
-	st := &serverTool{tool: t}
-
-	if err := setSchema[In](&t.InputSchema, &st.inputResolved); err != nil {
-		return nil, err
-	}
-	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
-		if err := setSchema[Out](&t.OutputSchema, &st.outputResolved); err != nil {
-			return nil, err
-		}
-	}
-
-	st.handler = func(ctx context.Context, areq any) (*CallToolResult, error) {
-		req := areq.(*ServerRequest[*CallToolParamsFor[json.RawMessage]])
-		var args In
-		if req.Params.Arguments != nil {
-			if err := unmarshalSchema(req.Params.Arguments, st.inputResolved, &args); err != nil {
-				return nil, err
-			}
-		}
-		// TODO(jba): future-proof this copy.
-		params := &CallToolParamsFor[In]{
-			Meta:      req.Params.Meta,
-			Name:      req.Params.Name,
-			Arguments: args,
-		}
-		// TODO(jba): improve copy
-		res, err := h(ctx, &ServerRequest[*CallToolParamsFor[In]]{
-			Session: req.Session,
-			Params:  params,
-			Extra:   req.Extra,
-		})
-		// Handle server errors appropriately:
-		// - If the handler returns a structured error (like jsonrpc2.WireError), return it directly
-		// - If the handler returns a regular error, wrap it in a CallToolResult with IsError=true
-		// - This allows tools to distinguish between protocol errors and tool execution errors
-		if err != nil {
-			// Check if this is already a structured JSON-RPC error
-			if wireErr, ok := err.(*jsonrpc2.WireError); ok {
-				return nil, wireErr
-			}
-			// For regular errors, embed them in the tool result as per MCP spec
-			return &CallToolResult{
-				Content: []Content{&TextContent{Text: err.Error()}},
-				IsError: true,
-			}, nil
-		}
-		var ctr CallToolResult
-		// TODO(jba): What if res == nil? Is that valid?
-		// TODO(jba): if t.OutputSchema != nil, check that StructuredContent is present and validates.
-		if res != nil {
-			// TODO(jba): future-proof this copy.
-			ctr.Meta = res.Meta
-			ctr.Content = res.Content
-			ctr.IsError = res.IsError
-			ctr.StructuredContent = res.StructuredContent
-		}
-		return &ctr, nil
-	}
-
-	return st, nil
+	handler ToolHandler
 }
 
 func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) error {

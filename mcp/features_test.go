@@ -5,7 +5,6 @@
 package mcp
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -16,14 +15,6 @@ import (
 
 type SayHiParams struct {
 	Name string `json:"name"`
-}
-
-func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[SayHiParams]) (*CallToolResultFor[any], error) {
-	return &CallToolResultFor[any]{
-		Content: []Content{
-			&TextContent{Text: "Hi " + params.Name},
-		},
-	}, nil
 }
 
 func TestFeatureSetOrder(t *testing.T) {

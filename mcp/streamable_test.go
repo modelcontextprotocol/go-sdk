@@ -48,18 +48,18 @@ func TestStreamableTransports(t *testing.T) {
 				start     = make(chan struct{})
 				cancelled = make(chan struct{}, 1) // don't block the request
 			)
-			hang := func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			hang := func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
 				start <- struct{}{}
 				select {
 				case <-ctx.Done():
 					cancelled <- struct{}{}
 				case <-time.After(5 * time.Second):
-					return nil, nil
+					return nil, nil, nil
 				}
-				return nil, nil
+				return nil, nil, nil
 			}
 			AddTool(server, &Tool{Name: "hang"}, hang)
-			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
 				// Try this on both the request context and a background context, so
@@ -70,13 +70,13 @@ func TestStreamableTransports(t *testing.T) {
 				} {
 					res, err := req.Session.CreateMessage(ctx, &CreateMessageParams{})
 					if err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 					if g, w := res.Model, "aModel"; g != w {
-						return nil, fmt.Errorf("got %q, want %q", g, w)
+						return nil, nil, fmt.Errorf("got %q, want %q", g, w)
 					}
 				}
-				return &CallToolResultFor[any]{}, nil
+				return &CallToolResult{}, nil, nil
 			})
 
 			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
@@ -218,8 +218,8 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	// proxy-killing action.
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
-	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
+	AddTool(server, &Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
+		func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
 			// Send one message to the request context, and another to a background
 			// context (which will end up on the hanging GET).
 
@@ -235,7 +235,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 			// the client's connection drops.
 			req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg3"})
 			req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
-			return new(CallToolResult), nil
+			return new(CallToolResult), nil, nil
 		})
 
 	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
@@ -352,9 +352,9 @@ func TestServerInitiatedSSE(t *testing.T) {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer clientSession.Close()
-	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerRequest[*CallToolParamsFor[map[string]any]]) (*CallToolResult, error) {
-			return &CallToolResult{}, nil
+	AddTool(server, &Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
+		func(context.Context, *ServerRequest[*CallToolParams], map[string]any) (*CallToolResult, any, error) {
+			return &CallToolResult{}, nil, nil
 		})
 	receivedNotifications := readNotifications(t, ctx, notifications, 1)
 	wantReceived := []string{"toolListChanged"}
@@ -641,12 +641,14 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[any]]) (*CallToolResultFor[any], error) {
-				if test.tool != nil {
-					test.tool(t, ctx, req.Session)
-				}
-				return &CallToolResultFor[any]{}, nil
-			})
+			server.AddTool(
+				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{}},
+				func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+					if test.tool != nil {
+						test.tool(t, ctx, req.Session)
+					}
+					return &CallToolResult{}, nil
+				})
 
 			// Start the streamable handler.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
@@ -999,12 +1001,12 @@ func TestEventID(t *testing.T) {
 func TestStreamableStateless(t *testing.T) {
 	// This version of sayHi expects
 	// that request from our client).
-	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[hiParams]]) (*CallToolResult, error) {
+	sayHi := func(ctx context.Context, req *ServerRequest[*CallToolParams], args hiParams) (*CallToolResult, any, error) {
 		if err := req.Session.Ping(ctx, nil); err == nil {
 			// ping should fail, but not break the connection
 			t.Errorf("ping succeeded unexpectedly")
 		}
-		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + req.Params.Arguments.Name}}}, nil
+		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + args.Name}}}, nil, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
@@ -1106,8 +1108,8 @@ func TestTokenInfo(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a server with a tool that returns TokenInfo.
-	tokenInfo := func(ctx context.Context, req *ServerRequest[*CallToolParamsFor[struct{}]]) (*CallToolResultFor[any], error) {
-		return &CallToolResultFor[any]{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil
+	tokenInfo := func(ctx context.Context, req *ServerRequest[*CallToolParams], _ struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
 	}
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)

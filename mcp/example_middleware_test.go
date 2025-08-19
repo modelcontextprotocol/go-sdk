@@ -72,7 +72,7 @@ func Example_loggingMiddleware() {
 	server.AddReceivingMiddleware(loggingMiddleware)
 
 	// Add a simple tool
-	server.AddTool(
+	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "greet",
 			Description: "Greet someone with logging.",
@@ -89,19 +89,19 @@ func Example_loggingMiddleware() {
 		},
 		func(
 			ctx context.Context,
-			req *mcp.ServerRequest[*mcp.CallToolParamsFor[map[string]any]],
-		) (*mcp.CallToolResultFor[any], error) {
-			name, ok := req.Params.Arguments["name"].(string)
+			req *mcp.ServerRequest[*mcp.CallToolParams], args map[string]any,
+		) (*mcp.CallToolResult, any, error) {
+			name, ok := args["name"].(string)
 			if !ok {
-				return nil, fmt.Errorf("name parameter is required and must be a string")
+				return nil, nil, fmt.Errorf("name parameter is required and must be a string")
 			}
 
 			message := fmt.Sprintf("Hello, %s!", name)
-			return &mcp.CallToolResultFor[any]{
+			return &mcp.CallToolResult{
 				Content: []mcp.Content{
 					&mcp.TextContent{Text: message},
 				},
-			}, nil
+			}, nil, nil
 		},
 	)
 

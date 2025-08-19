@@ -15,10 +15,12 @@ import (
 	"maps"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -146,53 +148,128 @@ func (s *Server) RemovePrompts(names ...string) {
 // The tool's input schema must be non-nil. For a tool that takes no input,
 // or one where any input is valid, set [Tool.InputSchema] to the empty schema,
 // &jsonschema.Schema{}.
+//
+// When the handler is invoked as part of a CallTool request, req.Params.Arguments
+// will be a json.RawMessage. Unmarshaling the arguments and validating them against the
+// input schema are the handler author's responsibility.
+//
+// Most users will prefer the top-level function [AddTool].
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
 		// one should be provided. If we papered over this by supplying the empty
 		// schema, then every input would be validated and the problem wouldn't be
 		// discovered until runtime, when the LLM sent bad data.
-		panic(fmt.Sprintf("adding tool %q: nil input schema", t.Name))
+		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
-	if err := addToolErr(s, t, h); err != nil {
-		panic(err)
-	}
-}
-
-// AddTool adds a [Tool] to the server, or replaces one with the same name.
-// If the tool's input schema is nil, it is set to the schema inferred from the In
-// type parameter, using [jsonschema.For].
-// If the tool's output schema is nil and the Out type parameter is not the empty
-// interface, then the output schema is set to the schema inferred from Out.
-// The Tool argument must not be modified after this call.
-func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	if err := addToolErr(s, t, h); err != nil {
-		panic(err)
-	}
-}
-
-func addToolErr[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) (err error) {
-	defer util.Wrapf(&err, "adding tool %q", t.Name)
-	// If the exact same Tool pointer has already been registered under this name,
-	// avoid rebuilding schemas and re-registering. This prevents duplicate
-	// registration from causing errors (and unnecessary work).
-	s.mu.Lock()
-	if existing, ok := s.tools.get(t.Name); ok && existing.tool == t {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-	st, err := newServerTool(t, h)
-	if err != nil {
-		return err
-	}
+	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
 	// TODO: Batch these changes by size and time? The typescript SDK doesn't.
 	// TODO: Surface notify error here? best not, in case we need to batch.
 	s.changeAndNotify(notificationToolListChanged, &ToolListChangedParams{},
 		func() bool { s.tools.add(st); return true })
-	return nil
+}
+
+// toolFor returns a shallow copy of t and a [ToolHandler] that wraps h.
+// If the tool's input schema is nil, it is set to the schema inferred from the In
+// type parameter, using [jsonschema.For].
+// If the tool's output schema is nil and the Out type parameter is not the empty
+// interface, then the output schema is set to the schema inferred from Out.
+//
+// Most users will call [AddTool]. Use [toolFor] if you wish to wrap the ToolHandler
+// before calling [Server.AddTool].
+func toolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler) {
+	tt, hh, err := toolForErr(t, h)
+	if err != nil {
+		panic(fmt.Sprintf("ToolFor: tool %q: %v", t.Name, err))
+	}
+	return tt, hh
+}
+
+// TODO(v0.3.0): test
+func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler, error) {
+	var err error
+	tt := *t
+	tt.InputSchema = t.InputSchema
+	if tt.InputSchema == nil {
+		tt.InputSchema, err = jsonschema.For[In](nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("input schema: %w", err)
+		}
+	}
+	inputResolved, err := tt.InputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolving input schema: %w", err)
+	}
+
+	if tt.OutputSchema == nil && reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
+		tt.OutputSchema, err = jsonschema.For[Out](nil)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("output schema: %w", err)
+	}
+	var outputResolved *jsonschema.Resolved
+	if tt.OutputSchema != nil {
+		outputResolved, err = tt.OutputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving output schema: %w", err)
+		}
+	}
+
+	th := func(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+		// Unmarshal and validate args.
+		rawArgs := req.Params.Arguments.(json.RawMessage)
+		var in In
+		if rawArgs != nil {
+			if err := unmarshalSchema(rawArgs, inputResolved, &in); err != nil {
+				return nil, err
+			}
+		}
+
+		// Call typed handler.
+		res, out, err := h(ctx, req, in)
+		// Handle server errors appropriately:
+		// - If the handler returns a structured error (like jsonrpc2.WireError), return it directly
+		// - If the handler returns a regular error, wrap it in a CallToolResult with IsError=true
+		// - This allows tools to distinguish between protocol errors and tool execution errors
+		if err != nil {
+			// Check if this is already a structured JSON-RPC error
+			if wireErr, ok := err.(*jsonrpc2.WireError); ok {
+				return nil, wireErr
+			}
+			// For regular errors, embed them in the tool result as per MCP spec
+			return &CallToolResult{
+				Content: []Content{&TextContent{Text: err.Error()}},
+				IsError: true,
+			}, nil
+		}
+
+		// TODO(v0.3.0): Validate out.
+		_ = outputResolved
+
+		// TODO: return the serialized JSON in a TextContent block, as per spec?
+		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content
+		// But people may use res.Content for other things.
+		if res == nil {
+			res = &CallToolResult{}
+		}
+		res.StructuredContent = out
+		return res, nil
+	}
+
+	return &tt, th, nil
+}
+
+// AddTool adds a tool and handler to the server.
+//
+// A shallow copy of the tool is made first.
+// If the tool's input schema is nil, the copy's input schema is set to the schema
+// inferred from the In type parameter, using [jsonschema.For].
+// If the tool's output schema is nil and the Out type parameter is not the empty
+// interface, then the copy's output schema is set to the schema inferred from Out.
+func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
+	s.AddTool(toolFor(t, h))
 }
 
 // RemoveTools removes the tools with the given names.
@@ -352,7 +429,7 @@ func (s *Server) listTools(_ context.Context, req *ServerRequest[*ListToolsParam
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParamsFor[json.RawMessage]]) (*CallToolResult, error) {
+func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
 	s.mu.Lock()
 	st, ok := s.tools.get(req.Params.Name)
 	s.mu.Unlock()

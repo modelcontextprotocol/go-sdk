@@ -40,20 +40,32 @@ type Annotations struct {
 	Priority float64 `json:"priority,omitempty"`
 }
 
-type CallToolParams = CallToolParamsFor[any]
-
-type CallToolParamsFor[In any] struct {
+type CallToolParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta      `json:"_meta,omitempty"`
 	Name      string `json:"name"`
-	Arguments In     `json:"arguments,omitempty"`
+	Arguments any    `json:"arguments,omitempty"`
+}
+
+// When unmarshalling CallToolParams on the server side, we need to delay unmarshaling of the arguments.
+func (c *CallToolParams) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Meta         `json:"_meta,omitempty"`
+		Name         string          `json:"name"`
+		RawArguments json.RawMessage `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Meta = raw.Meta
+	c.Name = raw.Name
+	c.Arguments = raw.RawArguments
+	return nil
 }
 
 // The server's response to a tool call.
-type CallToolResult = CallToolResultFor[any]
-
-type CallToolResultFor[Out any] struct {
+type CallToolResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -62,7 +74,7 @@ type CallToolResultFor[Out any] struct {
 	Content []Content `json:"content"`
 	// An optional JSON object that represents the structured result of the tool
 	// call.
-	StructuredContent Out `json:"structuredContent,omitempty"`
+	StructuredContent any `json:"structuredContent,omitempty"`
 	// Whether the tool call ended in an error.
 	//
 	// If not set, this is assumed to be false (the call was successful).
@@ -78,12 +90,12 @@ type CallToolResultFor[Out any] struct {
 	IsError bool `json:"isError,omitempty"`
 }
 
-func (*CallToolResultFor[Out]) isResult() {}
+func (*CallToolResult) isResult() {}
 
 // UnmarshalJSON handles the unmarshalling of content into the Content
 // interface.
-func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
-	type res CallToolResultFor[Out] // avoid recursion
+func (x *CallToolResult) UnmarshalJSON(data []byte) error {
+	type res CallToolResult // avoid recursion
 	var wire struct {
 		res
 		Content []*wireContent `json:"content"`
@@ -95,13 +107,13 @@ func (x *CallToolResultFor[Out]) UnmarshalJSON(data []byte) error {
 	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
 		return err
 	}
-	*x = CallToolResultFor[Out](wire.res)
+	*x = CallToolResult(wire.res)
 	return nil
 }
 
-func (x *CallToolParamsFor[Out]) isParams()              {}
-func (x *CallToolParamsFor[Out]) GetProgressToken() any  { return getProgressToken(x) }
-func (x *CallToolParamsFor[Out]) SetProgressToken(t any) { setProgressToken(x, t) }
+func (x *CallToolParams) isParams()              {}
+func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to

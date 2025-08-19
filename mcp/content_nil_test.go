@@ -52,8 +52,8 @@ func TestContentUnmarshalNil(t *testing.T) {
 		{
 			name:    "CallToolResultFor nil Content",
 			json:    `{"content":[{"type":"text","text":"hello"}]}`,
-			content: &mcp.CallToolResultFor[string]{},
-			want:    &mcp.CallToolResultFor[string]{Content: []mcp.Content{&mcp.TextContent{Text: "hello"}}},
+			content: &mcp.CallToolResult{},
+			want:    &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "hello"}}},
 		},
 	}
 

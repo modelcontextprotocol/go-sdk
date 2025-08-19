@@ -231,9 +231,7 @@ func deepCopyThoughts(thoughts []*Thought) []*Thought {
 }
 
 // StartThinking begins a new sequential thinking session for a complex problem.
-func StartThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[StartThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
-	args := req.Params.Arguments
-
+func StartThinking(ctx context.Context, _ *mcp.ServerRequest[*mcp.CallToolParams], args StartThinkingArgs) (*mcp.CallToolResult, any, error) {
 	sessionID := args.SessionID
 	if sessionID == "" {
 		sessionID = randText()
@@ -255,20 +253,18 @@ func StartThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolPara
 
 	store.SetSession(session)
 
-	return &mcp.CallToolResultFor[any]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{
 				Text: fmt.Sprintf("Started thinking session '%s' for problem: %s\nEstimated steps: %d\nReady for your first thought.",
 					sessionID, args.Problem, estimatedSteps),
 			},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // ContinueThinking adds the next thought step, revises a previous step, or creates a branch in the thinking process.
-func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ContinueThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
-	args := req.Params.Arguments
-
+func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args ContinueThinkingArgs) (*mcp.CallToolResult, any, error) {
 	// Handle revision of existing thought
 	if args.ReviseStep != nil {
 		err := store.CompareAndSwap(args.SessionID, func(session *ThinkingSession) (*ThinkingSession, error) {
@@ -283,17 +279,17 @@ func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolP
 			return session, nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		return &mcp.CallToolResultFor[any]{
+		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
 					Text: fmt.Sprintf("Revised step %d in session '%s':\n%s",
 						*args.ReviseStep, args.SessionID, args.Thought),
 				},
 			},
-		}, nil
+		}, nil, nil
 	}
 
 	// Handle branching
@@ -322,20 +318,20 @@ func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolP
 			return session, nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Save the branch session
 		store.SetSession(branchSession)
 
-		return &mcp.CallToolResultFor[any]{
+		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
 					Text: fmt.Sprintf("Created branch '%s' from session '%s'. You can now continue thinking in either session.",
 						branchID, args.SessionID),
 				},
 			},
-		}, nil
+		}, nil, nil
 	}
 
 	// Add new thought
@@ -381,27 +377,25 @@ func ContinueThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolP
 		return session, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return &mcp.CallToolResultFor[any]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{
 				Text: fmt.Sprintf("Session '%s' - %s:\n%s%s",
 					args.SessionID, progress, args.Thought, statusMsg),
 			},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // ReviewThinking provides a complete review of the thinking process for a session.
-func ReviewThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[ReviewThinkingArgs]]) (*mcp.CallToolResultFor[any], error) {
-	args := req.Params.Arguments
-
+func ReviewThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args ReviewThinkingArgs) (*mcp.CallToolResult, any, error) {
 	// Get a snapshot of the session to avoid race conditions
 	sessionSnapshot, exists := store.SessionSnapshot(args.SessionID)
 	if !exists {
-		return nil, fmt.Errorf("session %s not found", args.SessionID)
+		return nil, nil, fmt.Errorf("session %s not found", args.SessionID)
 	}
 
 	var review strings.Builder
@@ -424,13 +418,13 @@ func ReviewThinking(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolPar
 		fmt.Fprintf(&review, "%d. %s%s\n", i+1, thought.Content, status)
 	}
 
-	return &mcp.CallToolResultFor[any]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{
 				Text: review.String(),
 			},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // ThinkingHistory handles resource requests for thinking session data and history.

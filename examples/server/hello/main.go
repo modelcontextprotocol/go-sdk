@@ -22,12 +22,12 @@ type HiArgs struct {
 	Name string `json:"name" jsonschema:"the name to say hi to"`
 }
 
-func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[HiArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
-	return &mcp.CallToolResultFor[struct{}]{
+func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args HiArgs) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: "Hi " + req.Params.Arguments.Name},
+			&mcp.TextContent{Text: "Hi " + args.Name},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func PromptHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
