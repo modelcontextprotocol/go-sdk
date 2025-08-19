@@ -30,6 +30,10 @@ jobs:
           echo "All Go files are properly formatted"
       - name: Run Go vet
         run: go vet ./...
+      - name: Run staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: "latest"
 
   test:
     runs-on: ubuntu-latest
