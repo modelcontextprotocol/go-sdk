@@ -105,6 +105,15 @@ func (e unsupportedProtocolVersionError) Error() string {
 // ClientSessionOptions is reserved for future use.
 type ClientSessionOptions struct{}
 
+func (c *Client) capabilities() *ClientCapabilities {
+	caps := &ClientCapabilities{}
+	caps.Roots.ListChanged = true
+	if c.opts.CreateMessageHandler != nil {
+		caps.Sampling = &SamplingCapabilities{}
+	}
+	return caps
+}
+
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
 //
@@ -118,16 +127,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 		return nil, err
 	}
 
-	caps := &ClientCapabilities{}
-	caps.Roots.ListChanged = true
-	if c.opts.CreateMessageHandler != nil {
-		caps.Sampling = &SamplingCapabilities{}
-	}
-
 	params := &InitializeParams{
 		ProtocolVersion: latestProtocolVersion,
 		ClientInfo:      c.impl,
-		Capabilities:    caps,
+		Capabilities:    c.capabilities(),
 	}
 	req := &ClientRequest[*InitializeParams]{Session: cs, Params: params}
 	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)

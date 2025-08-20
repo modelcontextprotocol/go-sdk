@@ -190,3 +190,48 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 		})
 	}
 }
+
+func TestClientCapabilities(t *testing.T) {
+	testCases := []struct {
+		name             string
+		configureClient  func(s *Client)
+		clientOpts       ClientOptions
+		wantCapabilities *ClientCapabilities
+	}{
+		{
+			name:            "With initial capabilities",
+			configureClient: func(s *Client) {},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+			},
+		},
+		{
+			name:            "With sampling",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+				Sampling: &SamplingCapabilities{},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(testImpl, &tc.clientOpts)
+			tc.configureClient(client)
+			gotCapabilities := client.capabilities()
+			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
+				t.Errorf("capabilities() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
