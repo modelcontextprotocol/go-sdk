@@ -850,18 +850,11 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 		state.InitializeParams = params
 	})
 
-	// If we support the client's version, reply with it. Otherwise, reply with our
-	// latest version.
-	version := params.ProtocolVersion
-	if !slices.Contains(supportedProtocolVersions, params.ProtocolVersion) {
-		version = latestProtocolVersion
-	}
-
 	s := ss.server
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
-		ProtocolVersion: version,
+		ProtocolVersion: negotiatedVersion(params.ProtocolVersion),
 		Capabilities:    s.capabilities(),
 		Instructions:    s.opts.Instructions,
 		ServerInfo:      s.impl,

@@ -23,14 +23,36 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-// latestProtocolVersion is the latest protocol version that this version of the SDK supports.
-// It is the version that the client sends in the initialization request.
-const latestProtocolVersion = "2025-06-18"
+const (
+	// latestProtocolVersion is the latest protocol version that this version of
+	// the SDK supports.
+	//
+	// It is the version that the client sends in the initialization request, and
+	// the default version used by the server.
+	latestProtocolVersion   = protocolVersion20250618
+	protocolVersion20250618 = "2025-06-18"
+	protocolVersion20250326 = "2025-03-26"
+	protocolVersion20251105 = "2024-11-05"
+)
 
 var supportedProtocolVersions = []string{
-	latestProtocolVersion,
-	"2025-03-26",
-	"2024-11-05",
+	protocolVersion20250618,
+	protocolVersion20250326,
+	protocolVersion20251105,
+}
+
+// negotiatedVersion returns the effective protocol version to use, given a
+// client version.
+func negotiatedVersion(clientVersion string) string {
+	// In general, prefer to use the clientVersion, but if we don't support the
+	// client's version, use the latest version.
+	//
+	// This handles the case where a new spec version is released, and the SDK
+	// does not support it yet.
+	if !slices.Contains(supportedProtocolVersions, clientVersion) {
+		return latestProtocolVersion
+	}
+	return clientVersion
 }
 
 // A MethodHandler handles MCP messages.

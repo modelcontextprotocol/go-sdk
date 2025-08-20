@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,7 +153,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	if req.Method == http.MethodDelete {
 		if sessionID == "" {
-			http.Error(w, "DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+			http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
 		if transport != nil { // transport may be nil in stateless mode
@@ -172,8 +173,45 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 	default:
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		http.Error(w, "Method Not Allowed: streamable MCP servers support GET, POST, and DELETE requests", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Section 2.7 of the spec (2025-06-18) states:
+	//
+	// "If using HTTP, the client MUST include the MCP-Protocol-Version:
+	// <protocol-version> HTTP header on all subsequent requests to the MCP
+	// server, allowing the MCP server to respond based on the MCP protocol
+	// version.
+	//
+	// For example: MCP-Protocol-Version: 2025-06-18
+	// The protocol version sent by the client SHOULD be the one negotiated during
+	// initialization.
+	//
+	// For backwards compatibility, if the server does not receive an
+	// MCP-Protocol-Version header, and has no other way to identify the version -
+	// for example, by relying on the protocol version negotiated during
+	// initialization - the server SHOULD assume protocol version 2025-03-26.
+	//
+	// If the server receives a request with an invalid or unsupported
+	// MCP-Protocol-Version, it MUST respond with 400 Bad Request."
+	//
+	// Since this wasn't present in the 2025-03-26 version of the spec, this
+	// effectively means:
+	//  1. IF the client provides a version header, it must be a supported
+	//     version.
+	//  2. In stateless mode, where we've lost the state of the initialize
+	//     request, we assume that whatever the client tells us is the truth (or
+	//     assume 2025-03-26 if the client doesn't say anything).
+	//
+	// This logic matches the typescript SDK.
+	protocolVersion := req.Header.Get(protocolVersionHeader)
+	if protocolVersion == "" {
+		protocolVersion = protocolVersion20250326
+	}
+	if !slices.Contains(supportedProtocolVersions, protocolVersion) {
+		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
 		return
 	}
 
@@ -234,7 +272,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			// set the initial state to a default value.
 			state := new(ServerSessionState)
 			if !hasInitialize {
-				state.InitializeParams = new(InitializeParams)
+				state.InitializeParams = &InitializeParams{
+					ProtocolVersion: protocolVersion,
+				}
 			}
 			if !hasInitialized {
 				state.InitializedParams = new(InitializedParams)
@@ -377,11 +417,12 @@ type streamableServerConn struct {
 	eventStore   EventStore
 
 	incoming chan jsonrpc.Message // messages from the client to the server
-	done     chan struct{}
 
-	mu sync.Mutex
+	mu sync.Mutex // guards all fields below
+
 	// Sessions are closed exactly once.
 	isDone bool
+	done   chan struct{}
 
 	// Sessions can have multiple logical connections (which we call streams),
 	// corresponding to HTTP requests. Additionally, streams may be resumed by
