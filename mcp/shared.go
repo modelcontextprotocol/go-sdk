@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -396,6 +397,7 @@ type ServerRequest[P Params] struct {
 // the transport layer.
 type RequestExtra struct {
 	TokenInfo *auth.TokenInfo // bearer token info (e.g. from OAuth) if any
+	Header    http.Header     // header from HTTP request, if any
 }
 
 func (*ClientRequest[P]) isRequest() {}
