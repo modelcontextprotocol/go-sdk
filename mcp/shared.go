@@ -4,8 +4,10 @@
 
 // This file contains code shared between client and server, including
 // method handler and middleware definitions.
-// TODO: much of this is here so that we can factor out commonalities using
-// generics. Perhaps it can be simplified with reflection.
+//
+// Much of this is here so that we can factor out commonalities using
+// generics. If this becomes unwieldy, it can perhaps be simplified with
+// reflection.
 
 package mcp
 

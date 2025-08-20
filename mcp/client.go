@@ -226,7 +226,6 @@ func (c *Client) AddRoots(roots ...*Root) {
 // RemoveRoots removes the roots with the given URIs,
 // and notifies any connected servers if the list has changed.
 // It is not an error to remove a nonexistent root.
-// TODO: notification
 func (c *Client) RemoveRoots(uris ...string) {
 	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { return c.roots.remove(uris...) })

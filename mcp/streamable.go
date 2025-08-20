@@ -1053,7 +1053,6 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// TODO: do a best effort read of the body here, and format it in the error.
 		resp.Body.Close()
 		return fmt.Errorf("broken session: %v", resp.Status)
 	}

@@ -89,17 +89,18 @@ type ServerOptions struct {
 // The first argument must not be nil.
 //
 // If non-nil, the provided options are used to configure the server.
-func NewServer(impl *Implementation, opts *ServerOptions) *Server {
+func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	if impl == nil {
 		panic("nil Implementation")
 	}
-	if opts == nil {
-		opts = new(ServerOptions)
+	var opts ServerOptions
+	if options != nil {
+		opts = *options
 	}
+	options = nil // prevent reuse
 	if opts.PageSize < 0 {
 		panic(fmt.Errorf("invalid page size %d", opts.PageSize))
 	}
-	// TODO(jba): don't modify opts, modify Server.opts.
 	if opts.PageSize == 0 {
 		opts.PageSize = DefaultPageSize
 	}
@@ -111,7 +112,7 @@ func NewServer(impl *Implementation, opts *ServerOptions) *Server {
 	}
 	return &Server{
 		impl:                    impl,
-		opts:                    *opts,
+		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
@@ -455,7 +456,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 	return func(ctx context.Context, req *ServerRequest[*ReadResourceParams]) (_ *ReadResourceResult, err error) {
 		defer util.Wrapf(&err, "reading resource %s", req.Params.URI)
 
-		// TODO: use a memoizing API here.
+		// TODO(#25): use a memoizing API here.
 		rootRes, err := req.Session.ListRoots(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("listing roots: %w", err)
