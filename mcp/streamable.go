@@ -585,6 +585,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	incoming, _, err := readBatch(body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
+		return
+	}
 	requests := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	for _, msg := range incoming {
