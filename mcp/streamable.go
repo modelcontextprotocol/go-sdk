@@ -1123,10 +1123,6 @@ func (c *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error
 	}
 }
 
-// testAuth controls whether a fake Authorization header is added to outgoing requests.
-// TODO: replace with a better mechanism when client-side auth is in place.
-var testAuth = false
-
 // Write implements the [Connection] interface.
 func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if err := c.failure(); err != nil {
@@ -1144,9 +1140,6 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if testAuth {
-		req.Header.Set("Authorization", "Bearer foo")
-	}
 	c.setMCPHeaders(req)
 
 	resp, err := c.client.Do(req)
@@ -1192,6 +1185,10 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
+// testAuth controls whether a fake Authorization header is added to outgoing requests.
+// TODO: replace with a better mechanism when client-side auth is in place.
+var testAuth = false
+
 func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1201,6 +1198,9 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
+	}
+	if testAuth {
+		req.Header.Set("Authorization", "Bearer foo")
 	}
 }
 
