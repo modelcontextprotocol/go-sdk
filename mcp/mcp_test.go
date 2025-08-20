@@ -1084,3 +1084,104 @@ func TestNoDistributedDeadlock(t *testing.T) {
 }
 
 var testImpl = &Implementation{Name: "test", Version: "v1.0.0"}
+
+// This test checks that when we use pointer types for tools, we get the same
+// schema as when using the non-pointer types. It is too much of a footgun for
+// there to be a difference (see #199 and #200).
+//
+// If anyone asks, we can add an option that controls how pointers are treated.
+func TestPointerArgEquivalence(t *testing.T) {
+	type input struct {
+		In string
+	}
+	type output struct {
+		Out string
+	}
+	cs, _ := basicConnection(t, func(s *Server) {
+		// Add two equivalent tools, one of which operates in the 'pointer' realm,
+		// the other of which does not.
+		//
+		// We handle a few different types of results, to assert they behave the
+		// same in all cases.
+		AddTool(s, &Tool{Name: "pointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in *input) (*CallToolResult, *output, error) {
+			switch in.In {
+			case "":
+				return nil, nil, fmt.Errorf("must provide input")
+			case "nil":
+				return nil, nil, nil
+			case "empty":
+				return &CallToolResult{}, nil, nil
+			case "ok":
+				return &CallToolResult{}, &output{Out: "foo"}, nil
+			default:
+				panic("unreachable")
+			}
+		})
+		AddTool(s, &Tool{Name: "nonpointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in input) (*CallToolResult, output, error) {
+			switch in.In {
+			case "":
+				return nil, output{}, fmt.Errorf("must provide input")
+			case "nil":
+				return nil, output{}, nil
+			case "empty":
+				return &CallToolResult{}, output{}, nil
+			case "ok":
+				return &CallToolResult{}, output{Out: "foo"}, nil
+			default:
+				panic("unreachable")
+			}
+		})
+	})
+	defer cs.Close()
+
+	ctx := context.Background()
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(tools.Tools), 2; got != want {
+		t.Fatalf("got %d tools, want %d", got, want)
+	}
+	t0 := tools.Tools[0]
+	t1 := tools.Tools[1]
+
+	// First, check that the tool schemas don't differ.
+	if diff := cmp.Diff(t0.InputSchema, t1.InputSchema); diff != "" {
+		t.Errorf("input schemas do not match (-%s +%s):\n%s", t0.Name, t1.Name, diff)
+	}
+	if diff := cmp.Diff(t0.OutputSchema, t1.OutputSchema); diff != "" {
+		t.Errorf("output schemas do not match (-%s +%s):\n%s", t0.Name, t1.Name, diff)
+	}
+
+	// Then, check that we handle empty input equivalently.
+	for _, args := range []any{nil, struct{}{}} {
+		r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(r0, r1); diff != "" {
+			t.Errorf("CallTool(%v) with no arguments mismatch (-%s +%s):\n%s", args, t0.Name, t1.Name, diff)
+		}
+	}
+
+	// Then, check that we handle different types of output equivalently.
+	for _, in := range []string{"nil", "empty", "ok"} {
+		t.Run(in, func(t *testing.T) {
+			r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name, Arguments: input{In: in}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name, Arguments: input{In: in}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(r0, r1); diff != "" {
+				t.Errorf("CallTool({\"In\": %q}) mismatch (-%s +%s):\n%s", in, t0.Name, t1.Name, diff)
+			}
+		})
+	}
+}

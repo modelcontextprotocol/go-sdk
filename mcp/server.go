@@ -189,31 +189,26 @@ func toolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandle
 
 // TODO(v0.3.0): test
 func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler, error) {
-	var err error
 	tt := *t
-	tt.InputSchema = t.InputSchema
-	if tt.InputSchema == nil {
-		tt.InputSchema, err = jsonschema.For[In](nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("input schema: %w", err)
-		}
-	}
-	inputResolved, err := tt.InputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolving input schema: %w", err)
+	var inputResolved *jsonschema.Resolved
+	if _, err := setSchema[In](&tt.InputSchema, &inputResolved); err != nil {
+		return nil, nil, fmt.Errorf("input schema: %w", err)
 	}
 
-	if tt.OutputSchema == nil && reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
-		tt.OutputSchema, err = jsonschema.For[Out](nil)
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("output schema: %w", err)
-	}
-	var outputResolved *jsonschema.Resolved
-	if tt.OutputSchema != nil {
-		outputResolved, err = tt.OutputSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	// Handling for zero values:
+	//
+	// If Out is a pointer type and we've derived the output schema from its
+	// element type, use the zero value of its element type in place of a typed
+	// nil.
+	var (
+		zero           any
+		outputResolved *jsonschema.Resolved
+	)
+	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
+		var err error
+		zero, err = setSchema[Out](&t.OutputSchema, &outputResolved)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolving output schema: %w", err)
+			return nil, nil, fmt.Errorf("output schema: %v", err)
 		}
 	}
 
@@ -255,10 +250,52 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 			res = &CallToolResult{}
 		}
 		res.StructuredContent = out
+		if zero != nil {
+			// Avoid typed nil, which will serialize as JSON null.
+			// Instead, use the zero value of the non-zero
+			var z Out
+			if any(out) == any(z) { // bypass comparable check: pointers are comparable
+				res.StructuredContent = zero
+			}
+		}
+		if tt.OutputSchema != nil && zero != nil {
+			res.StructuredContent = zero
+		}
 		return res, nil
 	}
 
 	return &tt, th, nil
+}
+
+// setSchema sets the schema and resolved schema corresponding to the type T.
+//
+// If sfield is nil, the schema is derived from T.
+//
+// Pointers are treated equivalently to non-pointers when deriving the schema.
+// If an indirection occurred to derive the schema, a non-nil zero value is
+// returned to be used in place of the typed nil zero value.
+//
+// Note that if sfield already holds a schema, zero will be nil even if T is a
+// pointer: if the user provided the schema, they may have intentionally
+// derived it from the pointer type, and handling of zero values is up to them.
+//
+// TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
+// should have a jsonschema.Zero(schema) helper?
+func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) (zero any, err error) {
+	rt := reflect.TypeFor[T]()
+	if *sfield == nil {
+		if rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+			zero = reflect.Zero(rt).Interface()
+		}
+		// TODO: we should be able to pass nil opts here.
+		*sfield, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+	}
+	if err != nil {
+		return zero, err
+	}
+	*rfield, err = (*sfield).Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	return zero, err
 }
 
 // AddTool adds a tool and handler to the server.
