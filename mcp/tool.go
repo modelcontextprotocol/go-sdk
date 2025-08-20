@@ -27,18 +27,6 @@ type serverTool struct {
 	handler ToolHandler
 }
 
-func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) error {
-	var err error
-	if *sfield == nil {
-		*sfield, err = jsonschema.For[T](nil)
-	}
-	if err != nil {
-		return err
-	}
-	*rfield, err = (*sfield).Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-	return err
-}
-
 // unmarshalSchema unmarshals data into v and validates the result according to
 // the given resolved schema.
 func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any) error {

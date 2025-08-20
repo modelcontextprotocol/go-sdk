@@ -689,7 +689,3 @@ func TestMCPResponseFormat(t *testing.T) {
 		t.Errorf("expected Content[0] to be TextContent")
 	}
 }
-
-func requestFor[P mcp.Params](ss *mcp.ServerSession, p P) *mcp.ServerRequest[P] {
-	return &mcp.ServerRequest[P]{Session: ss, Params: p}
-}
