@@ -39,12 +39,6 @@ var supportedProtocolVersions = []string{
 // For notifications, both must be nil.
 type MethodHandler func(ctx context.Context, method string, req Request) (result Result, err error)
 
-// A methodHandler is a MethodHandler[Session] for some session.
-// We need to give up type safety here, or we will end up with a type cycle somewhere
-// else. For example, if Session.methodHandler returned a MethodHandler[Session],
-// the compiler would complain.
-type methodHandler any // MethodHandler[*ClientSession] | MethodHandler[*ServerSession]
-
 // A Session is either a [ClientSession] or a [ServerSession].
 type Session interface {
 	// ID returns the session ID, or the empty string if there is none.
@@ -52,8 +46,8 @@ type Session interface {
 
 	sendingMethodInfos() map[string]methodInfo
 	receivingMethodInfos() map[string]methodInfo
-	sendingMethodHandler() methodHandler
-	receivingMethodHandler() methodHandler
+	sendingMethodHandler() MethodHandler
+	receivingMethodHandler() MethodHandler
 	getConn() *jsonrpc2.Connection
 }
 
@@ -96,13 +90,13 @@ func orZero[T any, P *U, U any](p P) T {
 }
 
 func handleNotify(ctx context.Context, method string, req Request) error {
-	mh := req.GetSession().sendingMethodHandler().(MethodHandler)
+	mh := req.GetSession().sendingMethodHandler()
 	_, err := mh(ctx, method, req)
 	return err
 }
 
 func handleSend[R Result](ctx context.Context, method string, req Request) (R, error) {
-	mh := req.GetSession().sendingMethodHandler().(MethodHandler)
+	mh := req.GetSession().sendingMethodHandler()
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, method, req)
 	if err != nil {
@@ -119,7 +113,7 @@ func defaultReceivingMethodHandler[S Session](ctx context.Context, method string
 		// This can be called from user code, with an arbitrary value for method.
 		return nil, jsonrpc2.ErrNotHandled
 	}
-	return info.handleMethod.(MethodHandler)(ctx, method, req)
+	return info.handleMethod(ctx, method, req)
 }
 
 func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Request) (Result, error) {
@@ -132,7 +126,7 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 		return nil, fmt.Errorf("handling '%s': %w", jreq.Method, err)
 	}
 
-	mh := session.receivingMethodHandler().(MethodHandler)
+	mh := session.receivingMethodHandler()
 	re, _ := jreq.Extra.(*RequestExtra)
 	req := info.newRequest(session, params, re)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
@@ -156,10 +150,10 @@ func checkRequest(req *jsonrpc.Request, infos map[string]methodInfo) (methodInfo
 	if !ok {
 		return methodInfo{}, fmt.Errorf("%w: %q unsupported", jsonrpc2.ErrNotHandled, req.Method)
 	}
-	if info.flags&notification != 0 && req.ID.IsValid() {
+	if info.flags&notification != 0 && req.IsCall() {
 		return methodInfo{}, fmt.Errorf("%w: unexpected id for %q", jsonrpc2.ErrInvalidRequest, req.Method)
 	}
-	if info.flags&notification == 0 && !req.ID.IsValid() {
+	if info.flags&notification == 0 && !req.IsCall() {
 		return methodInfo{}, fmt.Errorf("%w: missing id for %q", jsonrpc2.ErrInvalidRequest, req.Method)
 	}
 	// missingParamsOK is checked here to catch the common case where "params" is
@@ -184,7 +178,7 @@ type methodInfo struct {
 	newRequest      func(Session, Params, *RequestExtra) Request
 	// Run the code when a call to the method is received.
 	// Used on the receive side.
-	handleMethod methodHandler
+	handleMethod MethodHandler
 	// Create a pointer to a Result struct.
 	// Used on the send side.
 	newResult func() Result

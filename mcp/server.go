@@ -22,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 const DefaultPageSize = 1000
@@ -229,7 +230,19 @@ func (s *Server) RemoveResources(uris ...string) {
 func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			// TODO: check template validity.
+			// Validate the URI template syntax
+			_, err := uritemplate.New(t.URITemplate)
+			if err != nil {
+				panic(fmt.Errorf("URI template %q is invalid: %w", t.URITemplate, err))
+			}
+			// Ensure the URI template has a valid scheme
+			u, err := url.Parse(t.URITemplate)
+			if err != nil {
+				panic(err) // url.Parse includes the URI in the error
+			}
+			if !u.IsAbs() {
+				panic(fmt.Errorf("URI template %q needs a scheme", t.URITemplate))
+			}
 			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
 		})
@@ -242,27 +255,27 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 		func() bool { return s.resourceTemplates.remove(uriTemplates...) })
 }
 
-func (s *Server) capabilities() *serverCapabilities {
+func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	caps := &serverCapabilities{
-		Logging: &loggingCapabilities{},
+	caps := &ServerCapabilities{
+		Logging: &LoggingCapabilities{},
 	}
 	if s.opts.HasTools || s.tools.len() > 0 {
-		caps.Tools = &toolCapabilities{ListChanged: true}
+		caps.Tools = &ToolCapabilities{ListChanged: true}
 	}
 	if s.opts.HasPrompts || s.prompts.len() > 0 {
-		caps.Prompts = &promptCapabilities{ListChanged: true}
+		caps.Prompts = &PromptCapabilities{ListChanged: true}
 	}
 	if s.opts.HasResources || s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
-		caps.Resources = &resourceCapabilities{ListChanged: true}
+		caps.Resources = &ResourceCapabilities{ListChanged: true}
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true
 		}
 	}
 	if s.opts.CompletionHandler != nil {
-		caps.Completions = &completionCapabilities{}
+		caps.Completions = &CompletionCapabilities{}
 	}
 	return caps
 }
@@ -342,6 +355,8 @@ func (s *Server) callTool(ctx context.Context, req *ServerRequest[*CallToolParam
 	if !ok {
 		return nil, fmt.Errorf("%s: unknown tool %q", jsonrpc2.ErrInvalidParams, req.Params.Name)
 	}
+	// TODO: if handler returns nil content, it will serialize as null.
+	// Add a test and fix.
 	return st.handler(ctx, req)
 }
 
@@ -602,9 +617,6 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 		// params are non-nil.
 		params = new(InitializedParams)
 	}
-	if ss.server.opts.KeepAlive > 0 {
-		ss.startKeepalive(ss.server.opts.KeepAlive)
-	}
 	var wasInit, wasInitd bool
 	ss.updateState(func(state *ServerSessionState) {
 		wasInit = state.InitializeParams != nil
@@ -619,6 +631,9 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	}
 	if wasInitd {
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
+	}
+	if ss.server.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
@@ -779,14 +794,14 @@ func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return cli
 
 func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo { return serverMethodInfos }
 
-func (ss *ServerSession) sendingMethodHandler() methodHandler {
+func (ss *ServerSession) sendingMethodHandler() MethodHandler {
 	s := ss.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sendingMethodHandler_
 }
 
-func (ss *ServerSession) receivingMethodHandler() methodHandler {
+func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 	s := ss.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -801,6 +816,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	ss.mu.Lock()
 	initialized := ss.state.InitializedParams != nil
 	ss.mu.Unlock()
+
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
@@ -811,6 +827,14 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
 	}
+
+	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
+	// notifications synchronously, except for 'initialize' which shouldn't be
+	// asynchronous to other
+	if req.IsCall() && req.Method != methodInitialize {
+		jsonrpc2.Async(ctx)
+	}
+
 	// For the streamable transport, we need the request ID to correlate
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
@@ -857,7 +881,7 @@ func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, erro
 	return nil, nil
 }
 
-func (ss *ServerSession) setLevel(_ context.Context, params *SetLevelParams) (*emptyResult, error) {
+func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelParams) (*emptyResult, error) {
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})

@@ -22,13 +22,6 @@ var (
 	// If a Handler returns ErrNotHandled, the server replies with
 	// ErrMethodNotFound.
 	ErrNotHandled = errors.New("JSON RPC not handled")
-
-	// ErrAsyncResponse is returned from a handler to indicate it will generate a
-	// response asynchronously.
-	//
-	// ErrAsyncResponse must not be returned for notifications,
-	// which do not receive responses.
-	ErrAsyncResponse = errors.New("JSON RPC asynchronous response")
 )
 
 // Preempter handles messages on a connection before they are queued to the main

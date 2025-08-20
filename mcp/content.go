@@ -253,7 +253,7 @@ func contentsFromWire(wires []*wireContent, allow map[string]bool) ([]Content, e
 
 func contentFromWire(wire *wireContent, allow map[string]bool) (Content, error) {
 	if wire == nil {
-		return nil, fmt.Errorf("content wire is nil")
+		return nil, fmt.Errorf("nil content")
 	}
 	if allow != nil && !allow[wire.Type] {
 		return nil, fmt.Errorf("invalid content type %q", wire.Type)

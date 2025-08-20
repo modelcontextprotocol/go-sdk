@@ -103,8 +103,7 @@ func (e unsupportedProtocolVersionError) Error() string {
 }
 
 // ClientSessionOptions is reserved for future use.
-type ClientSessionOptions struct {
-}
+type ClientSessionOptions struct{}
 
 // Connect begins an MCP session by connecting to a server over the given
 // transport, and initializing the session.
@@ -176,6 +175,8 @@ type ClientSession struct {
 type clientSessionState struct {
 	InitializeResult *InitializeResult
 }
+
+func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
 
 func (cs *ClientSession) ID() string {
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
@@ -323,16 +324,19 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
+	if req.IsCall() {
+		jsonrpc2.Async(ctx)
+	}
 	return handleReceive(ctx, cs, req)
 }
 
-func (cs *ClientSession) sendingMethodHandler() methodHandler {
+func (cs *ClientSession) sendingMethodHandler() MethodHandler {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
 	return cs.client.sendingMethodHandler_
 }
 
-func (cs *ClientSession) receivingMethodHandler() methodHandler {
+func (cs *ClientSession) receivingMethodHandler() MethodHandler {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
 	return cs.client.receivingMethodHandler_
@@ -392,7 +396,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
-func (cs *ClientSession) SetLevel(ctx context.Context, params *SetLevelParams) error {
+func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
 }

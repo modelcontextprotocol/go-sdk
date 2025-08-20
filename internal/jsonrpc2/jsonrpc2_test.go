@@ -371,16 +371,14 @@ func (h *handler) Handle(ctx context.Context, req *jsonrpc2.Request) (any, error
 		if err := json.Unmarshal(req.Params, &name); err != nil {
 			return nil, fmt.Errorf("%w: %s", jsonrpc2.ErrParse, err)
 		}
+		jsonrpc2.Async(ctx)
 		waitFor := h.waiter(name)
-		go func() {
-			select {
-			case <-waitFor:
-				h.conn.Respond(req.ID, true, nil)
-			case <-ctx.Done():
-				h.conn.Respond(req.ID, nil, ctx.Err())
-			}
-		}()
-		return nil, jsonrpc2.ErrAsyncResponse
+		select {
+		case <-waitFor:
+			return true, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	default:
 		return nil, jsonrpc2.ErrNotHandled
 	}
