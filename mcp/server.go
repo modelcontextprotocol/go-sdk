@@ -206,7 +206,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 	)
 	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
 		var err error
-		elemZero, err = setSchema[Out](&t.OutputSchema, &outputResolved)
+		elemZero, err = setSchema[Out](&tt.OutputSchema, &outputResolved)
 		if err != nil {
 			return nil, nil, fmt.Errorf("output schema: %v", err)
 		}
@@ -257,9 +257,6 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 			if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
 				res.StructuredContent = elemZero
 			}
-		}
-		if tt.OutputSchema != nil && elemZero != nil {
-			res.StructuredContent = elemZero
 		}
 		return res, nil
 	}

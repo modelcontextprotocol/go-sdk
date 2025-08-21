@@ -8,6 +8,7 @@ Fixed bugs:
 
 -- tools --
 greet
+structured
 
 -- client --
 {
@@ -63,6 +64,35 @@ greet
 					"additionalProperties": false
 				},
 				"name": "greet"
+			},
+			{
+				"inputSchema": {
+					"type": "object",
+					"required": [
+						"In"
+					],
+					"properties": {
+						"In": {
+							"type": "string",
+							"description": "the input"
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "structured",
+				"outputSchema": {
+					"type": "object",
+					"required": [
+						"Out"
+					],
+					"properties": {
+						"Out": {
+							"type": "string",
+							"description": "the output"
+						}
+					},
+					"additionalProperties": false
+				}
 			}
 		]
 	}

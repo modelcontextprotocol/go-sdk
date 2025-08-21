@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -96,6 +97,18 @@ func TestServerConformance(t *testing.T) {
 	}
 }
 
+type input struct {
+	In string `jsonschema:"the input"`
+}
+
+type output struct {
+	Out string `jsonschema:"the output"`
+}
+
+func structuredTool(ctx context.Context, req *CallToolRequest, args *input) (*CallToolResult, *output, error) {
+	return nil, &output{"Ack " + args.In}, nil
+}
+
 // runServerTest runs the server conformance test.
 // It must be executed in a synctest bubble.
 func runServerTest(t *testing.T, test *conformanceTest) {
@@ -109,6 +122,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				Name:        "greet",
 				Description: "say hi",
 			}, sayHi)
+		case "structured":
+			AddTool(s, &Tool{Name: "structured"}, structuredTool)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}
