@@ -338,7 +338,7 @@ func validateElicitSchema(schema *jsonschema.Schema) error {
 // validateElicitProperty validates a single property in an elicitation schema.
 func validateElicitProperty(propName string, propSchema *jsonschema.Schema) error {
 	// Check if this property has nested properties (not allowed)
-	if propSchema.Properties != nil && len(propSchema.Properties) > 0 {
+	if len(propSchema.Properties) > 0 {
 		return fmt.Errorf("elicit schema property %q contains nested properties, only primitive properties are allowed", propName)
 	}
 
