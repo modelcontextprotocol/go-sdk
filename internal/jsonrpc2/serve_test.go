@@ -49,7 +49,9 @@ func TestIdleTimeout(t *testing.T) {
 
 		idleStart := time.Now()
 		listener = jsonrpc2.NewIdleListener(d, listener)
-		defer listener.Close()
+		defer func() {
+			_ = listener.Close()
+		}()
 
 		server := jsonrpc2.NewServer(ctx, listener, jsonrpc2.ConnectionOptions{})
 
@@ -72,7 +74,7 @@ func TestIdleTimeout(t *testing.T) {
 				t.Fatalf("conn1 broken after %v: %v", since, err)
 			}
 			t.Log(`conn1.Call(ctx, "ping", nil):`, err)
-			conn1.Close()
+			_ = conn1.Close()
 			return false
 		}
 
@@ -81,7 +83,7 @@ func TestIdleTimeout(t *testing.T) {
 		// succeed.
 		conn2, err := jsonrpc2.Dial(ctx, listener.Dialer(), jsonrpc2.ConnectionOptions{}, nil)
 		if err != nil {
-			conn1.Close()
+			_ = conn1.Close()
 			t.Fatalf("conn2 failed to connect while non-idle after %v: %v", time.Since(idleStart), err)
 			return false
 		}
@@ -119,7 +121,7 @@ func TestIdleTimeout(t *testing.T) {
 				t.Fatalf("conn3 broken after %v: %v", since, err)
 			}
 			t.Log(`conn3.Call(ctx, "ping", nil):`, err)
-			conn3.Close()
+			_ = conn3.Close()
 			return false
 		}
 
@@ -223,7 +225,7 @@ func newFake(t *testing.T, ctx context.Context, l jsonrpc2.Listener) (*jsonrpc2.
 		if err := client.Close(); err != nil {
 			t.Fatal(err)
 		}
-		server.Wait()
+		_ = server.Wait()
 	}, nil
 }
 
@@ -258,9 +260,9 @@ func TestIdleListenerAcceptCloseRace(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			conn, err := jsonrpc2.Dial(ctx, listener.Dialer(), jsonrpc2.ConnectionOptions{}, nil)
-			listener.Close()
+			_ = listener.Close()
 			if err == nil {
-				conn.Close()
+				_ = conn.Close()
 			}
 			close(done)
 		}()
@@ -270,7 +272,7 @@ func TestIdleListenerAcceptCloseRace(t *testing.T) {
 		// deadlock!
 		c, err := listener.Accept(ctx)
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 		}
 		<-done
 	}
@@ -322,8 +324,8 @@ func TestCloseCallRace(t *testing.T) {
 
 		dialConn, err := jsonrpc2.Dial(ctx, listener.Dialer(), jsonrpc2.ConnectionOptions{}, nil)
 		if err != nil {
-			listener.Close()
-			s.Wait()
+			_ = listener.Close()
+			_ = s.Wait()
 			t.Fatal(err)
 		}
 
@@ -348,7 +350,7 @@ func TestCloseCallRace(t *testing.T) {
 			t.Logf("server-initiated call completed with expected error: %v", err)
 		}
 
-		listener.Close()
-		s.Wait()
+		_ = listener.Close()
+		_ = s.Wait()
 	}
 }

@@ -18,8 +18,10 @@ import (
 func TestList(t *testing.T) {
 	ctx := context.Background()
 	clientSession, serverSession, server := createSessions(ctx)
-	defer clientSession.Close()
-	defer serverSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+		_ = serverSession.Close()
+	}()
 
 	t.Run("tools", func(t *testing.T) {
 		var wantTools []*mcp.Tool

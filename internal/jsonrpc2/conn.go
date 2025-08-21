@@ -365,7 +365,8 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 			if s.outgoingCalls[ac.id] == ac {
 				delete(s.outgoingCalls, ac.id)
 				ac.retire(&Response{ID: id, Error: err})
-			} else {
+			} else { //nolint:staticcheck
+				// TODO: add handling for this case
 				// ac was already retired by the readIncoming goroutine:
 				// perhaps our write raced with the Read side of the connection breaking.
 			}
@@ -526,13 +527,13 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 				if ac, ok := s.outgoingCalls[msg.ID]; ok {
 					delete(s.outgoingCalls, msg.ID)
 					ac.retire(msg)
-				} else {
+				} else { //nolint:staticcheck
 					// TODO: How should we report unexpected responses?
 				}
 			})
 
 		default:
-			c.internalErrorf("Read returned an unexpected message of type %T", msg)
+			_ = c.internalErrorf("Read returned an unexpected message of type %T", msg)
 		}
 	}
 
@@ -587,7 +588,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		}
 	})
 	if err != nil {
-		c.processResult("acceptRequest", req, nil, err)
+		_ = c.processResult("acceptRequest", req, nil, err)
 		return
 	}
 
@@ -595,7 +596,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		result, err := preempter.Preempt(req.ctx, req.Request)
 
 		if !errors.Is(err, ErrNotHandled) {
-			c.processResult("Preempt", req, result, err)
+			_ = c.processResult("Preempt", req, result, err)
 			return
 		}
 	}
@@ -635,7 +636,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		}
 	})
 	if err != nil {
-		c.processResult("acceptRequest", req, nil, err)
+		_ = c.processResult("acceptRequest", req, nil, err)
 	}
 }
 
@@ -664,7 +665,7 @@ func (c *Connection) handleAsync() {
 					err = fmt.Errorf("%w: %v", ErrServerClosing, s.writeErr)
 				}
 			})
-			c.processResult("handleAsync", req, nil, err)
+			_ = c.processResult("handleAsync", req, nil, err)
 			continue
 		}
 
@@ -673,7 +674,7 @@ func (c *Connection) handleAsync() {
 		go func() {
 			defer releaser.release(true)
 			result, err := c.handler.Handle(ctx, req.Request)
-			c.processResult(c.handler, req, result, err)
+			_ = c.processResult(c.handler, req, result, err)
 		}()
 		<-releaser.ch
 	}
@@ -688,7 +689,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 	}
 
 	if result != nil && err != nil {
-		c.internalErrorf("%#v returned a non-nil result with a non-nil error for %s:\n%v\n%#v", from, req.Method, err, result)
+		_ = c.internalErrorf("%#v returned a non-nil result with a non-nil error for %s:\n%v\n%#v", from, req.Method, err, result)
 		result = nil // Discard the spurious result and respond with err.
 	}
 
@@ -720,7 +721,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 			err = fmt.Errorf("%w: %q notification failed: %v", ErrInternal, req.Method, err)
 		}
 	}
-	if err != nil {
+	if err != nil { //nolint:staticcheck
 		// TODO: can/should we do anything with this error beyond writing it to the event log?
 		// (Is this the right label to attach to the log?)
 	}
