@@ -46,11 +46,11 @@ var codeReviewPrompt = &Prompt{
 	Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
 }
 
-func codReviewPromptHandler(_ context.Context, _ *ServerSession, params *GetPromptParams) (*GetPromptResult, error) {
+func codReviewPromptHandler(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
 	return &GetPromptResult{
 		Description: "Code review prompt",
 		Messages: []*PromptMessage{
-			{Role: "user", Content: &TextContent{Text: "Please review the following code: " + params.Arguments["Code"]}},
+			{Role: "user", Content: &TextContent{Text: "Please review the following code: " + req.Params.Arguments["Code"]}},
 		},
 	}, nil
 }
@@ -102,7 +102,7 @@ func TestEndToEnd(t *testing.T) {
 			return nil, nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
-	s.AddPrompt(&Prompt{Name: "fail"}, func(_ context.Context, _ *ServerSession, _ *GetPromptParams) (*GetPromptResult, error) {
+	s.AddPrompt(&Prompt{Name: "fail"}, func(_ context.Context, _ *GetPromptRequest) (*GetPromptResult, error) {
 		return nil, errTestFailure
 	})
 	s.AddResource(resource1, readHandler)

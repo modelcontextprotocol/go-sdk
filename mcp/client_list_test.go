@@ -126,6 +126,6 @@ func testIterator[T any](t *testing.T, seq iter.Seq2[*T, error], want []*T) {
 	}
 }
 
-func testPromptHandler(context.Context, *mcp.ServerSession, *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+func testPromptHandler(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 	panic("not implemented")
 }

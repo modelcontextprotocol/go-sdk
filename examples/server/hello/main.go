@@ -30,11 +30,11 @@ func SayHi(ctx context.Context, req *mcp.CallToolRequest, args HiArgs) (*mcp.Cal
 	}, nil, nil
 }
 
-func PromptHi(ctx context.Context, ss *mcp.ServerSession, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+func PromptHi(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 	return &mcp.GetPromptResult{
 		Description: "Code review prompt",
 		Messages: []*mcp.PromptMessage{
-			{Role: "user", Content: &mcp.TextContent{Text: "Say hi to " + params.Arguments["name"]}},
+			{Role: "user", Content: &mcp.TextContent{Text: "Say hi to " + req.Params.Arguments["name"]}},
 		},
 	}, nil
 }
