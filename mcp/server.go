@@ -201,12 +201,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 	// element type, use the zero value of its element type in place of a typed
 	// nil.
 	var (
-		zero           any
+		elemZero       any // only non-nil if Out is a pointer type
 		outputResolved *jsonschema.Resolved
 	)
 	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
 		var err error
-		zero, err = setSchema[Out](&t.OutputSchema, &outputResolved)
+		elemZero, err = setSchema[Out](&t.OutputSchema, &outputResolved)
 		if err != nil {
 			return nil, nil, fmt.Errorf("output schema: %v", err)
 		}
@@ -250,16 +250,16 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 			res = &CallToolResult{}
 		}
 		res.StructuredContent = out
-		if zero != nil {
+		if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the non-zero
 			var z Out
-			if any(out) == any(z) { // bypass comparable check: pointers are comparable
-				res.StructuredContent = zero
+			if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
+				res.StructuredContent = elemZero
 			}
 		}
-		if tt.OutputSchema != nil && zero != nil {
-			res.StructuredContent = zero
+		if tt.OutputSchema != nil && elemZero != nil {
+			res.StructuredContent = elemZero
 		}
 		return res, nil
 	}
