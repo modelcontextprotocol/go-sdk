@@ -115,7 +115,7 @@ type HiParams struct {
 	Name string `json:"name" jsonschema:"the name of the person to greet"`
 }
 
-func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args HiParams) (*mcp.CallToolResult, any, error) {
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args HiParams) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + args.Name}},
 	}, nil, nil
