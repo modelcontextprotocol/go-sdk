@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"slices"
@@ -280,6 +281,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		// TODO: wrap or annotate this error? Pick a standard code?
 		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support elicitation")
 	}
+
 	// Validate that the requested schema only contains top-level properties without nesting
 	if err := validateElicitSchema(req.Params.RequestedSchema); err != nil {
 		return nil, jsonrpc2.NewError(CodeInvalidParams, err.Error())
@@ -288,10 +290,16 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 	return c.opts.ElicitationHandler(ctx, req)
 }
 
-// validateElicitSchema validates that the schema only contains top-level properties without nesting.
+// validateElicitSchema validates that the schema conforms to MCP elicitation schema requirements.
+// Per the MCP specification, elicitation schemas are limited to flat objects with primitive properties only.
 func validateElicitSchema(schema *jsonschema.Schema) error {
 	if schema == nil {
 		return nil // nil schema is allowed
+	}
+
+	// The root schema must be of type "object" if specified
+	if schema.Type != "" && schema.Type != "object" {
+		return fmt.Errorf("elicit schema must be of type 'object', got %q", schema.Type)
 	}
 
 	// Check if the schema has properties
@@ -301,17 +309,112 @@ func validateElicitSchema(schema *jsonschema.Schema) error {
 				continue
 			}
 
-			// Check if this property has nested properties (not allowed)
-			if propSchema.Properties != nil && len(propSchema.Properties) > 0 {
-				return fmt.Errorf("elicit schema property %q contains nested properties, only top-level properties are allowed", propName)
+			if err := validateElicitProperty(propName, propSchema); err != nil {
+				return err
 			}
+		}
+	}
 
-			// Also check Items for arrays that might contain nested objects
-			if propSchema.Items != nil {
-				if propSchema.Items.Properties != nil && len(propSchema.Items.Properties) > 0 {
-					return fmt.Errorf("elicit schema property %q contains array items with nested properties, only top-level properties are allowed", propName)
+	return nil
+}
+
+// validateElicitProperty validates a single property in an elicitation schema.
+func validateElicitProperty(propName string, propSchema *jsonschema.Schema) error {
+	// Check if this property has nested properties (not allowed)
+	if propSchema.Properties != nil && len(propSchema.Properties) > 0 {
+		return fmt.Errorf("elicit schema property %q contains nested properties, only primitive properties are allowed", propName)
+	}
+
+	// Validate based on the property type - only primitives are supported
+	switch propSchema.Type {
+	case "string":
+		return validateElicitStringProperty(propName, propSchema)
+	case "number", "integer":
+		return validateElicitNumberProperty(propName, propSchema)
+	case "boolean":
+		return validateElicitBooleanProperty(propName, propSchema)
+	default:
+		return fmt.Errorf("elicit schema property %q has unsupported type %q, only string, number, integer, and boolean are allowed", propName, propSchema.Type)
+	}
+}
+
+// validateElicitStringProperty validates string-type properties, including enums.
+func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema) error {
+	// Handle enum validation (enums are a special case of strings)
+	if len(propSchema.Enum) > 0 {
+		// Enums must be string type (or untyped which defaults to string)
+		if propSchema.Type != "" && propSchema.Type != "string" {
+			return fmt.Errorf("elicit schema property %q has enum values but type is %q, enums are only supported for string type", propName, propSchema.Type)
+		}
+		// Enum values themselves are validated by the JSON schema library
+		// Validate enumNames if present - must match enum length
+		if propSchema.Extra != nil {
+			if enumNamesRaw, exists := propSchema.Extra["enumNames"]; exists {
+				// Type check enumNames - should be a slice
+				if enumNamesSlice, ok := enumNamesRaw.([]interface{}); ok {
+					if len(enumNamesSlice) != len(propSchema.Enum) {
+						return fmt.Errorf("elicit schema property %q has %d enum values but %d enumNames, they must match", propName, len(propSchema.Enum), len(enumNamesSlice))
+					}
+				} else {
+					return fmt.Errorf("elicit schema property %q has invalid enumNames type, must be an array", propName)
 				}
 			}
+		}
+		return nil
+	}
+
+	// Validate format if specified - only specific formats are allowed
+	if propSchema.Format != "" {
+		allowedFormats := map[string]bool{
+			"email":     true,
+			"uri":       true,
+			"date":      true,
+			"date-time": true,
+		}
+		if !allowedFormats[propSchema.Format] {
+			return fmt.Errorf("elicit schema property %q has unsupported format %q, only email, uri, date, and date-time are allowed", propName, propSchema.Format)
+		}
+	}
+
+	// Validate minLength constraint if specified
+	if propSchema.MinLength != nil {
+		if *propSchema.MinLength < 0 {
+			return fmt.Errorf("elicit schema property %q has invalid minLength %d, must be non-negative", propName, *propSchema.MinLength)
+		}
+	}
+
+	// Validate maxLength constraint if specified
+	if propSchema.MaxLength != nil {
+		if *propSchema.MaxLength < 0 {
+			return fmt.Errorf("elicit schema property %q has invalid maxLength %d, must be non-negative", propName, *propSchema.MaxLength)
+		}
+		// Check that maxLength >= minLength if both are specified
+		if propSchema.MinLength != nil && *propSchema.MaxLength < *propSchema.MinLength {
+			return fmt.Errorf("elicit schema property %q has maxLength %d less than minLength %d", propName, *propSchema.MaxLength, *propSchema.MinLength)
+		}
+	}
+
+	return nil
+}
+
+// validateElicitNumberProperty validates number and integer-type properties.
+func validateElicitNumberProperty(propName string, propSchema *jsonschema.Schema) error {
+	if propSchema.Minimum != nil && propSchema.Maximum != nil {
+		if *propSchema.Maximum < *propSchema.Minimum {
+			return fmt.Errorf("elicit schema property %q has maximum %g less than minimum %g", propName, *propSchema.Maximum, *propSchema.Minimum)
+		}
+	}
+
+	return nil
+}
+
+// validateElicitBooleanProperty validates boolean-type properties.
+func validateElicitBooleanProperty(propName string, propSchema *jsonschema.Schema) error {
+	// Validate default value if specified - must be a valid boolean
+	if propSchema.Default != nil {
+		var defaultValue bool
+		if err := json.Unmarshal(propSchema.Default, &defaultValue); err != nil {
+			return fmt.Errorf("elicit schema property %q has invalid default value, must be a boolean: %v", propName, err)
 		}
 	}
 
