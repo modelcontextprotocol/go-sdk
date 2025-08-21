@@ -287,7 +287,24 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		return nil, jsonrpc2.NewError(CodeInvalidParams, err.Error())
 	}
 
-	return c.opts.ElicitationHandler(ctx, req)
+	res, err := c.opts.ElicitationHandler(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate elicitation result content against requested schema
+	if req.Params.RequestedSchema != nil && res.Content != nil {
+		resolved, err := req.Params.RequestedSchema.Resolve(nil)
+		if err != nil {
+			return nil, jsonrpc2.NewError(CodeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
+		}
+
+		if err := resolved.Validate(res.Content); err != nil {
+			return nil, jsonrpc2.NewError(CodeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
+		}
+	}
+
+	return res, nil
 }
 
 // validateElicitSchema validates that the schema conforms to MCP elicitation schema requirements.
