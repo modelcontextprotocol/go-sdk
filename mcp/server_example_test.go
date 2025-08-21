@@ -43,8 +43,9 @@ func ExampleServer() {
 	}
 
 	res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "user"},
+		Name: "greet",
+	}, map[string]any{
+		"name": "user",
 	})
 	if err != nil {
 		log.Fatal(err)

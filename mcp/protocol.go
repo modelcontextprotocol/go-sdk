@@ -44,24 +44,8 @@ type CallToolParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta      `json:"_meta,omitempty"`
-	Name      string `json:"name"`
-	Arguments any    `json:"arguments,omitempty"`
-}
-
-// When unmarshalling CallToolParams on the server side, we need to delay unmarshaling of the arguments.
-func (c *CallToolParams) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Meta         `json:"_meta,omitempty"`
-		Name         string          `json:"name"`
-		RawArguments json.RawMessage `json:"arguments,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	c.Meta = raw.Meta
-	c.Name = raw.Name
-	c.Arguments = raw.RawArguments
-	return nil
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // The server's response to a tool call.
@@ -74,7 +58,7 @@ type CallToolResult struct {
 	Content []Content `json:"content"`
 	// An optional JSON object that represents the structured result of the tool
 	// call.
-	StructuredContent any `json:"structuredContent,omitempty"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 	// Whether the tool call ended in an error.
 	//
 	// If not set, this is assumed to be false (the call was successful).

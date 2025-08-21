@@ -121,9 +121,8 @@ func Example_loggingMiddleware() {
 	// Call the tool to demonstrate logging
 	result, _ := clientSession.CallTool(ctx, &mcp.CallToolParams{
 		Name: "greet",
-		Arguments: map[string]any{
-			"name": "World",
-		},
+	}, map[string]any{
+		"name": "World",
 	})
 
 	fmt.Printf("Tool result: %s\n", result.Content[0].(*mcp.TextContent).Text)

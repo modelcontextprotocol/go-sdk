@@ -213,8 +213,9 @@ func TestEndToEnd(t *testing.T) {
 	t.Run("tools", func(t *testing.T) {
 		// ListTools is tested in client_list_test.go.
 		gotHi, err := cs.CallTool(ctx, &CallToolParams{
-			Name:      "greet",
-			Arguments: map[string]any{"name": "user"},
+			Name: "greet",
+		}, map[string]any{
+			"name": "user",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -228,10 +229,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("tools/call 'greet' mismatch (-want +got):\n%s", diff)
 		}
 
-		gotFail, err := cs.CallTool(ctx, &CallToolParams{
-			Name:      "fail",
-			Arguments: map[string]any{},
-		})
+		gotFail, err := cs.CallTool(ctx, &CallToolParams{Name: "fail"}, nil)
 		// Counter-intuitively, when a tool fails, we don't expect an RPC error for
 		// call tool: instead, the failure is embedded in the result.
 		if err != nil {
@@ -605,16 +603,18 @@ func TestServerClosing(t *testing.T) {
 		wg.Done()
 	}()
 	if _, err := cs.CallTool(ctx, &CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "user"},
+		Name: "greet",
+	}, map[string]any{
+		"name": "user",
 	}); err != nil {
 		t.Fatalf("after connecting: %v", err)
 	}
 	ss.Close()
 	wg.Wait()
 	if _, err := cs.CallTool(ctx, &CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "user"},
+		Name: "greet",
+	}, map[string]any{
+		"name": "user",
 	}); !errors.Is(err, ErrConnectionClosed) {
 		t.Errorf("after disconnection, got error %v, want EOF", err)
 	}
@@ -679,7 +679,7 @@ func TestCancellation(t *testing.T) {
 	defer cs.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+	go cs.CallTool(ctx, &CallToolParams{Name: "slow"}, nil)
 	<-start
 	cancel()
 	select {
@@ -892,8 +892,9 @@ func TestKeepAlive(t *testing.T) {
 
 	// Test that the connection is still alive by making a call
 	result, err := cs.CallTool(ctx, &CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"Name": "user"},
+		Name: "greet",
+	}, map[string]any{
+		"Name": "user",
 	})
 	if err != nil {
 		t.Fatalf("call failed after keepalive: %v", err)
@@ -942,8 +943,9 @@ func TestKeepAliveFailure(t *testing.T) {
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		_, err = cs.CallTool(ctx, &CallToolParams{
-			Name:      "greet",
-			Arguments: map[string]any{"Name": "user"},
+			Name: "greet",
+		}, map[string]any{
+			"Name": "user",
 		})
 		if errors.Is(err, ErrConnectionClosed) {
 			return // Test passed
@@ -1025,7 +1027,7 @@ func TestSynchronousNotifications(t *testing.T) {
 
 	t.Run("from client", func(t *testing.T) {
 		client.AddRoots(&Root{Name: "myroot", URI: "file://foo"})
-		res, err := cs.CallTool(context.Background(), &CallToolParams{Name: "tool"})
+		res, err := cs.CallTool(context.Background(), &CallToolParams{Name: "tool"}, nil)
 		if err != nil {
 			t.Fatalf("CallTool failed: %v", err)
 		}
@@ -1058,7 +1060,7 @@ func TestNoDistributedDeadlock(t *testing.T) {
 	// delegates synchronization to the user.
 	clientOpts := &ClientOptions{
 		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"})
+			req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"}, nil)
 			return &CreateMessageResult{Content: &TextContent{}}, nil
 		},
 	}
@@ -1077,7 +1079,7 @@ func TestNoDistributedDeadlock(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "tool1"}); err != nil {
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "tool1"}, nil); err != nil {
 		// should not deadlock
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -1155,11 +1157,11 @@ func TestPointerArgEquivalence(t *testing.T) {
 
 	// Then, check that we handle empty input equivalently.
 	for _, args := range []any{nil, struct{}{}} {
-		r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name, Arguments: args})
+		r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name}, args)
 		if err != nil {
 			t.Fatal(err)
 		}
-		r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name, Arguments: args})
+		r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name}, args)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1171,11 +1173,11 @@ func TestPointerArgEquivalence(t *testing.T) {
 	// Then, check that we handle different types of output equivalently.
 	for _, in := range []string{"nil", "empty", "ok"} {
 		t.Run(in, func(t *testing.T) {
-			r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name, Arguments: input{In: in}})
+			r0, err := cs.CallTool(ctx, &CallToolParams{Name: t0.Name}, input{In: in})
 			if err != nil {
 				t.Fatal(err)
 			}
-			r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name, Arguments: input{In: in}})
+			r1, err := cs.CallTool(ctx, &CallToolParams{Name: t1.Name}, input{In: in})
 			if err != nil {
 				t.Fatal(err)
 			}

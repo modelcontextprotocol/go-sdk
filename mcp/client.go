@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"slices"
@@ -386,14 +387,25 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 }
 
 // CallTool calls the tool with the given name and arguments.
-// The arguments can be any value that marshals into a JSON object.
-func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
+//
+// If args is non-nil, it is marshalled into params.Arguments.
+// CallToolPanics if args is non-nil and params.Arguments is non-empty.
+func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams, args any) (*CallToolResult, error) {
 	if params == nil {
 		params = new(CallToolParams)
 	}
+	if args != nil {
+		assert(len(params.Arguments) == 0, "non-nil args with non-empty params.Arguments")
+
+		data, err := json.Marshal(args)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling args: %v", err)
+		}
+		params.Arguments = json.RawMessage(data)
+	}
 	if params.Arguments == nil {
 		// Avoid sending nil over the wire.
-		params.Arguments = map[string]any{}
+		params.Arguments = json.RawMessage(`{}`)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }

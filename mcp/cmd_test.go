@@ -203,8 +203,9 @@ func TestCmdTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "user"},
+		Name: "greet",
+	}, map[string]any{
+		"name": "user",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -149,10 +149,6 @@ func (s *Server) RemovePrompts(names ...string) {
 // or one where any input is valid, set [Tool.InputSchema] to the empty schema,
 // &jsonschema.Schema{}.
 //
-// When the handler is invoked as part of a CallTool request, req.Params.Arguments
-// will be a json.RawMessage. Unmarshaling the arguments and validating them against the
-// input schema are the handler author's responsibility.
-//
 // Most users will prefer the top-level function [AddTool].
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	if t.InputSchema == nil {
@@ -214,7 +210,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 
 	th := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 		// Unmarshal and validate args.
-		rawArgs := req.Params.Arguments.(json.RawMessage)
+		rawArgs := req.Params.Arguments
 		var in In
 		if rawArgs != nil {
 			if err := unmarshalSchema(rawArgs, inputResolved, &in); err != nil {
@@ -249,14 +245,23 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 		if res == nil {
 			res = &CallToolResult{}
 		}
-		res.StructuredContent = out
+		var toMarshal any = out
 		if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the non-zero
 			var z Out
 			if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
-				res.StructuredContent = elemZero
+				toMarshal = elemZero
 			}
+		}
+		if reflect.ValueOf(toMarshal).IsValid() {
+			// TODO: we should probably also check that toMarshal is a valid JSON
+			// object type--a (pointer to) map or struct.
+			structuredOut, err := json.Marshal(toMarshal)
+			if err != nil {
+				return nil, fmt.Errorf("marshalling result: %v", err)
+			}
+			res.StructuredContent = structuredOut
 		}
 		return res, nil
 	}

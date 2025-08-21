@@ -141,11 +141,11 @@ func TestStreamableTransports(t *testing.T) {
 			// Verify the behavior of various tools.
 
 			// The "greet" tool should just work.
-			params := &CallToolParams{
-				Name:      "greet",
-				Arguments: map[string]any{"name": "foo"},
-			}
-			got, err := session.CallTool(ctx, params)
+			got, err := session.CallTool(ctx, &CallToolParams{
+				Name: "greet",
+			}, map[string]any{
+				"name": "foo",
+			})
 			if err != nil {
 				t.Fatalf("CallTool() failed: %v", err)
 			}
@@ -164,7 +164,7 @@ func TestStreamableTransports(t *testing.T) {
 
 			// The "hang" tool should be cancellable.
 			ctx2, cancel := context.WithCancel(context.Background())
-			go session.CallTool(ctx2, &CallToolParams{Name: "hang"})
+			go session.CallTool(ctx2, &CallToolParams{Name: "hang"}, nil)
 			<-start
 			cancel()
 			select {
@@ -175,10 +175,7 @@ func TestStreamableTransports(t *testing.T) {
 
 			// The "sampling" tool should be able to issue sampling requests during
 			// tool operation.
-			result, err := session.CallTool(ctx, &CallToolParams{
-				Name:      "sample",
-				Arguments: map[string]any{},
-			})
+			result, err := session.CallTool(ctx, &CallToolParams{Name: "sample"}, map[string]any{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -275,7 +272,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, callErr = clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+		_, callErr = clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"}, nil)
 	}()
 
 	select {
@@ -1094,7 +1091,7 @@ func TestStreamableStateless(t *testing.T) {
 			method:         "POST",
 			wantStatusCode: http.StatusOK,
 			messages: []jsonrpc.Message{
-				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "World"}}),
+				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: mustMarshal(hiParams{Name: "World"})}),
 			},
 			wantMessages: []jsonrpc.Message{
 				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi World"}}}, nil),
@@ -1105,7 +1102,7 @@ func TestStreamableStateless(t *testing.T) {
 			method:         "POST",
 			wantStatusCode: http.StatusOK,
 			messages: []jsonrpc.Message{
-				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "foo"}}),
+				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: mustMarshal(hiParams{Name: "foo"})}),
 			},
 			wantMessages: []jsonrpc.Message{
 				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi foo"}}}, nil),
@@ -1122,7 +1119,7 @@ func TestStreamableStateless(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := cs.CallTool(ctx, &CallToolParams{Name: "greet", Arguments: hiParams{Name: "bar"}})
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "greet"}, hiParams{Name: "bar"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1205,7 +1202,7 @@ func TestTokenInfo(t *testing.T) {
 	}
 	defer session.Close()
 
-	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
+	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

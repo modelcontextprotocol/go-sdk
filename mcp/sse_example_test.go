@@ -44,8 +44,9 @@ func ExampleSSEHandler() {
 	defer cs.Close()
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "add",
-		Arguments: map[string]any{"x": 1, "y": 2},
+		Name: "add",
+	}, map[string]any{
+		"x": 1, "y": 2,
 	})
 	if err != nil {
 		log.Fatal(err)

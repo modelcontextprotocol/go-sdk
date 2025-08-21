@@ -510,7 +510,7 @@ func TestContentUnmarshal(t *testing.T) {
 		Meta:              Meta{"m": true},
 		Content:           content,
 		IsError:           true,
-		StructuredContent: map[string]any{"s": "x"},
+		StructuredContent: mustMarshal(map[string]any{"s": "x"}),
 	}
 	var got CallToolResult
 	roundtrip(ctr, &got)
@@ -519,7 +519,7 @@ func TestContentUnmarshal(t *testing.T) {
 		Meta:              Meta{"m": true},
 		Content:           content,
 		IsError:           true,
-		StructuredContent: 3.0,
+		StructuredContent: mustMarshal(3.0),
 	}
 	var gotf CallToolResult
 	roundtrip(ctrf, &gotf)
