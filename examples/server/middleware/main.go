@@ -115,10 +115,14 @@ func main() {
 
 	// Connect server and client
 	serverSession, _ := server.Connect(ctx, serverTransport, nil)
-	defer serverSession.Close()
+	defer func() {
+		_ = serverSession.Close()
+	}()
 
 	clientSession, _ := client.Connect(ctx, clientTransport, nil)
-	defer clientSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+	}()
 
 	// Call the tool to demonstrate logging
 	result, _ := clientSession.CallTool(ctx, &mcp.CallToolParams{

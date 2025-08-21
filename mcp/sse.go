@@ -251,7 +251,9 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if h.onConnection != nil {
 		h.onConnection(ss)
 	}
-	defer ss.Close() // close the transport when the GET exits
+	defer func() {
+		_ = ss.Close() // close the transport when the GET exits
+	}()
 
 	select {
 	case <-req.Context().Done():
@@ -393,7 +395,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		return parsedURL.Parse(raw)
 	}()
 	if err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("missing endpoint: %v", err)
 	}
 
@@ -407,7 +409,9 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	}
 
 	go func() {
-		defer s.Close() // close the transport when the GET exits
+		defer func() {
+			_ = s.Close() // close the transport when the GET exits
+		}()
 
 		for evt, err := range scanEvents(resp.Body) {
 			if err != nil {
@@ -487,7 +491,9 @@ func (c *sseClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("failed to write: %s", resp.Status)
 	}

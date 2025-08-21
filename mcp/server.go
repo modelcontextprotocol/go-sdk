@@ -101,7 +101,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	if options != nil {
 		opts = *options
 	}
-	options = nil // prevent reuse
+
 	if opts.PageSize < 0 {
 		panic(fmt.Errorf("invalid page size %d", opts.PageSize))
 	}
@@ -687,7 +687,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 
 	select {
 	case <-ctx.Done():
-		ss.Close()
+		_ = ss.Close()
 		return ctx.Err()
 	case err := <-ssClosed:
 		return err

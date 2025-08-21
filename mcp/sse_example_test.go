@@ -41,7 +41,9 @@ func ExampleSSEHandler() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "add",

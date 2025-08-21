@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 		if run == nil {
 			log.Fatalf("Unknown server %q", name)
 		}
-		os.Unsetenv(runAsServer)
+		_ = os.Unsetenv(runAsServer)
 		run()
 		return
 	}
@@ -136,7 +136,7 @@ func TestServerInterrupt(t *testing.T) {
 	// get a signal when the server process exits
 	onExit := make(chan struct{})
 	go func() {
-		cmd.Process.Wait()
+		_, _ = cmd.Process.Wait()
 		close(onExit)
 	}()
 
@@ -185,7 +185,7 @@ func TestStdioContextCancellation(t *testing.T) {
 
 	onExit := make(chan struct{})
 	go func() {
-		cmd.Process.Wait()
+		_, _ = cmd.Process.Wait()
 		close(onExit)
 	}()
 

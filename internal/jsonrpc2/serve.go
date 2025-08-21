@@ -91,7 +91,7 @@ func (s *Server) Wait() error {
 func (s *Server) Shutdown() {
 	s.shutdownOnce.Do(func() {
 		atomic.StoreInt32(&s.closing, 1)
-		s.listener.Close()
+		_ = s.listener.Close()
 	})
 }
 
@@ -167,7 +167,7 @@ func (l *idleListener) Accept(ctx context.Context) (io.ReadWriteCloser, error) {
 		}
 		if ok {
 			l.active <- n + 1
-		} else {
+		} else { //nolint:staticcheck
 			// l.wrapped.Close Close has been called, but Accept returned a
 			// connection. This race can occur with concurrent Accept and Close calls
 			// with any net.Listener, and it is benign: since the listener was closed
@@ -180,8 +180,8 @@ func (l *idleListener) Accept(ctx context.Context) (io.ReadWriteCloser, error) {
 			// Keeping the connection open would leave the listener simultaneously
 			// active and closed due to idleness, which would be contradictory and
 			// confusing. Close the connection and pretend that it never happened.
-			rwc.Close()
-		} else {
+			_ = rwc.Close()
+		} else { //nolint:staticcheck
 			// In theory the timeout could have raced with an unrelated error return
 			// from Accept. However, ErrIdleTimeout is arguably still valid (since we
 			// would have closed due to the timeout independent of the error), and the
@@ -205,7 +205,7 @@ func (l *idleListener) Accept(ctx context.Context) (io.ReadWriteCloser, error) {
 			// safely close the timedOut channel, and then wait for the listener to
 			// actually be closed before we return ErrIdleTimeout.
 			l.idleTimer <- timer
-			rwc.Close()
+			_ = rwc.Close()
 			<-l.timedOut
 			return nil, ErrIdleTimeout
 		}
@@ -267,7 +267,7 @@ func (l *idleListener) timerExpired() {
 	// Close the Listener with all channels still blocked to ensure that this call
 	// to l.wrapped.Close doesn't race with the one in l.Close.
 	defer close(l.timedOut)
-	l.wrapped.Close()
+	_ = l.wrapped.Close()
 }
 
 func (l *idleListener) connClosed() {

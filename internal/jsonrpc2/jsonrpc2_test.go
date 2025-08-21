@@ -136,8 +136,8 @@ func testConnection(t *testing.T, framer jsonrpc2.Framer) {
 	}
 	server := jsonrpc2.NewServer(ctx, listener, binder{framer, nil})
 	defer func() {
-		listener.Close()
-		server.Wait()
+		_ = listener.Close()
+		_ = server.Wait()
 	}()
 
 	for _, test := range callTests {
@@ -146,7 +146,9 @@ func testConnection(t *testing.T, framer jsonrpc2.Framer) {
 				listener.Dialer(), binder{framer, func(h *handler) {
 					// Sleep a little to a void a race with setting conn.writer in jsonrpc2.bindConnection.
 					time.Sleep(50 * time.Millisecond)
-					defer h.conn.Close()
+					defer func() {
+						_ = h.conn.Close()
+					}()
 					test.Invoke(t, ctx, h)
 					if call, ok := test.(*call); ok {
 						// also run all simple call tests in echo mode
@@ -156,7 +158,7 @@ func testConnection(t *testing.T, framer jsonrpc2.Framer) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client.Wait()
+			_ = client.Wait()
 		})
 	}
 }

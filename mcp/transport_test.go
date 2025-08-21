@@ -36,7 +36,7 @@ func TestBatchFraming(t *testing.T) {
 	}()
 
 	// The first write should not yet be observed by the reader.
-	tport.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "test"})
+	_ = tport.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "test"})
 	select {
 	case got := <-read:
 		t.Fatalf("after one write, got message %v", got)
@@ -44,7 +44,7 @@ func TestBatchFraming(t *testing.T) {
 	}
 
 	// ...but the second write causes both messages to be observed.
-	tport.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(2), Method: "test"})
+	_ = tport.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(2), Method: "test"})
 	for _, want := range []int64{1, 2} {
 		got := <-read
 		if got := got.(*jsonrpc.Request).ID.Raw(); got != want {

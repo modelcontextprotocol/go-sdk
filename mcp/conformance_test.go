@@ -248,7 +248,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	if err := cStream.Close(); err != nil {
 		t.Fatalf("Stream.Close failed: %v", err)
 	}
-	ss.Wait()
+	_ = ss.Wait()
 
 	// Handle server output. If -update is set, write the 'server' file.
 	// Otherwise, compare with expected.

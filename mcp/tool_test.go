@@ -88,7 +88,9 @@ func TestToolErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	// Test that structured JSON-RPC errors are returned directly
 	t.Run("structured_error", func(t *testing.T) {

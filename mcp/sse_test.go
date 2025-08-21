@@ -97,7 +97,9 @@ func TestSSEServer(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						defer resp.Body.Close()
+						defer func() {
+							_ = resp.Body.Close()
+						}()
 						if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 							t.Errorf("Sending bad request %q: got status %d, want %d", r.body, got, want)
 						}
@@ -115,11 +117,11 @@ func TestSSEServer(t *testing.T) {
 			// Test that closing either end of the connection terminates the other
 			// end.
 			if closeServerFirst {
-				cs.Close()
-				ss.Wait()
+				_ = cs.Close()
+				_ = ss.Wait()
 			} else {
-				ss.Close()
-				cs.Wait()
+				_ = ss.Close()
+				_ = cs.Wait()
 			}
 		})
 	}

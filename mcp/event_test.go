@@ -134,7 +134,7 @@ func TestMemoryEventStoreState(t *testing.T) {
 				appendEvent(s, "S1", "2", "d2")
 				appendEvent(s, "S1", "1", "d3")
 				appendEvent(s, "S2", "8", "d4")
-				s.SessionClosed(ctx, "S1")
+				_ = s.SessionClosed(ctx, "S1")
 			},
 			"S2 8 first=0 d4",
 			2,
@@ -206,10 +206,10 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryEventStore(nil)
 	s.SetMaxBytes(4)
-	s.Append(ctx, "S1", "1", []byte("d1"))
-	s.Append(ctx, "S1", "1", []byte("d2"))
-	s.Append(ctx, "S1", "1", []byte("d3"))
-	s.Append(ctx, "S1", "2", []byte("d4")) // will purge d1
+	_ = s.Append(ctx, "S1", "1", []byte("d1"))
+	_ = s.Append(ctx, "S1", "1", []byte("d2"))
+	_ = s.Append(ctx, "S1", "1", []byte("d3"))
+	_ = s.Append(ctx, "S1", "2", []byte("d4")) // will purge d1
 	want := "S1 1 first=1 d2 d3; S1 2 first=0 d4"
 	if got := s.debugString(); got != want {
 		t.Fatalf("got state %q, want %q", got, want)
