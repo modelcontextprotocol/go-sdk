@@ -8,17 +8,30 @@ package mcp
 
 // TODO: expand the aliases
 type (
-	CallToolRequest              = ServerRequest[*CallToolParams]
-	CompleteRequest              = ServerRequest[*CompleteParams]
-	GetPromptRequest             = ServerRequest[*GetPromptParams]
-	InitializedRequest           = ServerRequest[*InitializedParams]
-	ListPromptsRequest           = ServerRequest[*ListPromptsParams]
-	ListResourcesRequest         = ServerRequest[*ListResourcesParams]
-	ListResourceTemplatesRequest = ServerRequest[*ListResourceTemplatesParams]
-	ListToolsRequest             = ServerRequest[*ListToolsParams]
-	ProgressNotificationRequest  = ServerRequest[*ProgressNotificationParams]
-	ReadResourceRequest          = ServerRequest[*ReadResourceParams]
-	RootsListChangedRequest      = ServerRequest[*RootsListChangedParams]
-	SubscribeRequest             = ServerRequest[*SubscribeParams]
-	UnsubscribeRequest           = ServerRequest[*UnsubscribeParams]
+	CallToolRequest                   = ServerRequest[*CallToolParams]
+	CompleteRequest                   = ServerRequest[*CompleteParams]
+	GetPromptRequest                  = ServerRequest[*GetPromptParams]
+	InitializedServerRequest          = ServerRequest[*InitializedParams]
+	ListPromptsRequest                = ServerRequest[*ListPromptsParams]
+	ListResourcesRequest              = ServerRequest[*ListResourcesParams]
+	ListResourceTemplatesRequest      = ServerRequest[*ListResourceTemplatesParams]
+	ListToolsRequest                  = ServerRequest[*ListToolsParams]
+	ProgressNotificationServerRequest = ServerRequest[*ProgressNotificationParams]
+	ReadResourceRequest               = ServerRequest[*ReadResourceParams]
+	RootsListChangedRequest           = ServerRequest[*RootsListChangedParams]
+	SubscribeRequest                  = ServerRequest[*SubscribeParams]
+	UnsubscribeRequest                = ServerRequest[*UnsubscribeParams]
+)
+
+type (
+	CreateMessageRequest               = ClientRequest[*CreateMessageParams]
+	InitializedClientRequest           = ClientRequest[*InitializedParams]
+	InitializeRequest                  = ClientRequest[*InitializeParams]
+	ListRootsRequest                   = ClientRequest[*ListRootsParams]
+	LoggingMessageRequest              = ClientRequest[*LoggingMessageParams]
+	ProgressNotificationClientRequest  = ClientRequest[*ProgressNotificationParams]
+	PromptListChangedRequest           = ClientRequest[*PromptListChangedParams]
+	ResourceListChangedRequest         = ClientRequest[*ResourceListChangedParams]
+	ResourceUpdatedNotificationRequest = ClientRequest[*ResourceUpdatedNotificationParams]
+	ToolListChangedRequest             = ClientRequest[*ToolListChangedParams]
 )

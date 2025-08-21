@@ -54,14 +54,14 @@ type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
 	// If non-nil, called when "notifications/initialized" is received.
-	InitializedHandler func(context.Context, *InitializedRequest)
+	InitializedHandler func(context.Context, *InitializedServerRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
-	ProgressNotificationHandler func(context.Context, *ProgressNotificationRequest)
+	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
 	// If non-nil, called when "completion/complete" is received.
 	CompletionHandler func(context.Context, *CompleteRequest) (*CompleteResult, error)
 	// If non-zero, defines an interval for regular "ping" requests.

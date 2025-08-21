@@ -74,13 +74,13 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler: func(context.Context, *InitializedRequest) {
+		InitializedHandler: func(context.Context, *InitializedServerRequest) {
 			notificationChans["initialized"] <- 0
 		},
 		RootsListChangedHandler: func(context.Context, *RootsListChangedRequest) {
 			notificationChans["roots"] <- 0
 		},
-		ProgressNotificationHandler: func(context.Context, *ProgressNotificationRequest) {
+		ProgressNotificationHandler: func(context.Context, *ProgressNotificationServerRequest) {
 			notificationChans["progress_server"] <- 0
 		},
 		SubscribeHandler: func(context.Context, *SubscribeRequest) error {
@@ -129,25 +129,25 @@ func TestEndToEnd(t *testing.T) {
 
 	loggingMessages := make(chan *LoggingMessageParams, 100) // big enough for all logging
 	opts := &ClientOptions{
-		CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
-		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {
 			notificationChans["tools"] <- 0
 		},
-		PromptListChangedHandler: func(context.Context, *ClientRequest[*PromptListChangedParams]) {
+		PromptListChangedHandler: func(context.Context, *PromptListChangedRequest) {
 			notificationChans["prompts"] <- 0
 		},
-		ResourceListChangedHandler: func(context.Context, *ClientRequest[*ResourceListChangedParams]) {
+		ResourceListChangedHandler: func(context.Context, *ResourceListChangedRequest) {
 			notificationChans["resources"] <- 0
 		},
-		LoggingMessageHandler: func(_ context.Context, req *ClientRequest[*LoggingMessageParams]) {
+		LoggingMessageHandler: func(_ context.Context, req *LoggingMessageRequest) {
 			loggingMessages <- req.Params
 		},
-		ProgressNotificationHandler: func(context.Context, *ClientRequest[*ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(context.Context, *ProgressNotificationClientRequest) {
 			notificationChans["progress_client"] <- 0
 		},
-		ResourceUpdatedHandler: func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams]) {
+		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {
 			notificationChans["resource_updated"] <- 0
 		},
 	}
@@ -992,10 +992,10 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 func TestSynchronousNotifications(t *testing.T) {
 	var toolsChanged atomic.Bool
 	clientOpts := &ClientOptions{
-		ToolListChangedHandler: func(ctx context.Context, req *ClientRequest[*ToolListChangedParams]) {
+		ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {
 			toolsChanged.Store(true)
 		},
-		CreateMessageHandler: func(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
 			if !toolsChanged.Load() {
 				return nil, fmt.Errorf("didn't get a tools changed notification")
 			}
@@ -1057,7 +1057,7 @@ func TestNoDistributedDeadlock(t *testing.T) {
 	// possible, and in any case making tool calls asynchronous by default
 	// delegates synchronization to the user.
 	clientOpts := &ClientOptions{
-		CreateMessageHandler: func(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
 			req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"})
 			return &CreateMessageResult{Content: &TextContent{}}, nil
 		},

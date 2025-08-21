@@ -211,7 +211,7 @@ func TestClientCapabilities(t *testing.T) {
 			name:            "With sampling",
 			configureClient: func(s *Client) {},
 			clientOpts: ClientOptions{
-				CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
 					return nil, nil
 				},
 			},

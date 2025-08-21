@@ -121,7 +121,7 @@ func TestStreamableTransports(t *testing.T) {
 				HTTPClient: httpClient,
 			}
 			client := NewClient(testImpl, &ClientOptions{
-				CreateMessageHandler: func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
 					return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 				},
 			})
@@ -255,7 +255,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ProgressNotificationHandler: func(ctx context.Context, req *ClientRequest[*ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(ctx context.Context, req *ProgressNotificationClientRequest) {
 			notifications <- req.Params.Message
 		},
 	})
@@ -344,7 +344,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ToolListChangedHandler: func(context.Context, *ClientRequest[*ToolListChangedParams]) {
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {
 			notifications <- "toolListChanged"
 		},
 	})

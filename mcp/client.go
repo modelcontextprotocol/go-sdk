@@ -55,14 +55,14 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 type ClientOptions struct {
 	// Handler for sampling.
 	// Called when a server calls CreateMessage.
-	CreateMessageHandler func(context.Context, *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error)
+	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// Handlers for notifications from the server.
-	ToolListChangedHandler      func(context.Context, *ClientRequest[*ToolListChangedParams])
-	PromptListChangedHandler    func(context.Context, *ClientRequest[*PromptListChangedParams])
-	ResourceListChangedHandler  func(context.Context, *ClientRequest[*ResourceListChangedParams])
-	ResourceUpdatedHandler      func(context.Context, *ClientRequest[*ResourceUpdatedNotificationParams])
-	LoggingMessageHandler       func(context.Context, *ClientRequest[*LoggingMessageParams])
-	ProgressNotificationHandler func(context.Context, *ClientRequest[*ProgressNotificationParams])
+	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
+	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
+	ResourceListChangedHandler  func(context.Context, *ResourceListChangedRequest)
+	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
+	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
+	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
@@ -132,7 +132,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 		ClientInfo:      c.impl,
 		Capabilities:    c.capabilities(),
 	}
-	req := &ClientRequest[*InitializeParams]{Session: cs, Params: params}
+	req := &InitializeRequest{Session: cs, Params: params}
 	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
@@ -145,7 +145,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
 		hc.sessionUpdated(cs.state)
 	}
-	req2 := &ClientRequest[*InitializedParams]{Session: cs, Params: &InitializedParams{}}
+	req2 := &InitializedClientRequest{Session: cs, Params: &InitializedParams{}}
 	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
 		_ = cs.Close()
 		return nil, err
@@ -248,7 +248,7 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 	notifySessions(sessions, notification, params)
 }
 
-func (c *Client) listRoots(_ context.Context, req *ClientRequest[*ListRootsParams]) (*ListRootsResult, error) {
+func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -260,7 +260,7 @@ func (c *Client) listRoots(_ context.Context, req *ClientRequest[*ListRootsParam
 	}, nil
 }
 
-func (c *Client) createMessage(ctx context.Context, req *ClientRequest[*CreateMessageParams]) (*CreateMessageResult, error) {
+func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
 		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support CreateMessage")
@@ -436,35 +436,35 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 	return err
 }
 
-func (c *Client) callToolChangedHandler(ctx context.Context, req *ClientRequest[*ToolListChangedParams]) (Result, error) {
+func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChangedRequest) (Result, error) {
 	if h := c.opts.ToolListChangedHandler; h != nil {
 		h(ctx, req)
 	}
 	return nil, nil
 }
 
-func (c *Client) callPromptChangedHandler(ctx context.Context, req *ClientRequest[*PromptListChangedParams]) (Result, error) {
+func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListChangedRequest) (Result, error) {
 	if h := c.opts.PromptListChangedHandler; h != nil {
 		h(ctx, req)
 	}
 	return nil, nil
 }
 
-func (c *Client) callResourceChangedHandler(ctx context.Context, req *ClientRequest[*ResourceListChangedParams]) (Result, error) {
+func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceListChangedRequest) (Result, error) {
 	if h := c.opts.ResourceListChangedHandler; h != nil {
 		h(ctx, req)
 	}
 	return nil, nil
 }
 
-func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ClientRequest[*ResourceUpdatedNotificationParams]) (Result, error) {
+func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ResourceUpdatedNotificationRequest) (Result, error) {
 	if h := c.opts.ResourceUpdatedHandler; h != nil {
 		h(ctx, req)
 	}
 	return nil, nil
 }
 
-func (c *Client) callLoggingHandler(ctx context.Context, req *ClientRequest[*LoggingMessageParams]) (Result, error) {
+func (c *Client) callLoggingHandler(ctx context.Context, req *LoggingMessageRequest) (Result, error) {
 	if h := c.opts.LoggingMessageHandler; h != nil {
 		h(ctx, req)
 	}
