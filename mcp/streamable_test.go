@@ -60,7 +60,7 @@ func TestStreamableTransports(t *testing.T) {
 				return nil, nil, nil
 			}
 			AddTool(server, &Tool{Name: "hang"}, hang)
-			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
+			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
 				// Test that we can make sampling requests during tool handling.
 				//
 				// Try this on both the request context and a background context, so
