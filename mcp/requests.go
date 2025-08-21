@@ -6,7 +6,6 @@
 
 package mcp
 
-// TODO: expand the aliases
 type (
 	CallToolRequest                   = ServerRequest[*CallToolParams]
 	CompleteRequest                   = ServerRequest[*CompleteParams]

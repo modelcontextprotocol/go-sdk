@@ -171,15 +171,15 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		func() bool { s.tools.add(st); return true })
 }
 
-// toolFor returns a shallow copy of t and a [ToolHandler] that wraps h.
+// ToolFor returns a shallow copy of t and a [ToolHandler] that wraps h.
 // If the tool's input schema is nil, it is set to the schema inferred from the In
 // type parameter, using [jsonschema.For].
 // If the tool's output schema is nil and the Out type parameter is not the empty
 // interface, then the output schema is set to the schema inferred from Out.
 //
-// Most users will call [AddTool]. Use [toolFor] if you wish to wrap the ToolHandler
-// before calling [Server.AddTool].
-func toolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler) {
+// Most users will call [AddTool]. Use [ToolFor] if you wish to modify the tool's
+// schemas or wrap the ToolHandler before calling [Server.AddTool].
+func ToolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler) {
 	tt, hh, err := toolForErr(t, h)
 	if err != nil {
 		panic(fmt.Sprintf("ToolFor: tool %q: %v", t.Name, err))
@@ -303,7 +303,7 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 // If the tool's output schema is nil and the Out type parameter is not the empty
 // interface, then the copy's output schema is set to the schema inferred from Out.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	s.AddTool(toolFor(t, h))
+	s.AddTool(ToolFor(t, h))
 }
 
 // RemoveTools removes the tools with the given names.
