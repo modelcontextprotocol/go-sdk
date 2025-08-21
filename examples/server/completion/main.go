@@ -16,7 +16,7 @@ import (
 // a CompletionHandler to an MCP Server's options.
 func main() {
 	// Define your custom CompletionHandler logic.
-	myCompletionHandler := func(_ context.Context, req *mcp.ServerRequest[*mcp.CompleteParams]) (*mcp.CompleteResult, error) {
+	myCompletionHandler := func(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		// In a real application, you'd implement actual completion logic here.
 		// For this example, we return a fixed set of suggestions.
 		var suggestions []string

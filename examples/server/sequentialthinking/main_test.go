@@ -387,11 +387,11 @@ func TestThinkingHistory(t *testing.T) {
 	ctx := context.Background()
 
 	// Test listing all sessions
-	listParams := &mcp.ReadResourceParams{
-		URI: "thinking://sessions",
-	}
-
-	result, err := ThinkingHistory(ctx, requestFor(listParams))
+	result, err := ThinkingHistory(ctx, &mcp.ReadResourceRequest{
+		Params: &mcp.ReadResourceParams{
+			URI: "thinking://sessions",
+		},
+	})
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -417,11 +417,9 @@ func TestThinkingHistory(t *testing.T) {
 	}
 
 	// Test getting specific session
-	sessionParams := &mcp.ReadResourceParams{
-		URI: "thinking://session1",
-	}
-
-	result, err = ThinkingHistory(ctx, requestFor(sessionParams))
+	result, err = ThinkingHistory(ctx, &mcp.ReadResourceRequest{
+		Params: &mcp.ReadResourceParams{URI: "thinking://session1"},
+	})
 	if err != nil {
 		t.Fatalf("ThinkingHistory() error = %v", err)
 	}
@@ -490,8 +488,4 @@ func TestInvalidOperations(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid revision step")
 	}
-}
-
-func requestFor[P mcp.Params](p P) *mcp.ServerRequest[P] {
-	return &mcp.ServerRequest[P]{Params: p}
 }

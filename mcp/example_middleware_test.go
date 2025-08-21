@@ -89,7 +89,7 @@ func Example_loggingMiddleware() {
 		},
 		func(
 			ctx context.Context,
-			req *mcp.ServerRequest[*mcp.CallToolParams], args map[string]any,
+			req *mcp.CallToolRequest, args map[string]any,
 		) (*mcp.CallToolResult, any, error) {
 			name, ok := args["name"].(string)
 			if !ok {

@@ -61,7 +61,7 @@ func TestToolErrorHandling(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	// Create a tool that returns a structured error
-	structuredErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
+	structuredErrorHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
 		return nil, nil, &jsonrpc2.WireError{
 			Code:    CodeInvalidParams,
 			Message: "internal server error",
@@ -69,7 +69,7 @@ func TestToolErrorHandling(t *testing.T) {
 	}
 
 	// Create a tool that returns a regular error
-	regularErrorHandler := func(ctx context.Context, req *ServerRequest[*CallToolParams], args map[string]any) (*CallToolResult, any, error) {
+	regularErrorHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
 		return nil, nil, fmt.Errorf("tool execution failed")
 	}
 

@@ -85,7 +85,7 @@ type HiArgs struct {
 }
 
 // SayHi is a tool handler that responds with a greeting.
-func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args HiArgs) (*mcp.CallToolResult, struct{}, error) {
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args HiArgs) (*mcp.CallToolResult, struct{}, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: "Hi " + args.Name},

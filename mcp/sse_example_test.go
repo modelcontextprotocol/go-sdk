@@ -18,7 +18,7 @@ type AddParams struct {
 	X, Y int
 }
 
-func Add(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args AddParams) (*mcp.CallToolResult, any, error) {
+func Add(ctx context.Context, req *mcp.CallToolRequest, args AddParams) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: fmt.Sprintf("%d", args.X+args.Y)},

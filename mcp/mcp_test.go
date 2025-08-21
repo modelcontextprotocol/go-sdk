@@ -33,7 +33,7 @@ type hiParams struct {
 // TODO(jba): after schemas are stateless (WIP), this can be a variable.
 func greetTool() *Tool { return &Tool{Name: "greet", Description: "say hi"} }
 
-func sayHi(ctx context.Context, req *ServerRequest[*CallToolParams], args hiParams) (*CallToolResult, any, error) {
+func sayHi(ctx context.Context, req *CallToolRequest, args hiParams) (*CallToolResult, any, error) {
 	if err := req.Session.Ping(ctx, nil); err != nil {
 		return nil, nil, fmt.Errorf("ping failed: %v", err)
 	}
@@ -74,20 +74,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler: func(context.Context, *ServerRequest[*InitializedParams]) {
+		InitializedHandler: func(context.Context, *InitializedRequest) {
 			notificationChans["initialized"] <- 0
 		},
-		RootsListChangedHandler: func(context.Context, *ServerRequest[*RootsListChangedParams]) {
+		RootsListChangedHandler: func(context.Context, *RootsListChangedRequest) {
 			notificationChans["roots"] <- 0
 		},
-		ProgressNotificationHandler: func(context.Context, *ServerRequest[*ProgressNotificationParams]) {
+		ProgressNotificationHandler: func(context.Context, *ProgressNotificationRequest) {
 			notificationChans["progress_server"] <- 0
 		},
-		SubscribeHandler: func(context.Context, *ServerRequest[*SubscribeParams]) error {
+		SubscribeHandler: func(context.Context, *SubscribeRequest) error {
 			notificationChans["subscribe"] <- 0
 			return nil
 		},
-		UnsubscribeHandler: func(context.Context, *ServerRequest[*UnsubscribeParams]) error {
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
 			notificationChans["unsubscribe"] <- 0
 			return nil
 		},
@@ -98,7 +98,7 @@ func TestEndToEnd(t *testing.T) {
 		Description: "say hi",
 	}, sayHi)
 	AddTool(s, &Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
-		func(context.Context, *ServerRequest[*CallToolParams], map[string]any) (*CallToolResult, any, error) {
+		func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
 			return nil, nil, errTestFailure
 		})
 	s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
@@ -511,7 +511,7 @@ var embeddedResources = map[string]string{
 	"info": "This is the MCP test server.",
 }
 
-func handleEmbeddedResource(_ context.Context, req *ServerRequest[*ReadResourceParams]) (*ReadResourceResult, error) {
+func handleEmbeddedResource(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
 	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
@@ -663,7 +663,7 @@ func TestCancellation(t *testing.T) {
 		start     = make(chan struct{})
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
-	slowRequest := func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
+	slowRequest := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -852,7 +852,7 @@ func traceCalls[S Session](w io.Writer, prefix string) Middleware {
 	}
 }
 
-func nopHandler(context.Context, *ServerRequest[*CallToolParams]) (*CallToolResult, error) {
+func nopHandler(context.Context, *CallToolRequest) (*CallToolResult, error) {
 	return nil, nil
 }
 
@@ -1009,13 +1009,13 @@ func TestSynchronousNotifications(t *testing.T) {
 
 	var rootsChanged atomic.Bool
 	serverOpts := &ServerOptions{
-		RootsListChangedHandler: func(_ context.Context, req *ServerRequest[*RootsListChangedParams]) {
+		RootsListChangedHandler: func(_ context.Context, req *RootsListChangedRequest) {
 			rootsChanged.Store(true)
 		},
 	}
 	server := NewServer(testImpl, serverOpts)
 	cs, ss := basicClientServerConnection(t, client, server, func(s *Server) {
-		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
+		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			if !rootsChanged.Load() {
 				return nil, nil, fmt.Errorf("didn't get root change notification")
 			}
@@ -1064,11 +1064,11 @@ func TestNoDistributedDeadlock(t *testing.T) {
 	}
 	client := NewClient(testImpl, clientOpts)
 	cs, _ := basicClientServerConnection(t, client, nil, func(s *Server) {
-		AddTool(s, &Tool{Name: "tool1"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
+		AddTool(s, &Tool{Name: "tool1"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			req.Session.CreateMessage(ctx, new(CreateMessageParams))
 			return new(CallToolResult), nil, nil
 		})
-		AddTool(s, &Tool{Name: "tool2"}, func(ctx context.Context, req *ServerRequest[*CallToolParams], args any) (*CallToolResult, any, error) {
+		AddTool(s, &Tool{Name: "tool2"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			req.Session.Ping(ctx, nil)
 			return new(CallToolResult), nil, nil
 		})

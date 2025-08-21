@@ -15,7 +15,7 @@ package mcp
 // 		P *int   `json:",omitempty"`
 // 	}
 
-// 	dummyHandler := func(context.Context, *ServerRequest[*CallToolParams], req) (*CallToolResultFor[any], error) {
+// 	dummyHandler := func(context.Context, *CallToolRequest, req) (*CallToolResultFor[any], error) {
 // 		return nil, nil
 // 	}
 

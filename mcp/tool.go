@@ -16,10 +16,10 @@ import (
 // A ToolHandler handles a call to tools/call.
 // [CallToolParams.Arguments] will contain a map[string]any that has been validated
 // against the input schema.
-type ToolHandler func(context.Context, *ServerRequest[*CallToolParams]) (*CallToolResult, error)
+type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
-type ToolHandlerFor[In, Out any] func(context.Context, *ServerRequest[*CallToolParams], In) (*CallToolResult, Out, error)
+type ToolHandlerFor[In, Out any] func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error)
 
 // A serverTool is a tool definition that is bound to a tool handler.
 type serverTool struct {

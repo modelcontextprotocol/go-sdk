@@ -22,7 +22,7 @@ type HiArgs struct {
 	Name string `json:"name" jsonschema:"the name to say hi to"`
 }
 
-func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams], args HiArgs) (*mcp.CallToolResult, any, error) {
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args HiArgs) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: "Hi " + args.Name},
@@ -69,7 +69,7 @@ var embeddedResources = map[string]string{
 	"info": "This is the hello example server.",
 }
 
-func handleEmbeddedResource(_ context.Context, req *mcp.ServerRequest[*mcp.ReadResourceParams]) (*mcp.ReadResourceResult, error) {
+func handleEmbeddedResource(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	u, err := url.Parse(req.Params.URI)
 	if err != nil {
 		return nil, err
