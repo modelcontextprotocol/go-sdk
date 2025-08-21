@@ -129,7 +129,9 @@ func TestStreamableTransports(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
-			defer session.Close()
+			defer func() {
+				_ = session.Close()
+			}()
 			sid := session.ID()
 			if sid == "" {
 				t.Error("empty session ID")
@@ -164,7 +166,9 @@ func TestStreamableTransports(t *testing.T) {
 
 			// The "hang" tool should be cancellable.
 			ctx2, cancel := context.WithCancel(context.Background())
-			go session.CallTool(ctx2, &CallToolParams{Name: "hang"})
+			go func() {
+				_, _ = session.CallTool(ctx2, &CallToolParams{Name: "hang"})
+			}()
 			<-start
 			cancel()
 			select {
@@ -225,8 +229,8 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 			// context (which will end up on the hanging GET).
 
 			bgCtx := context.Background()
-			req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg1"})
-			req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
+			_ = req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg1"})
+			_ = req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
 
 			// Signal the test that it can now kill the proxy.
 			close(serverReadyToKillProxy)
@@ -234,8 +238,8 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 
 			// These messages should be queued for replay by the server after
 			// the client's connection drops.
-			req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg3"})
-			req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
+			_ = req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg3"})
+			_ = req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
 			return new(CallToolResult), nil, nil
 		})
 
@@ -266,7 +270,9 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer clientSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+	}()
 
 	var (
 		wg      sync.WaitGroup
@@ -307,8 +313,12 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	}
 
 	restartedProxy := &http.Server{Handler: proxyHandler}
-	go restartedProxy.Serve(listener)
-	defer restartedProxy.Close()
+	go func() {
+		_ = restartedProxy.Serve(listener)
+	}()
+	defer func() {
+		_ = restartedProxy.Close()
+	}()
 
 	wg.Wait()
 
@@ -352,7 +362,9 @@ func TestServerInitiatedSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer clientSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+	}()
 	AddTool(server, &Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
 		func(context.Context, *ServerRequest[*CallToolParams], map[string]any) (*CallToolResult, any, error) {
 			return &CallToolResult{}, nil, nil
@@ -881,7 +893,9 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	newSessionID := resp.Header.Get("Mcp-Session-Id")
 
@@ -994,7 +1008,7 @@ func TestStreamableClientTransport(t *testing.T) {
 				t.Errorf("encoding failed: %v", err)
 			}
 			w.Header().Set("Mcp-Session-Id", "123")
-			w.Write(data)
+			_, _ = w.Write(data)
 		} else {
 			if v := r.Header.Get(protocolVersionHeader); v != latestProtocolVersion {
 				t.Errorf("bad protocol version header: got %q, want %q", v, latestProtocolVersion)
@@ -1203,7 +1217,9 @@ func TestTokenInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer session.Close()
+	defer func() {
+		_ = session.Close()
+	}()
 
 	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
 	if err != nil {

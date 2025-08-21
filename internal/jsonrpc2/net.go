@@ -131,8 +131,8 @@ func (l *netPiper) Dial(ctx context.Context) (io.ReadWriteCloser, error) {
 		return client, nil
 
 	case <-l.done:
-		client.Close()
-		server.Close()
+		_ = client.Close()
+		_ = server.Close()
 		return nil, net.ErrClosed
 	}
 }
