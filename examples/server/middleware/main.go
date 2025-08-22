@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-package mcp_test
+package main
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 )
 
 // This example demonstrates server side logging using the mcp.Middleware system.
-func Example_loggingMiddleware() {
+func main() {
 	// Create a logger for demonstration purposes.
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
