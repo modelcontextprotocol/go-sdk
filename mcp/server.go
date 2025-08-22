@@ -57,6 +57,8 @@ type ServerOptions struct {
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
+	//
+	// If zero, defaults to [DefaultPageSize].
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
@@ -265,6 +267,9 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 		// But people may use res.Content for other things.
 		if res == nil {
 			res = &CallToolResult{}
+		}
+		if res.Content == nil {
+			res.Content = []Content{} // avoid returning 'null'
 		}
 		res.StructuredContent = out
 		if elemZero != nil {
@@ -843,6 +848,14 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 
 // CreateMessage sends a sampling request to the client.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
+	if params == nil {
+		params = &CreateMessageParams{Messages: []*SamplingMessage{}}
+	}
+	if params.Messages == nil {
+		p2 := *params
+		p2.Messages = []*SamplingMessage{} // avoid JSON "null"
+		params = &p2
+	}
 	return handleSend[*CreateMessageResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
 }
 
