@@ -162,6 +162,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		// discovered until runtime, when the LLM sent bad data.
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
+	if t.InputSchema.Type != "object" {
+		panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
@@ -190,6 +193,12 @@ func ToolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandle
 // TODO(v0.3.0): test
 func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler, error) {
 	tt := *t
+
+	// Special handling for an "any" input: treat as an empty object.
+	if reflect.TypeFor[In]() == reflect.TypeFor[any]() && t.InputSchema == nil {
+		tt.InputSchema = &jsonschema.Schema{Type: "object"}
+	}
+
 	var inputResolved *jsonschema.Resolved
 	if _, err := setSchema[In](&tt.InputSchema, &inputResolved); err != nil {
 		return nil, nil, fmt.Errorf("input schema: %w", err)

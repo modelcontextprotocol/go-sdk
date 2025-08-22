@@ -97,7 +97,7 @@ func TestEndToEnd(t *testing.T) {
 		Name:        "greet",
 		Description: "say hi",
 	}, sayHi)
-	AddTool(s, &Tool{Name: "fail", InputSchema: &jsonschema.Schema{}},
+	AddTool(s, &Tool{Name: "fail", InputSchema: &jsonschema.Schema{Type: "object"}},
 		func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
 			return nil, nil, errTestFailure
 		})
@@ -247,7 +247,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
-		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{}}, nopHandler)
+		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 		waitForNotification(t, "tools")
 		s.RemoveTools("T")
 		waitForNotification(t, "tools")
@@ -674,7 +674,7 @@ func TestCancellation(t *testing.T) {
 		return nil, nil, nil
 	}
 	cs, _ := basicConnection(t, func(s *Server) {
-		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{}}, slowRequest)
+		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowRequest)
 	})
 	defer cs.Close()
 
@@ -961,8 +961,8 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 		// Use two distinct Tool instances with the same name but different
 		// descriptions to ensure the second replaces the first
 		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
-		t1 := &Tool{Name: "dup", Description: "first", InputSchema: &jsonschema.Schema{}}
-		t2 := &Tool{Name: "dup", Description: "second", InputSchema: &jsonschema.Schema{}}
+		t1 := &Tool{Name: "dup", Description: "first", InputSchema: &jsonschema.Schema{Type: "object"}}
+		t2 := &Tool{Name: "dup", Description: "second", InputSchema: &jsonschema.Schema{Type: "object"}}
 		s.AddTool(t1, nopHandler)
 		s.AddTool(t2, nopHandler)
 	})

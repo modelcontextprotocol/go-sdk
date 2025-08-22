@@ -232,7 +232,7 @@ func TestServerPaginateVariousPageSizes(t *testing.T) {
 }
 
 func TestServerCapabilities(t *testing.T) {
-	tool := &Tool{Name: "t", InputSchema: &jsonschema.Schema{}}
+	tool := &Tool{Name: "t", InputSchema: &jsonschema.Schema{Type: "object"}}
 	testCases := []struct {
 		name             string
 		configureServer  func(s *Server)

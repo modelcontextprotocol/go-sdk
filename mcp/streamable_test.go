@@ -219,7 +219,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	// proxy-killing action.
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
-	AddTool(server, &Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
+	AddTool(server, &Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{Type: "object"}},
 		func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
 			// Send one message to the request context, and another to a background
 			// context (which will end up on the hanging GET).
@@ -353,7 +353,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer clientSession.Close()
-	AddTool(server, &Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
+	AddTool(server, &Tool{Name: "testTool", InputSchema: &jsonschema.Schema{Type: "object"}},
 		func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
 			return &CallToolResult{}, nil, nil
 		})
@@ -658,7 +658,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 			server.AddTool(
-				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{}},
+				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{Type: "object"}},
 				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 					if test.tool != nil {
 						test.tool(t, ctx, req.Session)
