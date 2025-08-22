@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	// "log"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -42,13 +43,17 @@ func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any)
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("unmarshaling: %w", err)
 	}
-	// TODO: test with nil args.
+	return validateSchema(resolved, v)
+}
+
+// TODO: test with nil args.
+func validateSchema(resolved *jsonschema.Resolved, value any) error {
 	if resolved != nil {
-		if err := resolved.ApplyDefaults(v); err != nil {
-			return fmt.Errorf("applying defaults from \n\t%s\nto\n\t%s:\n%w", schemaJSON(resolved.Schema()), data, err)
+		if err := resolved.ApplyDefaults(value); err != nil {
+			return fmt.Errorf("applying defaults from \n\t%s\nto\n\t%v:\n%w", schemaJSON(resolved.Schema()), value, err)
 		}
-		if err := resolved.Validate(v); err != nil {
-			return fmt.Errorf("validating\n\t%s\nagainst\n\t %s:\n %w", data, schemaJSON(resolved.Schema()), err)
+		if err := resolved.Validate(value); err != nil {
+			return fmt.Errorf("validating\n\t%v\nagainst\n\t %s:\n %w", value, schemaJSON(resolved.Schema()), err)
 		}
 	}
 	return nil
