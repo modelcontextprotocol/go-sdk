@@ -381,10 +381,13 @@ func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 			// Ensure the URI template has a valid scheme
 			u, err := url.Parse(t.URITemplate)
 			if err != nil {
-				panic(err) // url.Parse includes the URI in the error
-			}
-			if !u.IsAbs() {
-				panic(fmt.Errorf("URI template %q needs a scheme", t.URITemplate))
+				//panic(err) // url.Parse includes the URI in the error
+				fmt.Fprintf(os.Stderr, "invalid resource template uri %q: %v\n", t.URITemplate, err)
+			} else {
+				if !u.IsAbs() {
+					//panic(fmt.Errorf("URI template %q needs a scheme", t.URITemplate))
+					fmt.Fprintf(os.Stderr, "invalid resource template uri %q: %v\n", t.URITemplate, err)
+				}
 			}
 			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
