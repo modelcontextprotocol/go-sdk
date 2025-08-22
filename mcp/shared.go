@@ -404,6 +404,8 @@ type Request interface {
 	isRequest()
 	GetSession() Session
 	GetParams() Params
+	// GetExtra returns the Extra field for ServerRequests, and nil for ClientRequests.
+	GetExtra() *RequestExtra
 }
 
 // A ClientRequest is a request to a client.
@@ -434,6 +436,9 @@ func (r *ServerRequest[P]) GetSession() Session { return r.Session }
 
 func (r *ClientRequest[P]) GetParams() Params { return r.Params }
 func (r *ServerRequest[P]) GetParams() Params { return r.Params }
+
+func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
+func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
 
 func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
 	return &ServerRequest[P]{Session: s, Params: p}
