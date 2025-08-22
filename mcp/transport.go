@@ -122,6 +122,7 @@ func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport) {
 }
 
 type binder[T handler, State any] interface {
+	// TODO(rfindley): the bind API has gotten too complicated. Simplify.
 	bind(Connection, *jsonrpc2.Connection, State, func()) T
 	disconnect(T)
 }

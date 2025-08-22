@@ -356,9 +356,7 @@ func TestServerTransportCleanup(t *testing.T) {
 	})
 
 	handler.onTransportDeletion = func(sessionID string) {
-		mu.Lock()
 		chans[sessionID] <- struct{}{}
-		mu.Unlock()
 	}
 
 	httpServer := httptest.NewServer(handler)
