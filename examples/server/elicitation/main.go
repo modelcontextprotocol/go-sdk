@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-package mcp_test
+package main
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func Example_elicitation() {
+func main() {
 	ctx := context.Background()
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
