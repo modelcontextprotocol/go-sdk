@@ -443,10 +443,6 @@ func (k knowledgeBase) CreateEntities(ctx context.Context, req *mcp.CallToolRequ
 		&mcp.TextContent{Text: "Entities created successfully"},
 	}
 
-	res.StructuredContent = CreateEntitiesResult{
-		Entities: entities,
-	}
-
 	return &res, CreateEntitiesResult{Entities: entities}, nil
 }
 

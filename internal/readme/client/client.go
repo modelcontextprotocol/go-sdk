@@ -28,11 +28,11 @@ func main() {
 	defer session.Close()
 
 	// Call a tool on the server.
-	params := &mcp.CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "you"},
-	}
-	res, err := session.CallTool(ctx, params)
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "greet",
+	}, map[string]any{
+		"name": "you",
+	})
 	if err != nil {
 		log.Fatalf("CallTool failed: %v", err)
 	}

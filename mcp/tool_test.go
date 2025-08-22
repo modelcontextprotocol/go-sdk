@@ -94,9 +94,8 @@ func TestToolErrorHandling(t *testing.T) {
 	t.Run("structured_error", func(t *testing.T) {
 		// Call the tool
 		_, err = cs.CallTool(context.Background(), &CallToolParams{
-			Name:      "error_tool",
-			Arguments: map[string]any{},
-		})
+			Name: "error_tool",
+		}, map[string]any{})
 
 		// Should get the structured error directly
 		if err == nil {
@@ -117,9 +116,8 @@ func TestToolErrorHandling(t *testing.T) {
 	t.Run("regular_error", func(t *testing.T) {
 		// Call the tool
 		result, err := cs.CallTool(context.Background(), &CallToolParams{
-			Name:      "regular_error_tool",
-			Arguments: map[string]any{},
-		})
+			Name: "regular_error_tool",
+		}, map[string]any{})
 		// Should not get an error at the protocol level
 		if err != nil {
 			t.Fatalf("unexpected protocol error: %v", err)
