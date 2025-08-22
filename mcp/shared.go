@@ -114,7 +114,7 @@ func orZero[T any, P *U, U any](p P) T {
 	return any(p).(T)
 }
 
-func handleNotify(ctx context.Context, method string, req Request) error {
+func HandleNotify(ctx context.Context, method string, req Request) error {
 	mh := req.GetSession().sendingMethodHandler()
 	_, err := mh(ctx, method, req)
 	return err
@@ -351,7 +351,7 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P) 
 	defer cancel()
 	for _, s := range sessions {
 		req := newRequest(s, params)
-		if err := handleNotify(ctx, method, req); err != nil {
+		if err := HandleNotify(ctx, method, req); err != nil {
 			// TODO(jba): surface this error better
 			log.Printf("calling %s: %v", method, err)
 		}

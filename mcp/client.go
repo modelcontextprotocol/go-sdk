@@ -154,7 +154,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 		hc.sessionUpdated(cs.state)
 	}
 	req2 := &initializedClientRequest{Session: cs, Params: &InitializedParams{}}
-	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
+	if err := HandleNotify(ctx, notificationInitialized, req2); err != nil {
 		_ = cs.Close()
 		return nil, err
 	}
@@ -662,7 +662,7 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 // This can be used if the client is performing a long-running task that was
 // initiated by the server
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
+	return HandleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Tools provides an iterator for all tools available on the server,

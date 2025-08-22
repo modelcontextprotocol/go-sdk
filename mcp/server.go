@@ -809,7 +809,7 @@ func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p 
 // This is typically used to report on the status of a long-running request
 // that was initiated by the client.
 func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
+	return HandleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
 func newServerRequest[P Params](ss *ServerSession, params P) *ServerRequest[P] {
@@ -896,7 +896,7 @@ func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) 
 	if compareLevels(params.Level, logLevel) < 0 {
 		return nil
 	}
-	return handleNotify(ctx, notificationLoggingMessage, newServerRequest(ss, orZero[Params](params)))
+	return HandleNotify(ctx, notificationLoggingMessage, newServerRequest(ss, orZero[Params](params)))
 }
 
 // AddSendingMiddleware wraps the current sending method handler using the provided
