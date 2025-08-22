@@ -40,13 +40,16 @@ func Example_loggingMiddleware() {
 				"session_id", req.GetSession().ID(),
 				"has_params", req.GetParams() != nil,
 			)
+			// Log more for tool calls.
+			if ctr, ok := req.(*mcp.CallToolRequest); ok {
+				logger.Info("Calling tool",
+					"name", ctr.Params.Name,
+					"args", ctr.Params.Arguments)
+			}
 
 			start := time.Now()
-
 			result, err := next(ctx, method, req)
-
 			duration := time.Since(start)
-
 			if err != nil {
 				logger.Error("MCP method failed",
 					"method", method,
@@ -62,7 +65,6 @@ func Example_loggingMiddleware() {
 					"has_result", result != nil,
 				)
 			}
-
 			return result, err
 		}
 	}
