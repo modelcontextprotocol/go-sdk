@@ -145,15 +145,17 @@ func (s *Server) RemovePrompts(names ...string) {
 // AddTool adds a [Tool] to the server, or replaces one with the same name.
 // The Tool argument must not be modified after this call.
 //
-// The tool's input schema must be non-nil. For a tool that takes no input,
-// or one where any input is valid, set [Tool.InputSchema] to the empty schema,
-// &jsonschema.Schema{}.
+// The tool's input schema must be non-nil and have the type "object". For a tool
+// that takes no input, or one where any input is valid, set [Tool.InputSchema] to
+// &jsonschema.Schema{Type: "object"}.
+//
+// If present, the output schema must also have type "object".
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage. Unmarshaling the arguments and validating them against the
 // input schema are the handler author's responsibility.
 //
-// Most users will prefer the top-level function [AddTool].
+// Most users should use the top-level function [AddTool].
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
@@ -164,6 +166,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	}
 	if t.InputSchema.Type != "object" {
 		panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+	}
+	if t.OutputSchema != nil && t.OutputSchema.Type != "object" {
+		panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -176,9 +181,12 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 
 // ToolFor returns a shallow copy of t and a [ToolHandler] that wraps h.
 // If the tool's input schema is nil, it is set to the schema inferred from the In
-// type parameter, using [jsonschema.For].
+// type parameter, using [jsonschema.For]. The In type parameter must be a map
+// or a struct, so that its inferred JSON Schema has type "object".
+//
 // If the tool's output schema is nil and the Out type parameter is not the empty
-// interface, then the output schema is set to the schema inferred from Out.
+// interface, then the output schema is set to the schema inferred from Out, which
+// must be a map or a struct.
 //
 // Most users will call [AddTool]. Use [ToolFor] if you wish to modify the tool's
 // schemas or wrap the ToolHandler before calling [Server.AddTool].
@@ -305,12 +313,7 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 }
 
 // AddTool adds a tool and handler to the server.
-//
-// A shallow copy of the tool is made first.
-// If the tool's input schema is nil, the copy's input schema is set to the schema
-// inferred from the In type parameter, using [jsonschema.For].
-// If the tool's output schema is nil and the Out type parameter is not the empty
-// interface, then the copy's output schema is set to the schema inferred from Out.
+// It is a convenience for s.AddTool(ToolFor(t, h)).
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	s.AddTool(ToolFor(t, h))
 }

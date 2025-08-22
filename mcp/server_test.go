@@ -456,3 +456,36 @@ func TestServerSessionkeepaliveCancelOverwritten(t *testing.T) {
 		t.Fatal("expected ServerSession.keepaliveCancel to be nil after we manually niled it and re-initialized")
 	}
 }
+
+// panicks reports whether f() panics.
+func panics(f func()) (b bool) {
+	defer func() {
+		b = recover() != nil
+	}()
+	f()
+	return false
+}
+
+func TestAddTool(t *testing.T) {
+	// AddTool should panic if In or Out are not JSON objects.
+	s := NewServer(testImpl, nil)
+	if !panics(func() {
+		AddTool(s, &Tool{Name: "T1"}, func(context.Context, *CallToolRequest, string) (*CallToolResult, any, error) { return nil, nil, nil })
+	}) {
+		t.Error("bad In: expected panic")
+	}
+	if panics(func() {
+		AddTool(s, &Tool{Name: "T2"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+			return nil, nil, nil
+		})
+	}) {
+		t.Error("good In: expected no panic")
+	}
+	if !panics(func() {
+		AddTool(s, &Tool{Name: "T2"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, int, error) {
+			return nil, 0, nil
+		})
+	}) {
+		t.Error("bad Out: expected panic")
+	}
+}
