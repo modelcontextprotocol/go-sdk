@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-package mcp_test
+package main
 
 import (
 	"context"
@@ -15,10 +15,9 @@ var nextProgressToken atomic.Int64
 
 // This middleware function adds a progress token to every outgoing request
 // from the client.
-func Example_progressMiddleware() {
-	c := mcp.NewClient(testImpl, nil)
+func main() {
+	c := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil)
 	c.AddSendingMiddleware(addProgressToken[*mcp.ClientSession])
-	_ = c
 }
 
 func addProgressToken[S mcp.Session](h mcp.MethodHandler) mcp.MethodHandler {
