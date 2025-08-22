@@ -75,7 +75,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	sopts := &ServerOptions{
-		InitializedHandler: func(context.Context, *InitializedServerRequest) {
+		InitializedHandler: func(context.Context, *InitializedRequest) {
 			notificationChans["initialized"] <- 0
 		},
 		RootsListChangedHandler: func(context.Context, *RootsListChangedRequest) {

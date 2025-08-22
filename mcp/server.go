@@ -54,7 +54,7 @@ type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
 	// If non-nil, called when "notifications/initialized" is received.
-	InitializedHandler func(context.Context, *InitializedServerRequest)
+	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
 	PageSize int

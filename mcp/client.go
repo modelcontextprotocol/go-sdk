@@ -153,7 +153,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
 		hc.sessionUpdated(cs.state)
 	}
-	req2 := &InitializedClientRequest{Session: cs, Params: &InitializedParams{}}
+	req2 := &initializedClientRequest{Session: cs, Params: &InitializedParams{}}
 	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
 		_ = cs.Close()
 		return nil, err

@@ -10,7 +10,7 @@ type (
 	CallToolRequest                   = ServerRequest[*CallToolParams]
 	CompleteRequest                   = ServerRequest[*CompleteParams]
 	GetPromptRequest                  = ServerRequest[*GetPromptParams]
-	InitializedServerRequest          = ServerRequest[*InitializedParams]
+	InitializedRequest                = ServerRequest[*InitializedParams]
 	ListPromptsRequest                = ServerRequest[*ListPromptsParams]
 	ListResourcesRequest              = ServerRequest[*ListResourcesParams]
 	ListResourceTemplatesRequest      = ServerRequest[*ListResourceTemplatesParams]
@@ -25,7 +25,7 @@ type (
 type (
 	CreateMessageRequest               = ClientRequest[*CreateMessageParams]
 	ElicitRequest                      = ClientRequest[*ElicitParams]
-	InitializedClientRequest           = ClientRequest[*InitializedParams]
+	initializedClientRequest           = ClientRequest[*InitializedParams]
 	InitializeRequest                  = ClientRequest[*InitializeParams]
 	ListRootsRequest                   = ClientRequest[*ListRootsParams]
 	LoggingMessageRequest              = ClientRequest[*LoggingMessageParams]
