@@ -76,9 +76,9 @@ type ClientOptions struct {
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
-func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState) *ClientSession {
+func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState, onClose func()) *ClientSession {
 	assert(mcpConn != nil && conn != nil, "nil connection")
-	cs := &ClientSession{conn: conn, mcpConn: mcpConn, client: c}
+	cs := &ClientSession{conn: conn, mcpConn: mcpConn, client: c, onClose: onClose}
 	if state != nil {
 		cs.state = *state
 	}
@@ -130,7 +130,7 @@ func (c *Client) capabilities() *ClientCapabilities {
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
 func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptions) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c, (*clientSessionState)(nil))
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +173,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 // Call [ClientSession.Close] to close the connection, or await server
 // termination with [ClientSession.Wait].
 type ClientSession struct {
+	onClose func()
+
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
@@ -208,7 +210,13 @@ func (cs *ClientSession) Close() error {
 	if cs.keepaliveCancel != nil {
 		cs.keepaliveCancel()
 	}
-	return cs.conn.Close()
+	err := cs.conn.Close()
+
+	if cs.onClose != nil {
+		cs.onClose()
+	}
+
+	return err
 }
 
 // Wait waits for the connection to be closed by the server.

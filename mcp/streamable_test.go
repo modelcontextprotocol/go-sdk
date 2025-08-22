@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -330,6 +331,78 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 			t.Errorf("CallTool succeeded unexpectedly")
 		}
 	}
+}
+
+func TestServerTransportCleanup(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{KeepAlive: 10 * time.Millisecond})
+
+	nClient := 3
+
+	var mu sync.Mutex
+	var id int = -1 // session id starting from "0", "1", "2"...
+	chans := make(map[string]chan struct{}, nClient)
+
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		GetSessionID: func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			id++
+			if id == nClient {
+				t.Errorf("creating more than %v session", nClient)
+			}
+			chans[fmt.Sprint(id)] = make(chan struct{}, 1)
+			return fmt.Sprint(id)
+		},
+	})
+
+	handler.onTransportDeletion = func(sessionID string) {
+		mu.Lock()
+		chans[sessionID] <- struct{}{}
+		mu.Unlock()
+	}
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Spin up clients connect to the same server but refuse to ping request.
+	for range nClient {
+		client := NewClient(testImpl, nil)
+		pingMiddleware := func(next MethodHandler) MethodHandler {
+			return func(
+				ctx context.Context,
+				method string,
+				req Request,
+			) (Result, error) {
+				if method == "ping" {
+					return &emptyResult{}, errors.New("ping error")
+				}
+				return next(ctx, method, req)
+			}
+		}
+		client.AddReceivingMiddleware(pingMiddleware)
+		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+		if err != nil {
+			t.Fatalf("client.Connect() failed: %v", err)
+		}
+		defer clientSession.Close()
+	}
+
+	for _, ch := range chans {
+		select {
+		case <-ctx.Done():
+			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
+		case <-ch: // Received transport deletion signal of this session
+		}
+	}
+
+	handler.mu.Lock()
+	if len(handler.transports) != 0 {
+		t.Errorf("want empty transports map, find %v entries from handler's transports map", len(handler.transports))
+	}
+	handler.mu.Unlock()
 }
 
 // TestServerInitiatedSSE verifies that the persistent SSE connection remains

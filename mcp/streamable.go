@@ -40,6 +40,8 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
+	onTransportDeletion func(sessionID string) // for testing only
+
 	mu sync.Mutex
 	// TODO: we should store the ServerSession along with the transport, because
 	// we need to cancel keepalive requests when closing the transport.
@@ -282,6 +284,19 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			}
 			connectOpts = &ServerSessionOptions{
 				State: state,
+			}
+		} else {
+			// Cleanup is only required in stateful mode, as transportation is
+			// not stored in the map otherwise.
+			connectOpts = &ServerSessionOptions{
+				onClose: func() {
+					h.mu.Lock()
+					delete(h.transports, transport.SessionID)
+					h.mu.Unlock()
+					if h.onTransportDeletion != nil {
+						h.onTransportDeletion(transport.SessionID)
+					}
+				},
 			}
 		}
 

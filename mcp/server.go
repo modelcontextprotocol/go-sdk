@@ -681,9 +681,9 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 
 // bind implements the binder[*ServerSession] interface, so that Servers can
 // be connected using [connect].
-func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *ServerSessionState) *ServerSession {
+func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *ServerSessionState, onClose func()) *ServerSession {
 	assert(mcpConn != nil && conn != nil, "nil connection")
-	ss := &ServerSession{conn: conn, mcpConn: mcpConn, server: s}
+	ss := &ServerSession{conn: conn, mcpConn: mcpConn, server: s, onClose: onClose}
 	if state != nil {
 		ss.state = *state
 	}
@@ -710,6 +710,8 @@ func (s *Server) disconnect(cc *ServerSession) {
 // ServerSessionOptions configures the server session.
 type ServerSessionOptions struct {
 	State *ServerSessionState
+
+	onClose func()
 }
 
 // Connect connects the MCP server over the given transport and starts handling
@@ -722,10 +724,12 @@ type ServerSessionOptions struct {
 // If opts.State is non-nil, it is the initial state for the server.
 func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOptions) (*ServerSession, error) {
 	var state *ServerSessionState
+	var onClose func()
 	if opts != nil {
 		state = opts.State
+		onClose = opts.onClose
 	}
-	return connect(ctx, t, s, state)
+	return connect(ctx, t, s, state, onClose)
 }
 
 // TODO: (nit) move all ServerSession methods below the ServerSession declaration.
@@ -792,6 +796,8 @@ func newServerRequest[P Params](ss *ServerSession, params P) *ServerRequest[P] {
 // Call [ServerSession.Close] to close the connection, or await client
 // termination with [ServerSession.Wait].
 type ServerSession struct {
+	onClose func()
+
 	server          *Server
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
@@ -1018,7 +1024,13 @@ func (ss *ServerSession) Close() error {
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly
 		ss.keepaliveCancel()
 	}
-	return ss.conn.Close()
+	err := ss.conn.Close()
+
+	if ss.onClose != nil {
+		ss.onClose()
+	}
+
+	return err
 }
 
 // Wait waits for the connection to be closed by the client.
