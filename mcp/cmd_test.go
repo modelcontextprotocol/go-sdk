@@ -22,6 +22,18 @@ import (
 
 const runAsServer = "_MCP_RUN_AS_SERVER"
 
+type SayHiParams struct {
+	Name string `json:"name"`
+}
+
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args SayHiParams) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "Hi " + args.Name},
+		},
+	}, nil, nil
+}
+
 func TestMain(m *testing.M) {
 	// If the runAsServer variable is set, execute the relevant serverFunc
 	// instead of running tests (aka the fork and exec trick).
