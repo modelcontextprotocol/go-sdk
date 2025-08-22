@@ -136,6 +136,7 @@ func Example_loggingMiddleware() {
 	// time=2025-01-01T00:00:00Z level=INFO msg="MCP method started" method=notifications/initialized session_id="" has_params=true
 	// time=2025-01-01T00:00:00Z level=INFO msg="MCP method completed" method=notifications/initialized session_id="" duration_ms=0 has_result=false
 	// time=2025-01-01T00:00:00Z level=INFO msg="MCP method started" method=tools/call session_id="" has_params=true
+	// time=2025-01-01T00:00:00Z level=INFO msg="Calling tool" name=greet args="{\"name\":\"World\"}"
 	// time=2025-01-01T00:00:00Z level=INFO msg="MCP method completed" method=tools/call session_id="" duration_ms=0 has_result=true
 	// Tool result: Hello, World!
 }
