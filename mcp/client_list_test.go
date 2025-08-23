@@ -7,6 +7,7 @@ package mcp_test
 import (
 	"context"
 	"iter"
+	"log"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -17,9 +18,19 @@ import (
 
 func TestList(t *testing.T) {
 	ctx := context.Background()
-	clientSession, serverSession, server := createSessions(ctx)
-	defer clientSession.Close()
+	server := mcp.NewServer(testImpl, nil)
+	client := mcp.NewClient(testImpl, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer clientSession.Close()
 
 	t.Run("tools", func(t *testing.T) {
 		var wantTools []*mcp.Tool
