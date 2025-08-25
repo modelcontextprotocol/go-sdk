@@ -14,7 +14,6 @@ import (
 	"iter"
 	"maps"
 	"net/url"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -349,7 +348,7 @@ func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 			_, err := url.Parse(r.URI)
 			if err != nil {
 				panic(err) // url.Parse includes the URI in the error
-			} 
+			}
 			s.resources.add(&serverResource{r, h})
 			return true
 		})

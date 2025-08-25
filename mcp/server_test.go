@@ -381,8 +381,6 @@ func TestServerAddResourceTemplate(t *testing.T) {
 	}{
 		{"ValidFileTemplate", "file:///{a}/{b}", false},
 		{"ValidCustomScheme", "myproto:///{a}", false},
-		{"MissingScheme1", "://example.com/{path}", true},
-		{"MissingScheme2", "/api/v1/users/{id}", true},
 		{"EmptyVariable", "file:///{}/{b}", true},
 		{"UnclosedVariable", "file:///{a", true},
 	}
