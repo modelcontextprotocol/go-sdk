@@ -346,16 +346,10 @@ func (s *Server) RemoveTools(names ...string) {
 func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			u, err := url.Parse(r.URI)
+			_, err := url.Parse(r.URI)
 			if err != nil {
-				//panic(err) // url.Parse includes the URI in the error
-				fmt.Fprintf(os.Stderr, "invalid resource URI %q: %v\n", r.URI, err)
-			} else {
-				if !u.IsAbs() {
-					//panic(fmt.Errorf("URI %s needs a scheme", r.URI))
-					fmt.Fprintf(os.Stderr, "invalid resource URI %q: %v\n", r.URI, err)
-				}
-			}
+				panic(err) // url.Parse includes the URI in the error
+			} 
 			s.resources.add(&serverResource{r, h})
 			return true
 		})
@@ -377,17 +371,6 @@ func (s *Server) AddResourceTemplate(t *ResourceTemplate, h ResourceHandler) {
 			_, err := uritemplate.New(t.URITemplate)
 			if err != nil {
 				panic(fmt.Errorf("URI template %q is invalid: %w", t.URITemplate, err))
-			}
-			// Ensure the URI template has a valid scheme
-			u, err := url.Parse(t.URITemplate)
-			if err != nil {
-				//panic(err) // url.Parse includes the URI in the error
-				fmt.Fprintf(os.Stderr, "invalid resource template uri %q: %v\n", t.URITemplate, err)
-			} else {
-				if !u.IsAbs() {
-					//panic(fmt.Errorf("URI template %q needs a scheme", t.URITemplate))
-					fmt.Fprintf(os.Stderr, "invalid resource template uri %q: %v\n", t.URITemplate, err)
-				}
 			}
 			s.resourceTemplates.add(&serverResourceTemplate{t, h})
 			return true
