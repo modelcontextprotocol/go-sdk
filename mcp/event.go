@@ -274,6 +274,12 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID 
 	// Purge before adding, so at least the current data item will be present.
 	// (That could result in nBytes > maxBytes, but we'll live with that.)
 	s.purge()
+
+	// An empty data slice signals that a stream has been registered.
+	// We ignore it since it contains no content and shouldn't affect the total size.
+	if data == nil {
+		return nil
+	}
 	dl.appendData(data)
 	s.nBytes += len(data)
 	return nil
@@ -282,12 +288,6 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID 
 // ErrEventsPurged is the error that [EventStore.After] should return if the event just after the
 // index is no longer available.
 var ErrEventsPurged = errors.New("data purged")
-
-// ErrUnknownSession is the error that [EventStore.After] should return if the session ID is unknown.
-var ErrUnknownSession = errors.New("unknown session ID")
-
-// ErrUnknownSession is the error that [EventStore.After] should return if the stream ID is unknown.
-var ErrUnknownStream = errors.New("unknown stream ID")
 
 // After implements [EventStore.After].
 func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID StreamID, index int) iter.Seq2[[]byte, error] {
@@ -298,11 +298,11 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID S
 		defer s.mu.Unlock()
 		streamMap, ok := s.store[sessionID]
 		if !ok {
-			return nil, fmt.Errorf("MemoryEventStore.After: session ID %v: %w", sessionID, ErrUnknownSession)
+			return nil, fmt.Errorf("MemoryEventStore.After: unknown session ID %q", sessionID)
 		}
 		dl, ok := streamMap[streamID]
 		if !ok {
-			return nil, fmt.Errorf("MemoryEventStore.After: stream ID %v in session %q: %w", streamID, sessionID, ErrUnknownStream)
+			return nil, fmt.Errorf("MemoryEventStore.After: unknown stream ID %v in session %q", streamID, sessionID)
 		}
 		start := index + 1
 		if dl.first > start {

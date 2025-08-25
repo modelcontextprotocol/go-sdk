@@ -506,9 +506,6 @@ type stream struct {
 	//
 	// Requests persist until their response data has been added to the event store.
 	requests map[jsonrpc.ID]struct{}
-
-	// lastWriteIndex tracks the index of the last message written to the event store for this stream.
-	lastWriteIndex atomic.Int64
 }
 
 func newStream(id StreamID, jsonResponse bool) *stream {
@@ -517,7 +514,6 @@ func newStream(id StreamID, jsonResponse bool) *stream {
 		jsonResponse: jsonResponse,
 		requests:     make(map[jsonrpc.ID]struct{}),
 	}
-	s.lastWriteIndex.Store(-1)
 	return s
 }
 
@@ -679,6 +675,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		c.mu.Unlock()
 		stream.signal.Store(signalChanPtr())
 		defer stream.signal.Store(nil)
+		// Register this stream with the event store.
+		if err := c.eventStore.Append(req.Context(), c.SessionID(), stream.id, nil); err != nil {
+			http.Error(w, fmt.Sprintf("error storing event: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Publish incoming messages.
@@ -804,12 +805,13 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 		for {
 			for data, err := range c.eventStore.After(ctx, c.SessionID(), stream.id, lastIndex) {
 				if err != nil {
-					// Wait for session initialization before yielding.
-					if errors.Is(err, ErrUnknownSession) || errors.Is(err, ErrUnknownStream) {
-						break
-					}
 					yield(nil, err)
 					return
+				}
+				// The stream exists, but does not contain any messages on the stream.
+				// Do not yield this data.
+				if data == nil {
+					break
 				}
 				if !yield(data, nil) {
 					return
@@ -825,7 +827,7 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 			// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 			// We only want to terminate POSTs, and GETs that are replaying. The general-purpose GET
 			// (stream ID 0) will never have requests, and should remain open indefinitely.
-			if nOutstanding == 0 && !persistent && lastIndex >= int(stream.lastWriteIndex.Load()) {
+			if nOutstanding == 0 && !persistent {
 				return
 			}
 
@@ -950,7 +952,6 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	if err := c.eventStore.Append(ctx, c.SessionID(), stream.id, data); err != nil {
 		return fmt.Errorf("error storing event: %w", err)
 	}
-	stream.lastWriteIndex.Add(1)
 	if isResponse {
 		// Once we've put the reply on the queue, it's no longer outstanding.
 		delete(stream.requests, forRequest)
