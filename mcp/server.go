@@ -345,8 +345,7 @@ func (s *Server) RemoveTools(names ...string) {
 func (s *Server) AddResource(r *Resource, h ResourceHandler) {
 	s.changeAndNotify(notificationResourceListChanged, &ResourceListChangedParams{},
 		func() bool {
-			_, err := url.Parse(r.URI)
-			if err != nil {
+			if _, err := url.Parse(r.URI); err != nil {
 				panic(err) // url.Parse includes the URI in the error
 			}
 			s.resources.add(&serverResource{r, h})
