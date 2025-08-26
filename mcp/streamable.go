@@ -133,7 +133,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "Accept must contain 'text/event-stream' for GET requests", http.StatusBadRequest)
 			return
 		}
-	} else if !jsonOK || !streamOK {
+	} else if (!jsonOK || !streamOK) && req.Method != http.MethodDelete {
 		http.Error(w, "Accept must contain both 'application/json' and 'text/event-stream'", http.StatusBadRequest)
 		return
 	}

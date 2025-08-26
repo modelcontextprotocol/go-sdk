@@ -687,6 +687,10 @@ func TestStreamableServerTransport(t *testing.T) {
 					},
 					wantSessionID: true,
 				},
+				{
+					method:         "DELETE",
+					wantStatusCode: http.StatusNoContent,
+				},
 			},
 		},
 		{
@@ -945,7 +949,9 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
+	if s.method != http.MethodDelete { // DELETE expects "No Content" response.
+		req.Header.Set("Accept", "application/json, text/event-stream")
+	}
 	maps.Copy(req.Header, s.headers)
 
 	resp, err := http.DefaultClient.Do(req)
