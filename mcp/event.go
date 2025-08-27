@@ -153,6 +153,11 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 //
 // All of an EventStore's methods must be safe for use by multiple goroutines.
 type EventStore interface {
+	// Open prepares the event store for a given session. It ensures that the
+	// underlying data structure for the sessionID is initialized, making it
+	// ready to store event streams.
+	Open(_ context.Context, sessionID string, streamID StreamID) error
+
 	// Append appends data for an outgoing event to given stream, which is part of the
 	// given session.
 	Append(_ context.Context, sessionID string, _ StreamID, data []byte) error
@@ -256,11 +261,21 @@ func NewMemoryEventStore(opts *MemoryEventStoreOptions) *MemoryEventStore {
 	}
 }
 
-// Append implements [EventStore.Append] by recording data in memory.
-func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID StreamID, data []byte) error {
+// Open implements [EventStore.Open]. It ensures that the underlying data
+// structures for the given session and stream IDs are initialized and ready
+// for use.
+func (s *MemoryEventStore) Open(_ context.Context, sessionID string, streamID StreamID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.init(sessionID, streamID)
+	return nil
+}
 
+// init is an internal helper function that ensures the nested map structure for a
+// given sessionID and streamID exists, creating it if necessary. It returns the
+// dataList associated with the specified IDs.
+// This function must be called within a locked context.
+func (s *MemoryEventStore) init(sessionID string, streamID StreamID) *dataList {
 	streamMap, ok := s.store[sessionID]
 	if !ok {
 		streamMap = make(map[StreamID]*dataList)
@@ -271,6 +286,14 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID 
 		dl = &dataList{}
 		streamMap[streamID] = dl
 	}
+	return dl
+}
+
+// Append implements [EventStore.Append] by recording data in memory.
+func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID StreamID, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dl := s.init(sessionID, streamID)
 	// Purge before adding, so at least the current data item will be present.
 	// (That could result in nBytes > maxBytes, but we'll live with that.)
 	s.purge()

@@ -401,7 +401,7 @@ func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransp
 }
 
 // Connect implements the [Transport] interface.
-func (t *StreamableServerTransport) Connect(context.Context) (Connection, error) {
+func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, error) {
 	if t.connection != nil {
 		return nil, fmt.Errorf("transport already connected")
 	}
@@ -415,13 +415,17 @@ func (t *StreamableServerTransport) Connect(context.Context) (Connection, error)
 		streams:        make(map[StreamID]*stream),
 		requestStreams: make(map[jsonrpc.ID]StreamID),
 	}
+	if t.connection.eventStore == nil {
+		t.connection.eventStore = NewMemoryEventStore(nil)
+	}
 	// Stream 0 corresponds to the hanging 'GET'.
 	//
 	// It is always text/event-stream, since it must carry arbitrarily many
 	// messages.
-	t.connection.streams[""] = newStream("", false)
-	if t.connection.eventStore == nil {
-		t.connection.eventStore = NewMemoryEventStore(nil)
+	var err error
+	t.connection.streams[""], err = t.connection.newStream(ctx, "", false)
+	if err != nil {
+		return nil, err
 	}
 	return t.connection, nil
 }
@@ -508,12 +512,15 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
-func newStream(id StreamID, jsonResponse bool) *stream {
+func (c *streamableServerConn) newStream(ctx context.Context, id StreamID, jsonResponse bool) (*stream, error) {
+	if err := c.eventStore.Open(ctx, c.sessionID, id); err != nil {
+		return nil, err
+	}
 	return &stream{
 		id:           id,
 		jsonResponse: jsonResponse,
 		requests:     make(map[jsonrpc.ID]struct{}),
-	}
+	}, nil
 }
 
 func signalChanPtr() *chan struct{} {
@@ -664,7 +671,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// notifications or server->client requests made in the course of handling.
 	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream = newStream(StreamID(randText()), c.jsonResponse)
+		stream, err = c.newStream(req.Context(), StreamID(randText()), c.jsonResponse)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
+			return
+		}
 		c.mu.Lock()
 		c.streams[stream.id] = stream
 		stream.requests = requests
@@ -800,18 +811,19 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 func (c *streamableServerConn) messages(ctx context.Context, stream *stream, persistent bool, lastIndex int) iter.Seq2[json.RawMessage, error] {
 	return func(yield func(json.RawMessage, error) bool) {
 		for {
+			c.mu.Lock()
+			nOutstanding := len(stream.requests)
+			c.mu.Unlock()
 			for data, err := range c.eventStore.After(ctx, c.SessionID(), stream.id, lastIndex) {
 				if err != nil {
-					break
+					yield(nil, err)
+					return
 				}
 				if !yield(data, nil) {
 					return
 				}
 				lastIndex++
 			}
-			c.mu.Lock()
-			nOutstanding := len(stream.requests)
-			c.mu.Unlock()
 			// If all requests have been handled and replied to, we should terminate this connection.
 			// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
 			// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
