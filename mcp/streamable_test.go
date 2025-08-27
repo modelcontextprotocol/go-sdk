@@ -690,6 +690,9 @@ func TestStreamableServerTransport(t *testing.T) {
 				{
 					method:         "DELETE",
 					wantStatusCode: http.StatusNoContent,
+					// Delete request expects 204 No Content with empty body. So override
+					// the default "accept: application/json, text/event-stream" header.
+					headers: map[string][]string{"Accept": nil},
 				},
 			},
 		},
@@ -949,9 +952,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if s.method != http.MethodDelete { // DELETE expects "No Content" response.
-		req.Header.Set("Accept", "application/json, text/event-stream")
-	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	maps.Copy(req.Header, s.headers)
 
 	resp, err := http.DefaultClient.Do(req)
