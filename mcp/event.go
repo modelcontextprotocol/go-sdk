@@ -274,12 +274,6 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID 
 	// Purge before adding, so at least the current data item will be present.
 	// (That could result in nBytes > maxBytes, but we'll live with that.)
 	s.purge()
-
-	// An empty data slice signals that a stream has been registered.
-	// We ignore it since it contains no content and shouldn't affect the total size.
-	if data == nil {
-		return nil
-	}
 	dl.appendData(data)
 	s.nBytes += len(data)
 	return nil

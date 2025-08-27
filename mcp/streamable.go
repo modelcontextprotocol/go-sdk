@@ -509,12 +509,11 @@ type stream struct {
 }
 
 func newStream(id StreamID, jsonResponse bool) *stream {
-	s := &stream{
+	return &stream{
 		id:           id,
 		jsonResponse: jsonResponse,
 		requests:     make(map[jsonrpc.ID]struct{}),
 	}
-	return s
 }
 
 func signalChanPtr() *chan struct{} {
@@ -675,11 +674,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		c.mu.Unlock()
 		stream.signal.Store(signalChanPtr())
 		defer stream.signal.Store(nil)
-		// Register this stream with the event store.
-		if err := c.eventStore.Append(req.Context(), c.SessionID(), stream.id, nil); err != nil {
-			http.Error(w, fmt.Sprintf("error storing event: %v", err), http.StatusInternalServerError)
-			return
-		}
 	}
 
 	// Publish incoming messages.
@@ -794,8 +788,11 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 
 // messages iterates over messages sent to the current stream.
 //
+// persistent indicates if it is the main GET listener.
+// lastIndex is the index of the last seen event.
+//
 // The first iterated value is the received JSON message. The second iterated
-// value is an OK value indicating whether the stream terminated normally.
+// value is an error value indicating whether the stream terminated normally.
 //
 // If the stream did not terminate normally, it is either because ctx was
 // cancelled, or the connection is closed: check the ctx.Err() to differentiate
@@ -805,12 +802,6 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 		for {
 			for data, err := range c.eventStore.After(ctx, c.SessionID(), stream.id, lastIndex) {
 				if err != nil {
-					yield(nil, err)
-					return
-				}
-				// The stream exists, but does not contain any messages on the stream.
-				// Do not yield this data.
-				if data == nil {
 					break
 				}
 				if !yield(data, nil) {
@@ -821,7 +812,6 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 			c.mu.Lock()
 			nOutstanding := len(stream.requests)
 			c.mu.Unlock()
-
 			// If all requests have been handled and replied to, we should terminate this connection.
 			// "After the JSON-RPC response has been sent, the server SHOULD close the SSE stream."
 			// §6.4, https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
