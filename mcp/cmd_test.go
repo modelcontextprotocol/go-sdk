@@ -273,7 +273,7 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 			defer cancel()
 
 			// Use a command that won't exit when stdin is closed
-			cmd := exec.Command("sleep", "3600")
+			cmd := exec.Command("sleep", "20")
 			transport := &mcp.CommandTransport{
 				Command:           cmd,
 				TerminateDuration: tt.duration,
@@ -288,10 +288,11 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 			err = conn.Close()
 			elapsed := time.Since(start)
 
-			// Close() may return "signal: terminated" when the subprocess is killed,
-			// which is expected behavior for our test with a non-responsive subprocess
-			if err != nil && err.Error() != "signal: terminated" {
-				t.Fatalf("Close() failed with unexpected error: %v", err)
+			if err != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("Close() failed with unexpected error: %v", err)
+				}
 			}
 
 			if elapsed > tt.wantMaxDuration {

@@ -15,7 +15,6 @@ import (
 
 const (
 	defaultTerminateDuration = 5 * time.Second
-	minTerminateDuration     = 1 * time.Second
 )
 
 // A CommandTransport is a [Transport] that runs a command and communicates
@@ -24,7 +23,7 @@ type CommandTransport struct {
 	Command *exec.Cmd
 	// TerminateDuration controls how long Close waits after closing stdin
 	// for the process to exit before sending SIGTERM.
-	// If less than 1 second (including zero or negative), the default of 5s is used.
+	// If zero or negative, the default of 5s is used.
 	TerminateDuration time.Duration
 }
 
@@ -55,11 +54,11 @@ func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.Command.Start(); err != nil {
 		return nil, err
 	}
-	terminateDuration := t.TerminateDuration
-	if terminateDuration < minTerminateDuration {
-		terminateDuration = defaultTerminateDuration
+	td := t.TerminateDuration
+	if td <= 0 {
+		td = defaultTerminateDuration
 	}
-	return newIOConn(&pipeRWC{t.Command, stdout, stdin, terminateDuration}), nil
+	return newIOConn(&pipeRWC{t.Command, stdout, stdin, td}), nil
 }
 
 // A pipeRWC is an io.ReadWriteCloser that communicates with a subprocess over
