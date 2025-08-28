@@ -137,19 +137,19 @@ type CreateResourceArgs struct {
 }
 
 // SayHi is a simple MCP tool that requires authentication
-func SayHi(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[struct{}]]) (*mcp.CallToolResultFor[struct{}], error) {
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
 	// Extract user information from context (set by auth middleware)
 	userInfo := ctx.Value("user_info").(*auth.TokenInfo)
 
-	return &mcp.CallToolResultFor[struct{}]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: fmt.Sprintf("Hello! You have scopes: %v", userInfo.Scopes)},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // GetUserInfo is an MCP tool that requires read scope
-func GetUserInfo(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[GetUserInfoArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
+func GetUserInfo(ctx context.Context, req *mcp.CallToolRequest, args GetUserInfoArgs) (*mcp.CallToolResult, any, error) {
 	// Extract user information from context (set by auth middleware)
 	userInfo := ctx.Value("user_info").(*auth.TokenInfo)
 
@@ -163,26 +163,26 @@ func GetUserInfo(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParams
 	}
 
 	if !hasReadScope {
-		return nil, fmt.Errorf("insufficient permissions: read scope required")
+		return nil, nil, fmt.Errorf("insufficient permissions: read scope required")
 	}
 
 	userData := map[string]interface{}{
-		"requested_user_id": req.Params.Arguments.UserID,
+		"requested_user_id": args.UserID,
 		"your_scopes":       userInfo.Scopes,
 		"message":           "User information retrieved successfully",
 	}
 
 	userDataJSON, _ := json.Marshal(userData)
 
-	return &mcp.CallToolResultFor[struct{}]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(userDataJSON)},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // CreateResource is an MCP tool that requires write scope
-func CreateResource(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolParamsFor[CreateResourceArgs]]) (*mcp.CallToolResultFor[struct{}], error) {
+func CreateResource(ctx context.Context, req *mcp.CallToolRequest, args CreateResourceArgs) (*mcp.CallToolResult, any, error) {
 	// Extract user information from context (set by auth middleware)
 	userInfo := ctx.Value("user_info").(*auth.TokenInfo)
 
@@ -196,24 +196,24 @@ func CreateResource(ctx context.Context, req *mcp.ServerRequest[*mcp.CallToolPar
 	}
 
 	if !hasWriteScope {
-		return nil, fmt.Errorf("insufficient permissions: write scope required")
+		return nil, nil, fmt.Errorf("insufficient permissions: write scope required")
 	}
 
 	resourceInfo := map[string]interface{}{
-		"name":        req.Params.Arguments.Name,
-		"description": req.Params.Arguments.Description,
-		"content":     req.Params.Arguments.Content,
+		"name":        args.Name,
+		"description": args.Description,
+		"content":     args.Content,
 		"created_by":  "authenticated_user",
 		"created_at":  time.Now().Format(time.RFC3339),
 	}
 
 	resourceInfoJSON, _ := json.Marshal(resourceInfo)
 
-	return &mcp.CallToolResultFor[struct{}]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: fmt.Sprintf("Resource created successfully: %s", string(resourceInfoJSON))},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // authMiddleware extracts token information and adds it to the context
