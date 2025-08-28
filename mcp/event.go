@@ -153,8 +153,8 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 //
 // All of an EventStore's methods must be safe for use by multiple goroutines.
 type EventStore interface {
-	// Open prepares the event store for a given session. It ensures that the
-	// underlying data structure for the sessionID is initialized, making it
+	// Open prepares the event store for a given stream. It ensures that the
+	// underlying data structure for the stream is initialized, making it
 	// ready to store event streams.
 	Open(_ context.Context, sessionID string, streamID StreamID) error
 
@@ -167,6 +167,7 @@ type EventStore interface {
 	// Once the iterator yields a non-nil error, it will stop.
 	// After's iterator must return an error immediately if any data after index was
 	// dropped; it must not return partial results.
+	// The stream must have been opened previously (see [EventStore.Open]).
 	After(_ context.Context, sessionID string, _ StreamID, index int) iter.Seq2[[]byte, error]
 
 	// SessionClosed informs the store that the given session is finished, along
@@ -262,8 +263,7 @@ func NewMemoryEventStore(opts *MemoryEventStoreOptions) *MemoryEventStore {
 }
 
 // Open implements [EventStore.Open]. It ensures that the underlying data
-// structures for the given session and stream IDs are initialized and ready
-// for use.
+// structures for the given session are initialized and ready for use.
 func (s *MemoryEventStore) Open(_ context.Context, sessionID string, streamID StreamID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,7 +274,7 @@ func (s *MemoryEventStore) Open(_ context.Context, sessionID string, streamID St
 // init is an internal helper function that ensures the nested map structure for a
 // given sessionID and streamID exists, creating it if necessary. It returns the
 // dataList associated with the specified IDs.
-// This function must be called within a locked context.
+// Requires s.mu.
 func (s *MemoryEventStore) init(sessionID string, streamID StreamID) *dataList {
 	streamMap, ok := s.store[sessionID]
 	if !ok {

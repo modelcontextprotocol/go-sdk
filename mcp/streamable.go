@@ -719,7 +719,7 @@ func (c *streamableServerConn) respondJSON(stream *stream, w http.ResponseWriter
 				w.WriteHeader(http.StatusNoContent)
 				return
 			} else {
-				http.Error(w, http.StatusText(http.StatusGone), http.StatusGone)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
 			}
 		}
@@ -784,10 +784,8 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 			if ctx.Err() != nil && writes == 0 {
 				// This probably doesn't matter, but respond with NoContent if the client disconnected.
 				w.WriteHeader(http.StatusNoContent)
-			} else if errors.Is(err, ErrEventsPurged) {
-				errorf(http.StatusInsufficientStorage, "failed to read events: %v", err)
 			} else {
-				errorf(http.StatusGone, "stream terminated")
+				errorf(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			}
 			return
 		}
@@ -799,11 +797,13 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 
 // messages iterates over messages sent to the current stream.
 //
-// persistent indicates if it is the main GET listener.
-// lastIndex is the index of the last seen event.
+// persistent indicates if it is the main GET listener, which should never be
+// terminated.
+// lastIndex is the index of the last seen event, iteration begins at lastIndex+1.
 //
 // The first iterated value is the received JSON message. The second iterated
 // value is an error value indicating whether the stream terminated normally.
+// Iteration ends at the first non-nil error.
 //
 // If the stream did not terminate normally, it is either because ctx was
 // cancelled, or the connection is closed: check the ctx.Err() to differentiate
