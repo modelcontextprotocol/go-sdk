@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
@@ -25,42 +24,26 @@ type authCodeInfo struct {
 	redirectURI   string
 }
 
-// FakeAuthServer is a fake OAuth2 authorization server.
-type FakeAuthServer struct {
-	server    *http.Server
+// // FakeAuthServer is a fake OAuth2 authorization server.
+// type FakeAuthServer struct {
+// 	server    *http.Server
+// 	authCodes map[string]authCodeInfo
+// }
+
+type state struct {
 	authCodes map[string]authCodeInfo
 }
 
-func NewFakeAuthServer() *FakeAuthServer {
-	server := &FakeAuthServer{
-		authCodes: make(map[string]authCodeInfo),
-	}
+func NewFakeAuthMux() *http.ServeMux {
+	s := &state{authCodes: make(map[string]authCodeInfo)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/oauth-authorization-server", server.handleMetadata)
-	mux.HandleFunc("/authorize", server.handleAuthorize)
-	mux.HandleFunc("/token", server.handleToken)
-	server.server = &http.Server{
-		Addr:    authServerPort,
-		Handler: mux,
-	}
-	return server
+	mux.HandleFunc("/.well-known/oauth-authorization-server", s.handleMetadata)
+	mux.HandleFunc("/authorize", s.handleAuthorize)
+	mux.HandleFunc("/token", s.handleToken)
+	return mux
 }
 
-func (s *FakeAuthServer) Start() {
-	go func() {
-		if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
-		}
-	}()
-}
-
-func (s *FakeAuthServer) Stop() {
-	if err := s.server.Close(); err != nil {
-		log.Printf("Failed to stop server: %v", err)
-	}
-}
-
-func (s *FakeAuthServer) handleMetadata(w http.ResponseWriter, r *http.Request) {
+func (s *state) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	metadata := map[string]any{
 		"issuer":                                issuer,
 		"authorization_endpoint":                issuer + "/authorize",
@@ -76,7 +59,7 @@ func (s *FakeAuthServer) handleMetadata(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(metadata)
 }
 
-func (s *FakeAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+func (s *state) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	responseType := query.Get("response_type")
 	redirectURI := query.Get("redirect_uri")
@@ -106,7 +89,7 @@ func (s *FakeAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-func (s *FakeAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
+func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	grantType := r.Form.Get("grant_type")
 	code := r.Form.Get("code")
