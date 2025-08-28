@@ -407,7 +407,7 @@ func (s *Server) capabilities() *ServerCapabilities {
 	return caps
 }
 
-func (s *Server) complete(ctx context.Context, req *CompleteRequest) (Result, error) {
+func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
