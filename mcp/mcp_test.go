@@ -1725,3 +1725,36 @@ func TestPointerArgEquivalence(t *testing.T) {
 func ptr[T any](v T) *T {
 	return &v
 }
+
+func TestComplete(t *testing.T) {
+	completionValues := []string{"python", "pytorch", "pyside"}
+
+	serverOpts := &ServerOptions{
+		CompletionHandler: func(_ context.Context, request *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: completionValues,
+				},
+			}, nil
+		},
+	}
+	server := NewServer(testImpl, serverOpts)
+	cs, _ := basicClientServerConnection(t, nil, server, func(s *Server) {})
+	result, err := cs.Complete(context.Background(), &CompleteParams{
+		Argument: CompleteParamsArgument{
+			Name:  "language",
+			Value: "py",
+		},
+		Ref: &CompleteReference{
+			Type: "ref/prompt",
+			Name: "code_review",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(completionValues, result.Completion.Values); diff != "" {
+		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
+	}
+}
