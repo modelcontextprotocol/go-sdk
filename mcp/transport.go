@@ -103,8 +103,8 @@ func NewStdioTransport() *StdioTransport {
 	return &StdioTransport{}
 }
 
-// A StdioTransport is a [Transport] that communicates over stdin/stdout using
-// newline-delimited JSON.
+// An IOTransport is a [Transport] that communicates over separate
+// io.ReadCloser and io.WriteCloser using newline-delimited JSON.
 type IOTransport struct {
 	reader io.ReadCloser
 	writer io.WriteCloser
