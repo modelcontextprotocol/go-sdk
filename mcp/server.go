@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"iter"
 	"maps"
@@ -234,10 +233,9 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 
 	th := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 		// Unmarshal and validate args.
-		rawArgs := req.Params.Arguments.(json.RawMessage)
 		var in In
-		if rawArgs != nil {
-			if err := unmarshalSchema(rawArgs, inputResolved, &in); err != nil {
+		if req.Params.Arguments != nil {
+			if err := unmarshalSchema(req.Params.Arguments, inputResolved, &in); err != nil {
 				return nil, err
 			}
 		}
