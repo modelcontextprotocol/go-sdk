@@ -106,7 +106,7 @@ func (h *StreamableHTTPHandler) closeAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, s := range h.transports {
-		s.connection.Close()
+		_ = s.connection.Close()
 	}
 	h.transports = nil
 }
@@ -163,7 +163,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Lock()
 			delete(h.transports, transport.SessionID)
 			h.mu.Unlock()
-			transport.connection.Close()
+			_ = transport.connection.Close()
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -251,7 +251,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 					http.Error(w, "failed to read body", http.StatusInternalServerError)
 					return
 				}
-				req.Body.Close()
+				_ = req.Body.Close()
 
 				// Reset the body so that it can be read later.
 				req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -310,7 +310,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 		if h.opts.Stateless {
 			// Stateless mode: close the session when the request exits.
-			defer ss.Close() // close the fake session after handling the request
+			defer func() {
+				_ = ss.Close() // close the fake session after handling the request
+			}()
 		} else {
 			// Otherwise, save the transport so that it can be reused
 			h.mu.Lock()
@@ -765,7 +767,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 	errorf := func(code int, format string, args ...any) {
 		if writes == 0 {
 			http.Error(w, fmt.Sprintf(format, args...), code)
-		} else {
+		} else { //nolint:staticcheck
 			// TODO(#170): log when we add server-side logging
 		}
 	}
@@ -1207,7 +1209,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return fmt.Errorf("broken session: %v", resp.Status)
 	}
 
@@ -1219,12 +1221,12 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		c.mu.Unlock()
 		if hadSessionID != "" && hadSessionID != sessionID {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return fmt.Errorf("mismatching session IDs %q and %q", hadSessionID, sessionID)
 		}
 	}
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil
 	}
 
@@ -1237,7 +1239,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		go c.handleSSE(resp, false, jsonReq)
 
 	default:
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return fmt.Errorf("unsupported content type %q", ct)
 	}
 	return nil
@@ -1264,7 +1266,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 
 func (c *streamableClientConn) handleJSON(resp *http.Response) {
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		c.fail(err)
 		return
@@ -1315,11 +1317,11 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 		resp = newResp
 		if resp.StatusCode == http.StatusMethodNotAllowed && persistent {
 			// The server doesn't support the hanging GET.
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			c.fail(fmt.Errorf("failed to reconnect: %v", http.StatusText(resp.StatusCode)))
 			return
 		}
@@ -1332,7 +1334,9 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
 func (c *streamableClientConn) processStream(resp *http.Response, forReq *jsonrpc.Request) (lastEventID string, clientClosed bool) {
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
 			return lastEventID, false

@@ -25,7 +25,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer session.Close()
+	defer func() {
+		_ = session.Close()
+	}()
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{

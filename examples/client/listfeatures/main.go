@@ -45,7 +45,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	printSection("tools", cs.Tools(ctx, nil), func(t *mcp.Tool) string { return t.Name })
 	printSection("resources", cs.Resources(ctx, nil), func(r *mcp.Resource) string { return r.Name })

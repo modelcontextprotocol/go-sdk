@@ -25,12 +25,16 @@ func TestList(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer serverSession.Close()
+	defer func() {
+		_ = serverSession.Close()
+	}()
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer clientSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+	}()
 
 	t.Run("tools", func(t *testing.T) {
 		var wantTools []*mcp.Tool

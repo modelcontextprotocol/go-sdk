@@ -26,7 +26,7 @@ func stores() map[string]func(t *testing.T) store {
 			if err != nil {
 				t.Fatalf("failed to create temp dir: %v", err)
 			}
-			t.Cleanup(func() { os.RemoveAll(tempDir) })
+			t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
 			return &fileStore{path: filepath.Join(tempDir, "test-memory.json")}
 		},
 		"memory": func(t *testing.T) store {

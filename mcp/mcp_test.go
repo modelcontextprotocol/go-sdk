@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -437,14 +436,14 @@ func TestEndToEnd(t *testing.T) {
 		})
 	})
 	t.Run("progress", func(t *testing.T) {
-		ss.NotifyProgress(ctx, &ProgressNotificationParams{
+		_ = ss.NotifyProgress(ctx, &ProgressNotificationParams{
 			ProgressToken: "token-xyz",
 			Message:       "progress update",
 			Progress:      0.5,
 			Total:         2,
 		})
 		waitForNotification(t, "progress_client")
-		cs.NotifyProgress(ctx, &ProgressNotificationParams{
+		_ = cs.NotifyProgress(ctx, &ProgressNotificationParams{
 			ProgressToken: "token-abc",
 			Message:       "progress update",
 			Progress:      1,
@@ -461,7 +460,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitForNotification(t, "subscribe")
-		s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
+		_ = s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
 			URI: "test",
 		})
 		waitForNotification(t, "resource_updated")
@@ -474,7 +473,7 @@ func TestEndToEnd(t *testing.T) {
 		waitForNotification(t, "unsubscribe")
 
 		// Verify the client does not receive the update after unsubscribing.
-		s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
+		_ = s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
 			URI: "test",
 		})
 		select {
@@ -498,7 +497,7 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	// Disconnect.
-	cs.Close()
+	_ = cs.Close()
 	clientWG.Wait()
 
 	// After disconnecting, neither client nor server should have any
@@ -522,37 +521,8 @@ var (
 		MIMEType: "text/plain",
 		URI:      "file:///fail.txt",
 	}
-	resource3 = &Resource{
-		Name:     "info",
-		MIMEType: "text/plain",
-		URI:      "embedded:info",
-	}
 	readHandler = fileResourceHandler("testdata/files")
 )
-
-var embeddedResources = map[string]string{
-	"info": "This is the MCP test server.",
-}
-
-func handleEmbeddedResource(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
-	u, err := url.Parse(req.Params.URI)
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme != "embedded" {
-		return nil, fmt.Errorf("wrong scheme: %q", u.Scheme)
-	}
-	key := u.Opaque
-	text, ok := embeddedResources[key]
-	if !ok {
-		return nil, fmt.Errorf("no embedded resource named %q", key)
-	}
-	return &ReadResourceResult{
-		Contents: []*ResourceContents{
-			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
-		},
-	}, nil
-}
 
 // errorCode returns the code associated with err.
 // If err is nil, it returns 0.
@@ -616,7 +586,9 @@ func TestServerClosing(t *testing.T) {
 	cs, ss := basicConnection(t, func(s *Server) {
 		AddTool(s, greetTool(), sayHi)
 	})
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -633,7 +605,7 @@ func TestServerClosing(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("after connecting: %v", err)
 	}
-	ss.Close()
+	_ = ss.Close()
 	wg.Wait()
 	if _, err := cs.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
@@ -662,7 +634,9 @@ func TestBatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	errs := make(chan error, batchSize)
 	for i := range batchSize {
@@ -699,10 +673,14 @@ func TestCancellation(t *testing.T) {
 	cs, _ := basicConnection(t, func(s *Server) {
 		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowRequest)
 	})
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+	go func() {
+		_, _ = cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+	}()
 	<-start
 	cancel()
 	select {
@@ -852,8 +830,8 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs.Close()
-	ss.Wait()
+	_ = cs.Close()
+	_ = ss.Wait()
 
 	logs := logbuf.Bytes()
 	if i := bytes.Index(logs, []byte("null")); i >= 0 {
@@ -868,8 +846,10 @@ func TestNoJSONNull(t *testing.T) {
 func traceCalls[S Session](w io.Writer, prefix string) Middleware {
 	return func(h MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
-			fmt.Fprintf(w, "%s >%s\n", prefix, method)
-			defer fmt.Fprintf(w, "%s <%s\n", prefix, method)
+			_, _ = fmt.Fprintf(w, "%s >%s\n", prefix, method)
+			defer func() {
+				_, _ = fmt.Fprintf(w, "%s <%s\n", prefix, method)
+			}()
 			return h(ctx, method, req)
 		}
 	}
@@ -898,7 +878,9 @@ func TestKeepAlive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() {
+		_ = ss.Close()
+	}()
 
 	clientOpts := &ClientOptions{
 		KeepAlive: 100 * time.Millisecond,
@@ -908,7 +890,9 @@ func TestKeepAlive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	// Wait for a few keepalive cycles to ensure pings are working
 	time.Sleep(300 * time.Millisecond)
@@ -939,7 +923,9 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() {
+		_ = ss.Close()
+	}()
 
 	// Client without ElicitationHandler
 	c := NewClient(testImpl, &ClientOptions{
@@ -951,7 +937,9 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	// Test that elicitation fails when no handler is provided
 	_, err = ss.Elicit(ctx, &ElicitParams{
@@ -984,7 +972,9 @@ func TestElicitationSchemaValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() {
+		_ = ss.Close()
+	}()
 
 	c := NewClient(testImpl, &ClientOptions{
 		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
@@ -995,7 +985,9 @@ func TestElicitationSchemaValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	// Test valid schemas - these should not return errors
 	validSchemas := []struct {
@@ -1334,7 +1326,9 @@ func TestElicitationProgressToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() {
+		_ = ss.Close()
+	}()
 
 	c := NewClient(testImpl, &ClientOptions{
 		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
@@ -1345,7 +1339,9 @@ func TestElicitationProgressToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	params := &ElicitParams{
 		Message: "Test progress token",
@@ -1381,13 +1377,17 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer ss.Close()
+		defer func() {
+			_ = ss.Close()
+		}()
 
 		cs, err := c.Connect(ctx, ct, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cs.Close()
+		defer func() {
+			_ = cs.Close()
+		}()
 
 		// The client should have declared elicitation capability during initialization
 		// We can verify this worked by successfully making an elicitation call
@@ -1418,13 +1418,17 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer ss.Close()
+		defer func() {
+			_ = ss.Close()
+		}()
 
 		cs, err := c.Connect(ctx, ct, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cs.Close()
+		defer func() {
+			_ = cs.Close()
+		}()
 
 		// Elicitation should fail with UnsupportedMethod
 		_, err = ss.Elicit(ctx, &ElicitParams{
@@ -1464,13 +1468,15 @@ func TestKeepAliveFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	// Let the connection establish properly first
 	time.Sleep(30 * time.Millisecond)
 
 	// simulate ping failure
-	ss.Close()
+	_ = ss.Close()
 
 	// Wait for keepalive to detect the failure and close the client
 	// check periodically instead of just waiting
@@ -1501,7 +1507,9 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 		s.AddTool(t1, nopHandler)
 		s.AddTool(t2, nopHandler)
 	})
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	ctx := context.Background()
 	res, err := cs.ListTools(ctx, nil)
@@ -1593,22 +1601,24 @@ func TestNoDistributedDeadlock(t *testing.T) {
 	// delegates synchronization to the user.
 	clientOpts := &ClientOptions{
 		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"})
+			_, _ = req.Session.CallTool(ctx, &CallToolParams{Name: "tool2"})
 			return &CreateMessageResult{Content: &TextContent{}}, nil
 		},
 	}
 	client := NewClient(testImpl, clientOpts)
 	cs, _ := basicClientServerConnection(t, client, nil, func(s *Server) {
 		AddTool(s, &Tool{Name: "tool1"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
-			req.Session.CreateMessage(ctx, new(CreateMessageParams))
+			_, _ = req.Session.CreateMessage(ctx, new(CreateMessageParams))
 			return new(CallToolResult), nil, nil
 		})
 		AddTool(s, &Tool{Name: "tool2"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
-			req.Session.Ping(ctx, nil)
+			_ = req.Session.Ping(ctx, nil)
 			return new(CallToolResult), nil, nil
 		})
 	})
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1667,7 +1677,9 @@ func TestPointerArgEquivalence(t *testing.T) {
 			}
 		})
 	})
-	defer cs.Close()
+	defer func() {
+		_ = cs.Close()
+	}()
 
 	ctx := context.Background()
 	tools, err := cs.ListTools(ctx, nil)

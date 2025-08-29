@@ -18,7 +18,9 @@ func withFile(dir, rel string, f func(*os.File) error) (err error) {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer func() {
+		_ = r.Close()
+	}()
 	file, err := r.Open(rel)
 	if err != nil {
 		return err

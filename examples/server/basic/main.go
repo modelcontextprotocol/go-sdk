@@ -51,8 +51,8 @@ func main() {
 	}
 	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
 
-	clientSession.Close()
-	serverSession.Wait()
+	_ = clientSession.Close()
+	_ = serverSession.Wait()
 
 	// Output: Hi user
 }

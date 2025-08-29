@@ -246,13 +246,13 @@ func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
 func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	msg, err := s.delegate.Read(ctx)
 	if err != nil {
-		fmt.Fprintf(s.w, "read error: %v", err)
+		_, _ = fmt.Fprintf(s.w, "read error: %v", err)
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
 		if err != nil {
-			fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
+			_, _ = fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
 		}
-		fmt.Fprintf(s.w, "read: %s\n", string(data))
+		_, _ = fmt.Fprintf(s.w, "read: %s\n", string(data))
 	}
 	return msg, err
 }
@@ -261,13 +261,13 @@ func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	err := s.delegate.Write(ctx, msg)
 	if err != nil {
-		fmt.Fprintf(s.w, "write error: %v", err)
+		_, _ = fmt.Fprintf(s.w, "write error: %v", err)
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
 		if err != nil {
-			fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
+			_, _ = fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
 		}
-		fmt.Fprintf(s.w, "write: %s\n", string(data))
+		_, _ = fmt.Fprintf(s.w, "write: %s\n", string(data))
 	}
 	return err
 }
