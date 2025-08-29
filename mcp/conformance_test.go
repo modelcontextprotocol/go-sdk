@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,38 @@ type output struct {
 
 func structuredTool(ctx context.Context, req *CallToolRequest, args *input) (*CallToolResult, *output, error) {
 	return nil, &output{"Ack " + args.In}, nil
+}
+
+var (
+	resource3 = &Resource{
+		Name:     "info",
+		MIMEType: "text/plain",
+		URI:      "embedded:info",
+	}
+)
+
+var embeddedResources = map[string]string{
+	"info": "This is the MCP test server.",
+}
+
+func handleEmbeddedResource(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+	u, err := url.Parse(req.Params.URI)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "embedded" {
+		return nil, fmt.Errorf("wrong scheme: %q", u.Scheme)
+	}
+	key := u.Opaque
+	text, ok := embeddedResources[key]
+	if !ok {
+		return nil, fmt.Errorf("no embedded resource named %q", key)
+	}
+	return &ReadResourceResult{
+		Contents: []*ResourceContents{
+			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
+		},
+	}, nil
 }
 
 // runServerTest runs the server conformance test.

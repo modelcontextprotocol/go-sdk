@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -522,37 +521,8 @@ var (
 		MIMEType: "text/plain",
 		URI:      "file:///fail.txt",
 	}
-	resource3 = &Resource{
-		Name:     "info",
-		MIMEType: "text/plain",
-		URI:      "embedded:info",
-	}
 	readHandler = fileResourceHandler("testdata/files")
 )
-
-var embeddedResources = map[string]string{
-	"info": "This is the MCP test server.",
-}
-
-func handleEmbeddedResource(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
-	u, err := url.Parse(req.Params.URI)
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme != "embedded" {
-		return nil, fmt.Errorf("wrong scheme: %q", u.Scheme)
-	}
-	key := u.Opaque
-	text, ok := embeddedResources[key]
-	if !ok {
-		return nil, fmt.Errorf("no embedded resource named %q", key)
-	}
-	return &ReadResourceResult{
-		Contents: []*ResourceContents{
-			{URI: req.Params.URI, MIMEType: "text/plain", Text: text},
-		},
-	}, nil
-}
 
 // errorCode returns the code associated with err.
 // If err is nil, it returns 0.
