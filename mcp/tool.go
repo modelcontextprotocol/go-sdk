@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	// "log"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )

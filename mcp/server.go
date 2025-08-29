@@ -212,7 +212,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 		elemZero       any // only non-nil if Out is a pointer type
 		outputResolved *jsonschema.Resolved
 	)
-	if reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
+	if t.OutputSchema != nil || reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
 		var err error
 		elemZero, err = setSchema[Out](&tt.OutputSchema, &outputResolved)
 		if err != nil {
@@ -302,8 +302,8 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 // TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
 // should have a jsonschema.Zero(schema) helper?
 func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) (zero any, err error) {
-	rt := reflect.TypeFor[T]()
 	if *sfield == nil {
+		rt := reflect.TypeFor[T]()
 		if rt.Kind() == reflect.Pointer {
 			rt = rt.Elem()
 			zero = reflect.Zero(rt).Interface()
