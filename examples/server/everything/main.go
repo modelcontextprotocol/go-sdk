@@ -11,18 +11,39 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+var (
+	httpAddr  = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	pprofAddr = flag.String("pprof", "", "if set, host the pprof debugging server at this address")
+)
 
 func main() {
 	flag.Parse()
+
+	if *pprofAddr != "" {
+		// For debugging memory leaks, add an endpoint to trigger a few garbage
+		// collection cycles and ensure the /debug/pprof/heap endpoint only reports
+		// reachable memory.
+		http.DefaultServeMux.Handle("/gc", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			for range 3 {
+				runtime.GC()
+			}
+			fmt.Fprintln(w, "GC'ed")
+		}))
+		go func() {
+			// DefaultServeMux was mutated by the /debug/pprof import.
+			http.ListenAndServe(*pprofAddr, http.DefaultServeMux)
+		}()
+	}
 
 	opts := &mcp.ServerOptions{
 		Instructions:      "Use this server!",
@@ -56,7 +77,10 @@ func main() {
 			return server
 		}, nil)
 		log.Printf("MCP handler listening at %s", *httpAddr)
-		http.ListenAndServe(*httpAddr, handler)
+		if *pprofAddr != "" {
+			log.Printf("pprof listening at http://%s/debug/pprof", *pprofAddr)
+		}
+		log.Fatal(http.ListenAndServe(*httpAddr, handler))
 	} else {
 		t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
 		if err := server.Run(context.Background(), t); err != nil {
