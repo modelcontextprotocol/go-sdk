@@ -251,6 +251,74 @@ func createServerCommand(t *testing.T, serverName string) *exec.Cmd {
 	return cmd
 }
 
+func TestCommandTransportTerminateDuration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX signals")
+	}
+	requireExec(t)
+
+	tests := []struct {
+		name            string
+		duration        time.Duration
+		wantMaxDuration time.Duration
+	}{
+		{
+			name:            "default duration (zero)",
+			duration:        0,
+			wantMaxDuration: 6 * time.Second, // default 5s + buffer
+		},
+		{
+			name:            "below minimum duration",
+			duration:        500 * time.Millisecond,
+			wantMaxDuration: 6 * time.Second, // should use default 5s + buffer
+		},
+		{
+			name:            "custom valid duration",
+			duration:        2 * time.Second,
+			wantMaxDuration: 3 * time.Second, // custom 2s + buffer
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Use a command that won't exit when stdin is closed
+			cmd := exec.Command("sleep", "20")
+			transport := &mcp.CommandTransport{
+				Command:           cmd,
+				TerminateDuration: tt.duration,
+			}
+
+			conn, err := transport.Connect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			start := time.Now()
+			err = conn.Close()
+			elapsed := time.Since(start)
+
+			if err != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("Close() failed with unexpected error: %v", err)
+				}
+			}
+
+			if elapsed > tt.wantMaxDuration {
+				t.Errorf("Close() took %v, expected at most %v", elapsed, tt.wantMaxDuration)
+			}
+
+			// Ensure the process was actually terminated
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+		})
+	}
+}
+
 func requireExec(t *testing.T) {
 	t.Helper()
 

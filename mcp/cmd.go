@@ -13,10 +13,18 @@ import (
 	"time"
 )
 
+const (
+	defaultTerminateDuration = 5 * time.Second
+)
+
 // A CommandTransport is a [Transport] that runs a command and communicates
 // with it over stdin/stdout, using newline-delimited JSON.
 type CommandTransport struct {
 	Command *exec.Cmd
+	// TerminateDuration controls how long Close waits after closing stdin
+	// for the process to exit before sending SIGTERM.
+	// If zero or negative, the default of 5s is used.
+	TerminateDuration time.Duration
 }
 
 // NewCommandTransport returns a [CommandTransport] that runs the given command
@@ -46,15 +54,20 @@ func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.Command.Start(); err != nil {
 		return nil, err
 	}
-	return newIOConn(&pipeRWC{t.Command, stdout, stdin}), nil
+	td := t.TerminateDuration
+	if td <= 0 {
+		td = defaultTerminateDuration
+	}
+	return newIOConn(&pipeRWC{t.Command, stdout, stdin, td}), nil
 }
 
 // A pipeRWC is an io.ReadWriteCloser that communicates with a subprocess over
 // stdin/stdout pipes.
 type pipeRWC struct {
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
-	stdin  io.WriteCloser
+	cmd               *exec.Cmd
+	stdout            io.ReadCloser
+	stdin             io.WriteCloser
+	terminateDuration time.Duration
 }
 
 func (s *pipeRWC) Read(p []byte) (n int, err error) {
@@ -85,7 +98,7 @@ func (s *pipeRWC) Close() error {
 		select {
 		case err := <-resChan:
 			return err, true
-		case <-time.After(5 * time.Second):
+		case <-time.After(s.terminateDuration):
 		}
 		return nil, false
 	}
