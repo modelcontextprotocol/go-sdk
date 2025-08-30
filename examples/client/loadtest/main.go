@@ -33,7 +33,7 @@ var (
 	workers  = flag.Int("workers", 10, "number of concurrent workers")
 	timeout  = flag.Duration("timeout", 1*time.Second, "request timeout")
 	qps      = flag.Int("qps", 100, "tool calls per second, per worker")
-	v        = flag.Bool("v", false, "if set, enable verbose logging of results")
+	verbose  = flag.Bool("v", false, "if set, enable verbose logging")
 )
 
 func main() {
@@ -56,8 +56,8 @@ func main() {
 
 	parentCtx, cancel := context.WithTimeout(context.Background(), *duration)
 	defer cancel()
-	parentCtx, restoreSignal := signal.NotifyContext(parentCtx, os.Interrupt)
-	defer restoreSignal()
+	parentCtx, stop := signal.NotifyContext(parentCtx, os.Interrupt)
+	defer stop()
 
 	var (
 		start   = time.Now()
@@ -91,12 +91,12 @@ func main() {
 						return // test ended
 					}
 					failure.Add(1)
-					if *v {
+					if *verbose {
 						log.Printf("FAILURE: %v", err)
 					}
 				} else {
 					success.Add(1)
-					if *v {
+					if *verbose {
 						data, err := json.Marshal(res)
 						if err != nil {
 							log.Fatalf("marshalling result: %v", err)
@@ -108,7 +108,7 @@ func main() {
 		}()
 	}
 	wg.Wait()
-	restoreSignal() // call restore signal (redundantly) here to allow ctrl-c to work again
+	stop() // restore the interrupt signal
 
 	// Print stats.
 	var (
