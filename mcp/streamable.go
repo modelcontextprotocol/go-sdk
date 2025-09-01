@@ -308,7 +308,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		if h.opts.Stateless {
+		if sessionID == "" && h.opts.Stateless {
 			// Stateless mode: close the session when the request exits.
 			defer ss.Close() // close the fake session after handling the request
 		} else {
