@@ -242,7 +242,6 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 
 type fakeResourceHandler struct {
 	http.ServeMux
-	serverURL            string
 	serveWWWAuthenticate bool
 }
 

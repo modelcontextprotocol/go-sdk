@@ -18,7 +18,7 @@ import (
 	"strings"
 	"unicode"
 
-	"golang.org/x/tools/internal/mcp/internal/util"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 const defaultProtectedResourceMetadataURI = "/.well-known/oauth-protected-resource"
