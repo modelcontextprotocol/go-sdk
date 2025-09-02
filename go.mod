@@ -1,6 +1,8 @@
 module github.com/modelcontextprotocol/go-sdk
 
-go 1.23.0
+go 1.24.0
+
+toolchain go1.24.4
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
@@ -9,3 +11,5 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	golang.org/x/tools v0.34.0
 )
+
+require golang.org/x/oauth2 v0.31.0 // indirect
