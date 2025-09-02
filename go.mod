@@ -8,3 +8,5 @@ require (
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/tools v0.34.0
 )
+
+require golang.org/x/oauth2 v0.30.0 // indirect
