@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/oauthex"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/authhandler"
 )
@@ -36,7 +37,9 @@ func NewHTTPTransport(opts *HTTPTransportConfig) (*HTTPTransport, error) {
 }
 
 type HTTPTransportConfig struct {
-	AuthHandler authhandler.AuthorizationHandler
+	// OAuthHandler is conducts the OAuth flow, using information obtained from the
+	// MCP server and the auth server that it refers to.
+	OAuthHandler func(context.Context, *oauthex.ProtectedResourceMetadata, *oauthex.AuthServerMeta) (oauth2.TokenSource, error)
 	// Base is the [http.RoundTripper] to use initially, before credentials are obtained.
 	// (After the OAuth flow is completed, an [oauth2.Transport] with the resulting
 	// [oauth2.TokenSource] is used.)
