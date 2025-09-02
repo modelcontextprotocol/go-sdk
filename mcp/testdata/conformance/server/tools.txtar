@@ -8,6 +8,7 @@ Fixed bugs:
 
 -- tools --
 greet
+structured
 
 -- client --
 {
@@ -20,6 +21,7 @@ greet
     "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
   }
 }
+{"jsonrpc":"2.0", "method": "notifications/initialized"}
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 { "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
@@ -62,6 +64,35 @@ greet
 					"additionalProperties": false
 				},
 				"name": "greet"
+			},
+			{
+				"inputSchema": {
+					"type": "object",
+					"required": [
+						"In"
+					],
+					"properties": {
+						"In": {
+							"type": "string",
+							"description": "the input"
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "structured",
+				"outputSchema": {
+					"type": "object",
+					"required": [
+						"Out"
+					],
+					"properties": {
+						"Out": {
+							"type": "string",
+							"description": "the output"
+						}
+					},
+					"additionalProperties": false
+				}
 			}
 		]
 	}

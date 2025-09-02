@@ -31,17 +31,17 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: listfeatures <command> [<args>]")
-		fmt.Fprintf(os.Stderr, "List all features for a stdio MCP server")
+		fmt.Fprintln(os.Stderr, "Usage: listfeatures <command> [<args>]")
+		fmt.Fprintln(os.Stderr, "List all features for a stdio MCP server")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "Example: listfeatures npx @modelcontextprotocol/server-everything")
+		fmt.Fprintln(os.Stderr, "Example:\n\tlistfeatures npx @modelcontextprotocol/server-everything")
 		os.Exit(2)
 	}
 
 	ctx := context.Background()
 	cmd := exec.Command(args[0], args[1:]...)
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
-	cs, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	cs, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

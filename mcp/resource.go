@@ -35,7 +35,7 @@ type serverResourceTemplate struct {
 // A ResourceHandler is a function that reads a resource.
 // It will be called when the client calls [ClientSession.ReadResource].
 // If it cannot find the resource, it should return the result of calling [ResourceNotFoundError].
-type ResourceHandler func(context.Context, *ServerSession, *ReadResourceParams) (*ReadResourceResult, error)
+type ResourceHandler func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error)
 
 // ResourceNotFoundError returns an error indicating that a resource being read could
 // not be found.

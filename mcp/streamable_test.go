@@ -8,14 +8,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,9 +27,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func TestStreamableTransports(t *testing.T) {
@@ -35,111 +39,207 @@ func TestStreamableTransports(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 1. Create a server with a simple "greet" tool.
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-	// 2. Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
-	// cookie-checking middleware.
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	var header http.Header
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header = r.Header
-		cookie, err := r.Cookie("test-cookie")
-		if err != nil {
-			t.Errorf("missing cookie: %v", err)
-		} else if cookie.Value != "test-value" {
-			t.Errorf("got cookie %q, want %q", cookie.Value, "test-value")
-		}
-		handler.ServeHTTP(w, r)
-	}))
-	defer httpServer.Close()
+	for _, useJSON := range []bool{false, true} {
+		t.Run(fmt.Sprintf("JSONResponse=%v", useJSON), func(t *testing.T) {
+			// Create a server with some simple tools.
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+			// The "hang" tool checks that context cancellation is propagated.
+			// It hangs until the context is cancelled.
+			var (
+				start     = make(chan struct{})
+				cancelled = make(chan struct{}, 1) // don't block the request
+			)
+			hang := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+				start <- struct{}{}
+				select {
+				case <-ctx.Done():
+					cancelled <- struct{}{}
+				case <-time.After(5 * time.Second):
+					return nil, nil, nil
+				}
+				return nil, nil, nil
+			}
+			AddTool(server, &Tool{Name: "hang"}, hang)
+			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+				// Test that we can make sampling requests during tool handling.
+				//
+				// Try this on both the request context and a background context, so
+				// that messages may be delivered on either the POST or GET connection.
+				for _, ctx := range map[string]context.Context{
+					"request context":    ctx,
+					"background context": context.Background(),
+				} {
+					res, err := req.Session.CreateMessage(ctx, &CreateMessageParams{})
+					if err != nil {
+						return nil, nil, err
+					}
+					if g, w := res.Model, "aModel"; g != w {
+						return nil, nil, fmt.Errorf("got %q, want %q", g, w)
+					}
+				}
+				return &CallToolResult{}, nil, nil
+			})
 
-	// 3. Create a client and connect it to the server using our StreamableClientTransport.
-	// Check that all requests honor a custom client.
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse(httpServer.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jar.SetCookies(u, []*http.Cookie{{Name: "test-cookie", Value: "test-value"}})
-	httpClient := &http.Client{Jar: jar}
-	transport := NewStreamableClientTransport(httpServer.URL, &StreamableClientTransportOptions{
-		HTTPClient: httpClient,
-	})
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	defer session.Close()
-	sid := session.ID()
-	if sid == "" {
-		t.Error("empty session ID")
-	}
-	if g, w := session.mcpConn.(*streamableClientConn).protocolVersion, latestProtocolVersion; g != w {
-		t.Fatalf("got protocol version %q, want %q", g, w)
-	}
-	// 4. The client calls the "greet" tool.
-	params := &CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"name": "streamy"},
-	}
-	got, err := session.CallTool(ctx, params)
-	if err != nil {
-		t.Fatalf("CallTool() failed: %v", err)
-	}
-	if g := session.ID(); g != sid {
-		t.Errorf("session ID: got %q, want %q", g, sid)
-	}
-	if g, w := header.Get(protocolVersionHeader), latestProtocolVersion; g != w {
-		t.Errorf("got protocol version header %q, want %q", g, w)
-	}
+			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
+			// cookie-checking middleware.
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+				jsonResponse: useJSON,
+			})
 
-	// 5. Verify that the correct response is received.
-	want := &CallToolResult{
-		Content: []Content{
-			&TextContent{Text: "hi streamy"},
-		},
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+			var (
+				headerMu   sync.Mutex
+				lastHeader http.Header
+			)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headerMu.Lock()
+				lastHeader = r.Header
+				headerMu.Unlock()
+				cookie, err := r.Cookie("test-cookie")
+				if err != nil {
+					t.Errorf("missing cookie: %v", err)
+				} else if cookie.Value != "test-value" {
+					t.Errorf("got cookie %q, want %q", cookie.Value, "test-value")
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			// Create a client and connect it to the server using our StreamableClientTransport.
+			// Check that all requests honor a custom client.
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(httpServer.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jar.SetCookies(u, []*http.Cookie{{Name: "test-cookie", Value: "test-value"}})
+			httpClient := &http.Client{Jar: jar}
+			transport := &StreamableClientTransport{
+				Endpoint:   httpServer.URL,
+				HTTPClient: httpClient,
+			}
+			client := NewClient(testImpl, &ClientOptions{
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
+				},
+			})
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			defer session.Close()
+			sid := session.ID()
+			if sid == "" {
+				t.Error("empty session ID")
+			}
+			if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
+				t.Fatalf("got protocol version %q, want %q", g, w)
+			}
+
+			// Verify the behavior of various tools.
+
+			// The "greet" tool should just work.
+			params := &CallToolParams{
+				Name:      "greet",
+				Arguments: map[string]any{"name": "foo"},
+			}
+			got, err := session.CallTool(ctx, params)
+			if err != nil {
+				t.Fatalf("CallTool() failed: %v", err)
+			}
+			if g := session.ID(); g != sid {
+				t.Errorf("session ID: got %q, want %q", g, sid)
+			}
+			if g, w := lastHeader.Get(protocolVersionHeader), latestProtocolVersion; g != w {
+				t.Errorf("got protocol version header %q, want %q", g, w)
+			}
+			want := &CallToolResult{
+				Content: []Content{&TextContent{Text: "hi foo"}},
+			}
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
+			}
+
+			// The "hang" tool should be cancellable.
+			ctx2, cancel := context.WithCancel(context.Background())
+			go session.CallTool(ctx2, &CallToolParams{Name: "hang"})
+			<-start
+			cancel()
+			select {
+			case <-cancelled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for cancellation")
+			}
+
+			// The "sampling" tool should be able to issue sampling requests during
+			// tool operation.
+			result, err := session.CallTool(ctx, &CallToolParams{
+				Name:      "sample",
+				Arguments: map[string]any{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError {
+				t.Fatalf("tool failed: %s", result.Content[0].(*TextContent).Text)
+			}
+		})
 	}
 }
 
-// TestClientReplay verifies that the client can recover from a
-// mid-stream network failure and receive replayed messages. It uses a proxy
-// that is killed and restarted to simulate a recoverable network outage.
+// TestClientReplay verifies that the client can recover from a mid-stream
+// network failure and receive replayed messages (if replay is configured). It
+// uses a proxy that is killed and restarted to simulate a recoverable network
+// outage.
 func TestClientReplay(t *testing.T) {
+	for _, test := range []clientReplayTest{
+		{"default", 0, true},
+		{"no retries", -1, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testClientReplay(t, test)
+		})
+	}
+}
+
+type clientReplayTest struct {
+	name          string
+	maxRetries    int
+	wantRecovered bool
+}
+
+func testClientReplay(t *testing.T, test clientReplayTest) {
 	notifications := make(chan string)
-	// 1. Configure the real MCP server.
+	// Configure the real MCP server.
 	server := NewServer(testImpl, nil)
 
 	// Use a channel to synchronize the server's message sending with the test's
 	// proxy-killing action.
 	serverReadyToKillProxy := make(chan struct{})
 	serverClosed := make(chan struct{})
-	server.AddTool(&Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
-			go func() {
-				bgCtx := context.Background()
-				// Send the first two messages immediately.
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg1"})
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
+	AddTool(server, &Tool{Name: "multiMessageTool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
+			// Send one message to the request context, and another to a background
+			// context (which will end up on the hanging GET).
 
-				// Signal the test that it can now kill the proxy.
-				close(serverReadyToKillProxy)
-				<-serverClosed
+			bgCtx := context.Background()
+			req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg1"})
+			req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg2"})
 
-				// These messages should be queued for replay by the server after
-				// the client's connection drops.
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg3"})
-				ss.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
-			}()
-			return &CallToolResult{}, nil
+			// Signal the test that it can now kill the proxy.
+			close(serverReadyToKillProxy)
+			<-serverClosed
+
+			// These messages should be queued for replay by the server after
+			// the client's connection drops.
+			req.Session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg3"})
+			req.Session.NotifyProgress(bgCtx, &ProgressNotificationParams{Message: "msg4"})
+			return new(CallToolResult), nil, nil
 		})
+
 	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
 	defer realServer.Close()
 	realServerURL, err := url.Parse(realServer.URL)
@@ -147,33 +247,37 @@ func TestClientReplay(t *testing.T) {
 		t.Fatalf("Failed to parse real server URL: %v", err)
 	}
 
-	// 2. Configure a proxy that sits between the client and the real server.
+	// Configure a proxy that sits between the client and the real server.
 	proxyHandler := httputil.NewSingleHostReverseProxy(realServerURL)
 	proxy := httptest.NewServer(proxyHandler)
 	proxyAddr := proxy.Listener.Addr().String() // Get the address to restart it later.
 
-	// 3. Configure the client to connect to the proxy with default options.
+	// Configure the client to connect to the proxy with default options.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := NewClient(testImpl, &ClientOptions{
-		ProgressNotificationHandler: func(ctx context.Context, cc *ClientSession, params *ProgressNotificationParams) {
-			notifications <- params.Message
+		ProgressNotificationHandler: func(ctx context.Context, req *ProgressNotificationClientRequest) {
+			notifications <- req.Params.Message
 		},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(proxy.URL, nil))
+	clientSession, err := client.Connect(ctx, &StreamableClientTransport{
+		Endpoint:   proxy.URL,
+		MaxRetries: test.maxRetries,
+	}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer clientSession.Close()
-	clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
 
-	// 4. Read and verify messages until the server signals it's ready for the proxy kill.
-	receivedNotifications := readNotifications(t, ctx, notifications, 2)
-
-	wantReceived := []string{"msg1", "msg2"}
-	if diff := cmp.Diff(wantReceived, receivedNotifications); diff != "" {
-		t.Errorf("Received notifications mismatch (-want +got):\n%s", diff)
-	}
+	var (
+		wg      sync.WaitGroup
+		callErr error
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, callErr = clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+	}()
 
 	select {
 	case <-serverReadyToKillProxy:
@@ -182,33 +286,121 @@ func TestClientReplay(t *testing.T) {
 		t.Fatalf("Context timed out before server was ready to kill proxy")
 	}
 
-	// 5. Simulate a total network failure by closing the proxy.
+	// We should always get the first two notifications.
+	msgs := readNotifications(t, ctx, notifications, 2)
+	sort.Strings(msgs) // notifications may arrive in either order
+	want := []string{"msg1", "msg2"}
+	if diff := cmp.Diff(want, msgs); diff != "" {
+		t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+	}
+
+	// Simulate a total network failure by closing the proxy.
 	t.Log("--- Killing proxy to simulate network failure ---")
 	proxy.CloseClientConnections()
 	proxy.Close()
 	close(serverClosed)
 
-	// 6. Simulate network recovery by restarting the proxy on the same address.
+	// Simulate network recovery by restarting the proxy on the same address.
 	t.Logf("--- Restarting proxy on %s ---", proxyAddr)
 	listener, err := net.Listen("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("Failed to listen on proxy address: %v", err)
 	}
+
 	restartedProxy := &http.Server{Handler: proxyHandler}
 	go restartedProxy.Serve(listener)
 	defer restartedProxy.Close()
 
-	// 7. Continue reading from the same connection object.
-	// Its internal logic should successfully retry, reconnect to the new proxy,
-	// and receive the replayed messages.
-	recoveredNotifications := readNotifications(t, ctx, notifications, 2)
+	wg.Wait()
 
-	// 8. Verify the correct messages were received on the recovered connection.
-	wantRecovered := []string{"msg3", "msg4"}
-
-	if diff := cmp.Diff(wantRecovered, recoveredNotifications); diff != "" {
-		t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+	if test.wantRecovered {
+		// If we've recovered, we should get all 4 notifications and the tool call
+		// should have succeeded.
+		msgs := readNotifications(t, ctx, notifications, 2)
+		sort.Strings(msgs)
+		want := []string{"msg3", "msg4"}
+		if diff := cmp.Diff(want, msgs); diff != "" {
+			t.Errorf("Recovered notifications mismatch (-want +got):\n%s", diff)
+		}
+		if callErr != nil {
+			t.Errorf("CallTool failed unexpectedly: %v", err)
+		}
+	} else {
+		// Otherwise, the call should fail.
+		if callErr == nil {
+			t.Errorf("CallTool succeeded unexpectedly")
+		}
 	}
+}
+
+func TestServerTransportCleanup(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{KeepAlive: 10 * time.Millisecond})
+
+	nClient := 3
+
+	var mu sync.Mutex
+	var id int = -1 // session id starting from "0", "1", "2"...
+	chans := make(map[string]chan struct{}, nClient)
+
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		GetSessionID: func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			id++
+			if id == nClient {
+				t.Errorf("creating more than %v session", nClient)
+			}
+			chans[fmt.Sprint(id)] = make(chan struct{}, 1)
+			return fmt.Sprint(id)
+		},
+	})
+
+	handler.onTransportDeletion = func(sessionID string) {
+		chans[sessionID] <- struct{}{}
+	}
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Spin up clients connect to the same server but refuse to ping request.
+	for range nClient {
+		client := NewClient(testImpl, nil)
+		pingMiddleware := func(next MethodHandler) MethodHandler {
+			return func(
+				ctx context.Context,
+				method string,
+				req Request,
+			) (Result, error) {
+				if method == "ping" {
+					return &emptyResult{}, errors.New("ping error")
+				}
+				return next(ctx, method, req)
+			}
+		}
+		client.AddReceivingMiddleware(pingMiddleware)
+		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+		if err != nil {
+			t.Fatalf("client.Connect() failed: %v", err)
+		}
+		defer clientSession.Close()
+	}
+
+	for _, ch := range chans {
+		select {
+		case <-ctx.Done():
+			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
+		case <-ch: // Received transport deletion signal of this session
+		}
+	}
+
+	handler.mu.Lock()
+	if len(handler.transports) != 0 {
+		t.Errorf("want empty transports map, find %v entries from handler's transports map", len(handler.transports))
+	}
+	handler.mu.Unlock()
 }
 
 // TestServerInitiatedSSE verifies that the persistent SSE connection remains
@@ -222,18 +414,19 @@ func TestServerInitiatedSSE(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := NewClient(testImpl, &ClientOptions{ToolListChangedHandler: func(ctx context.Context, cc *ClientSession, params *ToolListChangedParams) {
-		notifications <- "toolListChanged"
-	},
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {
+			notifications <- "toolListChanged"
+		},
 	})
-	clientSession, err := client.Connect(ctx, NewStreamableClientTransport(httpServer.URL, nil))
+	clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
 	defer clientSession.Close()
-	server.AddTool(&Tool{Name: "testTool", InputSchema: &jsonschema.Schema{}},
-		func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[map[string]any]) (*CallToolResult, error) {
-			return &CallToolResult{}, nil
+	AddTool(server, &Tool{Name: "testTool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+			return &CallToolResult{}, nil, nil
 		})
 	receivedNotifications := readNotifications(t, ctx, notifications, 1)
 	wantReceived := []string{"toolListChanged"}
@@ -262,92 +455,125 @@ func readNotifications(t *testing.T, ctx context.Context, notifications chan str
 	}
 }
 
+// JSON-RPC message constructors.
+func req(id int64, method string, params any) *jsonrpc.Request {
+	r := &jsonrpc.Request{
+		Method: method,
+		Params: mustMarshal(params),
+	}
+	if id > 0 {
+		r.ID = jsonrpc2.Int64ID(id)
+	}
+	return r
+}
+
+func resp(id int64, result any, err error) *jsonrpc.Response {
+	return &jsonrpc.Response{
+		ID:     jsonrpc2.Int64ID(id),
+		Result: mustMarshal(result),
+		Error:  err,
+	}
+}
+
 func TestStreamableServerTransport(t *testing.T) {
 	// This test checks detailed behavior of the streamable server transport, by
 	// faking the behavior of a streamable client using a sequence of HTTP
 	// requests.
 
-	// A step is a single step in the tests below, consisting of a request payload
-	// and expected response.
-	type step struct {
-		// If OnRequest is > 0, this step only executes after a request with the
-		// given ID is received.
-		//
-		// All OnRequest steps must occur before the step that creates the request.
-		//
-		// To avoid tests hanging when there's a bug, it's expected that this
-		// request is received in the course of a *synchronous* request to the
-		// server (otherwise, we wouldn't be able to terminate the test without
-		// analyzing a dependency graph).
-		OnRequest int64
-		// If set, Async causes the step to run asynchronously to other steps.
-		// Redundant with OnRequest: all OnRequest steps are asynchronous.
-		Async bool
-
-		Method     string            // HTTP request method
-		Send       []jsonrpc.Message // messages to send
-		CloseAfter int               // if nonzero, close after receiving this many messages
-		StatusCode int               // expected status code
-		Recv       []jsonrpc.Message // expected messages to receive
-	}
-
-	// JSON-RPC message constructors.
-	req := func(id int64, method string, params any) *jsonrpc.Request {
-		r := &jsonrpc.Request{
-			Method: method,
-			Params: mustMarshal(t, params),
-		}
-		if id > 0 {
-			r.ID = jsonrpc2.Int64ID(id)
-		}
-		return r
-	}
-	resp := func(id int64, result any, err error) *jsonrpc.Response {
-		return &jsonrpc.Response{
-			ID:     jsonrpc2.Int64ID(id),
-			Result: mustMarshal(t, result),
-			Error:  err,
-		}
-	}
-
 	// Predefined steps, to avoid repetition below.
 	initReq := req(1, methodInitialize, &InitializeParams{})
 	initResp := resp(1, &InitializeResult{
-		Capabilities: &serverCapabilities{
-			Logging: &loggingCapabilities{},
-			Tools:   &toolCapabilities{ListChanged: true},
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 	initializedMsg := req(0, notificationInitialized, &InitializedParams{})
-	initialize := step{
-		Method:     "POST",
-		Send:       []jsonrpc.Message{initReq},
-		StatusCode: http.StatusOK,
-		Recv:       []jsonrpc.Message{initResp},
+	initialize := streamableRequest{
+		method:         "POST",
+		messages:       []jsonrpc.Message{initReq},
+		wantStatusCode: http.StatusOK,
+		wantMessages:   []jsonrpc.Message{initResp},
+		wantSessionID:  true,
 	}
-	initialized := step{
-		Method:     "POST",
-		Send:       []jsonrpc.Message{initializedMsg},
-		StatusCode: http.StatusAccepted,
+	initialized := streamableRequest{
+		method:         "POST",
+		messages:       []jsonrpc.Message{initializedMsg},
+		wantStatusCode: http.StatusAccepted,
+		wantSessionID:  false, // TODO: should this be true?
 	}
 
 	tests := []struct {
-		name  string
-		tool  func(*testing.T, context.Context, *ServerSession)
-		steps []step
+		name     string
+		tool     func(*testing.T, context.Context, *ServerSession)
+		requests []streamableRequest // http requests
 	}{
 		{
 			name: "basic",
-			steps: []step{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					Method:     "POST",
-					Send:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
-					StatusCode: http.StatusOK,
-					Recv:       []jsonrpc.Message{resp(2, &CallToolResult{}, nil)},
+					method:         "POST",
+					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{}, nil)},
+					wantSessionID:  true,
+				},
+			},
+		},
+		{
+			name: "accept headers",
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				// Test various accept headers.
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/plain", "application/*"}},
+					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusBadRequest, // missing text/event-stream
+					wantSessionID:  false,
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/event-stream"}},
+					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusBadRequest, // missing application/json
+					wantSessionID:  false,
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/plain", "*/*"}},
+					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantSessionID:  true,
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/*, application/*"}},
+					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantSessionID:  true,
+				},
+			},
+		},
+		{
+			name: "protocol version headers",
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					method:             "POST",
+					headers:            http.Header{"mcp-protocol-version": {"2025-01-01"}}, // an invalid protocol version
+					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:     http.StatusBadRequest,
+					wantBodyContaining: "2025-03-26", // a supported version
+					wantSessionID:      false,        // could be true, but shouldn't matter
 				},
 			},
 		},
@@ -359,19 +585,20 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Notify failed: %v", err)
 				}
 			},
-			steps: []step{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					Method: "POST",
-					Send: []jsonrpc.Message{
+					method: "POST",
+					messages: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
-					StatusCode: http.StatusOK,
-					Recv: []jsonrpc.Message{
+					wantStatusCode: http.StatusOK,
+					wantMessages: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
 				},
 			},
 		},
@@ -383,36 +610,38 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Call failed: %v", err)
 				}
 			},
-			steps: []step{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					Method:    "POST",
-					OnRequest: 1,
-					Send: []jsonrpc.Message{
+					method:    "POST",
+					onRequest: 1,
+					messages: []jsonrpc.Message{
 						resp(1, &ListRootsResult{}, nil),
 					},
-					StatusCode: http.StatusAccepted,
+					wantStatusCode: http.StatusAccepted,
+					wantSessionID:  false,
 				},
 				{
-					Method: "POST",
-					Send: []jsonrpc.Message{
+					method: "POST",
+					messages: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
-					StatusCode: http.StatusOK,
-					Recv: []jsonrpc.Message{
+					wantStatusCode: http.StatusOK,
+					wantMessages: []jsonrpc.Message{
 						req(1, "roots/list", &ListRootsParams{}),
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
 				},
 			},
 		},
 		{
 			name: "background",
-			tool: func(t *testing.T, ctx context.Context, ss *ServerSession) {
+			tool: func(t *testing.T, _ context.Context, ss *ServerSession) {
 				// Perform operations on a background context, and ensure the client
 				// receives it.
-				ctx = context.Background()
+				ctx := context.Background()
 				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}
@@ -424,67 +653,78 @@ func TestStreamableServerTransport(t *testing.T) {
 					t.Errorf("Notify failed: %v", err)
 				}
 			},
-			steps: []step{
+			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					Method:    "POST",
-					OnRequest: 1,
-					Send: []jsonrpc.Message{
+					method:    "POST",
+					onRequest: 1,
+					messages: []jsonrpc.Message{
 						resp(1, &ListRootsResult{}, nil),
 					},
-					StatusCode: http.StatusAccepted,
+					wantStatusCode: http.StatusAccepted,
+					wantSessionID:  false,
 				},
 				{
-					Method:     "GET",
-					Async:      true,
-					StatusCode: http.StatusOK,
-					CloseAfter: 2,
-					Recv: []jsonrpc.Message{
+					method:         "GET",
+					async:          true,
+					wantStatusCode: http.StatusOK,
+					closeAfter:     2,
+					wantMessages: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
 						req(1, "roots/list", &ListRootsParams{}),
 					},
+					wantSessionID: true,
 				},
 				{
-					Method: "POST",
-					Send: []jsonrpc.Message{
+					method: "POST",
+					messages: []jsonrpc.Message{
 						req(2, "tools/call", &CallToolParams{Name: "tool"}),
 					},
-					StatusCode: http.StatusOK,
-					Recv: []jsonrpc.Message{
+					wantStatusCode: http.StatusOK,
+					wantMessages: []jsonrpc.Message{
 						resp(2, &CallToolResult{}, nil),
 					},
+					wantSessionID: true,
+				},
+				{
+					method:         "DELETE",
+					wantStatusCode: http.StatusNoContent,
+					// Delete request expects 204 No Content with empty body. So override
+					// the default "accept: application/json, text/event-stream" header.
+					headers: map[string][]string{"Accept": nil},
 				},
 			},
 		},
 		{
 			name: "errors",
-			steps: []step{
+			requests: []streamableRequest{
 				{
-					Method:     "PUT",
-					StatusCode: http.StatusMethodNotAllowed,
+					method:         "PUT",
+					wantStatusCode: http.StatusMethodNotAllowed,
 				},
 				{
-					Method:     "DELETE",
-					StatusCode: http.StatusBadRequest,
+					method:         "DELETE",
+					wantStatusCode: http.StatusBadRequest,
 				},
 				{
-					Method:     "POST",
-					Send:       []jsonrpc.Message{req(1, "notamethod", nil)},
-					StatusCode: http.StatusBadRequest, // notamethod is an invalid method
+					method:         "POST",
+					messages:       []jsonrpc.Message{req(1, "notamethod", nil)},
+					wantStatusCode: http.StatusBadRequest, // notamethod is an invalid method
 				},
 				{
-					Method:     "POST",
-					Send:       []jsonrpc.Message{req(0, "tools/call", &CallToolParams{Name: "tool"})},
-					StatusCode: http.StatusBadRequest, // tools/call must have an ID
+					method:         "POST",
+					messages:       []jsonrpc.Message{req(0, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusBadRequest, // tools/call must have an ID
 				},
 				{
-					Method:     "POST",
-					Send:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
-					StatusCode: http.StatusOK,
-					Recv: []jsonrpc.Message{resp(2, nil, &jsonrpc2.WireError{
+					method:         "POST",
+					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc2.WireError{
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
+					wantSessionID: true, // TODO: this is probably wrong; we don't have a valid session
 				},
 			},
 		},
@@ -495,130 +735,174 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			AddTool(server, &Tool{Name: "tool"}, func(ctx context.Context, ss *ServerSession, params *CallToolParamsFor[any]) (*CallToolResultFor[any], error) {
-				if test.tool != nil {
-					test.tool(t, ctx, ss)
-				}
-				return &CallToolResultFor[any]{}, nil
-			})
+			server.AddTool(
+				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					if test.tool != nil {
+						test.tool(t, ctx, req.Session)
+					}
+					return &CallToolResult{}, nil
+				})
 
 			// Start the streamable handler.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
 			defer handler.closeAll()
 
-			httpServer := httptest.NewServer(handler)
-			defer httpServer.Close()
-
-			// blocks records request blocks by jsonrpc. ID.
-			//
-			// When an OnRequest step is encountered, it waits on the corresponding
-			// block. When a request with that ID is received, the block is closed.
-			var mu sync.Mutex
-			blocks := make(map[int64]chan struct{})
-			for _, step := range test.steps {
-				if step.OnRequest > 0 {
-					blocks[step.OnRequest] = make(chan struct{})
-				}
-			}
-
-			// signal when all synchronous requests have executed, so we can fail
-			// async requests that are blocked.
-			syncRequestsDone := make(chan struct{})
-
-			// To avoid complicated accounting for session ID, just set the first
-			// non-empty session ID from a response.
-			var sessionID atomic.Value
-			sessionID.Store("")
-
-			// doStep executes a single step.
-			doStep := func(t *testing.T, step step) {
-				if step.OnRequest > 0 {
-					// Block the step until we've received the server->client request.
-					mu.Lock()
-					block := blocks[step.OnRequest]
-					mu.Unlock()
-					select {
-					case <-block:
-					case <-syncRequestsDone:
-						t.Errorf("after all sync requests are complete, request still blocked on %d", step.OnRequest)
-						return
-					}
-				}
-
-				// Collect messages received during this request, unblock other steps
-				// when requests are received.
-				var got []jsonrpc.Message
-				out := make(chan jsonrpc.Message)
-				// Cancel the step if we encounter a request that isn't going to be
-				// handled.
-				ctx, cancel := context.WithCancel(context.Background())
-
-				var wg sync.WaitGroup
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-
-					for m := range out {
-						if req, ok := m.(*jsonrpc.Request); ok && req.ID.IsValid() {
-							// Encountered a server->client request. We should have a
-							// response queued. Otherwise, we may deadlock.
-							mu.Lock()
-							if block, ok := blocks[req.ID.Raw().(int64)]; ok {
-								close(block)
-							} else {
-								t.Errorf("no queued response for %v", req.ID)
-								cancel()
-							}
-							mu.Unlock()
-						}
-						got = append(got, m)
-						if step.CloseAfter > 0 && len(got) == step.CloseAfter {
-							cancel()
-						}
-					}
-				}()
-
-				gotSessionID, gotStatusCode, err := streamingRequest(ctx,
-					httpServer.URL, sessionID.Load().(string), step.Method, step.Send, out)
-
-				// Don't fail on cancelled requests: error (if any) is handled
-				// elsewhere.
-				if err != nil && ctx.Err() == nil {
-					t.Fatal(err)
-				}
-
-				if gotStatusCode != step.StatusCode {
-					t.Errorf("got status %d, want %d", gotStatusCode, step.StatusCode)
-				}
-				wg.Wait()
-
-				transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
-				if diff := cmp.Diff(step.Recv, got, transform); diff != "" {
-					t.Errorf("received unexpected messages (-want +got):\n%s", diff)
-				}
-				sessionID.CompareAndSwap("", gotSessionID)
-			}
-
-			var wg sync.WaitGroup
-			for _, step := range test.steps {
-				if step.Async || step.OnRequest > 0 {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						doStep(t, step)
-					}()
-				} else {
-					doStep(t, step)
-				}
-			}
-
-			// Fail any blocked responses if they weren't needed by a synchronous
-			// request.
-			close(syncRequestsDone)
-
-			wg.Wait()
+			testStreamableHandler(t, handler, test.requests)
 		})
 	}
+}
+
+func testStreamableHandler(t *testing.T, handler http.Handler, requests []streamableRequest) {
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// blocks records request blocks by jsonrpc. ID.
+	//
+	// When an OnRequest step is encountered, it waits on the corresponding
+	// block. When a request with that ID is received, the block is closed.
+	var mu sync.Mutex
+	blocks := make(map[int64]chan struct{})
+	for _, req := range requests {
+		if req.onRequest > 0 {
+			blocks[req.onRequest] = make(chan struct{})
+		}
+	}
+
+	// signal when all synchronous requests have executed, so we can fail
+	// async requests that are blocked.
+	syncRequestsDone := make(chan struct{})
+
+	// To avoid complicated accounting for session ID, just set the first
+	// non-empty session ID from a response.
+	var sessionID atomic.Value
+	sessionID.Store("")
+
+	// doStep executes a single step.
+	doStep := func(t *testing.T, i int, request streamableRequest) {
+		if request.onRequest > 0 {
+			// Block the step until we've received the server->client request.
+			mu.Lock()
+			block := blocks[request.onRequest]
+			mu.Unlock()
+			select {
+			case <-block:
+			case <-syncRequestsDone:
+				t.Errorf("after all sync requests are complete, request still blocked on %d", request.onRequest)
+				return
+			}
+		}
+
+		// Collect messages received during this request, unblock other steps
+		// when requests are received.
+		var got []jsonrpc.Message
+		out := make(chan jsonrpc.Message)
+		// Cancel the step if we encounter a request that isn't going to be
+		// handled.
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for m := range out {
+				if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
+					// Encountered a server->client request. We should have a
+					// response queued. Otherwise, we may deadlock.
+					mu.Lock()
+					if block, ok := blocks[req.ID.Raw().(int64)]; ok {
+						close(block)
+					} else {
+						t.Errorf("no queued response for %v", req.ID)
+						cancel()
+					}
+					mu.Unlock()
+				}
+				got = append(got, m)
+				if request.closeAfter > 0 && len(got) == request.closeAfter {
+					cancel()
+				}
+			}
+		}()
+
+		gotSessionID, gotStatusCode, gotBody, err := request.do(ctx, httpServer.URL, sessionID.Load().(string), out)
+
+		// Don't fail on cancelled requests: error (if any) is handled
+		// elsewhere.
+		if err != nil && ctx.Err() == nil {
+			t.Fatal(err)
+		}
+
+		if gotStatusCode != request.wantStatusCode {
+			t.Errorf("request #%d: got status %d, want %d", i, gotStatusCode, request.wantStatusCode)
+		}
+		if got := gotSessionID != ""; got != request.wantSessionID {
+			t.Errorf("request #%d: got session id: %t, want %t", i, got, request.wantSessionID)
+		}
+		wg.Wait()
+
+		if request.wantBodyContaining != "" {
+			body := string(gotBody)
+			if !strings.Contains(body, request.wantBodyContaining) {
+				t.Errorf("body does not contain %q:\n%s", request.wantBodyContaining, body)
+			}
+		} else {
+			transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
+			if diff := cmp.Diff(request.wantMessages, got, transform); diff != "" {
+				t.Errorf("request #%d: received unexpected messages (-want +got):\n%s", i, diff)
+			}
+		}
+		sessionID.CompareAndSwap("", gotSessionID)
+	}
+
+	var wg sync.WaitGroup
+	for i, request := range requests {
+		if request.async || request.onRequest > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				doStep(t, i, request)
+			}()
+		} else {
+			doStep(t, i, request)
+		}
+	}
+
+	// Fail any blocked responses if they weren't needed by a synchronous
+	// request.
+	close(syncRequestsDone)
+
+	wg.Wait()
+}
+
+// A streamableRequest describes a single streamable HTTP request, consisting
+// of a request payload and expected response.
+type streamableRequest struct {
+	// If onRequest is > 0, this step only executes after a request with the
+	// given ID is received.
+	//
+	// All onRequest steps must occur before the step that creates the request.
+	//
+	// To avoid tests hanging when there's a bug, it's expected that this
+	// request is received in the course of a *synchronous* request to the
+	// server (otherwise, we wouldn't be able to terminate the test without
+	// analyzing a dependency graph).
+	onRequest int64
+	// If set, async causes the step to run asynchronously to other steps.
+	// Redundant with OnRequest: all OnRequest steps are asynchronous.
+	async bool
+
+	// Request attributes
+	method   string            // HTTP request method (required)
+	headers  http.Header       // additional headers to set, overlaid on top of the default headers
+	messages []jsonrpc.Message // messages to send
+
+	closeAfter         int               // if nonzero, close after receiving this many messages
+	wantStatusCode     int               // expected status code
+	wantBodyContaining string            // if set, expect the response body to contain this text; overrides wantMessages
+	wantMessages       []jsonrpc.Message // expected messages to receive; ignored if wantBodyContaining is set
+	wantSessionID      bool              // whether or not a session ID is expected in the response
 }
 
 // streamingRequest makes a request to the given streamable server with the
@@ -634,131 +918,188 @@ func TestStreamableServerTransport(t *testing.T) {
 // Returns the sessionID and http status code from the response. If an error is
 // returned, sessionID and status code may still be set if the error occurs
 // after the response headers have been received.
-func streamingRequest(ctx context.Context, serverURL, sessionID, method string, in []jsonrpc.Message, out chan<- jsonrpc.Message) (string, int, error) {
+func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, out chan<- jsonrpc.Message) (string, int, []byte, error) {
 	defer close(out)
 
 	var body []byte
-	if len(in) == 1 {
-		data, err := jsonrpc2.EncodeMessage(in[0])
+	if len(s.messages) == 1 {
+		data, err := jsonrpc2.EncodeMessage(s.messages[0])
 		if err != nil {
-			return "", 0, fmt.Errorf("encoding message: %w", err)
+			return "", 0, nil, fmt.Errorf("encoding message: %w", err)
 		}
 		body = data
 	} else {
 		var rawMsgs []json.RawMessage
-		for _, msg := range in {
+		for _, msg := range s.messages {
 			data, err := jsonrpc2.EncodeMessage(msg)
 			if err != nil {
-				return "", 0, fmt.Errorf("encoding message: %w", err)
+				return "", 0, nil, fmt.Errorf("encoding message: %w", err)
 			}
 			rawMsgs = append(rawMsgs, data)
 		}
 		data, err := json.Marshal(rawMsgs)
 		if err != nil {
-			return "", 0, fmt.Errorf("marshaling batch: %w", err)
+			return "", 0, nil, fmt.Errorf("marshaling batch: %w", err)
 		}
 		body = data
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, serverURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, s.method, serverURL, bytes.NewReader(body))
 	if err != nil {
-		return "", 0, fmt.Errorf("creating request: %w", err)
+		return "", 0, nil, fmt.Errorf("creating request: %w", err)
 	}
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Add("Accept", "text/plain") // ensure multiple accept headers are allowed
-	req.Header.Add("Accept", "application/json, text/event-stream")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	maps.Copy(req.Header, s.headers)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", 0, fmt.Errorf("request failed: %v", err)
+		return "", 0, nil, fmt.Errorf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	newSessionID := resp.Header.Get("Mcp-Session-Id")
 
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		for evt, err := range scanEvents(resp.Body) {
+	contentType := resp.Header.Get("Content-Type")
+	var respBody []byte
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		r := readerInto{resp.Body, new(bytes.Buffer)}
+		for evt, err := range scanEvents(r) {
 			if err != nil {
-				return newSessionID, resp.StatusCode, fmt.Errorf("reading events: %v", err)
+				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
 			// TODO(rfindley): do we need to check evt.name?
 			// Does the MCP spec say anything about this?
 			msg, err := jsonrpc2.DecodeMessage(evt.Data)
 			if err != nil {
-				return newSessionID, resp.StatusCode, fmt.Errorf("decoding message: %w", err)
+				return newSessionID, resp.StatusCode, nil, fmt.Errorf("decoding message: %w", err)
 			}
 			out <- msg
 		}
-	} else if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		respBody = r.w.Bytes()
+	} else if strings.HasPrefix(contentType, "application/json") {
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return newSessionID, resp.StatusCode, fmt.Errorf("reading json body: %w", err)
+			return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading json body: %w", err)
 		}
+		respBody = data
 		msg, err := jsonrpc2.DecodeMessage(data)
 		if err != nil {
-			return newSessionID, resp.StatusCode, fmt.Errorf("decoding message: %w", err)
+			return newSessionID, resp.StatusCode, nil, fmt.Errorf("decoding message: %w", err)
 		}
 		out <- msg
+	} else {
+		respBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading response: %v", err)
+		}
 	}
 
-	return newSessionID, resp.StatusCode, nil
+	return newSessionID, resp.StatusCode, respBody, nil
 }
 
-func mustMarshal(t *testing.T, v any) json.RawMessage {
+// readerInto is an io.Reader that writes any bytes read from r into w.
+type readerInto struct {
+	r io.Reader
+	w *bytes.Buffer
+}
+
+// Read implements io.Reader.
+func (r readerInto) Read(p []byte) (n int, err error) {
+	n, err = r.r.Read(p)
+	if err == nil || err == io.EOF {
+		n2, err2 := r.w.Write(p[:n])
+		if err2 != nil {
+			return n, fmt.Errorf("failed to write: %v", err)
+		}
+		if n2 != n {
+			return n, fmt.Errorf("short write: %d != %d", n2, n)
+		}
+	}
+	return n, err
+}
+
+func mustMarshal(v any) json.RawMessage {
 	if v == nil {
 		return nil
 	}
-	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return data
 }
 
-func TestStreamableClientTransportApplicationJSON(t *testing.T) {
-	// Test handling of application/json responses.
+func TestStreamableClientTransport(t *testing.T) {
+	// This test verifies various behavior of the streamable client transport:
+	//  - check that it can handle application/json responses
+	//  - check that it sends the negotiated protocol version
+	//
+	// TODO(rfindley): make this test more comprehensive, similar to
+	// [TestStreamableServerTransport].
 	ctx := context.Background()
 	resp := func(id int64, result any, err error) *jsonrpc.Response {
 		return &jsonrpc.Response{
 			ID:     jsonrpc2.Int64ID(id),
-			Result: mustMarshal(t, result),
+			Result: mustMarshal(result),
 			Error:  err,
 		}
 	}
 	initResult := &InitializeResult{
-		Capabilities: &serverCapabilities{
-			Logging: &loggingCapabilities{},
-			Tools:   &toolCapabilities{ListChanged: true},
+		Capabilities: &ServerCapabilities{
+			Completions: &CompletionCapabilities{},
+			Logging:     &LoggingCapabilities{},
+			Tools:       &ToolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}
 	initResp := resp(1, initResult, nil)
 
+	var reqN atomic.Int32 // request count
 	serverHandler := func(w http.ResponseWriter, r *http.Request) {
-		data, err := jsonrpc2.EncodeMessage(initResp)
-		if err != nil {
-			t.Fatal(err)
-		}
+		rN := reqN.Add(1)
+
+		// TODO(rfindley): if the status code is NoContent or Accepted, we should
+		// probably be tolerant of when the content type is not application/json.
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
+		if rN == 1 {
+			data, err := jsonrpc2.EncodeMessage(initResp)
+			if err != nil {
+				t.Errorf("encoding failed: %v", err)
+			}
+			w.Header().Set("Mcp-Session-Id", "123")
+			w.Write(data)
+		} else {
+			if v := r.Header.Get(protocolVersionHeader); v != latestProtocolVersion {
+				t.Errorf("bad protocol version header: got %q, want %q", v, latestProtocolVersion)
+			}
+		}
 	}
 
 	httpServer := httptest.NewServer(http.HandlerFunc(serverHandler))
 	defer httpServer.Close()
 
-	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer session.Close()
-	if diff := cmp.Diff(initResult, session.initializeResult); diff != "" {
+	if err := session.Close(); err != nil {
+		t.Errorf("closing session: %v", err)
+	}
+
+	if got, want := reqN.Load(), int32(3); got < want {
+		// Expect at least 3 requests: initialize, initialized, and DELETE.
+		// We may or may not observe the GET, depending on timing.
+		t.Errorf("unexpected number of requests: got %d, want at least %d", got, want)
+	}
+
+	if diff := cmp.Diff(initResult, session.state.InitializeResult); diff != "" {
 		t.Errorf("mismatch (-want, +got):\n%s", diff)
 	}
 }
@@ -768,22 +1109,23 @@ func TestEventID(t *testing.T) {
 		sid StreamID
 		idx int
 	}{
-		{0, 0},
-		{0, 1},
-		{1, 0},
-		{1, 1},
-		{1234, 5678},
+		{"0", 0},
+		{"0", 1},
+		{"1", 0},
+		{"1", 1},
+		{"", 1},
+		{"1234", 5678},
 	}
 
 	for _, test := range tests {
-		t.Run(fmt.Sprintf("%d_%d", test.sid, test.idx), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s_%d", test.sid, test.idx), func(t *testing.T) {
 			eventID := formatEventID(test.sid, test.idx)
 			gotSID, gotIdx, ok := parseEventID(eventID)
 			if !ok {
 				t.Fatalf("parseEventID(%q) failed, want ok", eventID)
 			}
 			if gotSID != test.sid || gotIdx != test.idx {
-				t.Errorf("parseEventID(%q) = %d, %d, want %d, %d", eventID, gotSID, gotIdx, test.sid, test.idx)
+				t.Errorf("parseEventID(%q) = %s, %d, want %s, %d", eventID, gotSID, gotIdx, test.sid, test.idx)
 			}
 		})
 	}
@@ -792,10 +1134,7 @@ func TestEventID(t *testing.T) {
 		"",
 		"_",
 		"1_",
-		"_1",
-		"a_1",
 		"1_a",
-		"-1_1",
 		"1_-1",
 	}
 
@@ -805,5 +1144,157 @@ func TestEventID(t *testing.T) {
 				t.Errorf("parseEventID(%q) succeeded, want failure", eventID)
 			}
 		})
+	}
+}
+
+func TestStreamableStateless(t *testing.T) {
+	// This version of sayHi expects
+	// that request from our client).
+	sayHi := func(ctx context.Context, req *CallToolRequest, args hiParams) (*CallToolResult, any, error) {
+		if err := req.Session.Ping(ctx, nil); err == nil {
+			// ping should fail, but not break the connection
+			t.Errorf("ping succeeded unexpectedly")
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + args.Name}}}, nil, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+
+	requests := []streamableRequest{
+		{
+			method:             "POST",
+			wantStatusCode:     http.StatusOK,
+			messages:           []jsonrpc.Message{req(1, "tools/list", struct{}{})},
+			wantBodyContaining: "greet",
+			wantSessionID:      false,
+		},
+		{
+			method:         "POST",
+			wantStatusCode: http.StatusOK,
+			messages: []jsonrpc.Message{
+				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "World"}}),
+			},
+			wantMessages: []jsonrpc.Message{
+				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi World"}}}, nil),
+			},
+			wantSessionID: false,
+		},
+		{
+			method:         "POST",
+			wantStatusCode: http.StatusOK,
+			messages: []jsonrpc.Message{
+				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "foo"}}),
+			},
+			wantMessages: []jsonrpc.Message{
+				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi foo"}}}, nil),
+			},
+			wantSessionID: false,
+		},
+	}
+
+	testClientCompatibility := func(t *testing.T, handler http.Handler) {
+		ctx := context.Background()
+		httpServer := httptest.NewServer(handler)
+		defer httpServer.Close()
+		cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "greet", Arguments: hiParams{Name: "bar"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := textContent(t, res), "hi bar"; got != want {
+			t.Errorf("Result = %q, want %q", got, want)
+		}
+	}
+
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		GetSessionID: func() string { return "" },
+		Stateless:    true,
+	})
+
+	// Test the default stateless mode.
+	t.Run("stateless", func(t *testing.T) {
+		testStreamableHandler(t, handler, requests)
+		testClientCompatibility(t, handler)
+	})
+
+	// Test a "distributed" variant of stateless mode, where it has non-empty
+	// session IDs, but is otherwise stateless.
+	//
+	// This can be used by tools to look up application state preserved across
+	// subsequent requests.
+	for i, req := range requests {
+		// Now, we want a session for all requests.
+		req.wantSessionID = true
+		requests[i] = req
+	}
+	distributableHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	t.Run("distributed", func(t *testing.T) {
+		testStreamableHandler(t, distributableHandler, requests)
+		testClientCompatibility(t, handler)
+	})
+}
+
+func textContent(t *testing.T, res *CallToolResult) string {
+	t.Helper()
+	if len(res.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(res.Content))
+	}
+	text, ok := res.Content[0].(*TextContent)
+	if !ok {
+		t.Fatalf("Content[0] is %T, want *TextContent", res.Content[0])
+	}
+	return text.Text
+}
+
+func TestTokenInfo(t *testing.T) {
+	defer func(b bool) { testAuth = b }(testAuth)
+	testAuth = true
+	ctx := context.Background()
+
+	// Create a server with a tool that returns TokenInfo.
+	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
+
+	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	verifier := func(context.Context, string) (*auth.TokenInfo, error) {
+		return &auth.TokenInfo{
+			Scopes: []string{"scope"},
+			// Expiration is far, far in the future.
+			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
+		}, nil
+	}
+	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("missing content")
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok {
+		t.Fatal("not TextContent")
+	}
+	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC map[]}"; g != w {
+		t.Errorf("got %q, want %q", g, w)
 	}
 }

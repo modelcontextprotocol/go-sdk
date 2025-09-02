@@ -117,7 +117,7 @@ func (h *LoggingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	// This is also checked in ServerSession.LoggingMessage, so checking it here
 	// is just an optimization that skips building the JSON.
 	h.ss.mu.Lock()
-	mcpLevel := h.ss.logLevel
+	mcpLevel := h.ss.state.LogLevel
 	h.ss.mu.Unlock()
 	return level >= mcpLevelToSlog(mcpLevel)
 }

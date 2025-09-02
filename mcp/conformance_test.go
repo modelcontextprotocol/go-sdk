@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -96,6 +97,18 @@ func TestServerConformance(t *testing.T) {
 	}
 }
 
+type input struct {
+	In string `jsonschema:"the input"`
+}
+
+type output struct {
+	Out string `jsonschema:"the output"`
+}
+
+func structuredTool(ctx context.Context, req *CallToolRequest, args *input) (*CallToolResult, *output, error) {
+	return nil, &output{"Ack " + args.In}, nil
+}
+
 // runServerTest runs the server conformance test.
 // It must be executed in a synctest bubble.
 func runServerTest(t *testing.T, test *conformanceTest) {
@@ -109,6 +122,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				Name:        "greet",
 				Description: "say hi",
 			}, sayHi)
+		case "structured":
+			AddTool(s, &Tool{Name: "structured"}, structuredTool)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}
@@ -135,7 +150,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Connect the server, and connect the client stream,
 	// but don't connect an actual client.
 	cTransport, sTransport := NewInMemoryTransports()
-	ss, err := s.Connect(ctx, sTransport)
+	ss, err := s.Connect(ctx, sTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +198,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				return nil, err, false
 			}
 			serverMessages = append(serverMessages, msg)
-			if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				// Pair up the next outgoing response with this request.
 				// We assume requests arrive in the same order every time.
 				if len(outResponses) == 0 {
@@ -201,8 +216,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Synthetic peer interacts with real peer.
 	for _, req := range outRequests {
 		writeMsg(req)
-		if req.ID.IsValid() {
-			// A request (as opposed to a notification). Wait for the response.
+		if req.IsCall() {
+			// A call (as opposed to a notification). Wait for the response.
 			res, err, ok := nextResponse()
 			if err != nil {
 				t.Fatalf("reading server messages failed: %v", err)

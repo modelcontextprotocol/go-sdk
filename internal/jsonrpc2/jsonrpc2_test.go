@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -143,6 +144,8 @@ func testConnection(t *testing.T, framer jsonrpc2.Framer) {
 		t.Run(test.Name(), func(t *testing.T) {
 			client, err := jsonrpc2.Dial(ctx,
 				listener.Dialer(), binder{framer, func(h *handler) {
+					// Sleep a little to a void a race with setting conn.writer in jsonrpc2.bindConnection.
+					time.Sleep(50 * time.Millisecond)
 					defer h.conn.Close()
 					test.Invoke(t, ctx, h)
 					if call, ok := test.(*call); ok {
@@ -368,16 +371,14 @@ func (h *handler) Handle(ctx context.Context, req *jsonrpc2.Request) (any, error
 		if err := json.Unmarshal(req.Params, &name); err != nil {
 			return nil, fmt.Errorf("%w: %s", jsonrpc2.ErrParse, err)
 		}
+		jsonrpc2.Async(ctx)
 		waitFor := h.waiter(name)
-		go func() {
-			select {
-			case <-waitFor:
-				h.conn.Respond(req.ID, true, nil)
-			case <-ctx.Done():
-				h.conn.Respond(req.ID, nil, ctx.Err())
-			}
-		}()
-		return nil, jsonrpc2.ErrAsyncResponse
+		select {
+		case <-waitFor:
+			return true, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	default:
 		return nil, jsonrpc2.ErrNotHandled
 	}

@@ -1,9 +1,0 @@
-"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"==>"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
-github.com/modelcontextprotocol/go-sdk/internal/xcontext==>github.com/modelcontextprotocol/go-sdk/internal/xcontext
-github.com/modelcontextprotocol/go-sdk/internal==>github.com/modelcontextprotocol/go-sdk/internal
-github.com/modelcontextprotocol/go-sdk/jsonschema==>github.com/modelcontextprotocol/go-sdk/jsonschema
-github.com/modelcontextprotocol/go-sdk/examples==>github.com/modelcontextprotocol/go-sdk/examples
-github.com/modelcontextprotocol/go-sdk/design==>github.com/modelcontextprotocol/go-sdk/design
-github.com/modelcontextprotocol/go-sdk/mcp==>github.com/modelcontextprotocol/go-sdk/mcp
-governed by an MIT-style==>governed by an MIT-style
-regex:Copyright (20\d\d) The Go Authors==>Copyright \1 The Go MCP SDK Authors

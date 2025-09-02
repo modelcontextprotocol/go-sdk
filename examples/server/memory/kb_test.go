@@ -230,7 +230,7 @@ func TestSaveAndLoadGraph(t *testing.T) {
 
 			// Test malformed data handling
 			if fs, ok := s.(*fileStore); ok {
-				err := os.WriteFile(fs.path, []byte("invalid json"), 0600)
+				err := os.WriteFile(fs.path, []byte("invalid json"), 0o600)
 				if err != nil {
 					t.Fatalf("failed to write invalid json: %v", err)
 				}
@@ -435,141 +435,109 @@ func TestMCPServerIntegration(t *testing.T) {
 
 			// Create mock server session
 			ctx := context.Background()
-			serverSession := &mcp.ServerSession{}
 
-			// Test CreateEntities through MCP
-			createEntitiesParams := &mcp.CallToolParamsFor[CreateEntitiesArgs]{
-				Arguments: CreateEntitiesArgs{
-					Entities: []Entity{
-						{
-							Name:         "TestPerson",
-							EntityType:   "Person",
-							Observations: []string{"Likes testing"},
-						},
+			createResult, out, err := kb.CreateEntities(ctx, nil, CreateEntitiesArgs{
+				Entities: []Entity{
+					{
+						Name:         "TestPerson",
+						EntityType:   "Person",
+						Observations: []string{"Likes testing"},
 					},
 				},
-			}
-
-			createResult, err := kb.CreateEntities(ctx, serverSession, createEntitiesParams)
+			})
 			if err != nil {
 				t.Fatalf("MCP CreateEntities failed: %v", err)
 			}
 			if createResult.IsError {
 				t.Fatalf("MCP CreateEntities returned error: %v", createResult.Content)
 			}
-			if len(createResult.StructuredContent.Entities) != 1 {
-				t.Errorf("expected 1 entity created, got %d", len(createResult.StructuredContent.Entities))
+			if len(out.Entities) != 1 {
+				t.Errorf("expected 1 entity created, got %d", len(out.Entities))
 			}
 
 			// Test ReadGraph through MCP
-			readParams := &mcp.CallToolParamsFor[struct{}]{}
-			readResult, err := kb.ReadGraph(ctx, serverSession, readParams)
+			readResult, outg, err := kb.ReadGraph(ctx, nil, nil)
 			if err != nil {
 				t.Fatalf("MCP ReadGraph failed: %v", err)
 			}
 			if readResult.IsError {
 				t.Fatalf("MCP ReadGraph returned error: %v", readResult.Content)
 			}
-			if len(readResult.StructuredContent.Entities) != 1 {
-				t.Errorf("expected 1 entity in graph, got %d", len(readResult.StructuredContent.Entities))
+			if len(outg.Entities) != 1 {
+				t.Errorf("expected 1 entity in graph, got %d", len(outg.Entities))
 			}
 
-			// Test CreateRelations through MCP
-			createRelationsParams := &mcp.CallToolParamsFor[CreateRelationsArgs]{
-				Arguments: CreateRelationsArgs{
-					Relations: []Relation{
-						{
-							From:         "TestPerson",
-							To:           "Testing",
-							RelationType: "likes",
-						},
+			relationsResult, outr, err := kb.CreateRelations(ctx, nil, CreateRelationsArgs{
+				Relations: []Relation{
+					{
+						From:         "TestPerson",
+						To:           "Testing",
+						RelationType: "likes",
 					},
 				},
-			}
-
-			relationsResult, err := kb.CreateRelations(ctx, serverSession, createRelationsParams)
+			})
 			if err != nil {
 				t.Fatalf("MCP CreateRelations failed: %v", err)
 			}
 			if relationsResult.IsError {
 				t.Fatalf("MCP CreateRelations returned error: %v", relationsResult.Content)
 			}
-			if len(relationsResult.StructuredContent.Relations) != 1 {
-				t.Errorf("expected 1 relation created, got %d", len(relationsResult.StructuredContent.Relations))
+			if len(outr.Relations) != 1 {
+				t.Errorf("expected 1 relation created, got %d", len(outr.Relations))
 			}
 
-			// Test AddObservations through MCP
-			addObsParams := &mcp.CallToolParamsFor[AddObservationsArgs]{
-				Arguments: AddObservationsArgs{
-					Observations: []Observation{
-						{
-							EntityName: "TestPerson",
-							Contents:   []string{"Works remotely", "Drinks coffee"},
-						},
+			obsResult, outo, err := kb.AddObservations(ctx, nil, AddObservationsArgs{
+				Observations: []Observation{
+					{
+						EntityName: "TestPerson",
+						Contents:   []string{"Works remotely", "Drinks coffee"},
 					},
 				},
-			}
-
-			obsResult, err := kb.AddObservations(ctx, serverSession, addObsParams)
+			})
 			if err != nil {
 				t.Fatalf("MCP AddObservations failed: %v", err)
 			}
 			if obsResult.IsError {
 				t.Fatalf("MCP AddObservations returned error: %v", obsResult.Content)
 			}
-			if len(obsResult.StructuredContent.Observations) != 1 {
-				t.Errorf("expected 1 observation result, got %d", len(obsResult.StructuredContent.Observations))
+			if len(outo.Observations) != 1 {
+				t.Errorf("expected 1 observation result, got %d", len(outo.Observations))
 			}
 
-			// Test SearchNodes through MCP
-			searchParams := &mcp.CallToolParamsFor[SearchNodesArgs]{
-				Arguments: SearchNodesArgs{
-					Query: "coffee",
-				},
-			}
-
-			searchResult, err := kb.SearchNodes(ctx, serverSession, searchParams)
+			searchResult, outg, err := kb.SearchNodes(ctx, nil, SearchNodesArgs{
+				Query: "coffee",
+			})
 			if err != nil {
 				t.Fatalf("MCP SearchNodes failed: %v", err)
 			}
 			if searchResult.IsError {
 				t.Fatalf("MCP SearchNodes returned error: %v", searchResult.Content)
 			}
-			if len(searchResult.StructuredContent.Entities) != 1 {
-				t.Errorf("expected 1 entity from search, got %d", len(searchResult.StructuredContent.Entities))
+			if len(outg.Entities) != 1 {
+				t.Errorf("expected 1 entity from search, got %d", len(outg.Entities))
 			}
 
-			// Test OpenNodes through MCP
-			openParams := &mcp.CallToolParamsFor[OpenNodesArgs]{
-				Arguments: OpenNodesArgs{
-					Names: []string{"TestPerson"},
-				},
-			}
-
-			openResult, err := kb.OpenNodes(ctx, serverSession, openParams)
+			openResult, outg, err := kb.OpenNodes(ctx, nil, OpenNodesArgs{
+				Names: []string{"TestPerson"},
+			})
 			if err != nil {
 				t.Fatalf("MCP OpenNodes failed: %v", err)
 			}
 			if openResult.IsError {
 				t.Fatalf("MCP OpenNodes returned error: %v", openResult.Content)
 			}
-			if len(openResult.StructuredContent.Entities) != 1 {
-				t.Errorf("expected 1 entity from open, got %d", len(openResult.StructuredContent.Entities))
+			if len(outg.Entities) != 1 {
+				t.Errorf("expected 1 entity from open, got %d", len(outg.Entities))
 			}
 
-			// Test DeleteObservations through MCP
-			deleteObsParams := &mcp.CallToolParamsFor[DeleteObservationsArgs]{
-				Arguments: DeleteObservationsArgs{
-					Deletions: []Observation{
-						{
-							EntityName:   "TestPerson",
-							Observations: []string{"Works remotely"},
-						},
+			deleteObsResult, _, err := kb.DeleteObservations(ctx, nil, DeleteObservationsArgs{
+				Deletions: []Observation{
+					{
+						EntityName:   "TestPerson",
+						Observations: []string{"Works remotely"},
 					},
 				},
-			}
-
-			deleteObsResult, err := kb.DeleteObservations(ctx, serverSession, deleteObsParams)
+			})
 			if err != nil {
 				t.Fatalf("MCP DeleteObservations failed: %v", err)
 			}
@@ -577,20 +545,15 @@ func TestMCPServerIntegration(t *testing.T) {
 				t.Fatalf("MCP DeleteObservations returned error: %v", deleteObsResult.Content)
 			}
 
-			// Test DeleteRelations through MCP
-			deleteRelParams := &mcp.CallToolParamsFor[DeleteRelationsArgs]{
-				Arguments: DeleteRelationsArgs{
-					Relations: []Relation{
-						{
-							From:         "TestPerson",
-							To:           "Testing",
-							RelationType: "likes",
-						},
+			deleteRelResult, _, err := kb.DeleteRelations(ctx, nil, DeleteRelationsArgs{
+				Relations: []Relation{
+					{
+						From:         "TestPerson",
+						To:           "Testing",
+						RelationType: "likes",
 					},
 				},
-			}
-
-			deleteRelResult, err := kb.DeleteRelations(ctx, serverSession, deleteRelParams)
+			})
 			if err != nil {
 				t.Fatalf("MCP DeleteRelations failed: %v", err)
 			}
@@ -598,14 +561,9 @@ func TestMCPServerIntegration(t *testing.T) {
 				t.Fatalf("MCP DeleteRelations returned error: %v", deleteRelResult.Content)
 			}
 
-			// Test DeleteEntities through MCP
-			deleteEntParams := &mcp.CallToolParamsFor[DeleteEntitiesArgs]{
-				Arguments: DeleteEntitiesArgs{
-					EntityNames: []string{"TestPerson"},
-				},
-			}
-
-			deleteEntResult, err := kb.DeleteEntities(ctx, serverSession, deleteEntParams)
+			deleteEntResult, _, err := kb.DeleteEntities(ctx, nil, DeleteEntitiesArgs{
+				EntityNames: []string{"TestPerson"},
+			})
 			if err != nil {
 				t.Fatalf("MCP DeleteEntities failed: %v", err)
 			}
@@ -614,12 +572,12 @@ func TestMCPServerIntegration(t *testing.T) {
 			}
 
 			// Verify final state
-			finalRead, err := kb.ReadGraph(ctx, serverSession, readParams)
+			_, outg, err = kb.ReadGraph(ctx, nil, nil)
 			if err != nil {
 				t.Fatalf("Final MCP ReadGraph failed: %v", err)
 			}
-			if len(finalRead.StructuredContent.Entities) != 0 {
-				t.Errorf("expected empty graph after deletion, got %d entities", len(finalRead.StructuredContent.Entities))
+			if len(outg.Entities) != 0 {
+				t.Errorf("expected empty graph after deletion, got %d entities", len(outg.Entities))
 			}
 		})
 	}
@@ -633,21 +591,15 @@ func TestMCPErrorHandling(t *testing.T) {
 			kb := knowledgeBase{s: s}
 
 			ctx := context.Background()
-			serverSession := &mcp.ServerSession{}
 
-			// Test adding observations to non-existent entity
-			addObsParams := &mcp.CallToolParamsFor[AddObservationsArgs]{
-				Arguments: AddObservationsArgs{
-					Observations: []Observation{
-						{
-							EntityName: "NonExistentEntity",
-							Contents:   []string{"This should fail"},
-						},
+			_, _, err := kb.AddObservations(ctx, nil, AddObservationsArgs{
+				Observations: []Observation{
+					{
+						EntityName: "NonExistentEntity",
+						Contents:   []string{"This should fail"},
 					},
 				},
-			}
-
-			_, err := kb.AddObservations(ctx, serverSession, addObsParams)
+			})
 			if err == nil {
 				t.Errorf("expected MCP AddObservations to return error for non-existent entity")
 			} else {
@@ -667,18 +619,12 @@ func TestMCPResponseFormat(t *testing.T) {
 	kb := knowledgeBase{s: s}
 
 	ctx := context.Background()
-	serverSession := &mcp.ServerSession{}
 
-	// Test CreateEntities response format
-	createParams := &mcp.CallToolParamsFor[CreateEntitiesArgs]{
-		Arguments: CreateEntitiesArgs{
-			Entities: []Entity{
-				{Name: "FormatTest", EntityType: "Test"},
-			},
+	result, out, err := kb.CreateEntities(ctx, nil, CreateEntitiesArgs{
+		Entities: []Entity{
+			{Name: "FormatTest", EntityType: "Test"},
 		},
-	}
-
-	result, err := kb.CreateEntities(ctx, serverSession, createParams)
+	})
 	if err != nil {
 		t.Fatalf("CreateEntities failed: %v", err)
 	}
@@ -687,7 +633,7 @@ func TestMCPResponseFormat(t *testing.T) {
 	if len(result.Content) == 0 {
 		t.Errorf("expected Content field to be populated")
 	}
-	if len(result.StructuredContent.Entities) == 0 {
+	if len(out.Entities) == 0 {
 		t.Errorf("expected StructuredContent.Entities to be populated")
 	}
 

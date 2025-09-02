@@ -12,12 +12,14 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Reader abstracts the transport mechanics from the JSON RPC protocol.
 // A Conn reads messages from the reader it was provided on construction,
 // and assumes that each call to Read fully transfers a single message,
 // or returns an error.
+//
 // A reader is not safe for concurrent use, it is expected it will be used by
 // a single Conn in a safe manner.
 type Reader interface {
@@ -29,8 +31,9 @@ type Reader interface {
 // A Conn writes messages using the writer it was provided on construction,
 // and assumes that each call to Write fully transfers a single message,
 // or returns an error.
-// A writer is not safe for concurrent use, it is expected it will be used by
-// a single Conn in a safe manner.
+//
+// A writer must be safe for concurrent use, as writes may occur concurrently
+// in practice: libraries may make calls or respond to requests asynchronously.
 type Writer interface {
 	// Write sends a message to the stream.
 	Write(context.Context, Message) error
@@ -62,7 +65,10 @@ func RawFramer() Framer { return rawFramer{} }
 
 type rawFramer struct{}
 type rawReader struct{ in *json.Decoder }
-type rawWriter struct{ out io.Writer }
+type rawWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
 
 func (rawFramer) Reader(rw io.Reader) Reader {
 	return &rawReader{in: json.NewDecoder(rw)}
@@ -92,10 +98,14 @@ func (w *rawWriter) Write(ctx context.Context, msg Message) error {
 		return ctx.Err()
 	default:
 	}
+
 	data, err := EncodeMessage(msg)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %v", err)
 	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	_, err = w.out.Write(data)
 	return err
 }
@@ -107,7 +117,10 @@ func HeaderFramer() Framer { return headerFramer{} }
 
 type headerFramer struct{}
 type headerReader struct{ in *bufio.Reader }
-type headerWriter struct{ out io.Writer }
+type headerWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
 
 func (headerFramer) Reader(rw io.Reader) Reader {
 	return &headerReader{in: bufio.NewReader(rw)}
@@ -180,6 +193,9 @@ func (w *headerWriter) Write(ctx context.Context, msg Message) error {
 		return ctx.Err()
 	default:
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	data, err := EncodeMessage(msg)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %v", err)

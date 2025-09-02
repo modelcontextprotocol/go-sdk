@@ -44,12 +44,13 @@ func TestSSEServer(t *testing.T) {
 				}),
 			}
 
-			clientTransport := NewSSEClientTransport(httpServer.URL, &SSEClientTransportOptions{
+			clientTransport := &SSEClientTransport{
+				Endpoint:   httpServer.URL,
 				HTTPClient: customClient,
-			})
+			}
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, clientTransport)
+			cs, err := c.Connect(ctx, clientTransport, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

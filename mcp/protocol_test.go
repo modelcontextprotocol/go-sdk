@@ -208,6 +208,7 @@ func TestCompleteReference(t *testing.T) {
 		})
 	}
 }
+
 func TestCompleteParams(t *testing.T) {
 	// Define test cases specifically for Marshalling
 	marshalTests := []struct {
@@ -514,13 +515,13 @@ func TestContentUnmarshal(t *testing.T) {
 	var got CallToolResult
 	roundtrip(ctr, &got)
 
-	ctrf := &CallToolResultFor[int]{
+	ctrf := &CallToolResult{
 		Meta:              Meta{"m": true},
 		Content:           content,
 		IsError:           true,
-		StructuredContent: 3,
+		StructuredContent: 3.0,
 	}
-	var gotf CallToolResultFor[int]
+	var gotf CallToolResult
 	roundtrip(ctrf, &gotf)
 
 	pm := &PromptMessage{

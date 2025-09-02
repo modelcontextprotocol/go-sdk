@@ -17,7 +17,9 @@ import (
 // A featureSet is a collection of features of type T.
 // Every feature has a unique ID, and the spec never mentions
 // an ordering for the List calls, so what it calls a "list" is actually a set.
-// TODO: switch to an ordered map
+//
+// An alternative implementation would use an ordered map, but that's probably
+// not necessary as adds and removes are rare, and usually batched.
 type featureSet[T any] struct {
 	uniqueID   func(T) string
 	features   map[string]T

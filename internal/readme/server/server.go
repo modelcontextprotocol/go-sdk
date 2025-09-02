@@ -16,10 +16,10 @@ type HiParams struct {
 	Name string `json:"name" jsonschema:"the name of the person to greet"`
 }
 
-func SayHi(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[HiParams]) (*mcp.CallToolResultFor[any], error) {
-	return &mcp.CallToolResultFor[any]{
-		Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + params.Arguments.Name}},
-	}, nil
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, args HiParams) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + args.Name}},
+	}, nil, nil
 }
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 	// Run the server over stdin/stdout, until the client disconnects
-	if err := server.Run(context.Background(), mcp.NewStdioTransport()); err != nil {
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -7,26 +7,42 @@ package mcp_test
 import (
 	"context"
 	"iter"
+	"log"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestList(t *testing.T) {
 	ctx := context.Background()
-	clientSession, serverSession, server := createSessions(ctx)
-	defer clientSession.Close()
+	server := mcp.NewServer(testImpl, nil)
+	client := mcp.NewClient(testImpl, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer clientSession.Close()
 
 	t.Run("tools", func(t *testing.T) {
 		var wantTools []*mcp.Tool
 		for _, name := range []string{"apple", "banana", "cherry"} {
-			t := &mcp.Tool{Name: name, Description: name + " tool"}
-			wantTools = append(wantTools, t)
-			mcp.AddTool(server, t, SayHi)
+			tt := &mcp.Tool{Name: name, Description: name + " tool"}
+			mcp.AddTool(server, tt, SayHi)
+			is, err := jsonschema.For[SayHiParams](nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.InputSchema = is
+			wantTools = append(wantTools, tt)
 		}
 		t.Run("list", func(t *testing.T) {
 			res, err := clientSession.ListTools(ctx, nil)
@@ -38,7 +54,7 @@ func TestList(t *testing.T) {
 			}
 		})
 		t.Run("iterator", func(t *testing.T) {
-			testIterator(ctx, t, clientSession.Tools(ctx, nil), wantTools)
+			testIterator(t, clientSession.Tools(ctx, nil), wantTools)
 		})
 	})
 
@@ -60,7 +76,7 @@ func TestList(t *testing.T) {
 			}
 		})
 		t.Run("iterator", func(t *testing.T) {
-			testIterator(ctx, t, clientSession.Resources(ctx, nil), wantResources)
+			testIterator(t, clientSession.Resources(ctx, nil), wantResources)
 		})
 	})
 
@@ -81,7 +97,7 @@ func TestList(t *testing.T) {
 			}
 		})
 		t.Run("ResourceTemplatesIterator", func(t *testing.T) {
-			testIterator(ctx, t, clientSession.ResourceTemplates(ctx, nil), wantResourceTemplates)
+			testIterator(t, clientSession.ResourceTemplates(ctx, nil), wantResourceTemplates)
 		})
 	})
 
@@ -102,12 +118,12 @@ func TestList(t *testing.T) {
 			}
 		})
 		t.Run("iterator", func(t *testing.T) {
-			testIterator(ctx, t, clientSession.Prompts(ctx, nil), wantPrompts)
+			testIterator(t, clientSession.Prompts(ctx, nil), wantPrompts)
 		})
 	})
 }
 
-func testIterator[T any](ctx context.Context, t *testing.T, seq iter.Seq2[*T, error], want []*T) {
+func testIterator[T any](t *testing.T, seq iter.Seq2[*T, error], want []*T) {
 	t.Helper()
 	var got []*T
 	for x, err := range seq {
@@ -121,6 +137,6 @@ func testIterator[T any](ctx context.Context, t *testing.T, seq iter.Seq2[*T, er
 	}
 }
 
-func testPromptHandler(context.Context, *mcp.ServerSession, *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+func testPromptHandler(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 	panic("not implemented")
 }

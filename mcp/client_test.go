@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type Item struct {
@@ -186,6 +186,51 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 			}
 			if diff := cmp.Diff(allItems, gotItems, cmpopts.IgnoreUnexported(jsonschema.Schema{})); diff != "" {
 				t.Fatalf("paginate() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestClientCapabilities(t *testing.T) {
+	testCases := []struct {
+		name             string
+		configureClient  func(s *Client)
+		clientOpts       ClientOptions
+		wantCapabilities *ClientCapabilities
+	}{
+		{
+			name:            "With initial capabilities",
+			configureClient: func(s *Client) {},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+			},
+		},
+		{
+			name:            "With sampling",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+				Sampling: &SamplingCapabilities{},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(testImpl, &tc.clientOpts)
+			tc.configureClient(client)
+			gotCapabilities := client.capabilities()
+			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
+				t.Errorf("capabilities() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

@@ -5,25 +5,16 @@
 package mcp
 
 import (
-	"context"
 	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type SayHiParams struct {
 	Name string `json:"name"`
-}
-
-func SayHi(ctx context.Context, cc *ServerSession, params *CallToolParamsFor[SayHiParams]) (*CallToolResultFor[any], error) {
-	return &CallToolResultFor[any]{
-		Content: []Content{
-			&TextContent{Text: "Hi " + params.Name},
-		},
-	}, nil
 }
 
 func TestFeatureSetOrder(t *testing.T) {

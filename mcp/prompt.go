@@ -9,7 +9,7 @@ import (
 )
 
 // A PromptHandler handles a call to prompts/get.
-type PromptHandler func(context.Context, *ServerSession, *GetPromptParams) (*GetPromptResult, error)
+type PromptHandler func(context.Context, *GetPromptRequest) (*GetPromptResult, error)
 
 type serverPrompt struct {
 	prompt  *Prompt

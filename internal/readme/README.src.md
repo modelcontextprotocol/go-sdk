@@ -1,4 +1,4 @@
-# MCP Go SDK v0.2.0
+# MCP Go SDK v0.3.0
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
@@ -6,7 +6,7 @@
 
 This version contains breaking changes.
 See the [release notes](
-https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.2.0) for details.
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.3.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
@@ -14,11 +14,9 @@ This repository contains an unreleased implementation of the official Go
 software development kit (SDK) for the Model Context Protocol (MCP).
 
 > [!WARNING]
-> The SDK should be considered unreleased, and is currently unstable
-> and subject to breaking changes. Please test it out and file bug reports or API
-> proposals, but don't use it in real projects. See the issue tracker for known
-> issues and missing features. We aim to release a stable version of the SDK in
-> August, 2025.
+> The SDK is not yet at v1.0.0 and may still be subject to incompatible API
+> changes. We aim to tag v1.0.0 in September, 2025. See
+> https://github.com/modelcontextprotocol/go-sdk/issues/328 for details.
 
 ## Design
 
