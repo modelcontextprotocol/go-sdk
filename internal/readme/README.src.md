@@ -32,16 +32,12 @@ open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
 
 ## Package documentation
 
-The SDK consists of three importable packages:
+The SDK consists of two importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
   package defines the primary APIs for constructing and using MCP clients and
   servers.
-- The
-  [`github.com/modelcontextprotocol/go-sdk/jsonschema`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
-  package provides an implementation of [JSON
-  Schema](https://json-schema.org/), used for MCP tool input and output schema.
 - The
   [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
   their own transports.
