@@ -64,7 +64,7 @@ type GetTimeParams struct {
 }
 
 // getTime implements the tool that returns the current time for a given city.
-func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolParamsFor[GetTimeParams]) (*mcp.CallToolResultFor[any], error) {
+func getTime(ctx context.Context, req *mcp.CallToolRequest, params *GetTimeParams) (*mcp.CallToolResult, any, error) {
 	// Define time zones for each city
 	locations := map[string]string{
 		"nyc":    "America/New_York",
@@ -72,7 +72,7 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 		"boston": "America/New_York",
 	}
 
-	city := params.Arguments.City
+	city := params.City
 	if city == "" {
 		city = "nyc" // Default to NYC
 	}
@@ -80,13 +80,13 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 	// Get the timezone.
 	tzName, ok := locations[city]
 	if !ok {
-		return nil, fmt.Errorf("unknown city: %s", city)
+		return nil, nil, fmt.Errorf("unknown city: %s", city)
 	}
 
 	// Load the location.
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load timezone: %w", err)
+		return nil, nil, fmt.Errorf("failed to load timezone: %w", err)
 	}
 
 	// Get current time in that location.
@@ -103,11 +103,11 @@ func getTime(ctx context.Context, ss *mcp.ServerSession, params *mcp.CallToolPar
 		cityNames[city],
 		now.Format(time.RFC3339))
 
-	return &mcp.CallToolResultFor[any]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: response},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func runServer(url string) {
@@ -145,9 +145,6 @@ func runClient(url string) {
 	// Create the URL for the server.
 	log.Printf("Connecting to MCP server at %s", url)
 
-	// Create a streamable client transport.
-	transport := mcp.NewStreamableClientTransport(url, nil)
-
 	// Create an MCP client.
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "time-client",
@@ -155,7 +152,7 @@ func runClient(url string) {
 	}, nil)
 
 	// Connect to the server.
-	session, err := client.Connect(ctx, transport)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: url}, nil)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
