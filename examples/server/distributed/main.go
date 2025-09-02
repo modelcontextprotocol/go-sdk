@@ -80,7 +80,6 @@ func parent() {
 	var wg sync.WaitGroup
 	childURLs := make([]*url.URL, len(ports))
 	for i, port := range ports {
-		wg.Add(1)
 		childURL := fmt.Sprintf("http://localhost:%s", port)
 		childURLs[i], err = url.Parse(childURL)
 		if err != nil {
@@ -89,6 +88,8 @@ func parent() {
 		cmd := exec.CommandContext(ctx, exe, os.Args[1:]...)
 		cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", childPortVar, port))
 		cmd.Stderr = os.Stderr
+
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			log.Printf("starting child %d at %s", i, childURL)
