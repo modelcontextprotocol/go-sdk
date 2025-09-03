@@ -40,6 +40,7 @@ type Annotations struct {
 	Priority float64 `json:"priority,omitempty"`
 }
 
+// CallToolParams is used by clients to call a tool.
 type CallToolParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -48,20 +49,13 @@ type CallToolParams struct {
 	Arguments any    `json:"arguments,omitempty"`
 }
 
-// When unmarshalling CallToolParams on the server side, we need to delay unmarshaling of the arguments.
-func (c *CallToolParams) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Meta         `json:"_meta,omitempty"`
-		Name         string          `json:"name"`
-		RawArguments json.RawMessage `json:"arguments,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	c.Meta = raw.Meta
-	c.Name = raw.Name
-	c.Arguments = raw.RawArguments
-	return nil
+// CallToolParamsRaw is passed to tool handlers on the server.
+type CallToolParamsRaw struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta      `json:"_meta,omitempty"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // The server's response to a tool call.
@@ -114,6 +108,10 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 func (x *CallToolParams) isParams()              {}
 func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+func (x *CallToolParamsRaw) isParams()              {}
+func (x *CallToolParamsRaw) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CallToolParamsRaw) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to

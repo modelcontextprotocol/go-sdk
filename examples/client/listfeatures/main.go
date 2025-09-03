@@ -31,10 +31,10 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: listfeatures <command> [<args>]")
-		fmt.Fprintf(os.Stderr, "List all features for a stdio MCP server")
+		fmt.Fprintln(os.Stderr, "Usage: listfeatures <command> [<args>]")
+		fmt.Fprintln(os.Stderr, "List all features for a stdio MCP server")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "Example: listfeatures npx @modelcontextprotocol/server-everything")
+		fmt.Fprintln(os.Stderr, "Example:\n\tlistfeatures npx @modelcontextprotocol/server-everything")
 		os.Exit(2)
 	}
 

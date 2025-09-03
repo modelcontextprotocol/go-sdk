@@ -64,6 +64,12 @@ func main() {
 					"duration_ms", duration.Milliseconds(),
 					"has_result", result != nil,
 				)
+				// Log more for tool results.
+				if ctr, ok := result.(*mcp.CallToolResult); ok {
+					logger.Info("tool result",
+						"isError", ctr.IsError,
+						"structuredContent", ctr.StructuredContent)
+				}
 			}
 			return result, err
 		}
@@ -103,7 +109,7 @@ func main() {
 				Content: []mcp.Content{
 					&mcp.TextContent{Text: message},
 				},
-			}, nil, nil
+			}, message, nil
 		},
 	)
 

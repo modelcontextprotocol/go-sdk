@@ -19,6 +19,8 @@ func TestVerify(t *testing.T) {
 			return &TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
 		case "invalid":
 			return nil, ErrInvalidToken
+		case "oauth":
+			return nil, ErrOAuth
 		case "noexp":
 			return &TokenInfo{}, nil
 		case "expired":
@@ -46,6 +48,10 @@ func TestVerify(t *testing.T) {
 		{
 			"invalid", nil, "bearer invalid",
 			"invalid token", 401,
+		},
+		{
+			"oauth error", nil, "Bearer oauth",
+			"oauth error", 400,
 		},
 		{
 			"no expiration", nil, "Bearer noexp",
