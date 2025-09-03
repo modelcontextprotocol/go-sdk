@@ -7,13 +7,13 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
 
 func TestVerify(t *testing.T) {
-	ctx := context.Background()
-	verifier := func(_ context.Context, token string) (*TokenInfo, error) {
+	verifier := func(_ context.Context, token string, _ *http.Request) (*TokenInfo, error) {
 		switch token {
 		case "valid":
 			return &TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
@@ -61,7 +61,9 @@ func TestVerify(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotMsg, gotCode := verify(ctx, verifier, tt.opts, tt.header)
+			_, gotMsg, gotCode := verify(&http.Request{
+				Header: http.Header{"Authorization": {tt.header}},
+			}, verifier, tt.opts)
 			if gotMsg != tt.wantMsg || gotCode != tt.wantCode {
 				t.Errorf("got (%q, %d), want (%q, %d)", gotMsg, gotCode, tt.wantMsg, tt.wantCode)
 			}

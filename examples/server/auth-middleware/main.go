@@ -83,7 +83,7 @@ func generateToken(userID string, scopes []string, expiresIn time.Duration) (str
 
 // verifyJWT verifies JWT tokens and returns TokenInfo for the auth middleware.
 // This function implements the TokenVerifier interface required by auth.RequireBearerToken.
-func verifyJWT(ctx context.Context, tokenString string) (*auth.TokenInfo, error) {
+func verifyJWT(ctx context.Context, tokenString string, _ *http.Request) (*auth.TokenInfo, error) {
 	// Parse and validate the JWT token.
 	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (any, error) {
 		// Verify the signing method is HMAC.
@@ -92,7 +92,6 @@ func verifyJWT(ctx context.Context, tokenString string) (*auth.TokenInfo, error)
 		}
 		return jwtSecret, nil
 	})
-
 	if err != nil {
 		// Return standard error for invalid tokens.
 		return nil, fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
@@ -111,7 +110,7 @@ func verifyJWT(ctx context.Context, tokenString string) (*auth.TokenInfo, error)
 
 // verifyAPIKey verifies API keys and returns TokenInfo for the auth middleware.
 // This function implements the TokenVerifier interface required by auth.RequireBearerToken.
-func verifyAPIKey(ctx context.Context, apiKey string) (*auth.TokenInfo, error) {
+func verifyAPIKey(ctx context.Context, apiKey string, _ *http.Request) (*auth.TokenInfo, error) {
 	// Look up the API key in our storage.
 	key, exists := apiKeys[apiKey]
 	if !exists {

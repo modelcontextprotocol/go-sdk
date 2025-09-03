@@ -1270,7 +1270,7 @@ func TestTokenInfo(t *testing.T) {
 	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
 
 	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	verifier := func(context.Context, string) (*auth.TokenInfo, error) {
+	verifier := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
 		return &auth.TokenInfo{
 			Scopes: []string{"scope"},
 			// Expiration is far, far in the future.
