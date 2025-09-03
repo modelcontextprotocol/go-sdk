@@ -92,7 +92,6 @@ func verifyJWT(ctx context.Context, tokenString string) (*auth.TokenInfo, error)
 		}
 		return jwtSecret, nil
 	})
-
 	if err != nil {
 		// Return standard error for invalid tokens.
 		return nil, fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
@@ -207,19 +206,6 @@ func CreateResource(ctx context.Context, req *mcp.CallToolRequest, args createRe
 	}, nil, nil
 }
 
-// authMiddleware extracts token information and adds it to the context
-func authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// In a real application, you would extract token info from the auth middleware's context
-		// For this example, we simulate the token info that would be available
-		ctx := context.WithValue(r.Context(), "user_info", &auth.TokenInfo{
-			Scopes:     []string{"read", "write"},
-			Expiration: time.Now().Add(time.Hour),
-		})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 // createMCPServer creates an MCP server with authentication-aware tools
 func createMCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "authenticated-mcp-server"}, nil)
@@ -264,8 +250,8 @@ func main() {
 	}, nil)
 
 	// Apply authentication middleware to the MCP handler.
-	authenticatedHandler := jwtAuth(authMiddleware(handler))
-	apiKeyHandler := apiKeyAuth(authMiddleware(handler))
+	authenticatedHandler := jwtAuth(handler)
+	apiKeyHandler := apiKeyAuth(handler)
 
 	// Create router for different authentication methods.
 	http.HandleFunc("/mcp/jwt", authenticatedHandler.ServeHTTP)
