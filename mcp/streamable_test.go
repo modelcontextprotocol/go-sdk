@@ -84,7 +84,7 @@ func TestStreamableTransports(t *testing.T) {
 			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 			// cookie-checking middleware.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
-				jsonResponse: useJSON,
+				JSONResponse: useJSON,
 			})
 
 			var (
@@ -1175,7 +1175,10 @@ func TestStreamableStateless(t *testing.T) {
 				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "World"}}),
 			},
 			wantMessages: []jsonrpc.Message{
-				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi World"}}}, nil),
+				resp(2, &CallToolResult{
+					Content:           []Content{&TextContent{Text: "hi World"}},
+					StructuredContent: json.RawMessage("null"),
+				}, nil),
 			},
 			wantSessionID: false,
 		},
@@ -1186,7 +1189,10 @@ func TestStreamableStateless(t *testing.T) {
 				req(2, "tools/call", &CallToolParams{Name: "greet", Arguments: hiParams{Name: "foo"}}),
 			},
 			wantMessages: []jsonrpc.Message{
-				resp(2, &CallToolResult{Content: []Content{&TextContent{Text: "hi foo"}}}, nil),
+				resp(2, &CallToolResult{
+					Content:           []Content{&TextContent{Text: "hi foo"}},
+					StructuredContent: json.RawMessage("null"),
+				}, nil),
 			},
 			wantSessionID: false,
 		},
