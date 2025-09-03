@@ -1,0 +1,102 @@
+// Copyright 2025 The Go MCP SDK Authors. All rights reserved.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
+package auth
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"sync"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/oauthex"
+	"golang.org/x/oauth2"
+)
+
+// An OAuthHandler conducts an OAuth flow and returns a [oauth2.TokenSource] if the authorization
+// is approved, or an error if not.
+type OAuthHandler func(context.Context, OAuthHandlerArgs) (oauth2.TokenSource, error)
+
+// OAuthHandlerArgs are arguments to an [OAuthHandler].
+type OAuthHandlerArgs struct {
+	// The URL to fetch protected resource metadata, extracted from the WWW-Authenticate header.
+	// Empty if not present or there was an error obtaining it.
+	ResourceMetadataURL string
+}
+
+// HTTPTransport is an [http.RoundTripper] that follows the MCP
+// OAuth protocol when it encounters a 401 Unauthorized response.
+type HTTPTransport struct {
+	handler OAuthHandler
+	mu      sync.Mutex // protects opts.Base
+	opts    HTTPTransportOptions
+}
+
+// NewHTTPTransport returns a new [*HTTPTransport].
+// The handler is invoked when an HTTP request results in a 401 Unauthorized status.
+// It is called only once per transport. Once a TokenSource is obtained, it is used
+// for the lifetime of the transport; subsequent 401s are not processed.
+func NewHTTPTransport(handler OAuthHandler, opts *HTTPTransportOptions) (*HTTPTransport, error) {
+	t := &HTTPTransport{}
+	if opts != nil {
+		t.opts = *opts
+	}
+	if t.opts.Base == nil {
+		t.opts.Base = http.DefaultTransport
+	}
+	return t, nil
+}
+
+// HTTPTransportOptions are options to [NewHTTPTransport].
+type HTTPTransportOptions struct {
+	// Base is the [http.RoundTripper] to use.
+	// If nil, [http.DefaultTransport] is used.
+	Base http.RoundTripper
+}
+
+func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	base := t.opts.Base
+	_, haveTokenSource := base.(*oauth2.Transport)
+	t.mu.Unlock()
+
+	resp, err := base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	if haveTokenSource {
+		// We failed to authorize even with a token source; give up.
+		return resp, nil
+	}
+	// Try to authorize.
+	t.mu.Lock()
+	// If we don't have a token source, get one by following the OAuth flow.
+	// (We may have obtained one while t.mu was not held above.)
+	if _, ok := t.opts.Base.(*oauth2.Transport); !ok {
+		authHeaders := resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")]
+		ts, err := t.handler(req.Context(), OAuthHandlerArgs{
+			ResourceMetadataURL: extractResourceMetadataURL(authHeaders),
+		})
+		if err != nil {
+			t.mu.Unlock()
+			return nil, err
+		}
+		t.opts.Base = &oauth2.Transport{Base: t.opts.Base, Source: ts}
+	}
+	t.mu.Unlock()
+	// Only one level of recursion, because we now have a token source.
+	return t.RoundTrip(req)
+}
+
+func extractResourceMetadataURL(authHeaders []string) string {
+	cs, err := oauthex.ParseWWWAuthenticate(authHeaders)
+	if err != nil {
+		log.Printf("parsing auth headers %q: %v", authHeaders, err)
+		return ""
+	}
+	return oauthex.ResourceMetadataURL(cs)
+}
