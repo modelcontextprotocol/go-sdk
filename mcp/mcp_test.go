@@ -258,21 +258,22 @@ func TestEndToEnd(t *testing.T) {
 		}
 
 		// Check output schema validation.
-		tool, handler := ToolFor(&Tool{Name: "badout"},
-			func(_ context.Context, _ *CallToolRequest, arg map[string]any) (*CallToolResult, map[string]any, error) {
-				return nil, map[string]any{"x": 1}, nil
-			})
-		tool.OutputSchema.Properties = map[string]*jsonschema.Schema{
-			"x": {Type: "string"},
+		badout := &Tool{
+			Name: "badout",
+			OutputSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"x": {Type: "string"},
+				},
+			},
 		}
-		s.AddTool(tool, handler)
+		AddTool(s, badout, func(_ context.Context, _ *CallToolRequest, arg map[string]any) (*CallToolResult, map[string]any, error) {
+			return nil, map[string]any{"x": 1}, nil
+		})
 		gotFail, err = cs.CallTool(ctx, &CallToolParams{Name: "badout"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		wantFail = &CallToolResult{IsError: true}
-		if diff := cmp.Diff(wantFail, gotFail); diff != "" {
-			t.Errorf("tools/call 'badout' mismatch (-want +got):\n%s", diff)
+		wantMsg := `has type "integer", want "string"`
+		if err == nil || !strings.Contains(err.Error(), wantMsg) {
+			t.Errorf("\ngot  %q\nwant error message containing %q", err, wantMsg)
 		}
 
 		// Check tools-changed notifications.

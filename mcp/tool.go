@@ -46,7 +46,6 @@ func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any)
 	return validateSchema(resolved, v)
 }
 
-// TODO: test with nil args.
 func validateSchema(resolved *jsonschema.Resolved, value any) error {
 	if resolved != nil {
 		if err := resolved.ApplyDefaults(value); err != nil {
