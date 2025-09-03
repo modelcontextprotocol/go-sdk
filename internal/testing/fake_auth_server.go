@@ -34,6 +34,8 @@ type state struct {
 	authCodes map[string]authCodeInfo
 }
 
+// NewFakeAuthMux constructs a ServeMux that implements an OAuth 2.1 authentication
+// server. It should be used with [httptest.NewTLSServer].
 func NewFakeAuthMux() *http.ServeMux {
 	s := &state{authCodes: make(map[string]authCodeInfo)}
 	mux := http.NewServeMux()
@@ -44,6 +46,7 @@ func NewFakeAuthMux() *http.ServeMux {
 }
 
 func (s *state) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	issuer := "https://localhost:" + r.URL.Port()
 	metadata := map[string]any{
 		"issuer":                                issuer,
 		"authorization_endpoint":                issuer + "/authorize",
@@ -71,11 +74,15 @@ func (s *state) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirectURI == "" {
-		http.Error(w, "invalid_request", http.StatusBadRequest)
+		http.Error(w, "invalid_request (no redirect_uri)", http.StatusBadRequest)
 		return
 	}
 	if codeChallenge == "" || codeChallengeMethod != "S256" {
-		http.Error(w, "invalid_request", http.StatusBadRequest)
+		http.Error(w, "invalid_request (code challenge is not S256)", http.StatusBadRequest)
+		return
+	}
+	if query.Get("client_id") == "" {
+		http.Error(w, "invalid_request (missing client_id)", http.StatusBadRequest)
 		return
 	}
 
@@ -93,8 +100,9 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	grantType := r.Form.Get("grant_type")
 	code := r.Form.Get("code")
-	redirectURI := r.Form.Get("redirect_uri")
 	codeVerifier := r.Form.Get("code_verifier")
+	// Ignore redirect_uri; it is not required in 2.1.
+	// https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-13.html#redirect-uri-in-token-request
 
 	if grantType != "authorization_code" {
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
@@ -107,11 +115,6 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(s.authCodes, code)
-
-	if authCodeInfo.redirectURI != redirectURI {
-		http.Error(w, "invalid_grant", http.StatusBadRequest)
-		return
-	}
 
 	// PKCE verification
 	hasher := sha256.New()
