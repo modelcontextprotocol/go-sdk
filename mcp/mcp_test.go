@@ -270,7 +270,7 @@ func TestEndToEnd(t *testing.T) {
 		AddTool(s, badout, func(_ context.Context, _ *CallToolRequest, arg map[string]any) (*CallToolResult, map[string]any, error) {
 			return nil, map[string]any{"x": 1}, nil
 		})
-		gotFail, err = cs.CallTool(ctx, &CallToolParams{Name: "badout"})
+		_, err = cs.CallTool(ctx, &CallToolParams{Name: "badout"})
 		wantMsg := `has type "integer", want "string"`
 		if err == nil || !strings.Contains(err.Error(), wantMsg) {
 			t.Errorf("\ngot  %q\nwant error message containing %q", err, wantMsg)
