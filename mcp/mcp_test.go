@@ -257,6 +257,25 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
+		// Check output schema validation.
+		tool, handler := ToolFor(&Tool{Name: "badout"},
+			func(_ context.Context, _ *CallToolRequest, arg map[string]any) (*CallToolResult, map[string]any, error) {
+				return nil, map[string]any{"x": 1}, nil
+			})
+		tool.OutputSchema.Properties = map[string]*jsonschema.Schema{
+			"x": {Type: "string"},
+		}
+		s.AddTool(tool, handler)
+		gotFail, err = cs.CallTool(ctx, &CallToolParams{Name: "badout"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantFail = &CallToolResult{IsError: true}
+		if diff := cmp.Diff(wantFail, gotFail); diff != "" {
+			t.Errorf("tools/call 'badout' mismatch (-want +got):\n%s", diff)
+		}
+
+		// Check tools-changed notifications.
 		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 		waitForNotification(t, "tools")
 		s.RemoveTools("T")
