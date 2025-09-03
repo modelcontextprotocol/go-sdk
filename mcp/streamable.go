@@ -72,8 +72,8 @@ type StreamableHTTPOptions struct {
 
 	// TODO: support session retention (?)
 
-	// jsonResponse is forwarded to StreamableServerTransport.jsonResponse.
-	jsonResponse bool
+	// JSONResponse is forwarded to StreamableServerTransport.jsonResponse.
+	JSONResponse bool
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -233,7 +233,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		transport = &StreamableServerTransport{
 			SessionID:    sessionID,
 			Stateless:    h.opts.Stateless,
-			jsonResponse: h.opts.jsonResponse,
+			jsonResponse: h.opts.JSONResponse,
 		}
 
 		// To support stateless mode, we initialize the session with a default
@@ -487,7 +487,7 @@ type stream struct {
 	// jsonResponse records whether this stream should respond with application/json
 	// instead of text/event-stream.
 	//
-	// See [StreamableServerTransportOptions.jsonResponse].
+	// See [StreamableServerTransportOptions.JSONResponse].
 	jsonResponse bool
 
 	// signal is a 1-buffered channel, owned by an incoming HTTP request, that signals
