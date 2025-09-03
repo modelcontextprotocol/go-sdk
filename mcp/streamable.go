@@ -171,7 +171,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
-		if req.Method == http.MethodGet && sessionID == "" {
+		if req.Method == http.MethodGet && (h.opts.Stateless || sessionID == "") {
 			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
 			return
 		}
