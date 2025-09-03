@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -187,7 +188,8 @@ func getPRM(ctx context.Context, url string, c *http.Client, wantResource string
 	}
 
 	var prm ProtectedResourceMetadata
-	dec := json.NewDecoder(res.Body)
+	// Use a LimitReader to avoid maliciously large payloads.
+	dec := json.NewDecoder(io.LimitReader(res.Body, 1<<20))
 	if err := dec.Decode(&prm); err != nil {
 		return nil, err
 	}
