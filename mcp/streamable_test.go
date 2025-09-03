@@ -687,6 +687,13 @@ func TestStreamableServerTransport(t *testing.T) {
 					},
 					wantSessionID: true,
 				},
+				{
+					method:         "DELETE",
+					wantStatusCode: http.StatusNoContent,
+					// Delete request expects 204 No Content with empty body. So override
+					// the default "accept: application/json, text/event-stream" header.
+					headers: map[string][]string{"Accept": nil},
+				},
 			},
 		},
 		{

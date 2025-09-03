@@ -494,7 +494,6 @@ func TestEndToEnd(t *testing.T) {
 		if result.Action != "accept" {
 			t.Errorf("got action %q, want %q", result.Action, "accept")
 		}
-
 	})
 
 	// Disconnect.
@@ -1638,7 +1637,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 		//
 		// We handle a few different types of results, to assert they behave the
 		// same in all cases.
-		AddTool(s, &Tool{Name: "pointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in *input) (*CallToolResult, *output, error) {
+		AddTool(s, &Tool{Name: "pointer"}, func(_ context.Context, req *CallToolRequest, in *input) (*CallToolResult, *output, error) {
 			switch in.In {
 			case "":
 				return nil, nil, fmt.Errorf("must provide input")
@@ -1652,7 +1651,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 				panic("unreachable")
 			}
 		})
-		AddTool(s, &Tool{Name: "nonpointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in input) (*CallToolResult, output, error) {
+		AddTool(s, &Tool{Name: "nonpointer"}, func(_ context.Context, req *CallToolRequest, in input) (*CallToolResult, output, error) {
 			switch in.In {
 			case "":
 				return nil, output{}, fmt.Errorf("must provide input")
@@ -1724,4 +1723,37 @@ func TestPointerArgEquivalence(t *testing.T) {
 // ptr is a helper function to create pointers for schema constraints
 func ptr[T any](v T) *T {
 	return &v
+}
+
+func TestComplete(t *testing.T) {
+	completionValues := []string{"python", "pytorch", "pyside"}
+
+	serverOpts := &ServerOptions{
+		CompletionHandler: func(_ context.Context, request *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: completionValues,
+				},
+			}, nil
+		},
+	}
+	server := NewServer(testImpl, serverOpts)
+	cs, _ := basicClientServerConnection(t, nil, server, func(s *Server) {})
+	result, err := cs.Complete(context.Background(), &CompleteParams{
+		Argument: CompleteParamsArgument{
+			Name:  "language",
+			Value: "py",
+		},
+		Ref: &CompleteReference{
+			Type: "ref/prompt",
+			Name: "code_review",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(completionValues, result.Completion.Values); diff != "" {
+		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
+	}
 }

@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-package mcp_test
+package main
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func SayHi(ctx context.Context, req *mcp.CallToolRequest, args SayHiParams) (*mc
 	}, nil, nil
 }
 
-func ExampleServer() {
+func main() {
 	ctx := context.Background()
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
@@ -55,20 +55,4 @@ func ExampleServer() {
 	serverSession.Wait()
 
 	// Output: Hi user
-}
-
-// createSessions creates and connects an in-memory client and server session for testing purposes.
-func createSessions(ctx context.Context) (*mcp.ClientSession, *mcp.ServerSession, *mcp.Server) {
-	server := mcp.NewServer(testImpl, nil)
-	client := mcp.NewClient(testImpl, nil)
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	serverSession, err := server.Connect(ctx, serverTransport, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	clientSession, err := client.Connect(ctx, clientTransport, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return clientSession, serverSession, server
 }
