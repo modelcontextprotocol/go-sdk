@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"maps"
@@ -261,26 +262,35 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 		// TODO(v0.3.0): Validate out.
 		_ = outputResolved
 
-		// TODO: return the serialized JSON in a TextContent block, as per spec?
-		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content
-		// But people may use res.Content for other things.
 		if res == nil {
 			res = &CallToolResult{}
 		}
-		if res.Content == nil {
-			res.Content = []Content{} // avoid returning 'null'
-		}
-		res.StructuredContent = out
+		// Marshal the output and put the RawMessage in the StructuredContent field.
+		var outval any = out
 		if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
-			// Instead, use the zero value of the non-zero
+			// Instead, use the zero value of the unpointered type.
 			var z Out
 			if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
-				res.StructuredContent = elemZero
+				outval = elemZero
 			}
 		}
+		outbytes, err := json.Marshal(outval)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling output: %w", err)
+		}
+		res.StructuredContent = json.RawMessage(outbytes) // avoid a second marshal over the wire
+
+		// If the Content field isn't being used, return the serialized JSON in a
+		// TextContent block, as the spec suggests:
+		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+		if res.Content == nil {
+			res.Content = []Content{&TextContent{
+				Text: string(outbytes),
+			}}
+		}
 		return res, nil
-	}
+	} // end of handler
 
 	return &tt, th, nil
 }
