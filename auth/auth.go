@@ -98,8 +98,6 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		if errors.Is(err, ErrOAuth) {
 			return nil, err.Error(), http.StatusBadRequest
 		}
-		// Investigate how that works.
-		// See typescript-sdk/src/server/auth/middleware/bearerAuth.ts.
 		return nil, err.Error(), http.StatusInternalServerError
 	}
 
