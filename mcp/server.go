@@ -154,10 +154,18 @@ func (s *Server) RemovePrompts(names ...string) {
 // If present, the output schema must also have type "object".
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
-// will be a json.RawMessage. Unmarshaling the arguments and validating them against the
-// input schema are the handler author's responsibility.
+// will be a json.RawMessage.
 //
-// Most users should use the top-level function [AddTool].
+// Unmarshaling the arguments and validating them against the input schema are the
+// caller's responsibility.
+//
+// Validating the result against the output schema, if any, is the caller's responsibility.
+//
+// Setting the result's Content, StructuredContent and IsError fields are the caller's
+// responsibility.
+//
+// Most users should use the top-level function [AddTool], which handles all these
+// responsibilities.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
@@ -179,26 +187,6 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	// TODO: Surface notify error here? best not, in case we need to batch.
 	s.changeAndNotify(notificationToolListChanged, &ToolListChangedParams{},
 		func() bool { s.tools.add(st); return true })
-}
-
-// ToolFor returns a shallow copy of t and a [ToolHandler] that wraps h.
-//
-// If the tool's input schema is nil, it is set to the schema inferred from the In
-// type parameter, using [jsonschema.For]. The In type parameter must be a map
-// or a struct, so that its inferred JSON Schema has type "object".
-//
-// For tools that don't return structured output, Out should be 'any'.
-// Otherwise, if the tool's output schema is nil the output schema is set to
-// the schema inferred from Out, which must be a map or a struct.
-//
-// Most users will call [AddTool]. Use [ToolFor] if you wish to modify the
-// tool's schemas or wrap the ToolHandler before calling [Server.AddTool].
-func ToolFor[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHandler) {
-	tt, hh, err := toolForErr(t, h)
-	if err != nil {
-		panic(fmt.Sprintf("ToolFor: tool %q: %v", t.Name, err))
-	}
-	return tt, hh
 }
 
 // TODO(v0.3.0): test
@@ -335,10 +323,12 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 // For tools that don't return structured output, Out should be 'any'.
 // Otherwise, if the tool's output schema is nil the output schema is set to
 // the schema inferred from Out, which must be a map or a struct.
-//
-// It is a convenience for s.AddTool(ToolFor(t, h)).
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	s.AddTool(ToolFor(t, h))
+	tt, hh, err := toolForErr(t, h)
+	if err != nil {
+		panic(fmt.Sprintf("AddTool: tool %q: %v", t.Name, err))
+	}
+	s.AddTool(tt, hh)
 }
 
 // RemoveTools removes the tools with the given names.
