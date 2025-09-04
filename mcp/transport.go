@@ -194,7 +194,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	err := call.Await(ctx, result)
 	switch {
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("calling %q: %w", method, ErrConnectionClosed)
+		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
 		// Notify the peer of cancellation.
 		err := conn.Notify(xcontext.Detach(ctx), notificationCancelled, &CancelledParams{

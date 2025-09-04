@@ -6,11 +6,14 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -181,5 +184,92 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 	}
 	if diff := cmp.Diff(initResult, session.state.InitializeResult); diff != "" {
 		t.Errorf("mismatch (-want, +got):\n%s", diff)
+	}
+}
+
+func TestStreamableClientGETHandling(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		status              int
+		wantErrorContaining string
+	}{
+		{http.StatusOK, ""},
+		{http.StatusMethodNotAllowed, ""},
+		{http.StatusBadRequest, "hanging GET"},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("status=%d", test.status), func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"GET", "123", ""}: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						status:              test.status,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"POST", "123", methodListTools}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body:     jsonBody(t, resp(2, &ListToolsResult{Tools: []*Tool{}}, nil)),
+						optional: true,
+					},
+					{"DELETE", "123", ""}: {optional: true},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+
+			// wait for all required requests to be handled, with exponential
+			// backoff.
+			start := time.Now()
+			delay := 1 * time.Millisecond
+			for range 10 {
+				if len(fake.missingRequests()) == 0 {
+					break
+				}
+				time.Sleep(delay)
+				delay *= 2
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests after %s: %v", time.Since(start), missing)
+			}
+
+			_, err = session.ListTools(ctx, nil)
+			if (err != nil) != (test.wantErrorContaining != "") {
+				t.Errorf("After initialization, got error %v, want %v", err, test.wantErrorContaining)
+			} else if err != nil {
+				if !strings.Contains(err.Error(), test.wantErrorContaining) {
+					t.Errorf("After initialization, got error %s, want containing %q", err, test.wantErrorContaining)
+				}
+			}
+
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+		})
 	}
 }

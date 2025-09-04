@@ -1130,7 +1130,7 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	// § 2.5: A server using the Streamable HTTP transport MAY assign a session
 	// ID at initialization time, by including it in an Mcp-Session-Id header
 	// on the HTTP response containing the InitializeResult.
-	go c.handleSSE(nil, true, nil)
+	go c.handleSSE("hanging GET", nil, true, nil)
 }
 
 // fail handles an asynchronous error while reading.
@@ -1224,24 +1224,27 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return nil
 	}
 
+	var requestSummary string
+	switch msg := msg.(type) {
+	case *jsonrpc.Request:
+		requestSummary = fmt.Sprintf("sending %q", msg.Method)
+	case *jsonrpc.Response:
+		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
+	default:
+		panic("unreachable")
+	}
+
 	switch ct := resp.Header.Get("Content-Type"); ct {
 	case "application/json":
-		go c.handleJSON(resp)
+		go c.handleJSON(requestSummary, resp)
 
 	case "text/event-stream":
 		jsonReq, _ := msg.(*jsonrpc.Request)
-		go c.handleSSE(resp, false, jsonReq)
+		go c.handleSSE(requestSummary, resp, false, jsonReq)
 
 	default:
 		resp.Body.Close()
-		switch msg := msg.(type) {
-		case *jsonrpc.Request:
-			return fmt.Errorf("unsupported content type %q when sending %q (status: %d)", ct, msg.Method, resp.StatusCode)
-		case *jsonrpc.Response:
-			return fmt.Errorf("unsupported content type %q when sending jsonrpc response #%d (status: %d)", ct, msg.ID, resp.StatusCode)
-		default:
-			panic("unreachable")
-		}
+		return fmt.Errorf("%s: unsupported content type %q", requestSummary, ct)
 	}
 	return nil
 }
@@ -1265,16 +1268,16 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	}
 }
 
-func (c *streamableClientConn) handleJSON(resp *http.Response) {
+func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		c.fail(err)
+		c.fail(fmt.Errorf("%s: failed to read body: %v", requestSummary, err))
 		return
 	}
 	msg, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
-		c.fail(fmt.Errorf("failed to decode response: %v", err))
+		c.fail(fmt.Errorf("%s: failed to decode response: %v", requestSummary, err))
 		return
 	}
 	select {
@@ -1289,12 +1292,12 @@ func (c *streamableClientConn) handleJSON(resp *http.Response) {
 //
 // If forReq is set, it is the request that initiated the stream, and the
 // stream is complete when we receive its response.
-func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent bool, forReq *jsonrpc2.Request) {
+func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *http.Response, persistent bool, forReq *jsonrpc2.Request) {
 	resp := initialResp
 	var lastEventID string
 	for {
 		if resp != nil {
-			eventID, clientClosed := c.processStream(resp, forReq)
+			eventID, clientClosed := c.processStream(requestSummary, resp, forReq)
 			lastEventID = eventID
 
 			// If the connection was closed by the client, we're done.
@@ -1312,7 +1315,7 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 		newResp, err := c.reconnect(lastEventID)
 		if err != nil {
 			// All reconnection attempts failed: fail the connection.
-			c.fail(err)
+			c.fail(fmt.Errorf("%s: failed to reconnect: %v", requestSummary, err))
 			return
 		}
 		resp = newResp
@@ -1323,7 +1326,7 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
-			c.fail(fmt.Errorf("failed to reconnect: %v", http.StatusText(resp.StatusCode)))
+			c.fail(fmt.Errorf("%s: failed to reconnect: %v", requestSummary, http.StatusText(resp.StatusCode)))
 			return
 		}
 		// Reconnection was successful. Continue the loop with the new response.
@@ -1334,7 +1337,7 @@ func (c *streamableClientConn) handleSSE(initialResp *http.Response, persistent 
 // incoming channel. It returns the ID of the last processed event and a flag
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
-func (c *streamableClientConn) processStream(resp *http.Response, forReq *jsonrpc.Request) (lastEventID string, clientClosed bool) {
+func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forReq *jsonrpc.Request) (lastEventID string, clientClosed bool) {
 	defer resp.Body.Close()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
@@ -1347,7 +1350,7 @@ func (c *streamableClientConn) processStream(resp *http.Response, forReq *jsonrp
 
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
-			c.fail(fmt.Errorf("failed to decode event: %v", err))
+			c.fail(fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
 			return "", true
 		}
 
