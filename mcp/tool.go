@@ -15,11 +15,13 @@ import (
 )
 
 // A ToolHandler handles a call to tools/call.
-// [CallToolParams.Arguments] will contain a map[string]any that has been validated
-// against the input schema.
+// This is a low-level API, for use with [Server.AddTool].
+// Most users will write a [ToolHandlerFor] and install it with [AddTool].
 type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
+// Use [AddTool] to add a ToolHandlerFor to a server.
+// Most users can ignore the [CallToolRequest] argument and [CallToolResult] return value.
 type ToolHandlerFor[In, Out any] func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error)
 
 // A serverTool is a tool definition that is bound to a tool handler.

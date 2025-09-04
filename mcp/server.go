@@ -319,7 +319,6 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 }
 
 // AddTool adds a tool and typed tool handler to the server.
-//
 // If the tool's input schema is nil, it is set to the schema inferred from the
 // In type parameter, using [jsonschema.For]. The In type parameter must be a
 // map or a struct, so that its inferred JSON Schema has type "object".
@@ -327,6 +326,15 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 // For tools that don't return structured output, Out should be 'any'.
 // Otherwise, if the tool's output schema is nil the output schema is set to
 // the schema inferred from Out, which must be a map or a struct.
+//
+// The In argument to the handler will contain the unmarshaled arguments from
+// CallToolRequest.Params.Arguments. Most users can ignore the [CallToolRequest]
+// argument to the handler.
+//
+// The handler's Out return value will be used to populate [CallToolResult.StructuredContent].
+// If the handler returns a non-nil error, [CallToolResult.IsError] will be set to true,
+// and [CallToolResult.Content] will be set to the text of the error.
+// Most users can ignore the [CallToolResult] return value.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	tt, hh, err := toolForErr(t, h)
 	if err != nil {
