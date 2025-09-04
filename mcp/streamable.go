@@ -282,6 +282,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			if !hasInitialized {
 				state.InitializedParams = new(InitializedParams)
 			}
+			state.LogLevel = "info"
 			connectOpts = &ServerSessionOptions{
 				State: state,
 			}

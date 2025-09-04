@@ -144,7 +144,7 @@ func parent() {
 }
 
 func child(port string) {
-	// Create a server with a single tool that increments a counter.
+	// Create a server with a single tool that increments a counter and sends a notification.
 	server := mcp.NewServer(&mcp.Implementation{Name: "counter"}, nil)
 
 	var count atomic.Int64
@@ -153,6 +153,9 @@ func child(port string) {
 		if *verbose {
 			log.Printf("request %d (session %s)", n, req.Session.ID())
 		}
+		// Send a notification in the context of the request
+		// Hint: in stateless mode, at least log level 'info' is required to send notifications
+		req.Session.Log(ctx, &mcp.LoggingMessageParams{Data: fmt.Sprintf("request %d (session %s)", n, req.Session.ID()), Level: "info"})
 		return nil, struct{ Count int64 }{n}, nil
 	}
 	mcp.AddTool(server, &mcp.Tool{Name: "inc"}, inc)
