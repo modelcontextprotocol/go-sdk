@@ -424,7 +424,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 	// It is always text/event-stream, since it must carry arbitrarily many
 	// messages.
 	var err error
-	t.connection.streams[""], err = t.connection.newStream(ctx, "", false)
+	t.connection.streams[""], err = t.connection.newStream(ctx, "", false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -485,6 +485,10 @@ type stream struct {
 	// an empty string is used for messages that don't correlate with an incoming request.
 	id StreamID
 
+	// If isInitialize is set, the stream is in response to an initialize request,
+	// and therefore should include the session ID header.
+	isInitialize bool
+
 	// jsonResponse records whether this stream should respond with application/json
 	// instead of text/event-stream.
 	//
@@ -513,12 +517,13 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
-func (c *streamableServerConn) newStream(ctx context.Context, id StreamID, jsonResponse bool) (*stream, error) {
+func (c *streamableServerConn) newStream(ctx context.Context, id StreamID, isInitialize, jsonResponse bool) (*stream, error) {
 	if err := c.eventStore.Open(ctx, c.sessionID, id); err != nil {
 		return nil, err
 	}
 	return &stream{
 		id:           id,
+		isInitialize: isInitialize,
 		jsonResponse: jsonResponse,
 		requests:     make(map[jsonrpc.ID]struct{}),
 	}, nil
@@ -647,6 +652,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 	requests := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
+	isInitialize := false
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -655,6 +661,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
+			}
+			if jreq.Method == methodInitialize {
+				isInitialize = true
 			}
 			jreq.Extra = &RequestExtra{
 				TokenInfo: tokenInfo,
@@ -672,7 +681,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// notifications or server->client requests made in the course of handling.
 	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream, err = c.newStream(req.Context(), StreamID(randText()), c.jsonResponse)
+		stream, err = c.newStream(req.Context(), StreamID(randText()), isInitialize, c.jsonResponse)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
 			return
@@ -708,7 +717,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 func (c *streamableServerConn) respondJSON(stream *stream, w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "application/json")
-	if c.sessionID != "" {
+	if c.sessionID != "" && stream.isInitialize {
 		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
 
@@ -747,7 +756,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Connection", "keep-alive")
-	if c.sessionID != "" {
+	if c.sessionID != "" && stream.isInitialize {
 		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
 	if persistent {
