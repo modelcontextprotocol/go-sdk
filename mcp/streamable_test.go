@@ -1312,3 +1312,77 @@ func TestTokenInfo(t *testing.T) {
 		t.Errorf("got %q, want %q", g, w)
 	}
 }
+
+func TestStreamableGET(t *testing.T) {
+	// This test checks the fix for problematic behavior described in #410:
+	// Hanging GET headers should be written immediately, even if there are no
+	// messages.
+	server := NewServer(testImpl, nil)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	newReq := func(method string, msg jsonrpc.Message) *http.Request {
+		var body io.Reader
+		if msg != nil {
+			data, err := jsonrpc2.EncodeMessage(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.NewReader(data)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, httpServer.URL, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if msg != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return req
+	}
+
+	get1 := newReq(http.MethodGet, nil)
+	resp, err := http.DefaultClient.Do(get1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+		t.Errorf("initial GET: got status %d, want %d", got, want)
+	}
+	defer resp.Body.Close()
+
+	post1 := newReq(http.MethodPost, req(1, methodInitialize, &InitializeParams{}))
+	resp, err = http.DefaultClient.Do(post1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, want := resp.StatusCode, http.StatusOK; got != want {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Errorf("initialize POST: got status %d, want %d; body:\n%s", got, want, string(body))
+	}
+
+	sessionID := resp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialized missing session ID")
+	}
+
+	get2 := newReq("GET", nil)
+	get2.Header.Set(sessionIDHeader, sessionID)
+	resp, err = http.DefaultClient.Do(get2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, want := resp.StatusCode, http.StatusOK; got != want {
+		t.Errorf("GET with session ID: got status %d, want %d", got, want)
+	}
+}

@@ -742,17 +742,28 @@ func (c *streamableServerConn) respondJSON(stream *stream, w http.ResponseWriter
 
 // lastIndex is the index of the last seen event if resuming, else -1.
 func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter, req *http.Request, lastIndex int, persistent bool) {
-	writes := 0
-
-	// Accept checked in [StreamableHTTPHandler]
+	// Accept was checked in [StreamableHTTPHandler]
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
 	w.Header().Set("Connection", "keep-alive")
 	if c.sessionID != "" {
 		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
+	if persistent {
+		// Issue #410: the hanging GET is likely not to receive messages for a long
+		// time. Ensure that headers are flushed.
+		//
+		// For non-persistent requests, delay the writing of the header in case we
+		// may want to set an error status.
+		// (see the TODO: this probably isn't worth it).
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
 
 	// write one event containing data.
+	writes := 0
 	write := func(data []byte) bool {
 		lastIndex++
 		e := Event{
@@ -769,23 +780,19 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 		return true
 	}
 
-	errorf := func(code int, format string, args ...any) {
-		if writes == 0 {
-			http.Error(w, fmt.Sprintf(format, args...), code)
-		} else {
-			// TODO(#170): log when we add server-side logging
-		}
-	}
-
 	// Repeatedly collect pending outgoing events and send them.
 	ctx := req.Context()
 	for msg, err := range c.messages(ctx, stream, persistent, lastIndex) {
 		if err != nil {
-			if ctx.Err() != nil && writes == 0 {
-				// This probably doesn't matter, but respond with NoContent if the client disconnected.
-				w.WriteHeader(http.StatusNoContent)
+			if ctx.Err() == nil && writes == 0 && !persistent {
+				// If we haven't yet written the header, we have an opportunity to
+				// promote an error to an HTTP error.
+				//
+				// TODO: This may not matter in practice, in which case we should
+				// simplify.
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			} else {
-				errorf(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+				// TODO(#170): log when we add server-side logging
 			}
 			return
 		}
