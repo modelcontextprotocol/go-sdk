@@ -267,19 +267,21 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 				outval = elemZero
 			}
 		}
-		outbytes, err := json.Marshal(outval)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling output: %w", err)
-		}
-		res.StructuredContent = json.RawMessage(outbytes) // avoid a second marshal over the wire
+		if outval != nil {
+			outbytes, err := json.Marshal(outval)
+			if err != nil {
+				return nil, fmt.Errorf("marshaling output: %w", err)
+			}
+			res.StructuredContent = json.RawMessage(outbytes) // avoid a second marshal over the wire
 
-		// If the Content field isn't being used, return the serialized JSON in a
-		// TextContent block, as the spec suggests:
-		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
-		if res.Content == nil {
-			res.Content = []Content{&TextContent{
-				Text: string(outbytes),
-			}}
+			// If the Content field isn't being used, return the serialized JSON in a
+			// TextContent block, as the spec suggests:
+			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+			if res.Content == nil {
+				res.Content = []Content{&TextContent{
+					Text: string(outbytes),
+				}}
+			}
 		}
 		return res, nil
 	} // end of handler

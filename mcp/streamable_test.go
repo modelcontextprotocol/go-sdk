@@ -1115,8 +1115,7 @@ func TestStreamableStateless(t *testing.T) {
 			},
 			wantMessages: []jsonrpc.Message{
 				resp(2, &CallToolResult{
-					Content:           []Content{&TextContent{Text: "hi World"}},
-					StructuredContent: json.RawMessage("null"),
+					Content: []Content{&TextContent{Text: "hi World"}},
 				}, nil),
 			},
 		},
@@ -1128,8 +1127,7 @@ func TestStreamableStateless(t *testing.T) {
 			},
 			wantMessages: []jsonrpc.Message{
 				resp(2, &CallToolResult{
-					Content:           []Content{&TextContent{Text: "hi foo"}},
-					StructuredContent: json.RawMessage("null"),
+					Content: []Content{&TextContent{Text: "hi foo"}},
 				}, nil),
 			},
 		},

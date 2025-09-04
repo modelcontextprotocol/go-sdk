@@ -21,11 +21,15 @@ structured
     "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
   }
 }
-{"jsonrpc":"2.0", "method": "notifications/initialized"}
+{ "jsonrpc":"2.0", "method": "notifications/initialized" }
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 { "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
 { "jsonrpc": "2.0", "id": 5, "method": "tools/call" }
+{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "greet", "arguments": {"name": "you"} } }
+{ "jsonrpc": "2.0", "id": 1, "result": {} }
+{ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "structured", "arguments": {"In": "input"} } }
+
 -- server --
 {
 	"jsonrpc": "2.0",
@@ -117,5 +121,37 @@ structured
 	"error": {
 		"code": -32600,
 		"message": "invalid request: missing required \"params\""
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"method": "ping"
+}
+{
+	"jsonrpc": "2.0",
+	"id": 6,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "hi you"
+			}
+		]
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 7,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "{\"Out\":\"Ack input\"}"
+			}
+		],
+		"structuredContent": {
+			"Out": "Ack input"
+		}
 	}
 }
