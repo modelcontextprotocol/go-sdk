@@ -1234,7 +1234,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	default:
 		resp.Body.Close()
-		return fmt.Errorf("unsupported content type %q", ct)
+		switch msg := msg.(type) {
+		case *jsonrpc.Request:
+			return fmt.Errorf("unsupported content type %q when sending %q (status: %d)", ct, msg.Method, resp.StatusCode)
+		case *jsonrpc.Response:
+			return fmt.Errorf("unsupported content type %q when sending jsonrpc response #%d (status: %d)", ct, msg.ID, resp.StatusCode)
+		default:
+			panic("unreachable")
+		}
 	}
 	return nil
 }
