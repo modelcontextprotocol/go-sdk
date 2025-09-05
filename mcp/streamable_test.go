@@ -520,7 +520,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					method:         "POST",
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{}, nil)},
+					wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
 				},
 			},
 		},
@@ -547,14 +547,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					headers:        http.Header{"Accept": {"text/plain", "*/*"}},
 					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{Content: []Content{}}, nil)},
 				},
 				{
 					method:         "POST",
 					headers:        http.Header{"Accept": {"text/*, application/*"}},
 					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{}, nil)},
+					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{Content: []Content{}}, nil)},
 				},
 			},
 		},
@@ -592,7 +592,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
-						resp(2, &CallToolResult{}, nil),
+						resp(2, &CallToolResult{Content: []Content{}}, nil),
 					},
 				},
 			},
@@ -624,7 +624,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{
 						req(1, "roots/list", &ListRootsParams{}),
-						resp(2, &CallToolResult{}, nil),
+						resp(2, &CallToolResult{Content: []Content{}}, nil),
 					},
 				},
 			},
@@ -674,7 +674,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{
-						resp(2, &CallToolResult{}, nil),
+						resp(2, &CallToolResult{Content: []Content{}}, nil),
 					},
 				},
 				{

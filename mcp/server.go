@@ -496,9 +496,13 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 			Message: fmt.Sprintf("unknown tool %q", req.Params.Name),
 		}
 	}
-	// TODO: if handler returns nil content, it will serialize as null.
-	// Add a test and fix.
-	return st.handler(ctx, req)
+	res, err := st.handler(ctx, req)
+	if err == nil && res != nil && res.Content == nil {
+		res2 := *res
+		res2.Content = []Content{} // avoid "null"
+		res = &res2
+	}
+	return res, err
 }
 
 func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
