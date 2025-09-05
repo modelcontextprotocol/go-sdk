@@ -330,9 +330,9 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 // output schema is set to the schema inferred from the Out type argument,
 // which also must be a map or struct.
 //
-// Unlike [Server.AddTool] Tools added with AddTool do a lot automatically, and
-// are forced to conform to the MCP spec. See [ToolHandlerFor] for a detailed
-// description of this automatic behavior.
+// Unlike [Server.AddTool], AddTool does a lot automatically, and forces tools
+// to conform to the MCP spec. See [ToolHandlerFor] for a detailed description
+// of this automatic behavior.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	tt, hh, err := toolForErr(t, h)
 	if err != nil {

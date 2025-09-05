@@ -87,6 +87,9 @@ func main() {
 	// Next, we can create our schemas entirely manually, and add them using
 	// [mcp.Server.AddTool]. Since we're working manually, we can add some
 	// constraints on the length of the name.
+	//
+	// We don't need to do all this work: below, we use jsonschema.For to start
+	// from the default schema.
 	var (
 		manual manualGreeter
 		err    error

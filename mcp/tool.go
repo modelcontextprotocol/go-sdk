@@ -24,8 +24,8 @@ import (
 // [AddTool] function.
 //
 // If ToolHandler returns an error, it is treated as a protocol error. By
-// contrast, [ToolHandlerFor] which automatically populates
-// [CallToolResult.IsError] and [CallToolResult.Content] accordingly.
+// contrast, [ToolHandlerFor] automatically populates [CallToolResult.IsError]
+// and [CallToolResult.Content] accordingly.
 type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error)
 
 // A ToolHandlerFor handles a call to tools/call with typed arguments and results.
@@ -36,11 +36,11 @@ type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error
 // out of the box, and enforces that the tool conforms to the MCP spec:
 //   - The In type provides a default input schema for the tool, though it may
 //     be overridden in [AddTool].
-//   - The input value is automatically unmarshalled from req.Params.Arguments.
+//   - The input value is automatically unmarshaled from req.Params.Arguments.
 //   - The input value is automatically validated against its input schema.
 //     Invalid input is rejected before getting to the handler.
 //   - If the Out type is not the empty interface [any], it provides the
-//     default output schema for the tool (which again may be overriden in
+//     default output schema for the tool (which again may be overridden in
 //     [AddTool]).
 //   - The Out value is used to populate result.StructuredOutput.
 //   - If [CallToolResult.Content] is unset, it is populated with the JSON

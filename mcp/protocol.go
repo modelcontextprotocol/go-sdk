@@ -49,9 +49,9 @@ type CallToolParams struct {
 	Arguments any    `json:"arguments,omitempty"`
 }
 
-// CallToolParamsRaw is passed to tool handlers on the server. It does not
-// perform any unmarshaling of its arguments (hence 'raw'), so that the
-// handlers can perform unmarshalling themselves.
+// CallToolParamsRaw is passed to tool handlers on the server. Its arguments
+// are not yet unmarshaled (hence "raw"), so that the handlers can perform
+// unmarshaling themselves.
 type CallToolParamsRaw struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
