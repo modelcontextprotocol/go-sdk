@@ -18,18 +18,6 @@ software development kit (SDK) for the Model Context Protocol (MCP).
 > changes. We aim to tag v1.0.0 in September, 2025. See
 > https://github.com/modelcontextprotocol/go-sdk/issues/328 for details.
 
-## Design
-
-The design doc for this SDK is at [design.md](./design/design.md), which was
-initially reviewed at
-[modelcontextprotocol/discussions/364](https://github.com/orgs/modelcontextprotocol/discussions/364).
-
-Further design discussion should occur in
-[issues](https://github.com/modelcontextprotocol/go-sdk/issues) (for concrete
-proposals) or
-[discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
-open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
-
 ## Package documentation
 
 The SDK consists of two importable packages:
@@ -41,21 +29,39 @@ The SDK consists of two importable packages:
 - The
   [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
   their own transports.
-   
+- The
+  [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
+  package provides some primitives for supporting oauth.
 
-## Example
+## Getting started
 
-In this example, an MCP client communicates with an MCP server running in a
-sidecar process:
-
-%include client/client.go -
-
-Here's an example of the corresponding server component, which communicates
-with its client over stdin/stdout:
+To get started creating an MCP server, create an `mcp.Server` instance, add
+features to it, and then run it over an `mcp.Transport`. For example, this
+server adds a single simple tool, and then connects it to clients over
+stdin/stdout:
 
 %include server/server.go -
 
-The [`examples/`](/examples/) directory contains more example clients and servers.
+To communicate with that server, we can similarly create an `mcp.Client` and
+connect it to the corresponding server, by running the server command and
+communicating over its stdin/stdout:
+
+%include client/client.go -
+
+The [`examples/`](/examples/) directory contains more example clients and
+servers.
+
+## Design
+
+The design doc for this SDK is at [design.md](./design/design.md), which was
+initially reviewed at
+[modelcontextprotocol/discussions/364](https://github.com/orgs/modelcontextprotocol/discussions/364).
+
+Further design discussion should occur in
+[issues](https://github.com/modelcontextprotocol/go-sdk/issues) (for concrete
+proposals) or
+[discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
+open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
 
 ## Acknowledgements
 
