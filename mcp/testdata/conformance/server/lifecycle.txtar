@@ -5,6 +5,7 @@ See also modelcontextprotocol/go-sdk#225.
 
 -- client --
 { "jsonrpc":"2.0", "method": "notifications/initialized" }
+{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 {
   "jsonrpc": "2.0",
   "id": 1,
@@ -21,6 +22,14 @@ See also modelcontextprotocol/go-sdk#225.
 { "jsonrpc": "2.0", "id": 3, "method": "tools/list" }
 
 -- server --
+{
+	"jsonrpc": "2.0",
+	"id": 2,
+	"error": {
+		"code": 0,
+		"message": "method \"tools/list\" is invalid during session initialization"
+	}
+}
 {
 	"jsonrpc": "2.0",
 	"id": 1,
@@ -43,9 +52,8 @@ See also modelcontextprotocol/go-sdk#225.
 {
 	"jsonrpc": "2.0",
 	"id": 2,
-	"error": {
-		"code": 0,
-		"message": "method \"tools/list\" is invalid during session initialization"
+	"result": {
+		"tools": []
 	}
 }
 {

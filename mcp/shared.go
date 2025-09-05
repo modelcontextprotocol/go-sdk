@@ -346,9 +346,12 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P) 
 	if sessions == nil {
 		return
 	}
-	// TODO: make this timeout configurable, or call Notify asynchronously.
+	// TODO: make this timeout configurable, or call handleNotify asynchronously.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// TODO: there's a potential spec violation here, when the feature list
+	// changes before the session (client or server) is initialized.
 	for _, s := range sessions {
 		req := newRequest(s, params)
 		if err := handleNotify(ctx, method, req); err != nil {

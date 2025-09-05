@@ -844,6 +844,33 @@ func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	}
 }
 
+// hasInitialized reports whether the server has received the initialized
+// notification.
+//
+// TODO(findleyr): use this to prevent change notifications.
+func (ss *ServerSession) hasInitialized() bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.state.InitializedParams != nil
+}
+
+// checkInitialized returns a formatted error if the server has not yet
+// received the initialized notification.
+func (ss *ServerSession) checkInitialized(method string) error {
+	if !ss.hasInitialized() {
+		// TODO(rfindley): enable this check.
+		// Right now is is flaky, because server tests don't await the initialized notification.
+		// Perhaps requests should simply block until they have received the initialized notification
+
+		// if strings.HasPrefix(method, "notifications/") {
+		// 	return fmt.Errorf("must not send %q before %q is received", method, notificationInitialized)
+		// } else {
+		// 	return fmt.Errorf("cannot call %q before %q is received", method, notificationInitialized)
+		// }
+	}
+	return nil
+}
+
 func (ss *ServerSession) ID() string {
 	if c, ok := ss.mcpConn.(hasSessionID); ok {
 		return c.SessionID()
@@ -859,11 +886,17 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListRoots lists the client roots.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
+	if err := ss.checkInitialized(methodListRoots); err != nil {
+		return nil, err
+	}
 	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
 }
 
 // CreateMessage sends a sampling request to the client.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
+	if err := ss.checkInitialized(methodCreateMessage); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		params = &CreateMessageParams{Messages: []*SamplingMessage{}}
 	}
@@ -877,6 +910,9 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 
 // Elicit sends an elicitation request to the client asking for user input.
 func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*ElicitResult, error) {
+	if err := ss.checkInitialized(methodElicit); err != nil {
+		return nil, err
+	}
 	return handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
 }
 
@@ -978,7 +1014,7 @@ func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
-	initialized := ss.state.InitializedParams != nil
+	initialized := ss.state.InitializeParams != nil
 	ss.mu.Unlock()
 
 	// From the spec:

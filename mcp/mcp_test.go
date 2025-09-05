@@ -1415,7 +1415,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 			RequestedSchema: &jsonschema.Schema{Type: "object"},
 		})
 		if err != nil {
-			t.Errorf("elicitation should work when capability is declared, got error: %v", err)
+			t.Fatalf("elicitation should work when capability is declared, got error: %v", err)
 		}
 		if result.Action != "cancel" {
 			t.Errorf("got action %q, want %q", result.Action, "cancel")
