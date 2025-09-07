@@ -21,7 +21,7 @@ software development kit (SDK) for the Model Context Protocol (MCP).
 
 ## Package documentation
 
-The SDK consists of two importable packages:
+The SDK consists of three importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
