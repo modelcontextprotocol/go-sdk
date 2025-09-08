@@ -21,7 +21,7 @@ software development kit (SDK) for the Model Context Protocol (MCP).
 
 ## Package documentation
 
-The SDK consists of three importable packages:
+The SDK consists of several importable packages:
 
 - The
   [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
@@ -33,6 +33,10 @@ The SDK consists of three importable packages:
 - The
   [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
   package provides some primitives for supporting oauth.
+
+- The
+  [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
+  package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
 
 ## Getting started
 
