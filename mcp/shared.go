@@ -36,13 +36,13 @@ const (
 	latestProtocolVersion   = protocolVersion20250618
 	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
-	protocolVersion20251105 = "2024-11-05"
+	protocolVersion20241105 = "2024-11-05"
 )
 
 var supportedProtocolVersions = []string{
 	protocolVersion20250618,
 	protocolVersion20250326,
-	protocolVersion20251105,
+	protocolVersion20241105,
 }
 
 // negotiatedVersion returns the effective protocol version to use, given a
