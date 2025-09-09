@@ -483,10 +483,32 @@ func (c *Connection) Cancel(id ID) {
 
 // Wait blocks until the connection is fully closed, but does not close it.
 func (c *Connection) Wait() error {
+	return c.wait(true)
+}
+
+// wait for the connection to close, and aggregates the most cause of its
+// termination, if abnormal.
+//
+// The fromWait argument allows this logic to be shared with Close, where we
+// only want to expose the closeErr.
+//
+// (Previously, Wait also only returned the closeErr, which was misleading if
+// the connection was broken for another reason).
+func (c *Connection) wait(fromWait bool) error {
 	var err error
 	<-c.done
 	c.updateInFlight(func(s *inFlightState) {
-		err = s.closeErr
+		if fromWait {
+			if !errors.Is(s.readErr, io.EOF) {
+				err = s.readErr
+			}
+			if err == nil && !errors.Is(s.writeErr, io.EOF) {
+				err = s.writeErr
+			}
+		}
+		if err == nil {
+			err = s.closeErr
+		}
 	})
 	return err
 }
@@ -502,8 +524,7 @@ func (c *Connection) Close() error {
 	// Stop handling new requests, and interrupt the reader (by closing the
 	// connection) as soon as the active requests finish.
 	c.updateInFlight(func(s *inFlightState) { s.connClosing = true })
-
-	return c.Wait()
+	return c.wait(false)
 }
 
 // readIncoming collects inbound messages from the reader and delivers them, either responding

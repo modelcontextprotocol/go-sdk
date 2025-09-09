@@ -1119,6 +1119,17 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
+// errSessionMissing distinguishes if the session is known to not be present on
+// the server (see [streamableClientConn.fail]).
+//
+// TODO(rfindley): should we expose this error value (and its corresponding
+// API) to the user?
+//
+// The spec says that if the server returns 404, clients should reestablish
+// a session. For now, we delegate that to the user, but do they need a way to
+// differentiate a 'NotFound' error from other errors?
+var errSessionMissing = errors.New("session not found")
+
 var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
@@ -1146,6 +1157,10 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 //
 // If err is non-nil, it is terminal, and subsequent (or pending) Reads will
 // fail.
+//
+// If err wraps errSessionMissing, the failure indicates that the session is no
+// longer present on the server, and no final DELETE will be performed when
+// closing the connection.
 func (c *streamableClientConn) fail(err error) {
 	if err != nil {
 		c.failOnce.Do(func() {
@@ -1193,9 +1208,19 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
+	var requestSummary string
+	switch msg := msg.(type) {
+	case *jsonrpc.Request:
+		requestSummary = fmt.Sprintf("sending %q", msg.Method)
+	case *jsonrpc.Response:
+		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
+	default:
+		panic("unreachable")
+	}
+
 	data, err := jsonrpc.EncodeMessage(msg)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %v", requestSummary, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
@@ -1208,9 +1233,21 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %v", requestSummary, err)
 	}
 
+	// Section 2.5.3: "The server MAY terminate the session at any time, after
+	// which it MUST respond to requests containing that session ID with HTTP
+	// 404 Not Found."
+	if resp.StatusCode == http.StatusNotFound {
+		// Fail the session immediately, rather than relying on jsonrpc2 to fail
+		// (and close) it, because we want the call to Close to know that this
+		// session is missing (and therefore not send the DELETE).
+		err := fmt.Errorf("%s: failed to send: %w", requestSummary, errSessionMissing)
+		c.fail(err)
+		resp.Body.Close()
+		return err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
 		return fmt.Errorf("broken session: %v", resp.Status)
@@ -1231,16 +1268,6 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
 		resp.Body.Close()
 		return nil
-	}
-
-	var requestSummary string
-	switch msg := msg.(type) {
-	case *jsonrpc.Request:
-		requestSummary = fmt.Sprintf("sending %q", msg.Method)
-	case *jsonrpc.Response:
-		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
-	default:
-		panic("unreachable")
 	}
 
 	switch ct := resp.Header.Get("Content-Type"); ct {
@@ -1333,6 +1360,11 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 			resp.Body.Close()
 			return
 		}
+		// (see equivalent handling in [streamableClientConn.Write]).
+		if resp.StatusCode == http.StatusNotFound {
+			c.fail(fmt.Errorf("%s: failed to reconnect: %w", requestSummary, errSessionMissing))
+			return
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
 			c.fail(fmt.Errorf("%s: failed to reconnect: %v", requestSummary, http.StatusText(resp.StatusCode)))
@@ -1423,13 +1455,17 @@ func (c *streamableClientConn) Close() error {
 		c.cancel()
 		close(c.done)
 
-		req, err := http.NewRequest(http.MethodDelete, c.url, nil)
-		if err != nil {
-			c.closeErr = err
+		if errors.Is(c.failure(), errSessionMissing) {
+			// If the session is missing, no need to delete it.
 		} else {
-			c.setMCPHeaders(req)
-			if _, err := c.client.Do(req); err != nil {
+			req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+			if err != nil {
 				c.closeErr = err
+			} else {
+				c.setMCPHeaders(req)
+				if _, err := c.client.Do(req); err != nil {
+					c.closeErr = err
+				}
 			}
 		}
 	})

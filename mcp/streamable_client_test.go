@@ -29,7 +29,7 @@ type streamableRequestKey struct {
 type header map[string]string
 
 type streamableResponse struct {
-	header              header
+	header              header // response headers
 	status              int    // or http.StatusOK
 	body                string // or ""
 	optional            bool   // if set, request need not be sent
@@ -184,6 +184,56 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 	}
 	if diff := cmp.Diff(initResult, session.state.InitializeResult); diff != "" {
 		t.Errorf("mismatch (-want, +got):\n%s", diff)
+	}
+}
+
+func TestStreamableClientRedundantDelete(t *testing.T) {
+	ctx := context.Background()
+
+	// The lifecycle test verifies various behavior of the streamable client
+	// initialization:
+	//  - check that it can handle application/json responses
+	//  - check that it sends the negotiated protocol version
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "123", ""}: {
+				status:   http.StatusMethodNotAllowed,
+				optional: true,
+			},
+			{"POST", "123", methodListTools}: {
+				status: http.StatusNotFound,
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	_, err = session.ListTools(ctx, nil)
+	if err == nil {
+		t.Errorf("Listing tools: got nil error, want non-nil")
+	}
+	_ = session.Wait() // must not hang
+	if missing := fake.missingRequests(); len(missing) > 0 {
+		t.Errorf("did not receive expected requests: %v", missing)
 	}
 }
 
