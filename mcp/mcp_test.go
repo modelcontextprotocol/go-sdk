@@ -1777,3 +1777,63 @@ func TestComplete(t *testing.T) {
 		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestEmbeddedStructResponse performs a tool call to verify that a struct with
+// an embedded pointer generates a correct, flattened JSON schema and that its
+// response is validated successfully.
+func TestEmbeddedStructResponse(t *testing.T) {
+	type foo struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	// bar embeds foo
+	type bar struct {
+		*foo         // Embedded - should flatten in JSON
+		Extra string `json:"extra"`
+	}
+
+	type response struct {
+		Data bar `json:"data"`
+	}
+
+	// testTool demonstrates an embedded struct in its response.
+	testTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, response, error) {
+		response := response{
+			Data: bar{
+				foo: &foo{
+					ID:   "foo",
+					Name: "Test Foo",
+				},
+				Extra: "additional data",
+			},
+		}
+		return nil, response, nil
+	}
+	ctx := context.Background()
+	clientTransport, serverTransport := NewInMemoryTransports()
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	AddTool(server, &Tool{
+		Name: "test_embedded_struct",
+	}, testTool)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := NewClient(&Implementation{Name: "test-client"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	_, err = clientSession.CallTool(ctx, &CallToolParams{
+		Name: "test_embedded_struct",
+	})
+	if err != nil {
+		t.Errorf("CallTool() failed: %v", err)
+	}
+}
