@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:generate ../internal/readme/build.sh
-
 // The mcp package provides an SDK for writing model context protocol clients
 // and servers.
 //
