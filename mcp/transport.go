@@ -106,24 +106,13 @@ func NewStdioTransport() *StdioTransport {
 // An IOTransport is a [Transport] that communicates over separate
 // io.ReadCloser and io.WriteCloser using newline-delimited JSON.
 type IOTransport struct {
-	reader io.ReadCloser
-	writer io.WriteCloser
+	Reader io.ReadCloser
+	Writer io.WriteCloser
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.reader, t.writer}), nil
-}
-
-// NewIOTransport constructs a transport that communicates over
-// io.ReadCloser and io.WriteCloser.
-//
-//go:fix inline
-func NewIOTransport(reader io.ReadCloser, writer io.WriteCloser) *IOTransport {
-	return &IOTransport{
-		reader: reader,
-		writer: writer,
-	}
+	return newIOConn(rwc{t.Reader, t.Writer}), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
