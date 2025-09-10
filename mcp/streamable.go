@@ -323,15 +323,6 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	transport.ServeHTTP(w, req)
 }
 
-// StreamableServerTransportOptions configures the stramable server transport.
-//
-// Deprecated: use a StreamableServerTransport literal.
-type StreamableServerTransportOptions struct {
-	// Storage for events, to enable stream resumption.
-	// If nil, a [MemoryEventStore] with the default maximum size will be used.
-	EventStore EventStore
-}
-
 // A StreamableServerTransport implements the server side of the MCP streamable
 // transport.
 //
@@ -383,22 +374,6 @@ type StreamableServerTransport struct {
 
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
-}
-
-// NewStreamableServerTransport returns a new [StreamableServerTransport] with
-// the given session ID and options.
-//
-// Deprecated: use a StreamableServerTransport literal.
-//
-//go:fix inline.
-func NewStreamableServerTransport(sessionID string, opts *StreamableServerTransportOptions) *StreamableServerTransport {
-	t := &StreamableServerTransport{
-		SessionID: sessionID,
-	}
-	if opts != nil {
-		t.EventStore = opts.EventStore
-	}
-	return t
 }
 
 // Connect implements the [Transport] interface.
@@ -1024,34 +999,6 @@ const (
 	// reconnectMaxDelay caps the backoff delay, preventing it from growing indefinitely.
 	reconnectMaxDelay = 30 * time.Second
 )
-
-// StreamableClientTransportOptions provides options for the
-// [NewStreamableClientTransport] constructor.
-//
-// Deprecated: use a StremableClientTransport literal.
-type StreamableClientTransportOptions struct {
-	// HTTPClient is the client to use for making HTTP requests. If nil,
-	// http.DefaultClient is used.
-	HTTPClient *http.Client
-	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
-	// It defaults to 5. To disable retries, use a negative number.
-	MaxRetries int
-}
-
-// NewStreamableClientTransport returns a new client transport that connects to
-// the streamable HTTP server at the provided URL.
-//
-// Deprecated: use a StreamableClientTransport literal.
-//
-//go:fix inline
-func NewStreamableClientTransport(url string, opts *StreamableClientTransportOptions) *StreamableClientTransport {
-	t := &StreamableClientTransport{Endpoint: url}
-	if opts != nil {
-		t.HTTPClient = opts.HTTPClient
-		t.MaxRetries = opts.MaxRetries
-	}
-	return t
-}
 
 // Connect implements the [Transport] interface.
 //

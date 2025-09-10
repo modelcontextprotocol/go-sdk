@@ -27,19 +27,6 @@ type CommandTransport struct {
 	TerminateDuration time.Duration
 }
 
-// NewCommandTransport returns a [CommandTransport] that runs the given command
-// and communicates with it over stdin/stdout.
-//
-// The resulting transport takes ownership of the command, starting it during
-// [CommandTransport.Connect], and stopping it when the connection is closed.
-//
-// Deprecated: use a CommandTransport literal.
-//
-//go:fix inline
-func NewCommandTransport(cmd *exec.Cmd) *CommandTransport {
-	return &CommandTransport{Command: cmd}
-}
-
 // Connect starts the command, and connects to it over stdin/stdout.
 func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	stdout, err := t.Command.StdoutPipe()

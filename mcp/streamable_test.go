@@ -1211,7 +1211,7 @@ func TestTokenInfo(t *testing.T) {
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
-	transport := NewStreamableClientTransport(httpServer.URL, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {

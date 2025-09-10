@@ -93,16 +93,6 @@ func (*StdioTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
 }
 
-// NewStdioTransport constructs a transport that communicates over
-// stdin/stdout.
-//
-// Deprecated: use a StdioTransport literal.
-//
-//go:fix inline
-func NewStdioTransport() *StdioTransport {
-	return &StdioTransport{}
-}
-
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
 type InMemoryTransport struct {
@@ -213,16 +203,6 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 type LoggingTransport struct {
 	Transport Transport
 	Writer    io.Writer
-}
-
-// NewLoggingTransport creates a new LoggingTransport that delegates to the
-// provided transport, writing RPC logs to the provided io.Writer.
-//
-// Deprecated: use a LoggingTransport literal.
-//
-//go:fix inline
-func NewLoggingTransport(delegate Transport, w io.Writer) *LoggingTransport {
-	return &LoggingTransport{Transport: delegate, Writer: w}
 }
 
 // Connect connects the underlying transport, returning a [Connection] that writes
