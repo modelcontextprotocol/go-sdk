@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -491,7 +492,7 @@ func TestAddTool(t *testing.T) {
 
 type schema = jsonschema.Schema
 
-func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut *schema, wantErr bool) {
+func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut *schema, wantErrContaining string) {
 	t.Helper()
 	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
 		return nil, out, nil
@@ -513,34 +514,48 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	}
 	_, err = goth(context.Background(), ctr)
 
-	if gotErr := err != nil; gotErr != wantErr {
-		t.Errorf("got error: %t, want error: %t", gotErr, wantErr)
+	if wantErrContaining != "" {
+		if err == nil {
+			t.Errorf("got nil error, want error containing %q", wantErrContaining)
+		} else {
+			if !strings.Contains(err.Error(), wantErrContaining) {
+				t.Errorf("got error %q, want containing %q", err, wantErrContaining)
+			}
+		}
+	} else if err != nil {
+		t.Errorf("got error %v, want no error", err)
 	}
 }
 
 func TestToolForSchemas(t *testing.T) {
-	// Validate that ToolFor handles schemas properly.
+	// Validate that toolForErr handles schemas properly.
+	type in struct {
+		P int `json:"p,omitempty"`
+	}
+	type out struct {
+		B bool `json:"b,omitempty"`
+	}
+
+	var (
+		falseSchema = &schema{Not: &schema{}}
+		inSchema    = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "integer"}}}
+		inSchema2   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "string"}}}
+		outSchema   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "boolean"}}}
+		outSchema2  = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "integer"}}}
+	)
 
 	// Infer both schemas.
-	testToolForSchema[int](t, &Tool{}, "3", true,
-		&schema{Type: "integer"}, &schema{Type: "boolean"}, false)
+	testToolForSchema[in](t, &Tool{}, `{"p":3}`, out{true}, inSchema, outSchema, "")
 	// Validate the input schema: expect an error if it's wrong.
 	// We can't test that the output schema is validated, because it's typed.
-	testToolForSchema[int](t, &Tool{}, `"x"`, true,
-		&schema{Type: "integer"}, &schema{Type: "boolean"}, true)
-
+	testToolForSchema[in](t, &Tool{}, `{"p":"x"}`, out{true}, inSchema, outSchema, `want "integer"`)
 	// Ignore type any for output.
-	testToolForSchema[int, any](t, &Tool{}, "3", 0,
-		&schema{Type: "integer"}, nil, false)
+	testToolForSchema[in, any](t, &Tool{}, `{"p":3}`, 0, inSchema, nil, "")
 	// Input is still validated.
-	testToolForSchema[int, any](t, &Tool{}, `"x"`, 0,
-		&schema{Type: "integer"}, nil, true)
-
+	testToolForSchema[in, any](t, &Tool{}, `{"p":"x"}`, 0, inSchema, nil, `want "integer"`)
 	// Tool sets input schema: that is what's used.
-	testToolForSchema[int, any](t, &Tool{InputSchema: &schema{Type: "string"}}, "3", 0,
-		&schema{Type: "string"}, nil, true) // error: 3 is not a string
-
+	testToolForSchema[in, any](t, &Tool{InputSchema: inSchema2}, `{"p":3}`, 0, inSchema2, nil, `want "string"`)
 	// Tool sets output schema: that is what's used, and validation happens.
-	testToolForSchema[string, any](t, &Tool{OutputSchema: &schema{Type: "integer"}}, "3", "x",
-		&schema{Type: "string"}, &schema{Type: "integer"}, true) // error: "x" is not an integer
+	testToolForSchema[in, any](t, &Tool{OutputSchema: outSchema2}, `{"p":3}`, out{true},
+		inSchema, outSchema2, `want "integer"`)
 }

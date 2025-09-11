@@ -5,7 +5,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,41 +60,44 @@ type serverTool struct {
 	handler ToolHandler
 }
 
-// unmarshalSchema unmarshals data into v and validates the result according to
-// the given resolved schema.
-func unmarshalSchema(data json.RawMessage, resolved *jsonschema.Resolved, v any) error {
+// applySchema validates whether data is valid JSON according to the provided
+// schema, after applying schema defaults.
+//
+// Returns the JSON value augmented with defaults.
+func applySchema(data json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, error) {
 	// TODO: use reflection to create the struct type to unmarshal into.
 	// Separate validation from assignment.
 
-	// Disallow unknown fields.
-	// Otherwise, if the tool was built with a struct, the client could send extra
-	// fields and json.Unmarshal would ignore them, so the schema would never get
-	// a chance to declare the extra args invalid.
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("unmarshaling: %w", err)
-	}
-	return validateSchema(resolved, v)
-}
-
-func validateSchema(resolved *jsonschema.Resolved, value any) error {
+	// Use default JSON marshalling for validation.
+	//
+	// This avoids inconsistent representation due to custom marshallers, such as
+	// time.Time (issue #449).
+	//
+	// Additionally, unmarshalling into a map ensures that the resulting JSON is
+	// at least {}, even if data is empty. For example, arguments is technically
+	// an optional property of callToolParams, and we still want to apply the
+	// defaults in this case.
+	//
+	// TODO(rfindley): in which cases can resolved be nil?
 	if resolved != nil {
-		if err := resolved.ApplyDefaults(value); err != nil {
-			return fmt.Errorf("applying defaults from \n\t%s\nto\n\t%v:\n%w", schemaJSON(resolved.Schema()), value, err)
+		v := make(map[string]any)
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &v); err != nil {
+				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
+			}
 		}
-		if err := resolved.Validate(value); err != nil {
-			return fmt.Errorf("validating\n\t%v\nagainst\n\t %s:\n %w", value, schemaJSON(resolved.Schema()), err)
+		if err := resolved.ApplyDefaults(&v); err != nil {
+			return nil, fmt.Errorf("applying schema defaults:\n%w", err)
+		}
+		if err := resolved.Validate(&v); err != nil {
+			return nil, err
+		}
+		// We must re-marshal with the default values applied.
+		var err error
+		data, err = json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling with defaults: %v", err)
 		}
 	}
-	return nil
-}
-
-// schemaJSON returns the JSON value for s as a string, or a string indicating an error.
-func schemaJSON(s *jsonschema.Schema) string {
-	m, err := json.Marshal(s)
-	if err != nil {
-		return fmt.Sprintf("<!%s>", err)
-	}
-	return string(m)
+	return data, nil
 }

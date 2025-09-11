@@ -17,7 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
-func TestUnmarshalSchema(t *testing.T) {
+func TestApplySchema(t *testing.T) {
 	schema := &jsonschema.Schema{
 		Type: "object",
 		Properties: map[string]*jsonschema.Schema{
@@ -39,20 +39,23 @@ func TestUnmarshalSchema(t *testing.T) {
 		want any
 	}{
 		{`{"x": 1}`, new(S), &S{X: 1}},
-		{`{}`, new(S), &S{X: 3}},       // default applied
-		{`{"x": 0}`, new(S), &S{X: 3}}, // FAIL: should be 0. (requires double unmarshal)
+		{`{}`, new(S), &S{X: 3}}, // default applied
+		{`{"x": 0}`, new(S), &S{X: 0}},
 		{`{"x": 1}`, new(map[string]any), &map[string]any{"x": 1.0}},
 		{`{}`, new(map[string]any), &map[string]any{"x": 3.0}}, // default applied
 		{`{"x": 0}`, new(map[string]any), &map[string]any{"x": 0.0}},
 	} {
 		raw := json.RawMessage(tt.data)
-		if err := unmarshalSchema(raw, resolved, tt.v); err != nil {
+		raw, err = applySchema(raw, resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &tt.v); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(tt.v, tt.want) {
 			t.Errorf("got %#v, want %#v", tt.v, tt.want)
 		}
-
 	}
 }
 

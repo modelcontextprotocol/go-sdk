@@ -5,10 +5,17 @@ Fixed bugs:
 - "_meta" should not be nil
 - empty resource or prompts should not be returned as 'null'
 - the server should not crash when params are passed to tools/call
+- missing required input fields should be rejected (#449)
+- output and input should be validated against their actual json, not Go
+	representation
+- When arguments are missing, the request should succeed if all properties are
+	optional, and observe any default values.
 
 -- tools --
 greet
 structured
+tomorrow
+inc
 
 -- client --
 {
@@ -26,9 +33,14 @@ structured
 { "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
 { "jsonrpc": "2.0", "id": 5, "method": "tools/call" }
-{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "greet", "arguments": {"name": "you"} } }
+{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "greet", "arguments": {"Name": "you"} } }
 { "jsonrpc": "2.0", "id": 1, "result": {} }
 { "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "structured", "arguments": {"In": "input"} } }
+{ "jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "structured", "arguments": {} } }
+{ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "tomorrow", "arguments": { "Now": "2025-06-18T15:04:05Z" } } }
+{ "jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "greet" } }
+{ "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "inc", "arguments": { "x": 3 } } }
+{ "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "inc" } }
 
 -- server --
 {
@@ -72,6 +84,31 @@ structured
 			{
 				"inputSchema": {
 					"type": "object",
+					"properties": {
+						"x": {
+							"type": "integer",
+							"default": 6
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "inc",
+				"outputSchema": {
+					"type": "object",
+					"required": [
+						"y"
+					],
+					"properties": {
+						"y": {
+							"type": "integer"
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			{
+				"inputSchema": {
+					"type": "object",
 					"required": [
 						"In"
 					],
@@ -93,6 +130,33 @@ structured
 						"Out": {
 							"type": "string",
 							"description": "the output"
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			{
+				"inputSchema": {
+					"type": "object",
+					"required": [
+						"Now"
+					],
+					"properties": {
+						"Now": {
+							"type": "string"
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "tomorrow",
+				"outputSchema": {
+					"type": "object",
+					"required": [
+						"Tomorrow"
+					],
+					"properties": {
+						"Tomorrow": {
+							"type": "string"
 						}
 					},
 					"additionalProperties": false
@@ -152,6 +216,67 @@ structured
 		],
 		"structuredContent": {
 			"Out": "Ack input"
+		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 8,
+	"error": {
+		"code": -32602,
+		"message": "invalid params: validating \"arguments\": validating root: required: missing properties: [\"In\"]"
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 9,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "{\"Tomorrow\":\"2025-06-19T15:04:05Z\"}"
+			}
+		],
+		"structuredContent": {
+			"Tomorrow": "2025-06-19T15:04:05Z"
+		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 10,
+	"error": {
+		"code": -32602,
+		"message": "invalid params: validating \"arguments\": validating root: required: missing properties: [\"Name\"]"
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 11,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "{\"y\":4}"
+			}
+		],
+		"structuredContent": {
+			"y": 4
+		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 11,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "{\"y\":7}"
+			}
+		],
+		"structuredContent": {
+			"y": 7
 		}
 	}
 }

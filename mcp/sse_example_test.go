@@ -15,7 +15,8 @@ import (
 )
 
 type AddParams struct {
-	X, Y int
+	X int `json:"x"`
+	Y int `json:"y"`
 }
 
 func Add(ctx context.Context, req *mcp.CallToolRequest, args AddParams) (*mcp.CallToolResult, any, error) {

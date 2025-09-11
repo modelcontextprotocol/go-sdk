@@ -224,7 +224,7 @@ func TestEndToEnd(t *testing.T) {
 		// ListTools is tested in client_list_test.go.
 		gotHi, err := cs.CallTool(ctx, &CallToolParams{
 			Name:      "greet",
-			Arguments: map[string]any{"name": "user"},
+			Arguments: map[string]any{"Name": "user"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -648,7 +648,7 @@ func TestServerClosing(t *testing.T) {
 	}()
 	if _, err := cs.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
-		Arguments: map[string]any{"name": "user"},
+		Arguments: map[string]any{"Name": "user"},
 	}); err != nil {
 		t.Fatalf("after connecting: %v", err)
 	}
@@ -1646,7 +1646,7 @@ var testImpl = &Implementation{Name: "test", Version: "v1.0.0"}
 // If anyone asks, we can add an option that controls how pointers are treated.
 func TestPointerArgEquivalence(t *testing.T) {
 	type input struct {
-		In string
+		In string `json:",omitempty"`
 	}
 	type output struct {
 		Out string

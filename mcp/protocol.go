@@ -105,6 +105,13 @@ type CallToolResult struct {
 	IsError bool `json:"isError,omitempty"`
 }
 
+// TODO(#64): consider exposing setError (and getError), by adding an error
+// field on CallToolResult.
+func (r *CallToolResult) setError(err error) {
+	r.Content = []Content{&TextContent{Text: err.Error()}}
+	r.IsError = true
+}
+
 func (*CallToolResult) isResult() {}
 
 // UnmarshalJSON handles the unmarshalling of content into the Content

@@ -20,9 +20,11 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"golang.org/x/tools/txtar"
@@ -97,16 +99,40 @@ func TestServerConformance(t *testing.T) {
 	}
 }
 
-type input struct {
+type structuredInput struct {
 	In string `jsonschema:"the input"`
 }
 
-type output struct {
+type structuredOutput struct {
 	Out string `jsonschema:"the output"`
 }
 
-func structuredTool(ctx context.Context, req *CallToolRequest, args *input) (*CallToolResult, *output, error) {
-	return nil, &output{"Ack " + args.In}, nil
+func structuredTool(ctx context.Context, req *CallToolRequest, args *structuredInput) (*CallToolResult, *structuredOutput, error) {
+	return nil, &structuredOutput{"Ack " + args.In}, nil
+}
+
+type tomorrowInput struct {
+	Now time.Time
+}
+
+type tomorrowOutput struct {
+	Tomorrow time.Time
+}
+
+func tomorrowTool(ctx context.Context, req *CallToolRequest, args tomorrowInput) (*CallToolResult, tomorrowOutput, error) {
+	return nil, tomorrowOutput{args.Now.Add(24 * time.Hour)}, nil
+}
+
+type incInput struct {
+	X int `json:"x,omitempty"`
+}
+
+type incOutput struct {
+	Y int `json:"y"`
+}
+
+func incTool(_ context.Context, _ *CallToolRequest, args incInput) (*CallToolResult, incOutput, error) {
+	return nil, incOutput{args.X + 1}, nil
 }
 
 // runServerTest runs the server conformance test.
@@ -124,6 +150,15 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			}, sayHi)
 		case "structured":
 			AddTool(s, &Tool{Name: "structured"}, structuredTool)
+		case "tomorrow":
+			AddTool(s, &Tool{Name: "tomorrow"}, tomorrowTool)
+		case "inc":
+			inSchema, err := jsonschema.For[incInput](nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inSchema.Properties["x"].Default = json.RawMessage(`6`)
+			AddTool(s, &Tool{Name: "inc", InputSchema: inSchema}, incTool)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}

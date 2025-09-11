@@ -144,7 +144,7 @@ func TestStreamableTransports(t *testing.T) {
 			// The "greet" tool should just work.
 			params := &CallToolParams{
 				Name:      "greet",
-				Arguments: map[string]any{"name": "foo"},
+				Arguments: map[string]any{"Name": "foo"},
 			}
 			got, err := session.CallTool(ctx, params)
 			if err != nil {
@@ -239,10 +239,11 @@ func TestStreamableServerShutdown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer clientSession.Close()
 
 			params := &CallToolParams{
 				Name:      "greet",
-				Arguments: map[string]any{"name": "foo"},
+				Arguments: map[string]any{"Name": "foo"},
 			}
 			// Verify that we can call a tool.
 			if _, err := clientSession.CallTool(ctx, params); err != nil {
