@@ -1,10 +1,10 @@
-module github.com/modelcontextprotocol/go-sdk/examples/rate-limiting
+module auth-middleware-example
 
 go 1.23.0
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v0.3.0
-	golang.org/x/time v0.12.0
 )
 
 require (

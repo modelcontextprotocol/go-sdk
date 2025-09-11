@@ -17,10 +17,10 @@ var nextProgressToken atomic.Int64
 // from the client.
 func main() {
 	c := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil)
-	c.AddSendingMiddleware(addProgressToken[*mcp.ClientSession])
+	c.AddSendingMiddleware(addProgressToken)
 }
 
-func addProgressToken[S mcp.Session](h mcp.MethodHandler) mcp.MethodHandler {
+func addProgressToken(h mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (result mcp.Result, err error) {
 		if rp, ok := req.GetParams().(mcp.RequestParams); ok {
 			rp.SetProgressToken(nextProgressToken.Add(1))

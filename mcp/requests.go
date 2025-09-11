@@ -7,7 +7,7 @@
 package mcp
 
 type (
-	CallToolRequest                   = ServerRequest[*CallToolParams]
+	CallToolRequest                   = ServerRequest[*CallToolParamsRaw]
 	CompleteRequest                   = ServerRequest[*CompleteParams]
 	GetPromptRequest                  = ServerRequest[*GetPromptParams]
 	InitializedRequest                = ServerRequest[*InitializedParams]

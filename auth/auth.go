@@ -24,9 +24,13 @@ type TokenInfo struct {
 // The error that a TokenVerifier should return if the token cannot be verified.
 var ErrInvalidToken = errors.New("invalid token")
 
+// The error that a TokenVerifier should return for OAuth-specific protocol errors.
+var ErrOAuth = errors.New("oauth error")
+
 // A TokenVerifier checks the validity of a bearer token, and extracts information
 // from it. If verification fails, it should return an error that unwraps to ErrInvalidToken.
-type TokenVerifier func(ctx context.Context, token string) (*TokenInfo, error)
+// The HTTP request is provided in case verifying the token involves checking it.
+type TokenVerifier func(ctx context.Context, token string, req *http.Request) (*TokenInfo, error)
 
 // RequireBearerTokenOptions are options for [RequireBearerToken].
 type RequireBearerTokenOptions struct {
@@ -53,13 +57,15 @@ func TokenInfoFromContext(ctx context.Context) *TokenInfo {
 // If verification fails, the request fails with a 401 Unauthenticated, and the WWW-Authenticate header
 // is populated to enable [protected resource metadata].
 //
+
+//
 // [protected resource metadata]: https://datatracker.ietf.org/doc/rfc9728
 func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions) func(http.Handler) http.Handler {
 	// Based on typescript-sdk/src/server/auth/middleware/bearerAuth.ts.
 
 	return func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenInfo, errmsg, code := verify(r.Context(), verifier, opts, r.Header.Get("Authorization"))
+			tokenInfo, errmsg, code := verify(r, verifier, opts)
 			if code != 0 {
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
 					if opts != nil && opts.ResourceMetadataURL != "" {
@@ -75,22 +81,23 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 	}
 }
 
-func verify(ctx context.Context, verifier TokenVerifier, opts *RequireBearerTokenOptions, authHeader string) (_ *TokenInfo, errmsg string, code int) {
+func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenOptions) (_ *TokenInfo, errmsg string, code int) {
 	// Extract bearer token.
+	authHeader := req.Header.Get("Authorization")
 	fields := strings.Fields(authHeader)
 	if len(fields) != 2 || strings.ToLower(fields[0]) != "bearer" {
 		return nil, "no bearer token", http.StatusUnauthorized
 	}
 
 	// Verify the token and get information from it.
-	tokenInfo, err := verifier(ctx, fields[1])
+	tokenInfo, err := verifier(req.Context(), fields[1], req)
 	if err != nil {
 		if errors.Is(err, ErrInvalidToken) {
 			return nil, err.Error(), http.StatusUnauthorized
 		}
-		// TODO: the TS SDK distinguishes another error, OAuthError, and returns a 400.
-		// Investigate how that works.
-		// See typescript-sdk/src/server/auth/middleware/bearerAuth.ts.
+		if errors.Is(err, ErrOAuth) {
+			return nil, err.Error(), http.StatusBadRequest
+		}
 		return nil, err.Error(), http.StatusInternalServerError
 	}
 

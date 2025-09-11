@@ -257,6 +257,26 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
+		// Check output schema validation.
+		badout := &Tool{
+			Name: "badout",
+			OutputSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"x": {Type: "string"},
+				},
+			},
+		}
+		AddTool(s, badout, func(_ context.Context, _ *CallToolRequest, arg map[string]any) (*CallToolResult, map[string]any, error) {
+			return nil, map[string]any{"x": 1}, nil
+		})
+		_, err = cs.CallTool(ctx, &CallToolParams{Name: "badout"})
+		wantMsg := `has type "integer", want "string"`
+		if err == nil || !strings.Contains(err.Error(), wantMsg) {
+			t.Errorf("\ngot  %q\nwant error message containing %q", err, wantMsg)
+		}
+
+		// Check tools-changed notifications.
 		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 		waitForNotification(t, "tools")
 		s.RemoveTools("T")
@@ -494,7 +514,6 @@ func TestEndToEnd(t *testing.T) {
 		if result.Action != "accept" {
 			t.Errorf("got action %q, want %q", result.Action, "accept")
 		}
-
 	})
 
 	// Disconnect.
@@ -1396,7 +1415,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 			RequestedSchema: &jsonschema.Schema{Type: "object"},
 		})
 		if err != nil {
-			t.Errorf("elicitation should work when capability is declared, got error: %v", err)
+			t.Fatalf("elicitation should work when capability is declared, got error: %v", err)
 		}
 		if result.Action != "cancel" {
 			t.Errorf("got action %q, want %q", result.Action, "cancel")
@@ -1638,7 +1657,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 		//
 		// We handle a few different types of results, to assert they behave the
 		// same in all cases.
-		AddTool(s, &Tool{Name: "pointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in *input) (*CallToolResult, *output, error) {
+		AddTool(s, &Tool{Name: "pointer"}, func(_ context.Context, req *CallToolRequest, in *input) (*CallToolResult, *output, error) {
 			switch in.In {
 			case "":
 				return nil, nil, fmt.Errorf("must provide input")
@@ -1652,7 +1671,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 				panic("unreachable")
 			}
 		})
-		AddTool(s, &Tool{Name: "nonpointer"}, func(_ context.Context, req *ServerRequest[*CallToolParams], in input) (*CallToolResult, output, error) {
+		AddTool(s, &Tool{Name: "nonpointer"}, func(_ context.Context, req *CallToolRequest, in input) (*CallToolResult, output, error) {
 			switch in.In {
 			case "":
 				return nil, output{}, fmt.Errorf("must provide input")
@@ -1724,4 +1743,97 @@ func TestPointerArgEquivalence(t *testing.T) {
 // ptr is a helper function to create pointers for schema constraints
 func ptr[T any](v T) *T {
 	return &v
+}
+
+func TestComplete(t *testing.T) {
+	completionValues := []string{"python", "pytorch", "pyside"}
+
+	serverOpts := &ServerOptions{
+		CompletionHandler: func(_ context.Context, request *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: completionValues,
+				},
+			}, nil
+		},
+	}
+	server := NewServer(testImpl, serverOpts)
+	cs, _ := basicClientServerConnection(t, nil, server, func(s *Server) {})
+	result, err := cs.Complete(context.Background(), &CompleteParams{
+		Argument: CompleteParamsArgument{
+			Name:  "language",
+			Value: "py",
+		},
+		Ref: &CompleteReference{
+			Type: "ref/prompt",
+			Name: "code_review",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(completionValues, result.Completion.Values); diff != "" {
+		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestEmbeddedStructResponse performs a tool call to verify that a struct with
+// an embedded pointer generates a correct, flattened JSON schema and that its
+// response is validated successfully.
+func TestEmbeddedStructResponse(t *testing.T) {
+	type foo struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	// bar embeds foo
+	type bar struct {
+		*foo         // Embedded - should flatten in JSON
+		Extra string `json:"extra"`
+	}
+
+	type response struct {
+		Data bar `json:"data"`
+	}
+
+	// testTool demonstrates an embedded struct in its response.
+	testTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, response, error) {
+		response := response{
+			Data: bar{
+				foo: &foo{
+					ID:   "foo",
+					Name: "Test Foo",
+				},
+				Extra: "additional data",
+			},
+		}
+		return nil, response, nil
+	}
+	ctx := context.Background()
+	clientTransport, serverTransport := NewInMemoryTransports()
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	AddTool(server, &Tool{
+		Name: "test_embedded_struct",
+	}, testTool)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := NewClient(&Implementation{Name: "test-client"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	_, err = clientSession.CallTool(ctx, &CallToolParams{
+		Name: "test_embedded_struct",
+	})
+	if err != nil {
+		t.Errorf("CallTool() failed: %v", err)
+	}
 }

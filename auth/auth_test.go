@@ -7,18 +7,20 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
 
 func TestVerify(t *testing.T) {
-	ctx := context.Background()
-	verifier := func(_ context.Context, token string) (*TokenInfo, error) {
+	verifier := func(_ context.Context, token string, _ *http.Request) (*TokenInfo, error) {
 		switch token {
 		case "valid":
 			return &TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
 		case "invalid":
 			return nil, ErrInvalidToken
+		case "oauth":
+			return nil, ErrOAuth
 		case "noexp":
 			return &TokenInfo{}, nil
 		case "expired":
@@ -48,6 +50,10 @@ func TestVerify(t *testing.T) {
 			"invalid token", 401,
 		},
 		{
+			"oauth error", nil, "Bearer oauth",
+			"oauth error", 400,
+		},
+		{
 			"no expiration", nil, "Bearer noexp",
 			"token missing expiration", 401,
 		},
@@ -61,7 +67,9 @@ func TestVerify(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotMsg, gotCode := verify(ctx, verifier, tt.opts, tt.header)
+			_, gotMsg, gotCode := verify(&http.Request{
+				Header: http.Header{"Authorization": {tt.header}},
+			}, verifier, tt.opts)
 			if gotMsg != tt.wantMsg || gotCode != tt.wantCode {
 				t.Errorf("got (%q, %d), want (%q, %d)", gotMsg, gotCode, tt.wantMsg, tt.wantCode)
 			}

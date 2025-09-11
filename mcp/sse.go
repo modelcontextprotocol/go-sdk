@@ -114,19 +114,6 @@ type SSEServerTransport struct {
 	done   chan struct{} // closed when the connection is closed
 }
 
-// NewSSEServerTransport creates a new SSE transport for the given messages
-// endpoint, and hanging GET response.
-//
-// Deprecated: use an SSEServerTransport literal.
-//
-//go:fix inline
-func NewSSEServerTransport(endpoint string, w http.ResponseWriter) *SSEServerTransport {
-	return &SSEServerTransport{
-		Endpoint: endpoint,
-		Response: w,
-	}
-}
-
 // ServeHTTP handles POST requests to the transport endpoint.
 func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if t.incoming == nil {
@@ -332,30 +319,6 @@ type SSEClientTransport struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
-}
-
-// SSEClientTransportOptions provides options for the [NewSSEClientTransport]
-// constructor.
-//
-// Deprecated: use an SSEClientTransport literal.
-type SSEClientTransportOptions struct {
-	// HTTPClient is the client to use for making HTTP requests. If nil,
-	// http.DefaultClient is used.
-	HTTPClient *http.Client
-}
-
-// NewSSEClientTransport returns a new client transport that connects to the
-// SSE server at the provided URL.
-//
-// Deprecated: use an SSEClientTransport literal.
-//
-//go:fix inline
-func NewSSEClientTransport(endpoint string, opts *SSEClientTransportOptions) *SSEClientTransport {
-	t := &SSEClientTransport{Endpoint: endpoint}
-	if opts != nil {
-		t.HTTPClient = opts.HTTPClient
-	}
-	return t
 }
 
 // Connect connects through the client endpoint.

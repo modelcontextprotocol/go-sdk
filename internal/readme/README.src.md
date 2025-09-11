@@ -1,4 +1,4 @@
-# MCP Go SDK v0.3.0
+# MCP Go SDK v0.4.0
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
@@ -6,7 +6,7 @@
 
 This version contains breaking changes.
 See the [release notes](
-https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.3.0) for details.
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.4.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
@@ -17,6 +17,39 @@ software development kit (SDK) for the Model Context Protocol (MCP).
 > The SDK is not yet at v1.0.0 and may still be subject to incompatible API
 > changes. We aim to tag v1.0.0 in September, 2025. See
 > https://github.com/modelcontextprotocol/go-sdk/issues/328 for details.
+
+## Package documentation
+
+The SDK consists of three importable packages:
+
+- The
+  [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
+  package defines the primary APIs for constructing and using MCP clients and
+  servers.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
+  their own transports.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
+  package provides some primitives for supporting oauth.
+
+## Getting started
+
+To get started creating an MCP server, create an `mcp.Server` instance, add
+features to it, and then run it over an `mcp.Transport`. For example, this
+server adds a single simple tool, and then connects it to clients over
+stdin/stdout:
+
+%include server/server.go -
+
+To communicate with that server, we can similarly create an `mcp.Client` and
+connect it to the corresponding server, by running the server command and
+communicating over its stdin/stdout:
+
+%include client/client.go -
+
+The [`examples/`](/examples/) directory contains more example clients and
+servers.
 
 ## Design
 
@@ -29,37 +62,6 @@ Further design discussion should occur in
 proposals) or
 [discussions](https://github.com/modelcontextprotocol/go-sdk/discussions) for
 open-ended discussion. See [CONTRIBUTING.md](/CONTRIBUTING.md) for details.
-
-## Package documentation
-
-The SDK consists of three importable packages:
-
-- The
-  [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
-  package defines the primary APIs for constructing and using MCP clients and
-  servers.
-- The
-  [`github.com/modelcontextprotocol/go-sdk/jsonschema`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
-  package provides an implementation of [JSON
-  Schema](https://json-schema.org/), used for MCP tool input and output schema.
-- The
-  [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
-  their own transports.
-   
-
-## Example
-
-In this example, an MCP client communicates with an MCP server running in a
-sidecar process:
-
-%include client/client.go -
-
-Here's an example of the corresponding server component, which communicates
-with its client over stdin/stdout:
-
-%include server/server.go -
-
-The [`examples/`](/examples/) directory contains more example clients and servers.
 
 ## Acknowledgements
 

@@ -55,17 +55,16 @@ func TestBatchFraming(t *testing.T) {
 
 func TestIOConnRead(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name            string
+		input           string
+		want            string
+		protocolVersion string
 	}{
-
 		{
 			name:  "valid json input",
 			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}}`,
 			want:  "",
 		},
-
 		{
 			name: "newline at the end of first valid json input",
 			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}}
@@ -77,13 +76,41 @@ func TestIOConnRead(t *testing.T) {
 			input: `{"jsonrpc":"2.0","id":1,"method":"test","params":{}},`,
 			want:  "invalid trailing data at the end of stream",
 		},
+		{
+			name:            "batching unknown protocol",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "",
+			protocolVersion: "",
+		},
+		{
+			name:            "batching old protocol",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "",
+			protocolVersion: protocolVersion20241105,
+		},
+		{
+			name:            "batching new protocol",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2025-06-18)",
+			protocolVersion: protocolVersion20250618,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := newIOConn(rwc{
 				rc: io.NopCloser(strings.NewReader(tt.input)),
 			})
+			if tt.protocolVersion != "" {
+				tr.sessionUpdated(ServerSessionState{
+					InitializeParams: &InitializeParams{
+						ProtocolVersion: tt.protocolVersion,
+					},
+				})
+			}
 			_, err := tr.Read(context.Background())
+			if err == nil && tt.want != "" {
+				t.Errorf("ioConn.Read() got nil error but wanted %v", tt.want)
+			}
 			if err != nil && err.Error() != tt.want {
 				t.Errorf("ioConn.Read() = %v, want %v", err.Error(), tt.want)
 			}

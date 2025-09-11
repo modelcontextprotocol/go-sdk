@@ -40,6 +40,7 @@ type Annotations struct {
 	Priority float64 `json:"priority,omitempty"`
 }
 
+// CallToolParams is used by clients to call a tool.
 type CallToolParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -48,45 +49,59 @@ type CallToolParams struct {
 	Arguments any    `json:"arguments,omitempty"`
 }
 
-// When unmarshalling CallToolParams on the server side, we need to delay unmarshaling of the arguments.
-func (c *CallToolParams) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Meta         `json:"_meta,omitempty"`
-		Name         string          `json:"name"`
-		RawArguments json.RawMessage `json:"arguments,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	c.Meta = raw.Meta
-	c.Name = raw.Name
-	c.Arguments = raw.RawArguments
-	return nil
+// CallToolParamsRaw is passed to tool handlers on the server. Its arguments
+// are not yet unmarshaled (hence "raw"), so that the handlers can perform
+// unmarshaling themselves.
+type CallToolParamsRaw struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta      `json:"_meta,omitempty"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
-// The server's response to a tool call.
+// A CallToolResult is the server's response to a tool call.
+//
+// The [ToolHandler] and [ToolHandlerFor] handler functions return this result,
+// though [ToolHandlerFor] populates much of it automatically as documented at
+// each field.
 type CallToolResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+
 	// A list of content objects that represent the unstructured result of the tool
 	// call.
+	//
+	// When using a [ToolHandlerFor] with structured output, if Content is unset
+	// it will be populated with JSON text content corresponding to the
+	// structured output value.
 	Content []Content `json:"content"`
-	// An optional JSON object that represents the structured result of the tool
-	// call.
+
+	// StructuredContent is an optional value that represents the structured
+	// result of the tool call. It must marshal to a JSON object.
+	//
+	// When using a [ToolHandlerFor] with structured output, you should not
+	// populate this field. It will be automatically populated with the typed Out
+	// value.
 	StructuredContent any `json:"structuredContent,omitempty"`
-	// Whether the tool call ended in an error.
+
+	// IsError reports whether the tool call ended in an error.
 	//
 	// If not set, this is assumed to be false (the call was successful).
 	//
-	// Any errors that originate from the tool should be reported inside the result
-	// object, with isError set to true, not as an MCP protocol-level error
-	// response. Otherwise, the LLM would not be able to see that an error occurred
-	// and self-correct.
+	// Any errors that originate from the tool should be reported inside the
+	// Content field, with IsError set to true, not as an MCP protocol-level
+	// error response. Otherwise, the LLM would not be able to see that an error
+	// occurred and self-correct.
 	//
 	// However, any errors in finding the tool, an error indicating that the
 	// server does not support tool calls, or any other exceptional conditions,
 	// should be reported as an MCP error response.
+	//
+	// When using a [ToolHandlerFor], this field is automatically set when the
+	// tool handler returns an error, and the error string is included as text in
+	// the Content field.
 	IsError bool `json:"isError,omitempty"`
 }
 
@@ -114,6 +129,10 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 func (x *CallToolParams) isParams()              {}
 func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+func (x *CallToolParamsRaw) isParams()              {}
+func (x *CallToolParamsRaw) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CallToolParamsRaw) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type CancelledParams struct {
 	// This property is reserved by the protocol to allow clients and servers to

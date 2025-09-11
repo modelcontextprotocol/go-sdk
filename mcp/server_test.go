@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"slices"
 	"testing"
@@ -486,4 +487,60 @@ func TestAddTool(t *testing.T) {
 	}) {
 		t.Error("bad Out: expected panic")
 	}
+}
+
+type schema = jsonschema.Schema
+
+func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut *schema, wantErr bool) {
+	t.Helper()
+	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
+		return nil, out, nil
+	}
+	gott, goth, err := toolForErr(tool, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(wantIn, gott.InputSchema); diff != "" {
+		t.Errorf("input: mismatch (-want, +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(wantOut, gott.OutputSchema); diff != "" {
+		t.Errorf("output: mismatch (-want, +got):\n%s", diff)
+	}
+	ctr := &CallToolRequest{
+		Params: &CallToolParamsRaw{
+			Arguments: json.RawMessage(in),
+		},
+	}
+	_, err = goth(context.Background(), ctr)
+
+	if gotErr := err != nil; gotErr != wantErr {
+		t.Errorf("got error: %t, want error: %t", gotErr, wantErr)
+	}
+}
+
+func TestToolForSchemas(t *testing.T) {
+	// Validate that ToolFor handles schemas properly.
+
+	// Infer both schemas.
+	testToolForSchema[int](t, &Tool{}, "3", true,
+		&schema{Type: "integer"}, &schema{Type: "boolean"}, false)
+	// Validate the input schema: expect an error if it's wrong.
+	// We can't test that the output schema is validated, because it's typed.
+	testToolForSchema[int](t, &Tool{}, `"x"`, true,
+		&schema{Type: "integer"}, &schema{Type: "boolean"}, true)
+
+	// Ignore type any for output.
+	testToolForSchema[int, any](t, &Tool{}, "3", 0,
+		&schema{Type: "integer"}, nil, false)
+	// Input is still validated.
+	testToolForSchema[int, any](t, &Tool{}, `"x"`, 0,
+		&schema{Type: "integer"}, nil, true)
+
+	// Tool sets input schema: that is what's used.
+	testToolForSchema[int, any](t, &Tool{InputSchema: &schema{Type: "string"}}, "3", 0,
+		&schema{Type: "string"}, nil, true) // error: 3 is not a string
+
+	// Tool sets output schema: that is what's used, and validation happens.
+	testToolForSchema[string, any](t, &Tool{OutputSchema: &schema{Type: "integer"}}, "3", "x",
+		&schema{Type: "string"}, &schema{Type: "integer"}, true) // error: "x" is not an integer
 }
