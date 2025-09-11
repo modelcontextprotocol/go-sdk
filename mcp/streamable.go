@@ -614,17 +614,22 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, "POST requires a non-empty body", http.StatusBadRequest)
 		return
 	}
-	// TODO(#21): if the negotiated protocol version is 2025-06-18 or later,
-	// we should not allow batching here.
-	//
-	// This also requires access to the negotiated version, which would either be
-	// set by the MCP-Protocol-Version header, or would require peeking into the
-	// session.
-	incoming, _, err := readBatch(body)
+	incoming, isBatch, err := readBatch(body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	protocolVersion := req.Header.Get(protocolVersionHeader)
+	if protocolVersion == "" {
+		protocolVersion = protocolVersion20250326
+	}
+
+	if isBatch && protocolVersion >= protocolVersion20250618 {
+		http.Error(w, fmt.Sprintf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion), http.StatusBadRequest)
+		return
+	}
+
 	requests := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
