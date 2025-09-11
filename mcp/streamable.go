@@ -624,6 +624,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
+	protocolVersion = negotiatedVersion(protocolVersion)
 
 	if isBatch && protocolVersion >= protocolVersion20250618 {
 		http.Error(w, fmt.Sprintf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion), http.StatusBadRequest)

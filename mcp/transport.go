@@ -283,6 +283,8 @@ func (r rwc) Close() error {
 //
 // See [msgBatch] for more discussion of message batching.
 type ioConn struct {
+	protocolVersion string
+
 	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
 	rwc     io.ReadWriteCloser // the underlying stream
 
@@ -359,6 +361,17 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 }
 
 func (c *ioConn) SessionID() string { return "" }
+
+func (c *ioConn) sessionUpdated(state ServerSessionState) {
+	protocolVersion := ""
+	if state.InitializeParams != nil {
+		protocolVersion = state.InitializeParams.ProtocolVersion
+	}
+	if protocolVersion == "" {
+		protocolVersion = protocolVersion20250326
+	}
+	c.protocolVersion = negotiatedVersion(protocolVersion)
+}
 
 // addBatch records a msgBatch for an incoming batch payload.
 // It returns an error if batch is malformed, containing previously seen IDs.
@@ -458,6 +471,10 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	if batch && t.protocolVersion >= protocolVersion20250618 {
+		return nil, fmt.Errorf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, t.protocolVersion)
+	}
+
 	t.queue = msgs[1:]
 
 	if batch {
