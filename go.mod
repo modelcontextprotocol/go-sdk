@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/google/go-cmp v0.7.0
-	github.com/google/jsonschema-go v0.2.3-0.20250911201137-bbdc431016d2
+	github.com/google/jsonschema-go v0.2.3
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	golang.org/x/tools v0.34.0
 )
