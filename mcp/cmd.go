@@ -13,9 +13,7 @@ import (
 	"time"
 )
 
-const (
-	defaultTerminateDuration = 5 * time.Second
-)
+var defaultTerminateDuration = 5 * time.Second // mutable for testing
 
 // A CommandTransport is a [Transport] that runs a command and communicates
 // with it over stdin/stdout, using newline-delimited JSON.

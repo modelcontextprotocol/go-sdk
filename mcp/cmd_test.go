@@ -257,25 +257,35 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 	}
 	requireExec(t)
 
+	// Unfortunately, since it does I/O, this test needs to rely on timing (we
+	// can't use synctest). However, we can still decreate the default
+	// termination duration to speed up the test.
+	const defaultDur = 50 * time.Millisecond
+	defer mcp.SetDefaultTerminateDuration(defaultDur)()
+
 	tests := []struct {
 		name            string
 		duration        time.Duration
+		wantMinDuration time.Duration
 		wantMaxDuration time.Duration
 	}{
 		{
 			name:            "default duration (zero)",
 			duration:        0,
-			wantMaxDuration: 6 * time.Second, // default 5s + buffer
+			wantMinDuration: defaultDur,
+			wantMaxDuration: 1 * time.Second, // default + buffer
 		},
 		{
 			name:            "below minimum duration",
-			duration:        500 * time.Millisecond,
-			wantMaxDuration: 6 * time.Second, // should use default 5s + buffer
+			duration:        -500 * time.Millisecond,
+			wantMinDuration: defaultDur,
+			wantMaxDuration: 1 * time.Second, // should use default + buffer
 		},
 		{
 			name:            "custom valid duration",
-			duration:        2 * time.Second,
-			wantMaxDuration: 3 * time.Second, // custom 2s + buffer
+			duration:        200 * time.Millisecond,
+			wantMinDuration: 200 * time.Millisecond,
+			wantMaxDuration: 1 * time.Second, // custom + buffer
 		},
 	}
 
@@ -306,7 +316,9 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 					t.Fatalf("Close() failed with unexpected error: %v", err)
 				}
 			}
-
+			if elapsed < tt.wantMinDuration {
+				t.Errorf("Close() took %v, expected at least %v", elapsed, tt.wantMinDuration)
+			}
 			if elapsed > tt.wantMaxDuration {
 				t.Errorf("Close() took %v, expected at most %v", elapsed, tt.wantMaxDuration)
 			}
