@@ -212,12 +212,14 @@ func (t *LoggingTransport) Connect(ctx context.Context) (Connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &loggingConn{delegate, t.Writer}, nil
+	return &loggingConn{delegate: delegate, w: t.Writer}, nil
 }
 
 type loggingConn struct {
 	delegate Connection
-	w        io.Writer
+
+	mu sync.Mutex
+	w  io.Writer
 }
 
 func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
@@ -225,15 +227,21 @@ func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
 // Read is a stream middleware that logs incoming messages.
 func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	msg, err := s.delegate.Read(ctx)
+
 	if err != nil {
+		s.mu.Lock()
 		fmt.Fprintf(s.w, "read error: %v", err)
+		s.mu.Unlock()
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
+		s.mu.Lock()
 		if err != nil {
 			fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
 		}
 		fmt.Fprintf(s.w, "read: %s\n", string(data))
+		s.mu.Unlock()
 	}
+
 	return msg, err
 }
 
@@ -241,13 +249,17 @@ func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	err := s.delegate.Write(ctx, msg)
 	if err != nil {
+		s.mu.Lock()
 		fmt.Fprintf(s.w, "write error: %v", err)
+		s.mu.Unlock()
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
+		s.mu.Lock()
 		if err != nil {
 			fmt.Fprintf(s.w, "LoggingTransport: failed to marshal: %v", err)
 		}
 		fmt.Fprintf(s.w, "write: %s\n", string(data))
+		s.mu.Unlock()
 	}
 	return err
 }

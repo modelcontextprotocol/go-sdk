@@ -55,11 +55,15 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 
 // ClientOptions configures the behavior of the client.
 type ClientOptions struct {
-	// Handler for sampling.
-	// Called when a server calls CreateMessage.
+	// CreateMessageHandler handles incoming requests for sampling/createMessage.
+	//
+	// Setting CreateMessageHandler to a non-nil value causes the client to
+	// advertise the sampling capability.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
-	// Handler for elicitation.
-	// Called when a server requests user input via Elicit.
+	// ElicitationHandler handles incoming requests for elicitation/create.
+	//
+	// Setting ElicitationHandler to a non-nil value causes the client to
+	// advertise the elicitation capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
@@ -123,7 +127,7 @@ func (c *Client) capabilities() *ClientCapabilities {
 }
 
 // Connect begins an MCP session by connecting to a server over the given
-// transport, and initializing the session.
+// transport. The resulting session is initialized, and ready to use.
 //
 // Typically, it is the responsibility of the client to close the connection
 // when it is no longer needed. However, if the connection is closed by the
@@ -302,6 +306,9 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 
 	// Validate elicitation result content against requested schema
 	if req.Params.RequestedSchema != nil && res.Content != nil {
+		// TODO: is this the correct behavior if validation fails?
+		// It isn't the *server's* params that are invalid, so why would we return
+		// this code to the server?
 		resolved, err := req.Params.RequestedSchema.Resolve(nil)
 		if err != nil {
 			return nil, jsonrpc2.NewError(CodeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))

@@ -705,7 +705,7 @@ func TestCancellation(t *testing.T) {
 		start     = make(chan struct{})
 		cancelled = make(chan struct{}, 1) // don't block the request
 	)
-	slowRequest := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+	slowTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 		start <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -716,7 +716,7 @@ func TestCancellation(t *testing.T) {
 		return nil, nil, nil
 	}
 	cs, _ := basicConnection(t, func(s *Server) {
-		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowRequest)
+		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowTool)
 	})
 	defer cs.Close()
 
@@ -1109,7 +1109,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 							"low",
 						},
 						Extra: map[string]any{
-							"enumNames": []interface{}{"High Priority", "Medium Priority", "Low Priority"},
+							"enumNames": []any{"High Priority", "Medium Priority", "Low Priority"},
 						},
 					},
 				},
@@ -1270,7 +1270,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 							"low",
 						},
 						Extra: map[string]any{
-							"enumNames": []interface{}{"High Priority", "Medium Priority"}, // Only 2 names for 3 values
+							"enumNames": []any{"High Priority", "Medium Priority"}, // Only 2 names for 3 values
 						},
 					},
 				},
