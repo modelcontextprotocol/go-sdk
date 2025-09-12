@@ -135,6 +135,15 @@ func incTool(_ context.Context, _ *CallToolRequest, args incInput) (*CallToolRes
 	return nil, incOutput{args.X + 1}, nil
 }
 
+func progressTool(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+	for i := range 10 {
+		if err := req.Progress(ctx, fmt.Sprintf("message %d", i), float64(i+1), 10); err != nil {
+			return nil, nil, err
+		}
+	}
+	return nil, nil, nil
+}
+
 // runServerTest runs the server conformance test.
 // It must be executed in a synctest bubble.
 func runServerTest(t *testing.T, test *conformanceTest) {
@@ -152,6 +161,8 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			AddTool(s, &Tool{Name: "structured"}, structuredTool)
 		case "tomorrow":
 			AddTool(s, &Tool{Name: "tomorrow"}, tomorrowTool)
+		case "progress":
+			AddTool(s, &Tool{Name: "progress"}, progressTool)
 		case "inc":
 			inSchema, err := jsonschema.For[incInput](nil)
 			if err != nil {
@@ -233,15 +244,17 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				return nil, err, false
 			}
 			serverMessages = append(serverMessages, msg)
-			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
-				// Pair up the next outgoing response with this request.
-				// We assume requests arrive in the same order every time.
-				if len(outResponses) == 0 {
-					t.Fatalf("no outgoing response for request %v", req)
+			if req, ok := msg.(*jsonrpc.Request); ok {
+				if req.IsCall() {
+					// Pair up the next outgoing response with this request.
+					// We assume requests arrive in the same order every time.
+					if len(outResponses) == 0 {
+						t.Fatalf("no outgoing response for request %v", req)
+					}
+					outResponses[0].ID = req.ID
+					writeMsg(outResponses[0])
+					outResponses = outResponses[1:]
 				}
-				outResponses[0].ID = req.ID
-				writeMsg(outResponses[0])
-				outResponses = outResponses[1:]
 				continue
 			}
 			return msg.(*jsonrpc.Response), nil, true
