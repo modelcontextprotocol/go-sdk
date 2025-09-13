@@ -70,9 +70,12 @@ type StreamableHTTPOptions struct {
 	// documentation for [StreamableServerTransport].
 	Stateless bool
 
-	// TODO: support session retention (?)
+	// TODO(#148): support session retention (?)
 
-	// JSONResponse is forwarded to StreamableServerTransport.jsonResponse.
+	// JSONResponse causes streamable responses to return application/json rather
+	// than text/event-stream ([§2.1.5] of the spec).
+	//
+	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
 }
 
@@ -181,7 +184,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	// Section 2.7 of the spec (2025-06-18) states:
+	// [§2.7] of the spec (2025-06-18) states:
 	//
 	// "If using HTTP, the client MUST include the MCP-Protocol-Version:
 	// <protocol-version> HTTP header on all subsequent requests to the MCP
@@ -209,6 +212,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//     assume 2025-03-26 if the client doesn't say anything).
 	//
 	// This logic matches the typescript SDK.
+	//
+	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
@@ -370,6 +375,9 @@ type StreamableServerTransport struct {
 	// request contain only a single message. In this case, notifications or
 	// requests made within the context of a server request will be sent to the
 	// hanging GET request, if any.
+	//
+	// TODO(rfindley): jsonResponse should be exported, since
+	// StreamableHTTPOptions.JSONResponse is exported.
 	jsonResponse bool
 
 	// connection is non-nil if and only if the transport has been connected.
@@ -1188,7 +1196,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return fmt.Errorf("%s: %v", requestSummary, err)
 	}
 
-	// Section 2.5.3: "The server MAY terminate the session at any time, after
+	// §2.5.3: "The server MAY terminate the session at any time, after
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
 	if resp.StatusCode == http.StatusNotFound {
