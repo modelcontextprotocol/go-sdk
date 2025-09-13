@@ -9,11 +9,13 @@
 Transports should not be reused for multiple connections: if you need to create
 multiple connections, use different transports.
 
+### Stdio Transport
+
 ### Streamable Transport
 
-### Streamable Transport API
-
-The streamable transport API is implemented across three types:
+The [streamable
+transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http)
+API is implemented across three types:
 
 - `StreamableHTTPHandler`: an`http.Handler` that serves streamable MCP
   sessions.
@@ -69,7 +71,11 @@ for more background.
 
 ## Authorization
 
+**TODO**
+
 ## Security
+
+**TODO**
 
 ## Utilities
 
