@@ -1,4 +1,4 @@
-# Support for MCP Client Features
+# Support for MCP client features
 
 %toc
 

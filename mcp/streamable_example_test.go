@@ -5,6 +5,7 @@
 package mcp_test
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -31,10 +32,39 @@ func ExampleStreamableHTTPHandler() {
 	// The SDK is currently permissive of some missing keys in "params".
 	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
 	fmt.Println(resp)
-	// Output: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"server","version":"v0.1.0"}}}
+	// Output:
+	// {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"server","version":"v0.1.0"}}}
 }
 
 // !-streamablehandler
+
+// !+httpmiddleware
+func ExampleStreamableHTTPHandler_httpMiddleware() {
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		return server
+	}, nil)
+	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Example debugging; you could also capture the response.
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		req.Body.Close() // ignore error
+		req.Body = io.NopCloser(bytes.NewBuffer(body))
+		fmt.Println(req.Method, string(body))
+		handler.ServeHTTP(w, req)
+	})
+	httpServer := httptest.NewServer(loggingHandler)
+	defer httpServer.Close()
+
+	// The SDK is currently permissive of some missing keys in "params".
+	mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
+	// Output:
+	// POST {"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}
+}
+
+// !-httpmiddleware
 
 func mustPostMessage(msg, url string) string {
 	req := orFatal(http.NewRequest("POST", url, strings.NewReader(msg)))

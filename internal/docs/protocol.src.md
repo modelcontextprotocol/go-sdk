@@ -1,4 +1,4 @@
-# Support for the MCP Base protocol
+# Support for the MCP base protocol
 
 %toc
 
