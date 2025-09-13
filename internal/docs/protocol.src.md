@@ -11,6 +11,39 @@ multiple connections, use different transports.
 
 ### Streamable Transport
 
+### Streamable Transport API
+
+The streamable transport API is implemented across three types:
+
+- `StreamableHTTPHandler`: an`http.Handler` that serves streamable MCP
+  sessions.
+- `StreamableServerTransport`: a `Transport` that implements the server side of
+  the streamable transport.
+- `StreamableClientTransport`: a `Transport` that implements the client side of
+  the streamable transport.
+
+To create a streamable MCP server, you create a `StreamableHTTPHandler` and
+pass it an `mcp.Server`:
+
+%include ../../mcp/streamable_example_test.go streamablehandler -
+
+The `StreamableHTTPHandler` handles the HTTP requests and creates a new
+`StreamableServerTransport` for each new session. The transport is then used to
+communicate with the client.
+
+On the client side, you create a `StreamableClientTransport` and use it to
+connect to the server:
+
+```go
+transport := &mcp.StreamableClientTransport{
+	Endpoint: "http://localhost:8080/mcp",
+}
+client, err := mcp.Connect(context.Background(), transport, &mcp.ClientOptions{...})
+```
+
+The `StreamableClientTransport` handles the HTTP requests and communicates with
+the server using the streamable transport protocol.
+
 #### Stateless Mode
 
 #### Sessionless mode

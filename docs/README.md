@@ -10,8 +10,9 @@ https://modelcontextprotocol.io/specification/2025-06-18
 
 1. [Lifecycle (Clients, Servers, and Sessions)](protocol.md#lifecycle).
 1. [Transports](protocol.md#transports)
+    1. [Stdio transport](protocol.md#stdio-transport)
     1. [Streamable transport](protocol.md#streamable-transport)
-    1. [Stateless mode](protocol.md#stateless-mode)
+    1. [Custom transports](protocol.md#stateless-mode)
 1. [Authorization](protocol.md#authorization)
 1. [Security](protocol.md#security)
 1. [Utilities](protocol.md#utilities)

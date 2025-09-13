@@ -12,4 +12,4 @@
 // The doc package generates the documentation at /doc, via go:generate.
 //
 // Tests in this package are used for examples.
-package doc
+package docs
