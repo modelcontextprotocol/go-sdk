@@ -86,11 +86,23 @@ type serverConnection interface {
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	In  io.ReadCloser
+	Out io.WriteCloser
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	in := t.In
+	out := t.Out
+
+	if in == nil {
+		in = os.Stdin
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	return newIOConn(rwc{in, out}), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
