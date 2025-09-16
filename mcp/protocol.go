@@ -625,15 +625,16 @@ type ProgressNotificationParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	// The progress token which was given in the initial request, used to associate
+	// this notification with the request that is proceeding.
+	ProgressToken any `json:"progressToken"`
 	// An optional message describing the current progress.
 	Message string `json:"message,omitempty"`
 	// The progress thus far. This should increase every time progress is made, even
 	// if the total is unknown.
 	Progress float64 `json:"progress"`
-	// The progress token which was given in the initial request, used to associate
-	// this notification with the request that is proceeding.
-	ProgressToken any `json:"progressToken"`
 	// Total number of items to process (or total progress required), if known.
+	// Zero means unknown.
 	Total float64 `json:"total,omitempty"`
 }
 
