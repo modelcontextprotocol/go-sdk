@@ -2,11 +2,12 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:generate go run golang.org/x/example/internal/cmd/weave@latest -o ../../docs/README.md ./README.src.md
-//go:generate go run golang.org/x/example/internal/cmd/weave@latest -o ../../docs/protocol.md ./protocol.src.md
-//go:generate go run golang.org/x/example/internal/cmd/weave@latest -o ../../docs/client.md ./client.src.md
-//go:generate go run golang.org/x/example/internal/cmd/weave@latest -o ../../docs/server.md ./server.src.md
-//go:generate go run golang.org/x/example/internal/cmd/weave@latest -o ../../docs/troubleshooting.md ./troubleshooting.src.md
+//go:generate -command weave go run golang.org/x/example/internal/cmd/weave@latest
+//go:generate weave -o ../../docs/README.md ./README.src.md
+//go:generate weave -o ../../docs/protocol.md ./protocol.src.md
+//go:generate weave -o ../../docs/client.md ./client.src.md
+//go:generate weave -o ../../docs/server.md ./server.src.md
+//go:generate weave -o ../../docs/troubleshooting.md ./troubleshooting.src.md
 
 // The doc package generates the documentation at /doc, via go:generate.
 //

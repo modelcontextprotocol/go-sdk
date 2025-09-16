@@ -106,7 +106,7 @@ connect to the server:
 transport := &mcp.StreamableClientTransport{
 	Endpoint: "http://localhost:8080/mcp",
 }
-client, err := mcp.Connect(context.Background(), transport, &mcp.ClientOptions{...})
+client, err := mcp.Connect(ctx, transport, &mcp.ClientOptions{...})
 ```
 
 The `StreamableClientTransport` handles the HTTP requests and communicates with
@@ -131,11 +131,12 @@ or server sends a notification, the spec says nothing about when the peer
 observes that notification relative to other request. However, the Go SDK
 implements the following heuristics:
 
-- If a notifying method (such as progress notification or
+- If a notifying method (such as `notifications/progress` or
   `notifications/initialized`) returns, then it is guaranteed that the peer
-  observes that notification before other notifications or calls.
+  observes that notification before other notifications or calls from the same
+  client goroutine.
 - Calls (such as `tools/call`) are handled asynchronously with respect to
-  eachother.
+  each other.
 
 See
 [modelcontextprotocol/go-sdk#26](https://github.com/modelcontextprotocol/go-sdk/issues/26)
@@ -157,15 +158,11 @@ Cancellation is implemented with context cancellation. Cancelling a context
 used in a method on `ClientSession` or `ServerSession` will terminate the RPC
 and send a "notifications/cancelled" message to the peer.
 
-```go
-ctx, cancel := context.WithCancel(context.Background())
-go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
-cancel() // cancel the tool call
-```
-
 When an RPC exits due to a cancellation error, there's a guarantee that the
 cancellation notification has been sent, but there's no guarantee that the
 server has observed it (see [concurrency](#concurrency)).
+
+%include ../../mcp/mcp_example_test.go cancellation -
 
 ### Ping
 

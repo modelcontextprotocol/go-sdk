@@ -2,8 +2,7 @@ These docs are a work-in-progress.
 
 # Features
 
-This doc mirrors the official MCP spec hosted at
-https://modelcontextprotocol.io/specification/2025-06-18
+These docs mirror the [official MCP spec](https://modelcontextprotocol.io/specification/2025-06-18).
 
 ## Base Protocol
 
