@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScanEvents(t *testing.T) {
@@ -249,6 +250,49 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+func BenchmarkMemoryEventStore(b *testing.B) {
+	// Benchmark with various settings for event store size, number of session,
+	// and payload size.
+	//
+	// Assume a small number of streams per session, which is probably realistic.
+	tests := []struct {
+		name     string
+		limit    int
+		sessions int
+		datasize int
+	}{
+		{"1KB", 1024, 1, 16},
+		{"1MB", 1024 * 1024, 10, 16},
+		{"10MB", 10 * 1024 * 1024, 100, 16},
+		{"10MB_big", 10 * 1024 * 1024, 1000, 128},
+	}
+
+	for _, test := range tests {
+		b.Run(test.name, func(b *testing.B) {
+			store := NewMemoryEventStore(nil)
+			store.SetMaxBytes(test.limit)
+			ctx := context.Background()
+			sessionIDs := make([]string, test.sessions)
+			streamIDs := make([][3]StreamID, test.sessions)
+			for i := range sessionIDs {
+				sessionIDs[i] = fmt.Sprint(i)
+				for j := range 3 {
+					streamIDs[i][j] = StreamID(randText())
+				}
+			}
+			payload := make([]byte, test.datasize)
+			start := time.Now()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				sessionID := sessionIDs[i%len(sessionIDs)]
+				streamID := streamIDs[i%len(sessionIDs)][i%3]
+				store.Append(ctx, sessionID, streamID, payload)
+			}
+			b.ReportMetric(float64(test.datasize)*float64(b.N)/time.Since(start).Seconds(), "bytes/s")
 		})
 	}
 }
