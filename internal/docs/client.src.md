@@ -27,7 +27,7 @@ method. To receive notifications about root changes, set
 ## Sampling
 
 [Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
-is a way for server's to leverage the client's AI capabilities. It is
+is a way for servers to leverage the client's AI capabilities. It is
 implemented in the SDK as follows:
 
 **Client-side**: To add the `sampling` capability to a client, set 
@@ -49,7 +49,7 @@ allows servers to request user inputs. It is implemented in the SDK as follows:
 The elicitation handler must return a result that matches the requested schema;
 otherwise, elicitation returns an error.
 
-**Server-side**: To use eliciation from the server, call
+**Server-side**: To use elicitation from the server, call
 [`ServerSession.Elicit`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Elicit).
 
 %include ../../mcp/client_example_test.go elicitation -

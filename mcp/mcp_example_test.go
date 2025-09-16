@@ -16,7 +16,7 @@ import (
 
 // !+lifecycle
 
-func Example_lifeCycle() {
+func Example_lifecycle() {
 	ctx := context.Background()
 
 	// Create a client and server.

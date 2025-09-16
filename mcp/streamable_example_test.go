@@ -19,7 +19,7 @@ import (
 // !+streamablehandler
 
 func ExampleStreamableHTTPHandler() {
-	// Create a new stramable handler, using the same MCP server for every request.
+	// Create a new streamable handler, using the same MCP server for every request.
 	//
 	// Here, we configure it to serves application/json responses rather than
 	// text/event-stream, just so the output below doesn't use random event ids.

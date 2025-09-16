@@ -62,7 +62,7 @@ func Example_roots() {
 func Example_sampling() {
 	ctx := context.Background()
 
-	// Create a client with a single root.
+	// Create a client with a sampling handler.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
 		CreateMessageHandler: func(_ context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
 			return &mcp.CreateMessageResult{
@@ -102,7 +102,7 @@ func Example_elicitation() {
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 
-	s := mcp.NewServer(testImpl, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
