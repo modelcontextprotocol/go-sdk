@@ -70,7 +70,7 @@ func Example_roots() {
 ## Sampling
 
 [Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
-is a way for server's to leverage the client's AI capabilities. It is
+is a way for servers to leverage the client's AI capabilities. It is
 implemented in the SDK as follows:
 
 **Client-side**: To add the `sampling` capability to a client, set 
@@ -84,7 +84,7 @@ This function is invoked whenever the server requests sampling.
 func Example_sampling() {
 	ctx := context.Background()
 
-	// Create a client with a single root.
+	// Create a client with a sampling handler.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
 		CreateMessageHandler: func(_ context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
 			return &mcp.CreateMessageResult{
@@ -127,7 +127,7 @@ allows servers to request user inputs. It is implemented in the SDK as follows:
 The elicitation handler must return a result that matches the requested schema;
 otherwise, elicitation returns an error.
 
-**Server-side**: To use eliciation from the server, call
+**Server-side**: To use elicitation from the server, call
 [`ServerSession.Elicit`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Elicit).
 
 ```go
@@ -135,7 +135,7 @@ func Example_elicitation() {
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 
-	s := mcp.NewServer(testImpl, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)

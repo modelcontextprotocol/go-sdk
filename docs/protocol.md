@@ -36,7 +36,7 @@ session.
   [`ClientSession`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession).
   This session is initialized during the `Connect` method, and provides methods
   to communicate with the server peer.
-- A `Server` is a logical MCP server, configure with various
+- A `Server` is a logical MCP server, configured with various
   [`ServerOptions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions).
 - When a server is connected to a client using
   [`Server.Connect`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.Connect),
@@ -53,7 +53,7 @@ session, and a `Wait` method to await session termination by the peer. Typically
 it is the client's responsibility to end the session.
 
 ```go
-func Example_lifeCycle() {
+func Example_lifecycle() {
 	ctx := context.Background()
 
 	// Create a client and server.
@@ -119,7 +119,7 @@ newline-delimited JSON over its stdin/stdout.
 
 **Client-side**: the client side of the `stdio` transport is implemented by
 [`CommandTransport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CommandTransport),
-which starts the a given `exec.Cmd` as a subprocess and communicates over its
+which starts the a `exec.Cmd` as a subprocess and communicates over its
 stdin/stdout.
 
 **Server-side**: the server side of the `stdio` transport is implemented by
@@ -144,7 +144,7 @@ pass it an `mcp.Server`:
 
 ```go
 func ExampleStreamableHTTPHandler() {
-	// Create a new stramable handler, using the same MCP server for every request.
+	// Create a new streamable handler, using the same MCP server for every request.
 	//
 	// Here, we configure it to serves application/json responses rather than
 	// text/event-stream, just so the output below doesn't use random event ids.
