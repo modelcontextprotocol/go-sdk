@@ -512,8 +512,7 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 			Arguments: json.RawMessage(in),
 		},
 	}
-	_, err = goth(context.Background(), ctr)
-
+	result, err := goth(context.Background(), ctr)
 	if wantErrContaining != "" {
 		if err == nil {
 			t.Errorf("got nil error, want error containing %q", wantErrContaining)
@@ -525,8 +524,18 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	} else if err != nil {
 		t.Errorf("got error %v, want no error", err)
 	}
+
+	if gott.OutputSchema != nil && err == nil && !result.IsError {
+		// Check that structured content matches exactly.
+		unstructured := result.Content[0].(*TextContent).Text
+		structured := string(result.StructuredContent.(json.RawMessage))
+		if diff := cmp.Diff(unstructured, structured); diff != "" {
+			t.Errorf("Unstructured content does not match structured content exactly (-unstructured +structured):\n%s", diff)
+		}
+	}
 }
 
+// TODO: move this to tool_test.go
 func TestToolForSchemas(t *testing.T) {
 	// Validate that toolForErr handles schemas properly.
 	type in struct {
@@ -558,4 +567,24 @@ func TestToolForSchemas(t *testing.T) {
 	// Tool sets output schema: that is what's used, and validation happens.
 	testToolForSchema[in, any](t, &Tool{OutputSchema: outSchema2}, `{"p":3}`, out{true},
 		inSchema, outSchema2, `want "integer"`)
+
+	// Check a slightly more complicated case.
+	type weatherOutput struct {
+		Summary string
+		AsOf    time.Time
+		Source  string
+	}
+	testToolForSchema[any](t, &Tool{}, `{}`, weatherOutput{},
+		&schema{Type: "object"},
+		&schema{
+			Type:                 "object",
+			Required:             []string{"Summary", "AsOf", "Source"},
+			AdditionalProperties: falseSchema,
+			Properties: map[string]*schema{
+				"Summary": {Type: "string"},
+				"AsOf":    {Type: "string"},
+				"Source":  {Type: "string"},
+			},
+		},
+		"")
 }
