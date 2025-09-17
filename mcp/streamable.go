@@ -74,9 +74,9 @@ type StreamableHTTPOptions struct {
 	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
 
-	// OnSessionClose is a callback function that is invoked when a [Connection]
-	// is closed. A connection is closed when the session is ended explicitly by
-	// the client or when it is interrupted due to a timeout or other errors.
+	// OnSessionClose is a callback function that is invoked when a [ServerSession]
+	// is closed. This happens when a session is ended explicitly by the MCP client
+	// or when it is interrupted due to a timeout or other errors.
 	OnSessionClose func(sessionID string)
 }
 
