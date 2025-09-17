@@ -189,6 +189,8 @@ func ExampleAddTool_complexSchema() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		// Formatting the entire schemas would be too much output.
+		// Just check that our customizations were effective.
 		fmt.Println("max days:", *t.InputSchema.Properties["days"].Maximum)
 		fmt.Println("max confidence:", *t.OutputSchema.Properties["confidence"].Maximum)
 		fmt.Println("weather types:", t.OutputSchema.Properties["dailyForecast"].Items.Properties["type"].Enum)
