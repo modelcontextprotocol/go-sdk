@@ -433,7 +433,7 @@ func TestServerTransportCleanup(t *testing.T) {
 			chans[fmt.Sprint(id)] = make(chan struct{}, 1)
 			return fmt.Sprint(id)
 		},
-		OnConnectionClose: func(sessionID string) {
+		OnSessionClose: func(sessionID string) {
 			chans[sessionID] <- struct{}{}
 		},
 	})
@@ -1428,14 +1428,14 @@ func TestStreamableGET(t *testing.T) {
 	}
 }
 
-// TestStreamableHTTPHandler_OnConnectionClose_SessionDeletion tests that the
-// OnConnectionClose callback is called when the client closes the session.
-func TestStreamableHTTPHandler_OnConnectionClose_SessionDeletion(t *testing.T) {
+// TestStreamableHTTPHandler_OnSessionClose_SessionDeletion tests that the
+// OnSessionClose callback is called when the client closes the session.
+func TestStreamableHTTPHandler_OnSessionClose_SessionDeletion(t *testing.T) {
 	var closedConnections []string
 
 	server := NewServer(testImpl, nil)
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
-		OnConnectionClose: func(sessionID string) {
+		OnSessionClose: func(sessionID string) {
 			closedConnections = append(closedConnections, sessionID)
 		},
 	})
