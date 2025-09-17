@@ -40,8 +40,6 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
-	onTransportDeletion func(sessionID string) // for testing only
-
 	mu sync.Mutex
 	// TODO: we should store the ServerSession along with the transport, because
 	// we need to cancel keepalive requests when closing the transport.
@@ -77,6 +75,11 @@ type StreamableHTTPOptions struct {
 	//
 	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
+
+	// OnConnectionClose is a callback function that is invoked when a [Connection]
+	// is closed. A connection is closed when the session is ended explicitly by
+	// the client or when it is interrupted due to a timeout or other errors.
+	OnConnectionClose func(sessionID string)
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -166,7 +169,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Lock()
 			delete(h.transports, transport.SessionID)
 			h.mu.Unlock()
-			transport.connection.Close()
+			_ = transport.Close()
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -299,8 +302,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 					h.mu.Lock()
 					delete(h.transports, transport.SessionID)
 					h.mu.Unlock()
-					if h.onTransportDeletion != nil {
-						h.onTransportDeletion(transport.SessionID)
+					if h.opts.OnConnectionClose != nil {
+						h.opts.OnConnectionClose(transport.SessionID)
 					}
 				},
 			}
@@ -320,6 +323,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		} else {
 			// Otherwise, save the transport so that it can be reused
 			h.mu.Lock()
+			transport.session = ss
 			h.transports[transport.SessionID] = transport
 			h.mu.Unlock()
 		}
@@ -382,6 +386,9 @@ type StreamableServerTransport struct {
 
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
+
+	// the server session associated with this transport
+	session *ServerSession
 }
 
 // Connect implements the [Transport] interface.
@@ -561,6 +568,19 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
 		return
 	}
+}
+
+// Close releases resources related to this transport if it has already been connected.
+func (t *StreamableServerTransport) Close() error {
+	var sessionErr, connErr error
+	if t.session != nil {
+		sessionErr = t.session.Close()
+	}
+	if t.connection != nil {
+		connErr = t.connection.Close()
+	}
+
+	return errors.Join(sessionErr, connErr)
 }
 
 // serveGET streams messages to a hanging http GET, with stream ID and last

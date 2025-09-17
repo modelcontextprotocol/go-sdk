@@ -130,7 +130,12 @@ func TestStreamableTransports(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
-			defer session.Close()
+			t.Cleanup(func() {
+				err := session.Close()
+				if err != nil {
+					t.Errorf("session.Close() failed: %v", err)
+				}
+			})
 			sid := session.ID()
 			if sid == "" {
 				t.Fatalf("empty session ID")
@@ -220,7 +225,7 @@ func TestStreamableServerShutdown(t *testing.T) {
 			httpServer := httptest.NewUnstartedServer(handler)
 			httpServer.Config.RegisterOnShutdown(func() {
 				for session := range server.Sessions() {
-					session.Close()
+					_ = session.Close()
 				}
 			})
 			httpServer.Start()
@@ -428,11 +433,10 @@ func TestServerTransportCleanup(t *testing.T) {
 			chans[fmt.Sprint(id)] = make(chan struct{}, 1)
 			return fmt.Sprint(id)
 		},
+		OnConnectionClose: func(sessionID string) {
+			chans[sessionID] <- struct{}{}
+		},
 	})
-
-	handler.onTransportDeletion = func(sessionID string) {
-		chans[sessionID] <- struct{}{}
-	}
 
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
@@ -1421,5 +1425,43 @@ func TestStreamableGET(t *testing.T) {
 	defer resp.Body.Close()
 	if got, want := resp.StatusCode, http.StatusOK; got != want {
 		t.Errorf("GET with session ID: got status %d, want %d", got, want)
+	}
+}
+
+// TestStreamableHTTPHandler_OnConnectionClose_SessionDeletion tests that the
+// OnConnectionClose callback is called when the client closes the session.
+func TestStreamableHTTPHandler_OnConnectionClose_SessionDeletion(t *testing.T) {
+	var closedConnections []string
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		OnConnectionClose: func(sessionID string) {
+			closedConnections = append(closedConnections, sessionID)
+		},
+	})
+
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	ctx := context.Background()
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+
+	sessionID := session.ID()
+	t.Log("Closing client session")
+	err = session.Close()
+	if err != nil {
+		t.Fatalf("session.Close() failed: %v", err)
+	}
+
+	if len(closedConnections) != 1 {
+		t.Fatalf("got %d connections, want 1", len(closedConnections))
+	}
+	if closedConnections[0] != sessionID {
+		t.Fatalf("got session ID %q, want %q", closedConnections[0], sessionID)
 	}
 }
