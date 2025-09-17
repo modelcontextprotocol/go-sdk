@@ -226,7 +226,7 @@ func TestCmdTransport(t *testing.T) {
 			&mcp.TextContent{Text: "Hi user"},
 		},
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
+	if diff := cmp.Diff(want, got, ctrCmpOpts...); diff != "" {
 		t.Errorf("greet returned unexpected content (-want +got):\n%s", diff)
 	}
 	if err := session.Close(); err != nil {

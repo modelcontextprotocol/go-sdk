@@ -234,7 +234,7 @@ func TestEndToEnd(t *testing.T) {
 				&TextContent{Text: "hi user"},
 			},
 		}
-		if diff := cmp.Diff(wantHi, gotHi); diff != "" {
+		if diff := cmp.Diff(wantHi, gotHi, ctrCmpOpts...); diff != "" {
 			t.Errorf("tools/call 'greet' mismatch (-want +got):\n%s", diff)
 		}
 
@@ -253,7 +253,7 @@ func TestEndToEnd(t *testing.T) {
 				&TextContent{Text: errTestFailure.Error()},
 			},
 		}
-		if diff := cmp.Diff(wantFail, gotFail); diff != "" {
+		if diff := cmp.Diff(wantFail, gotFail, ctrCmpOpts...); diff != "" {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
@@ -1717,7 +1717,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(r0, r1); diff != "" {
+		if diff := cmp.Diff(r0, r1, ctrCmpOpts...); diff != "" {
 			t.Errorf("CallTool(%v) with no arguments mismatch (-%s +%s):\n%s", args, t0.Name, t1.Name, diff)
 		}
 	}
@@ -1733,7 +1733,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if diff := cmp.Diff(r0, r1); diff != "" {
+			if diff := cmp.Diff(r0, r1, ctrCmpOpts...); diff != "" {
 				t.Errorf("CallTool({\"In\": %q}) mismatch (-%s +%s):\n%s", in, t0.Name, t1.Name, diff)
 			}
 		})
@@ -1875,7 +1875,7 @@ func TestToolErrorMiddleware(t *testing.T) {
 	}
 	defer clientSession.Close()
 
-	res, err := clientSession.CallTool(ctx, &CallToolParams{
+	_, err = clientSession.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
 		Arguments: map[string]any{"Name": "al"},
 	})
@@ -1885,7 +1885,7 @@ func TestToolErrorMiddleware(t *testing.T) {
 	if middleErr != nil {
 		t.Errorf("middleware got error %v, want nil", middleErr)
 	}
-	res, err = clientSession.CallTool(ctx, &CallToolParams{
+	res, err := clientSession.CallTool(ctx, &CallToolParams{
 		Name: "fail",
 	})
 	if err != nil {
@@ -1902,3 +1902,5 @@ func TestToolErrorMiddleware(t *testing.T) {
 		t.Errorf("middleware got err %v, want errTestFailure", middleErr)
 	}
 }
+
+var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}

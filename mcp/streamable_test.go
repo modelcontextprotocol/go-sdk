@@ -159,7 +159,7 @@ func TestStreamableTransports(t *testing.T) {
 			want := &CallToolResult{
 				Content: []Content{&TextContent{Text: "hi foo"}},
 			}
-			if diff := cmp.Diff(want, got); diff != "" {
+			if diff := cmp.Diff(want, got, ctrCmpOpts...); diff != "" {
 				t.Errorf("CallTool() returned unexpected content (-want +got):\n%s", diff)
 			}
 
@@ -549,8 +549,6 @@ func resp(id int64, result any, err error) *jsonrpc.Response {
 		Error:  err,
 	}
 }
-
-var ()
 
 func TestStreamableServerTransport(t *testing.T) {
 	// This test checks detailed behavior of the streamable server transport, by

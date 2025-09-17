@@ -70,7 +70,7 @@ func TestSSEServer(t *testing.T) {
 					&TextContent{Text: "hi user"},
 				},
 			}
-			if diff := cmp.Diff(wantHi, gotHi); diff != "" {
+			if diff := cmp.Diff(wantHi, gotHi, ctrCmpOpts...); diff != "" {
 				t.Errorf("tools/call 'greet' mismatch (-want +got):\n%s", diff)
 			}
 

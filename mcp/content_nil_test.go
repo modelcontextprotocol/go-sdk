@@ -72,7 +72,7 @@ func TestContentUnmarshalNil(t *testing.T) {
 			}
 
 			// Verify that the Content field was properly populated
-			if cmp.Diff(tt.want, tt.content) != "" {
+			if cmp.Diff(tt.want, tt.content, ctrCmpOpts...) != "" {
 				t.Errorf("Content is not equal: %v", cmp.Diff(tt.content, tt.content))
 			}
 		})
@@ -222,3 +222,5 @@ func TestContentUnmarshalNilWithInvalidContent(t *testing.T) {
 		})
 	}
 }
+
+var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(mcp.CallToolResult{})}
