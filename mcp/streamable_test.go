@@ -1431,12 +1431,12 @@ func TestStreamableGET(t *testing.T) {
 // TestStreamableHTTPHandler_OnSessionClose_SessionDeletion tests that the
 // OnSessionClose callback is called when the client closes the session.
 func TestStreamableHTTPHandler_OnSessionClose_SessionDeletion(t *testing.T) {
-	var closedConnections []string
+	var closedSessions []string
 
 	server := NewServer(testImpl, nil)
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
 		OnSessionClose: func(sessionID string) {
-			closedConnections = append(closedConnections, sessionID)
+			closedSessions = append(closedSessions, sessionID)
 		},
 	})
 
@@ -1458,10 +1458,10 @@ func TestStreamableHTTPHandler_OnSessionClose_SessionDeletion(t *testing.T) {
 		t.Fatalf("session.Close() failed: %v", err)
 	}
 
-	if len(closedConnections) != 1 {
-		t.Fatalf("got %d connections, want 1", len(closedConnections))
+	if len(closedSessions) != 1 {
+		t.Fatalf("got %d closed sessions, want 1", len(closedSessions))
 	}
-	if closedConnections[0] != sessionID {
-		t.Fatalf("got session ID %q, want %q", closedConnections[0], sessionID)
+	if closedSessions[0] != sessionID {
+		t.Fatalf("got session ID %q, want %q", closedSessions[0], sessionID)
 	}
 }
