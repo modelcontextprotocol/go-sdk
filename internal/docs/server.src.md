@@ -28,4 +28,25 @@
 
 ### Pagination
 
-<!-- TODO -->
+Server-side feature lists may be
+[paginated](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/pagination),
+using cursors. The SDK supports this by default.
+
+**Client-side**: The `ClientSession` provides methods returning
+[iterators](https://go.dev/blog/range-functions) for each feature type.
+These iterators are an `iter.Seq2[Feature, error]`, where the error value
+indicates whether page retrieval failed.
+
+- [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
+  iterates prompts.
+- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+  iterates resources.
+- [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
+  iterates resource templates.
+- [`ClientSession.Tools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Tools)
+  iterates tools.
+
+**Server-side**: pagination is on by default, so in general nothing is required
+server-side. However, you may use
+[`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
+to customize the page size.
