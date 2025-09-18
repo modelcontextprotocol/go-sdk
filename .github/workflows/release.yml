@@ -1,0 +1,89 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Minimal permissions required by this workflow
+permissions:
+  contents: write # create releases and upload assets
+  id-token: write # needed for keyless provenance/attestations
+  attestations: write # record build provenance in the repo's Attestations
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed to access and verify tags
+
+      # TODO(frenchi): Verify tag is signed (GPG/SSH)
+      #   - name: Verify tag is signed (GPG/SSH)
+      #     env:
+      #       GH_TOKEN: ${{ github.token }}
+      #       TAG: ${{ github.ref_name }}
+      #       REPO: ${{ github.repository }}
+      #     run: |
+      #       set -euo pipefail
+      #       obj_type="$(gh api repos/${REPO}/git/ref/tags/${TAG} --jq '.object.type')"
+      #       obj_sha="$(gh api repos/${REPO}/git/ref/tags/${TAG} --jq '.object.sha')"
+      #       echo "Tag ${TAG} type=${obj_type} sha=${obj_sha}"
+      #       if [ "${obj_type}" = "tag" ]; then
+      #         verified="$(gh api repos/${REPO}/git/tags/${obj_sha} --jq '.verification.verified')"
+      #         reason="$(gh api repos/${REPO}/git/tags/${obj_sha} --jq '.verification.reason')"
+      #       else
+      #         verified="$(gh api repos/${REPO}/git/commits/${obj_sha} --jq '.verification.verified')"
+      #         reason="$(gh api repos/${REPO}/git/commits/${obj_sha} --jq '.verification.reason')"
+      #       fi
+      #       echo "verification.verified=${verified} reason=${reason}"
+      #       if [ "${verified}" != "true" ]; then
+      #         echo "Tag ${TAG} is not signed/verified. Aborting release." >&2
+      #         exit 1
+      #       fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "^1.23"
+
+      - name: Download Go modules (for SBOM resolution)
+        run: go mod download
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+
+      - name: Generate SLSA build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: sbom.spdx.json
+
+      - name: Create GitHub Release and upload SBOMs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          TITLE="Release ${TAG}"
+          gh release create "${TAG}" \
+            --title "${TITLE}" \
+            --generate-notes \
+            sbom.spdx.json
+
+      - name: Post-release summary
+        run: |
+          echo "Release ${{ github.ref_name }} created with SBOMs and provenance attestations."
+          echo "Environment approvals (if configured) gated this job."
