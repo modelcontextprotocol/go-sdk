@@ -181,13 +181,13 @@ If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.c
 the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
 Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).
 
-The  [auth middleware example](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
+The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
 
 ### Client
 
 Client-side OAuth is implemented by setting  
 [`StreamableClientTransport.HTTPClient`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.5.0/mcp#StreamableClientTransport.HTTPClient) to a custom [`http.Client`](https://pkg.go.dev/net/http#Client)
-Additional support is forthcoming.
+Additional support is forthcoming; see #493.
 
 ## Security
 
@@ -217,9 +217,14 @@ middleware function will verify all HTTP requests that it receives. It is the
 user's responsibility to wrap that function around all handlers in their server.
 
 - _Secure session IDs_. This SDK generates cryptographically secure session IDs by default.
+If you create your own with 
+[`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID), it is your responsibility to ensure they are secure.
+If you are using Go 1.24 or above,
+we recommend using [`crypto/rand.Text`](https://pkg.go.dev/crypto/rand#Text) 
 
 - _Binding session IDs to user information_. This is an application requirement, out of scope
-for the SDK.
+for the SDK. You can create your own session IDs by setting
+[`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID).
 
 ## Utilities
 
