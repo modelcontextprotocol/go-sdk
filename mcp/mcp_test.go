@@ -464,7 +464,6 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	t.Run("resource_subscriptions", func(t *testing.T) {
-		t.Skip("TODO")
 		err := cs.Subscribe(ctx, &SubscribeParams{
 			URI: "test",
 		})

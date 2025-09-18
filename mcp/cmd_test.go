@@ -122,7 +122,6 @@ func TestServerRunContextCancel(t *testing.T) {
 }
 
 func TestServerInterrupt(t *testing.T) {
-	t.Skip()
 	if runtime.GOOS == "windows" {
 		t.Skip("requires POSIX signals")
 	}
@@ -134,10 +133,11 @@ func TestServerInterrupt(t *testing.T) {
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { session.Close() })
 
 	// get a signal when the server process exits
 	onExit := make(chan struct{})
@@ -208,7 +208,6 @@ func TestStdioContextCancellation(t *testing.T) {
 }
 
 func TestCmdTransport(t *testing.T) {
-	t.Skip()
 	requireExec(t)
 
 	ctx, cancel := context.WithCancel(context.Background())

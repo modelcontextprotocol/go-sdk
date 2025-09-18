@@ -34,7 +34,6 @@ import (
 )
 
 func TestStreamableTransports(t *testing.T) {
-	t.Skip()
 	// This test checks that the streamable server and client transports can
 	// communicate.
 
@@ -271,7 +270,6 @@ func TestStreamableServerShutdown(t *testing.T) {
 // uses a proxy that is killed and restarted to simulate a recoverable network
 // outage.
 func TestClientReplay(t *testing.T) {
-	t.Skip()
 	for _, test := range []clientReplayTest{
 		{"default", 0, true},
 		{"no retries", -1, false},
@@ -344,7 +342,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer clientSession.Close()
+	t.Cleanup(func() { clientSession.Close() })
 
 	var (
 		wg      sync.WaitGroup
@@ -386,7 +384,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 
 	restartedProxy := &http.Server{Handler: proxyHandler}
 	go restartedProxy.Serve(listener)
-	defer restartedProxy.Close()
+	t.Cleanup(func() { restartedProxy.Close() })
 
 	wg.Wait()
 
