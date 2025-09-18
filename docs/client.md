@@ -13,7 +13,7 @@ The SDK supports this as follows:
 
 **Client-side**: The SDK client always has the `roots.listChanged` capability.
 To add roots to a client, use the
-[`Client.AddRoots`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#AddRoots)
+[`Client.AddRoots`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Client.AddRoots)
 and
 [`Client.RemoveRoots`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Client.RemoveRoots)
 methods. If any servers are already [connected](protocol.md#lifecycle) to the
