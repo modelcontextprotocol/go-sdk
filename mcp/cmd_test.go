@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/goleak"
 )
 
 const runAsServer = "_MCP_RUN_AS_SERVER"
@@ -35,6 +36,8 @@ func SayHi(ctx context.Context, req *mcp.CallToolRequest, args SayHiParams) (*mc
 }
 
 func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+
 	// If the runAsServer variable is set, execute the relevant serverFunc
 	// instead of running tests (aka the fork and exec trick).
 	if name := os.Getenv(runAsServer); name != "" {
