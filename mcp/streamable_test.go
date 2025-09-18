@@ -103,7 +103,7 @@ func TestStreamableTransports(t *testing.T) {
 				}
 				handler.ServeHTTP(w, r)
 			}))
-			defer httpServer.Close()
+			t.Cleanup(func() { httpServer.Close() })
 
 			// Create a client and connect it to the server using our StreamableClientTransport.
 			// Check that all requests honor a custom client.
