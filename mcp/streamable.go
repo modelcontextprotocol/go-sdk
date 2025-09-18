@@ -167,6 +167,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Lock()
 			delete(h.transports, transport.SessionID)
 			h.mu.Unlock()
+			// TODO: consider logging this error
 			_ = transport.session.Close()
 		}
 		w.WriteHeader(http.StatusNoContent)
