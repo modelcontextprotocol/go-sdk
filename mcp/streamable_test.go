@@ -316,7 +316,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 		})
 
 	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
-	defer realServer.Close()
+	t.Cleanup(func() { realServer.Close() })
 	realServerURL, err := url.Parse(realServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to parse real server URL: %v", err)
