@@ -16,6 +16,7 @@ import (
 // a CompletionHandler to an MCP Server's options.
 func main() {
 	// Define your custom CompletionHandler logic.
+	// !+completionhandler
 	myCompletionHandler := func(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		// In a real application, you'd implement actual completion logic here.
 		// For this example, we return a fixed set of suggestions.
@@ -43,6 +44,7 @@ func main() {
 	_ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
 		CompletionHandler: myCompletionHandler,
 	})
+	// !-completionhandler
 
 	log.Println("MCP Server instance created with a CompletionHandler assigned (but not running).")
 	log.Println("This example demonstrates configuration, not live interaction.")

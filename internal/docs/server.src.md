@@ -36,11 +36,23 @@ Set [`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/mod
 
 ## Utilities
 
-<!-- TODO -->
-
 ### Completion
 
-<!-- TODO -->
+To support the
+[completion](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/completion)
+capability, the server needs a completion handler.
+
+**Client-side**: completion is called using the
+[`ClientSession.Complete`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Complete)
+method.
+
+**Server-side**: completion is enabled by setting
+[`ServerOptions.CompletionHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.CompletionHandler).
+If this field is set to a non-nil value, the server will advertise the
+`completions` server capability, and use this handler to respond to completion
+requests.
+
+%include ../../examples/server/completion/main.go completionhandler -
 
 ### Logging
 

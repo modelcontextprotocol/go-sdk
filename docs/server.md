@@ -109,11 +109,51 @@ func Example_prompts() {
 
 ## Utilities
 
-<!-- TODO -->
-
 ### Completion
 
-<!-- TODO -->
+To support the
+[completion](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/completion)
+capability, the server needs a completion handler.
+
+**Client-side**: completion is called using the
+[`ClientSession.Complete`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Complete)
+method.
+
+**Server-side**: completion is enabled by setting
+[`ServerOptions.CompletionHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.CompletionHandler).
+If this field is set to a non-nil value, the server will advertise the
+`completions` server capability, and use this handler to respond to completion
+requests.
+
+```go
+myCompletionHandler := func(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+	// In a real application, you'd implement actual completion logic here.
+	// For this example, we return a fixed set of suggestions.
+	var suggestions []string
+	switch req.Params.Ref.Type {
+	case "ref/prompt":
+		suggestions = []string{"suggestion1", "suggestion2", "suggestion3"}
+	case "ref/resource":
+		suggestions = []string{"suggestion4", "suggestion5", "suggestion6"}
+	default:
+		return nil, fmt.Errorf("unrecognized content type %s", req.Params.Ref.Type)
+	}
+
+	return &mcp.CompleteResult{
+		Completion: mcp.CompletionResultDetails{
+			HasMore: false,
+			Total:   len(suggestions),
+			Values:  suggestions,
+		},
+	}, nil
+}
+
+// Create the MCP Server instance and assign the handler.
+// No server running, just showing the configuration.
+_ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
+	CompletionHandler: myCompletionHandler,
+})
+```
 
 ### Logging
 
