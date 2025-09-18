@@ -13,7 +13,9 @@
 
 **Server-side**:
 MCP servers can provide LLM prompt templates (called simply _prompts_) to clients.
-Associated with each prompt is a handler that expands the template given a set of key-value pairs.
+Every prompt has a required name which identifies it, and a set of named arguments, which are strings.
+Construct a prompt with a name and descriptions of its arguments.
+Associated with each prompt is a handler that expands the template given values for its arguments.
 Use [`Server.AddPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddPrompt)
 to add a prompt along with its handler.
 If `AddPrompt` is called before a server is connected, the server will have the `prompts` capability.
@@ -47,8 +49,17 @@ func Example_prompts() {
 
 	// Create a server with a single prompt.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
-	// The name is required: it uniquely identifies the prompt.
-	s.AddPrompt(&mcp.Prompt{Name: "greet"}, promptHandler)
+	prompt := &mcp.Prompt{
+		Name: "greet",
+		Arguments: []*mcp.PromptArgument{
+			{
+				Name:        "name",
+				Description: "the name of the person to greet",
+				Required:    true,
+			},
+		},
+	}
+	s.AddPrompt(prompt, promptHandler)
 
 	// Create a client.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)

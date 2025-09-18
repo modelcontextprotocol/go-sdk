@@ -6,7 +6,9 @@
 
 **Server-side**:
 MCP servers can provide LLM prompt templates (called simply _prompts_) to clients.
-Associated with each prompt is a handler that expands the template given a set of key-value pairs.
+Every prompt has a required name which identifies it, and a set of named arguments, which are strings.
+Construct a prompt with a name and descriptions of its arguments.
+Associated with each prompt is a handler that expands the template given values for its arguments.
 Use [`Server.AddPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddPrompt)
 to add a prompt along with its handler.
 If `AddPrompt` is called before a server is connected, the server will have the `prompts` capability.
