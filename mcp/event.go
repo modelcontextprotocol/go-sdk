@@ -156,11 +156,13 @@ type EventStore interface {
 	// Open prepares the event store for a given stream. It ensures that the
 	// underlying data structure for the stream is initialized, making it
 	// ready to store event streams.
-	Open(_ context.Context, sessionID string, streamID StreamID) error
+	//
+	// streamIDs must be globally unique.
+	Open(_ context.Context, sessionID, streamID string) error
 
 	// Append appends data for an outgoing event to given stream, which is part of the
 	// given session.
-	Append(_ context.Context, sessionID string, _ StreamID, data []byte) error
+	Append(_ context.Context, sessionID, streamID string, data []byte) error
 
 	// After returns an iterator over the data for the given session and stream, beginning
 	// just after the given index.
@@ -168,7 +170,7 @@ type EventStore interface {
 	// After's iterator must return an error immediately if any data after index was
 	// dropped; it must not return partial results.
 	// The stream must have been opened previously (see [EventStore.Open]).
-	After(_ context.Context, sessionID string, _ StreamID, index int) iter.Seq2[[]byte, error]
+	After(_ context.Context, sessionID, streamID string, index int) iter.Seq2[[]byte, error]
 
 	// SessionClosed informs the store that the given session is finished, along
 	// with all of its streams.
@@ -217,9 +219,9 @@ func (dl *dataList) removeFirst() int {
 // A MemoryEventStore is an [EventStore] backed by memory.
 type MemoryEventStore struct {
 	mu       sync.Mutex
-	maxBytes int                               // max total size of all data
-	nBytes   int                               // current total size of all data
-	store    map[string]map[StreamID]*dataList // session ID -> stream ID -> *dataList
+	maxBytes int                             // max total size of all data
+	nBytes   int                             // current total size of all data
+	store    map[string]map[string]*dataList // session ID -> stream ID -> *dataList
 }
 
 // MemoryEventStoreOptions are options for a [MemoryEventStore].
@@ -258,13 +260,13 @@ const defaultMaxBytes = 10 << 20 // 10 MiB
 func NewMemoryEventStore(opts *MemoryEventStoreOptions) *MemoryEventStore {
 	return &MemoryEventStore{
 		maxBytes: defaultMaxBytes,
-		store:    make(map[string]map[StreamID]*dataList),
+		store:    make(map[string]map[string]*dataList),
 	}
 }
 
 // Open implements [EventStore.Open]. It ensures that the underlying data
 // structures for the given session are initialized and ready for use.
-func (s *MemoryEventStore) Open(_ context.Context, sessionID string, streamID StreamID) error {
+func (s *MemoryEventStore) Open(_ context.Context, sessionID, streamID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init(sessionID, streamID)
@@ -275,10 +277,10 @@ func (s *MemoryEventStore) Open(_ context.Context, sessionID string, streamID St
 // given sessionID and streamID exists, creating it if necessary. It returns the
 // dataList associated with the specified IDs.
 // Requires s.mu.
-func (s *MemoryEventStore) init(sessionID string, streamID StreamID) *dataList {
+func (s *MemoryEventStore) init(sessionID, streamID string) *dataList {
 	streamMap, ok := s.store[sessionID]
 	if !ok {
-		streamMap = make(map[StreamID]*dataList)
+		streamMap = make(map[string]*dataList)
 		s.store[sessionID] = streamMap
 	}
 	dl, ok := streamMap[streamID]
@@ -290,7 +292,7 @@ func (s *MemoryEventStore) init(sessionID string, streamID StreamID) *dataList {
 }
 
 // Append implements [EventStore.Append] by recording data in memory.
-func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID StreamID, data []byte) error {
+func (s *MemoryEventStore) Append(_ context.Context, sessionID, streamID string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dl := s.init(sessionID, streamID)
@@ -307,7 +309,7 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID string, streamID 
 var ErrEventsPurged = errors.New("data purged")
 
 // After implements [EventStore.After].
-func (s *MemoryEventStore) After(_ context.Context, sessionID string, streamID StreamID, index int) iter.Seq2[[]byte, error] {
+func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, index int) iter.Seq2[[]byte, error] {
 	// Return the data items to yield.
 	// We must copy, because dataList.removeFirst nils out slice elements.
 	copyData := func() ([][]byte, error) {

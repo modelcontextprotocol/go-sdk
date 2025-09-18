@@ -584,7 +584,10 @@ func errorCode(err error) int64 {
 //
 // The caller should cancel either the client connection or server connection
 // when the connections are no longer needed.
-func basicConnection(t *testing.T, config func(*Server)) (*ClientSession, *ServerSession) {
+//
+// The returned func cleans up by closing the client and waiting for the server
+// to shut down.
+func basicConnection(t *testing.T, config func(*Server)) (*ClientSession, *ServerSession, func()) {
 	return basicClientServerConnection(t, nil, nil, config)
 }
 
@@ -596,7 +599,10 @@ func basicConnection(t *testing.T, config func(*Server)) (*ClientSession, *Serve
 //
 // The caller should cancel either the client connection or server connection
 // when the connections are no longer needed.
-func basicClientServerConnection(t *testing.T, client *Client, server *Server, config func(*Server)) (*ClientSession, *ServerSession) {
+//
+// The returned func cleans up by closing the client and waiting for the server
+// to shut down.
+func basicClientServerConnection(t *testing.T, client *Client, server *Server, config func(*Server)) (*ClientSession, *ServerSession, func()) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -623,14 +629,17 @@ func basicClientServerConnection(t *testing.T, client *Client, server *Server, c
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 
-	return cs, ss
+	return cs, ss, func() {
+		cs.Close()
+		ss.Wait()
+	}
 }
 
 func TestServerClosing(t *testing.T) {
-	cs, ss := basicConnection(t, func(s *Server) {
+	cs, ss, cleanup := basicConnection(t, func(s *Server) {
 		AddTool(s, greetTool(), sayHi)
 	})
-	defer cs.Close()
+	defer cleanup()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -710,10 +719,10 @@ func TestCancellation(t *testing.T) {
 		}
 		return nil, nil, nil
 	}
-	cs, _ := basicConnection(t, func(s *Server) {
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
 		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowTool)
 	})
-	defer cs.Close()
+	defer cleanup()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
@@ -1501,7 +1510,7 @@ func TestKeepAliveFailure(t *testing.T) {
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
-	cs, _ := basicConnection(t, func(s *Server) {
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
 		// Use two distinct Tool instances with the same name but different
 		// descriptions to ensure the second replaces the first
 		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
@@ -1510,7 +1519,7 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 		s.AddTool(t1, nopHandler)
 		s.AddTool(t2, nopHandler)
 	})
-	defer cs.Close()
+	defer cleanup()
 
 	ctx := context.Background()
 	res, err := cs.ListTools(ctx, nil)
@@ -1558,7 +1567,7 @@ func TestSynchronousNotifications(t *testing.T) {
 		},
 	}
 	server := NewServer(testImpl, serverOpts)
-	cs, ss := basicClientServerConnection(t, client, server, func(s *Server) {
+	cs, ss, cleanup := basicClientServerConnection(t, client, server, func(s *Server) {
 		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			if !rootsChanged.Load() {
 				return nil, nil, fmt.Errorf("didn't get root change notification")
@@ -1566,6 +1575,7 @@ func TestSynchronousNotifications(t *testing.T) {
 			return new(CallToolResult), nil, nil
 		})
 	})
+	defer cleanup()
 
 	t.Run("from client", func(t *testing.T) {
 		client.AddRoots(&Root{Name: "myroot", URI: "file://foo"})
@@ -1607,7 +1617,7 @@ func TestNoDistributedDeadlock(t *testing.T) {
 		},
 	}
 	client := NewClient(testImpl, clientOpts)
-	cs, _ := basicClientServerConnection(t, client, nil, func(s *Server) {
+	cs, _, cleanup := basicClientServerConnection(t, client, nil, func(s *Server) {
 		AddTool(s, &Tool{Name: "tool1"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			req.Session.CreateMessage(ctx, new(CreateMessageParams))
 			return new(CallToolResult), nil, nil
@@ -1617,7 +1627,7 @@ func TestNoDistributedDeadlock(t *testing.T) {
 			return new(CallToolResult), nil, nil
 		})
 	})
-	defer cs.Close()
+	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1641,7 +1651,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 	type output struct {
 		Out string
 	}
-	cs, _ := basicConnection(t, func(s *Server) {
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
 		// Add two equivalent tools, one of which operates in the 'pointer' realm,
 		// the other of which does not.
 		//
@@ -1676,7 +1686,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 			}
 		})
 	})
-	defer cs.Close()
+	defer cleanup()
 
 	ctx := context.Background()
 	tools, err := cs.ListTools(ctx, nil)
@@ -1748,7 +1758,9 @@ func TestComplete(t *testing.T) {
 		},
 	}
 	server := NewServer(testImpl, serverOpts)
-	cs, _ := basicClientServerConnection(t, nil, server, func(s *Server) {})
+	cs, _, cleanup := basicClientServerConnection(t, nil, server, func(s *Server) {})
+	defer cleanup()
+
 	result, err := cs.Complete(context.Background(), &CompleteParams{
 		Argument: CompleteParamsArgument{
 			Name:  "language",

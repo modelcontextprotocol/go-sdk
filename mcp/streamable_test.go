@@ -409,15 +409,14 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 }
 
 func TestServerTransportCleanup(t *testing.T) {
-	server := NewServer(testImpl, &ServerOptions{KeepAlive: 10 * time.Millisecond})
-
 	nClient := 3
 
 	var mu sync.Mutex
 	var id int = -1 // session id starting from "0", "1", "2"...
 	chans := make(map[string]chan struct{}, nClient)
 
-	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+	server := NewServer(testImpl, &ServerOptions{
+		KeepAlive: 10 * time.Millisecond,
 		GetSessionID: func() string {
 			mu.Lock()
 			defer mu.Unlock()
@@ -430,6 +429,7 @@ func TestServerTransportCleanup(t *testing.T) {
 		},
 	})
 
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
 	handler.onTransportDeletion = func(sessionID string) {
 		chans[sessionID] <- struct{}{}
 	}
@@ -1140,7 +1140,7 @@ func mustMarshal(v any) json.RawMessage {
 
 func TestEventID(t *testing.T) {
 	tests := []struct {
-		sid StreamID
+		sid string
 		idx int
 	}{
 		{"0", 0},
@@ -1200,8 +1200,6 @@ func TestStreamableStateless(t *testing.T) {
 		}
 		return &CallToolResult{Content: []Content{&TextContent{Text: "hi " + args.Name}}}, nil, nil
 	}
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 
 	requests := []streamableRequest{
 		{
@@ -1265,9 +1263,15 @@ func TestStreamableStateless(t *testing.T) {
 		}
 	}
 
-	sessionlessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
-		GetSessionID: func() string { return "" },
-		Stateless:    true,
+	sessionlessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+		// Return a stateless server which never assigns a session ID.
+		server := NewServer(testImpl, &ServerOptions{
+			GetSessionID: func() string { return "" },
+		})
+		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+		return server
+	}, &StreamableHTTPOptions{
+		Stateless: true,
 	})
 
 	// First, test the "sessionless" stateless mode, where there is no session ID.
@@ -1281,7 +1285,12 @@ func TestStreamableStateless(t *testing.T) {
 	// This can be used by tools to look up application state preserved across
 	// subsequent requests.
 	requests[0].wantSessionID = true // now expect a session ID for initialize
-	statelessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+	statelessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+		// Return a server with default options which should assign a random session ID.
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
+		return server
+	}, &StreamableHTTPOptions{
 		Stateless: true,
 	})
 	t.Run("stateless", func(t *testing.T) {

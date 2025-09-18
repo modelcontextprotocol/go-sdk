@@ -11,7 +11,93 @@
 
 ## Prompts
 
-<!-- TODO -->
+**Server-side**:
+MCP servers can provide LLM prompt templates (called simply _prompts_) to clients.
+Every prompt has a required name which identifies it, and a set of named arguments, which are strings.
+Construct a prompt with a name and descriptions of its arguments.
+Associated with each prompt is a handler that expands the template given values for its arguments.
+Use [`Server.AddPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddPrompt)
+to add a prompt along with its handler.
+If `AddPrompt` is called before a server is connected, the server will have the `prompts` capability.
+If all prompts are to be added after connection, set [`ServerOptions.HasPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasPrompts)
+to advertise the capability.
+
+**Client-side**:
+To list the server's prompts, call
+Call [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts) to get an iterator.
+If needed, you can use the lower-level
+[`ClientSession.ListPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ListPrompts) to list the server's prompts.
+Call [`ClientSession.GetPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.GetPrompt) to retrieve a prompt by name, providing
+arguments for expansion.
+Set [`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler) to be notified of changes in the list of prompts.
+
+```go
+func Example_prompts() {
+	ctx := context.Background()
+
+	promptHandler := func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{
+			Description: "Hi prompt",
+			Messages: []*mcp.PromptMessage{
+				{
+					Role:    "user",
+					Content: &mcp.TextContent{Text: "Say hi to " + req.Params.Arguments["name"]},
+				},
+			},
+		}, nil
+	}
+
+	// Create a server with a single prompt.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	prompt := &mcp.Prompt{
+		Name: "greet",
+		Arguments: []*mcp.PromptArgument{
+			{
+				Name:        "name",
+				Description: "the name of the person to greet",
+				Required:    true,
+			},
+		},
+	}
+	s.AddPrompt(prompt, promptHandler)
+
+	// Create a client.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+
+	// Connect the server and client.
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// List the prompts.
+	for p, err := range cs.Prompts(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(p.Name)
+	}
+
+	// Get the prompt.
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{
+		Name:      "greet",
+		Arguments: map[string]string{"name": "Pat"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		fmt.Println(msg.Role, msg.Content.(*mcp.TextContent).Text)
+	}
+	// Output:
+	// greet
+	// user Say hi to Pat
+}
+```
 
 ## Resources
 
@@ -23,11 +109,51 @@
 
 ## Utilities
 
-<!-- TODO -->
-
 ### Completion
 
-<!-- TODO -->
+To support the
+[completion](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/completion)
+capability, the server needs a completion handler.
+
+**Client-side**: completion is called using the
+[`ClientSession.Complete`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Complete)
+method.
+
+**Server-side**: completion is enabled by setting
+[`ServerOptions.CompletionHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.CompletionHandler).
+If this field is set to a non-nil value, the server will advertise the
+`completions` server capability, and use this handler to respond to completion
+requests.
+
+```go
+myCompletionHandler := func(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+	// In a real application, you'd implement actual completion logic here.
+	// For this example, we return a fixed set of suggestions.
+	var suggestions []string
+	switch req.Params.Ref.Type {
+	case "ref/prompt":
+		suggestions = []string{"suggestion1", "suggestion2", "suggestion3"}
+	case "ref/resource":
+		suggestions = []string{"suggestion4", "suggestion5", "suggestion6"}
+	default:
+		return nil, fmt.Errorf("unrecognized content type %s", req.Params.Ref.Type)
+	}
+
+	return &mcp.CompleteResult{
+		Completion: mcp.CompletionResultDetails{
+			HasMore: false,
+			Total:   len(suggestions),
+			Values:  suggestions,
+		},
+	}, nil
+}
+
+// Create the MCP Server instance and assign the handler.
+// No server running, just showing the configuration.
+_ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
+	CompletionHandler: myCompletionHandler,
+})
+```
 
 ### Logging
 
@@ -35,4 +161,28 @@
 
 ### Pagination
 
-<!-- TODO -->
+Server-side feature lists may be
+[paginated](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/pagination),
+using cursors. The SDK supports this by default.
+
+**Client-side**: The `ClientSession` provides methods returning
+[iterators](https://go.dev/blog/range-functions) for each feature type.
+These iterators are an `iter.Seq2[Feature, error]`, where the error value
+indicates whether page retrieval failed.
+
+- [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
+  iterates prompts.
+- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+  iterates resources.
+- [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
+  iterates resource templates.
+- [`ClientSession.Tools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Tools)
+  iterates tools.
+
+The `ClientSession` also exposes `ListXXX` methods for fine-grained control
+over pagination.
+
+**Server-side**: pagination is on by default, so in general nothing is required
+server-side. However, you may use
+[`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
+to customize the page size.
