@@ -105,8 +105,8 @@ func TestScanEvents(t *testing.T) {
 func TestMemoryEventStoreState(t *testing.T) {
 	ctx := context.Background()
 
-	appendEvent := func(s *MemoryEventStore, sess string, str StreamID, data string) {
-		if err := s.Append(ctx, sess, str, []byte(data)); err != nil {
+	appendEvent := func(s *MemoryEventStore, sess, stream string, data string) {
+		if err := s.Append(ctx, sess, stream, []byte(data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,7 +218,7 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 
 	for _, tt := range []struct {
 		sessionID string
-		streamID  StreamID
+		streamID  string
 		index     int
 		want      []string
 		wantErr   string // if non-empty, error should contain this string
@@ -277,11 +277,11 @@ func BenchmarkMemoryEventStore(b *testing.B) {
 			store.SetMaxBytes(test.limit)
 			ctx := context.Background()
 			sessionIDs := make([]string, test.sessions)
-			streamIDs := make([][3]StreamID, test.sessions)
+			streamIDs := make([][3]string, test.sessions)
 			for i := range sessionIDs {
 				sessionIDs[i] = fmt.Sprint(i)
 				for j := range 3 {
-					streamIDs[i][j] = StreamID(randText())
+					streamIDs[i][j] = randText()
 				}
 			}
 			payload := make([]byte, test.datasize)

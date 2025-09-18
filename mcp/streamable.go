@@ -46,16 +46,6 @@ type StreamableHTTPHandler struct {
 
 // StreamableHTTPOptions configures the StreamableHTTPHandler.
 type StreamableHTTPOptions struct {
-	// GetSessionID provides the next session ID to use for an incoming request.
-	// If nil, a default randomly generated ID will be used.
-	//
-	// Session IDs should be globally unique across the scope of the server,
-	// which may span multiple processes in the case of distributed servers.
-	//
-	// As a special case, if GetSessionID returns the empty string, the
-	// Mcp-Session-Id header will not be set.
-	GetSessionID func() string
-
 	// Stateless controls whether the session is 'stateless'.
 	//
 	// A stateless server does not validate the Mcp-Session-Id header, and uses a
@@ -92,9 +82,6 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	}
 	if opts != nil {
 		h.opts = *opts
-	}
-	if h.opts.GetSessionID == nil {
-		h.opts.GetSessionID = randText
 	}
 	return h
 }
@@ -235,7 +222,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		if sessionID == "" {
 			// In stateless mode, sessionID may be nonempty even if there's no
 			// existing transport.
-			sessionID = h.opts.GetSessionID()
+			sessionID = server.opts.GetSessionID()
 		}
 		transport = &StreamableServerTransport{
 			SessionID:    sessionID,
@@ -402,8 +389,8 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		jsonResponse:   t.jsonResponse,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
-		streams:        make(map[StreamID]*stream),
-		requestStreams: make(map[jsonrpc.ID]StreamID),
+		streams:        make(map[string]*stream),
+		requestStreams: make(map[jsonrpc.ID]string),
 	}
 	if t.connection.eventStore == nil {
 		t.connection.eventStore = NewMemoryEventStore(nil)
@@ -448,14 +435,14 @@ type streamableServerConn struct {
 	// bound. If we deleted a stream when the response is sent, we would lose the ability
 	// to replay if there was a cut just before the response was transmitted.
 	// Perhaps we could have a TTL for streams that starts just after the response.
-	streams map[StreamID]*stream
+	streams map[string]*stream
 
 	// requestStreams maps incoming requests to their logical stream ID.
 	//
 	// Lifecycle: requestStreams persist for the duration of the session.
 	//
 	// TODO: clean up once requests are handled. See the TODO for streams above.
-	requestStreams map[jsonrpc.ID]StreamID
+	requestStreams map[jsonrpc.ID]string
 }
 
 func (c *streamableServerConn) SessionID() string {
@@ -472,7 +459,7 @@ func (c *streamableServerConn) SessionID() string {
 type stream struct {
 	// id is the logical ID for the stream, unique within a session.
 	// an empty string is used for messages that don't correlate with an incoming request.
-	id StreamID
+	id string
 
 	// If isInitialize is set, the stream is in response to an initialize request,
 	// and therefore should include the session ID header.
@@ -506,7 +493,7 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
-func (c *streamableServerConn) newStream(ctx context.Context, id StreamID, isInitialize, jsonResponse bool) (*stream, error) {
+func (c *streamableServerConn) newStream(ctx context.Context, id string, isInitialize, jsonResponse bool) (*stream, error) {
 	if err := c.eventStore.Open(ctx, c.sessionID, id); err != nil {
 		return nil, err
 	}
@@ -522,10 +509,6 @@ func signalChanPtr() *chan struct{} {
 	c := make(chan struct{}, 1)
 	return &c
 }
-
-// A StreamID identifies a stream of SSE events. It is globally unique.
-// [ServerSession].
-type StreamID string
 
 // We track the incoming request ID inside the handler context using
 // idContextValue, so that notifications and server->client calls that occur in
@@ -575,7 +558,7 @@ func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.R
 // It returns an HTTP status code and error message.
 func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request) {
 	// connID 0 corresponds to the default GET request.
-	id := StreamID("")
+	id := ""
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
 	// that by -1. This is incremented just before each event is written, in streamResponse
 	// around L407.
@@ -675,7 +658,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// notifications or server->client requests made in the course of handling.
 	// Update accounting for this incoming payload.
 	if len(requests) > 0 {
-		stream, err = c.newStream(req.Context(), StreamID(randText()), isInitialize, c.jsonResponse)
+		stream, err = c.newStream(req.Context(), randText(), isInitialize, c.jsonResponse)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
 			return
@@ -866,7 +849,7 @@ func (c *streamableServerConn) messages(ctx context.Context, stream *stream, per
 // streamID and message index idx.
 //
 // See also [parseEventID].
-func formatEventID(sid StreamID, idx int) string {
+func formatEventID(sid string, idx int) string {
 	return fmt.Sprintf("%s_%d", sid, idx)
 }
 
@@ -874,17 +857,17 @@ func formatEventID(sid StreamID, idx int) string {
 // index.
 //
 // See also [formatEventID].
-func parseEventID(eventID string) (sid StreamID, idx int, ok bool) {
+func parseEventID(eventID string) (streamID string, idx int, ok bool) {
 	parts := strings.Split(eventID, "_")
 	if len(parts) != 2 {
 		return "", 0, false
 	}
-	stream := StreamID(parts[0])
+	streamID = parts[0]
 	idx, err := strconv.Atoi(parts[1])
 	if err != nil || idx < 0 {
 		return "", 0, false
 	}
-	return StreamID(stream), idx, true
+	return streamID, idx, true
 }
 
 // Read implements the [Connection] interface.
@@ -928,7 +911,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	//
 	// For messages sent outside of a request context, this is the default
 	// connection "".
-	var forStream StreamID
+	var forStream string
 	if forRequest.IsValid() {
 		c.mu.Lock()
 		forStream = c.requestStreams[forRequest]

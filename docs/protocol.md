@@ -8,7 +8,12 @@
 	1. [Custom transports](#custom-transports)
 	1. [Concurrency](#concurrency)
 1. [Authorization](#authorization)
+	1. [Server](#server)
+	1. [Client](#client)
 1. [Security](#security)
+	1. [Confused Deputy](#confused-deputy)
+	1. [Token Passthrough](#token-passthrough)
+	1. [Session Hijacking](#session-hijacking)
 1. [Utilities](#utilities)
 	1. [Cancellation](#cancellation)
 	1. [Ping](#ping)
@@ -182,15 +187,35 @@ the server using the streamable transport protocol.
 
 #### Stateless Mode
 
-<!-- TODO -->
+The streamable server supports a _stateless mode_ by setting
+[`StreamableHTTPOptions.Stateless`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableHTTPOptions.Stateless),
+which is where the server does not perform any validation of the session id,
+and uses a temporary session to handle requests. In this mode, it is impossible
+for the server to make client requests, as there is no way for the client's
+response to reach the session.
 
-#### Sessionless mode
+However, it is still possible for the server to access the `ServerSession.ID`
+to see the logical session
 
-<!-- TODO -->
+> [!WARNING]
+> Stateless mode is not directly discussed in the spec, and is still being
+> defined. See modelcontextprotocol/modelcontextprotocol#1364,
+> modelcontextprotocol/modelcontextprotocol#1372, or
+> modelcontextprotocol/modelcontextprotocol#11442 for potential refinements.
+
+_See [examples/server/distributed](../examples/server/distributed/main.go) for
+an example using statless mode to implement a server distributed across
+multiple processes._
 
 ### Custom transports
 
-<!-- TODO -->
+The SDK supports [custom
+transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#custom-transports)
+by implementing the
+[`Transport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Transport)
+interface: a logical bidirectional stream of JSON-RPC messages.
+
+_Full example: [examples/server/custom-transport](../examples/server/custom-transport/main.go)._
 
 ### Concurrency
 
@@ -212,11 +237,67 @@ for more background.
 
 ## Authorization
 
-<!-- TODO -->
+### Server
+
+To write an MCP server that performs authorization,
+use [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
+This function is middleware that wraps an HTTP handler, such as the one returned
+by [`NewStreamableHTTPHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#NewStreamableHTTPHandler), to provide support for verifying bearer tokens.
+The middleware function checks every request for an Authorization header with a bearer token,
+and invokes the 
+[`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
+ passed to `RequireBearerToken` to parse the token and perform validation.
+The middleware function checks expiration and scopes (if they are provided in
+[`RequireBearerTokenOptions.Scopes`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.Scopes)), so the
+`TokenVerifer` doesn't have to.
+If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.ResourceMetadataURL) is set and verification fails, 
+the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
+Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).
+
+The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
+
+### Client
+
+Client-side OAuth is implemented by setting  
+[`StreamableClientTransport.HTTPClient`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.5.0/mcp#StreamableClientTransport.HTTPClient) to a custom [`http.Client`](https://pkg.go.dev/net/http#Client)
+Additional support is forthcoming; see #493.
 
 ## Security
 
-<!-- TODO -->
+Here we discuss the mitigations described under
+the MCP spec's [Security Best Practices](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices) section, and how we handle them.
+
+### Confused Deputy
+
+The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation), obtaining user consent for dynamically registered clients,
+happens on the MCP client. At present we don't provide client-side OAuth support.
+
+
+### Token Passthrough
+
+The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-2), accepting only tokens that were issued for the server, depends on the structure
+of tokens and is the responsibility of the
+[`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
+provided to 
+[`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
+
+### Session Hijacking
+
+The [mitigations](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-3) are as follows:
+
+- _Verify all inbound requests_. The [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken)
+middleware function will verify all HTTP requests that it receives. It is the
+user's responsibility to wrap that function around all handlers in their server.
+
+- _Secure session IDs_. This SDK generates cryptographically secure session IDs by default.
+If you create your own with 
+[`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID), it is your responsibility to ensure they are secure.
+If you are using Go 1.24 or above,
+we recommend using [`crypto/rand.Text`](https://pkg.go.dev/crypto/rand#Text) 
+
+- _Binding session IDs to user information_. This is an application requirement, out of scope
+for the SDK. You can create your own session IDs by setting
+[`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID).
 
 ## Utilities
 
