@@ -287,7 +287,7 @@ func BenchmarkMemoryEventStore(b *testing.B) {
 			payload := make([]byte, test.datasize)
 			start := time.Now()
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				sessionID := sessionIDs[i%len(sessionIDs)]
 				streamID := streamIDs[i%len(sessionIDs)][i%3]
 				store.Append(ctx, sessionID, streamID, payload)

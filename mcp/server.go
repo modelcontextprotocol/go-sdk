@@ -292,7 +292,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
 			if res.Content == nil {
 				res.Content = []Content{&TextContent{
-					Text: string(outbytes),
+					Text: string(outJSON),
 				}}
 			}
 		}

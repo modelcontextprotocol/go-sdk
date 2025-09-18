@@ -103,6 +103,12 @@ type CallToolResult struct {
 	// tool handler returns an error, and the error string is included as text in
 	// the Content field.
 	IsError bool `json:"isError,omitempty"`
+
+	// The error passed to setError, if any.
+	// It is not marshaled, and therefore it is only visible on the server.
+	// Its only use is in server sending middleware, where it can be accessed
+	// with getError.
+	err error
 }
 
 // TODO(#64): consider exposing setError (and getError), by adding an error
@@ -110,6 +116,13 @@ type CallToolResult struct {
 func (r *CallToolResult) setError(err error) {
 	r.Content = []Content{&TextContent{Text: err.Error()}}
 	r.IsError = true
+	r.err = err
+}
+
+// getError returns the error set with setError, or nil if none.
+// This function always returns nil on clients.
+func (r *CallToolResult) getError() error {
+	return r.err
 }
 
 func (*CallToolResult) isResult() {}

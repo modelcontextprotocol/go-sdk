@@ -499,7 +499,7 @@ func TestContentUnmarshal(t *testing.T) {
 		if err := json.Unmarshal(data, out); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(in, out); diff != "" {
+		if diff := cmp.Diff(in, out, ctrCmpOpts...); diff != "" {
 			t.Errorf("mismatch (-want, +got):\n%s", diff)
 		}
 	}

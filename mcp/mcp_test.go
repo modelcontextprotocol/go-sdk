@@ -234,7 +234,7 @@ func TestEndToEnd(t *testing.T) {
 				&TextContent{Text: "hi user"},
 			},
 		}
-		if diff := cmp.Diff(wantHi, gotHi); diff != "" {
+		if diff := cmp.Diff(wantHi, gotHi, ctrCmpOpts...); diff != "" {
 			t.Errorf("tools/call 'greet' mismatch (-want +got):\n%s", diff)
 		}
 
@@ -253,7 +253,7 @@ func TestEndToEnd(t *testing.T) {
 				&TextContent{Text: errTestFailure.Error()},
 			},
 		}
-		if diff := cmp.Diff(wantFail, gotFail); diff != "" {
+		if diff := cmp.Diff(wantFail, gotFail, ctrCmpOpts...); diff != "" {
 			t.Errorf("tools/call 'fail' mismatch (-want +got):\n%s", diff)
 		}
 
@@ -1717,7 +1717,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(r0, r1); diff != "" {
+		if diff := cmp.Diff(r0, r1, ctrCmpOpts...); diff != "" {
 			t.Errorf("CallTool(%v) with no arguments mismatch (-%s +%s):\n%s", args, t0.Name, t1.Name, diff)
 		}
 	}
@@ -1733,7 +1733,7 @@ func TestPointerArgEquivalence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if diff := cmp.Diff(r0, r1); diff != "" {
+			if diff := cmp.Diff(r0, r1, ctrCmpOpts...); diff != "" {
 				t.Errorf("CallTool({\"In\": %q}) mismatch (-%s +%s):\n%s", in, t0.Name, t1.Name, diff)
 			}
 		})
@@ -1837,3 +1837,70 @@ func TestEmbeddedStructResponse(t *testing.T) {
 		t.Errorf("CallTool() failed: %v", err)
 	}
 }
+
+func TestToolErrorMiddleware(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	s := NewServer(testImpl, nil)
+	AddTool(s, &Tool{
+		Name:        "greet",
+		Description: "say hi",
+	}, sayHi)
+	AddTool(s, &Tool{Name: "fail", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+			return nil, nil, errTestFailure
+		})
+
+	var middleErr error
+	s.AddReceivingMiddleware(func(h MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			res, err := h(ctx, method, req)
+			if err == nil {
+				if ctr, ok := res.(*CallToolResult); ok {
+					middleErr = ctr.getError()
+				}
+			}
+			return res, err
+		}
+	})
+	_, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(&Implementation{Name: "test-client"}, nil)
+	clientSession, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	_, err = clientSession.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "al"},
+	})
+	if err != nil {
+		t.Errorf("CallTool() failed: %v", err)
+	}
+	if middleErr != nil {
+		t.Errorf("middleware got error %v, want nil", middleErr)
+	}
+	res, err := clientSession.CallTool(ctx, &CallToolParams{
+		Name: "fail",
+	})
+	if err != nil {
+		t.Errorf("CallTool() failed: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("want error, got none")
+	}
+	// Clients can't see the error, because it isn't marshaled.
+	if err := res.getError(); err != nil {
+		t.Fatalf("got %v, want nil", err)
+	}
+	if middleErr != errTestFailure {
+		t.Errorf("middleware got err %v, want errTestFailure", middleErr)
+	}
+}
+
+var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}
