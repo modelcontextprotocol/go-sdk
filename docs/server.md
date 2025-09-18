@@ -73,6 +73,7 @@ func Example_prompts() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer cs.Close()
 
 	// List the prompts.
 	for p, err := range cs.Prompts(ctx, nil) {
@@ -157,7 +158,86 @@ _ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
 
 ### Logging
 
-<!-- TODO -->
+MCP servers can send logging messages to MCP clients so their users can keep informed of progress.
+(This form of logging is distinct from server-side logging, where the
+server produces logs that remain server-side, for use by server maintainers.)
+
+**Server-side**:
+The minimum log level is part of the server state.
+For stateful sessions, there is no default log level: no log messages will be sent
+until the client calls `SetLevel` (see below).
+For stateful sessions, the level defaults to "info".
+
+[`ServerSession.Log`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Log) is the low-level way for servers to log to clients.
+It sends a logging notification to the client if the level of the message
+is at least the minimum log level.
+
+For a simpler API, use [`NewLoggingHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#NewLoggingHandler) to obtain a [`slog.Handler`](https://pkg.go.dev/log/slog#Handler).
+By setting [`LoggingHandlerOptions.MinInterval`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#LoggingHandlerOptions.MinInterval), the handler can be rate-limited
+to avoid spamming clients with too many messages.
+
+Servers always report the logging capability.
+
+
+**Client-side**:
+
+Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
+
+Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
+
+```go
+func Example_logging() {
+	ctx := context.Background()
+
+	// Create a server.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+
+	// Create a client that displays log messages.
+	c := mcp.NewClient(
+		&mcp.Implementation{Name: "client", Version: "v0.0.1"},
+		&mcp.ClientOptions{
+			LoggingMessageHandler: func(_ context.Context, r *mcp.LoggingMessageRequest) {
+				m := r.Params.Data.(map[string]any)
+				fmt.Println(m["msg"], m["value"])
+			},
+		})
+
+	// Connect the server and client.
+	t1, t2 := mcp.NewInMemoryTransports()
+	ss, err := s.Connect(ctx, t1, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Set the minimum log level to "info".
+	if err := cs.SetLoggingLevel(ctx, &mcp.SetLoggingLevelParams{Level: "info"}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Get a slog.Logger for the server session.
+	logger := slog.New(mcp.NewLoggingHandler(ss, nil))
+
+	// Log some things.
+	logger.Info("info shows up", "value", 1)
+	logger.Debug("debug doesn't show up", "value", 2)
+	logger.Warn("warn shows up", "value", 3)
+
+	// Wait for them to arrive on the client.
+	// In a real application, the log messages would appear asynchronously
+	// while other work was happening.
+	time.Sleep(500 * time.Millisecond)
+
+	// Output:
+	// info shows up 1
+	// warn shows up 3
+}
+```
 
 ### Pagination
 

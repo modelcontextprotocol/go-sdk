@@ -70,6 +70,7 @@ type LoggingHandlerOptions struct {
 	// The value for the "logger" field of logging notifications.
 	LoggerName string
 	// Limits the rate at which log messages are sent.
+	// Excess messages are dropped.
 	// If zero, there is no rate limiting.
 	MinInterval time.Duration
 }
