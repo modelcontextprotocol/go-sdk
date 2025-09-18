@@ -1139,7 +1139,7 @@ func mustMarshal(v any) json.RawMessage {
 
 func TestEventID(t *testing.T) {
 	tests := []struct {
-		sid StreamID
+		sid string
 		idx int
 	}{
 		{"0", 0},
