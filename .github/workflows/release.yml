@@ -70,9 +70,8 @@ jobs:
         run: go mod download
 
       # Optional: sigstore/cosign. required for keyless signing at the cost of a (relatively common) dependency on cosign.
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 #v3.10.0
-
+      # - name: Install Cosign
+      #   uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 #v3.10.0
       # Optional: anchore/syft. generate SBOMs, at the cost of a (relatively common) dependency on anchore/sbom-action
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
@@ -98,10 +97,6 @@ jobs:
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: sbom.json
-      - name: Sign SBOM with Cosign
-        run: |
-          cosign sign --key cosign.key sbom.json
-
       - name: Create GitHub Release and upload SBOMs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
