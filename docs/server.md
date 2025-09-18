@@ -53,6 +53,9 @@ indicates whether page retrieval failed.
 - [`ClientSession.Tools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Tools)
   iterates tools.
 
+The `ClientSession` also exposes `ListXXX` methods for fine-grained control
+over pagination.
+
 **Server-side**: pagination is on by default, so in general nothing is required
 server-side. However, you may use
 [`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
