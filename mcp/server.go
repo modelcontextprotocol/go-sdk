@@ -713,6 +713,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 	select {
 	case <-ctx.Done():
 		ss.Close()
+		<-ssClosed // wait until waiting go routine above actually completes
 		return ctx.Err()
 	case err := <-ssClosed:
 		return err
