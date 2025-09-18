@@ -164,11 +164,62 @@ for more background.
 
 ## Authorization
 
-<!-- TODO -->
+### Server
+
+To write an MCP server that performs authorization,
+use [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
+This function is middleware that wraps an HTTP handler, such as the one returned
+by [`NewStreamableHTTPHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#NewStreamableHTTPHandler), to provide support for verifying bearer tokens.
+The middleware function checks every request for an Authorization header with a bearer token,
+and invokes the 
+[`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
+ passed to `RequireBearerToken` to parse the token and perform validation.
+The middleware function checks expiration and scopes (if they are provided in
+[`RequireBearerTokenOptions.Scopes`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.Scopes)), so the
+`TokenVerifer` doesn't have to.
+If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.ResourceMetadataURL) is set and verification fails, 
+the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
+Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).
+
+The  [auth middleware example](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
+
+### Client
+
+Client-side OAuth is implemented by setting  
+[`StreamableClientTransport.HTTPClient`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.5.0/mcp#StreamableClientTransport.HTTPClient) to a custom [`http.Client`](https://pkg.go.dev/net/http#Client)
+Additional support is forthcoming.
 
 ## Security
 
-<!-- TODO -->
+Here we discuss the mitigations described under
+the MCP spec's [Security Best Practices](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices) section, and how we handle them.
+
+### Confused Deputy
+
+The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation), obtaining user consent for dynamically registered clients,
+happens on the MCP client. At present we don't provide client-side OAuth support.
+
+
+### Token Passthrough
+
+The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-2), accepting only tokens that were issued for the server, depends on the structure
+of tokens and is the responsibility of the
+[`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
+provided to 
+[`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
+
+### Session Hijacking
+
+The [mitigations](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-3) are as follows:
+
+- _Verify all inbound requests_. The [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken)
+middleware function will verify all HTTP requests that it receives. It is the
+user's responsibility to wrap that function around all handlers in their server.
+
+- _Secure session IDs_. This SDK generates cryptographically secure session IDs by default.
+
+- _Binding session IDs to user information_. This is an application requirement, out of scope
+for the SDK.
 
 ## Utilities
 
