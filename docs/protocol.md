@@ -182,15 +182,35 @@ the server using the streamable transport protocol.
 
 #### Stateless Mode
 
-<!-- TODO -->
+The streamable server supports a _stateless mode_ by setting
+[`StreamableHTTPOptions.Stateless`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableHTTPOptions.Stateless),
+which is where the server does not perform any validation of the session id,
+and uses a temporary session to handle requests. In this mode, it is impossible
+for the server to make client requests, as there is no way for the client's
+response to reach the session.
 
-#### Sessionless mode
+However, it is still possible for the server to access the `ServerSession.ID`
+to see the logical session
 
-<!-- TODO -->
+> [!WARNING]
+> Stateless mode is not directly discussed in the spec, and is still being
+> defined. See modelcontextprotocol/modelcontextprotocol#1364,
+> modelcontextprotocol/modelcontextprotocol#1372, or
+> modelcontextprotocol/modelcontextprotocol#11442 for potential refinements.
+
+_See [examples/server/distributed](../examples/server/distributed/main.go) for
+an example using statless mode to implement a server distributed across
+multiple processes._
 
 ### Custom transports
 
-<!-- TODO -->
+The SDK supports [custom
+transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#custom-transports)
+by implementing the
+[`Transport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Transport)
+interface: a logical bidirectional stream of JSON-RPC messages.
+
+_Full example: [examples/server/custom-transport](../examples/server/custom-transport/main.go)._
 
 ### Concurrency
 
