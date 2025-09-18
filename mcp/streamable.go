@@ -50,16 +50,6 @@ type StreamableHTTPHandler struct {
 
 // StreamableHTTPOptions configures the StreamableHTTPHandler.
 type StreamableHTTPOptions struct {
-	// GetSessionID provides the next session ID to use for an incoming request.
-	// If nil, a default randomly generated ID will be used.
-	//
-	// Session IDs should be globally unique across the scope of the server,
-	// which may span multiple processes in the case of distributed servers.
-	//
-	// As a special case, if GetSessionID returns the empty string, the
-	// Mcp-Session-Id header will not be set.
-	GetSessionID func() string
-
 	// Stateless controls whether the session is 'stateless'.
 	//
 	// A stateless server does not validate the Mcp-Session-Id header, and uses a
@@ -91,9 +81,6 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	}
 	if opts != nil {
 		h.opts = *opts
-	}
-	if h.opts.GetSessionID == nil {
-		h.opts.GetSessionID = randText
 	}
 	return h
 }
@@ -233,7 +220,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		if sessionID == "" {
 			// In stateless mode, sessionID may be nonempty even if there's no
 			// existing transport.
-			sessionID = h.opts.GetSessionID()
+			sessionID = server.opts.GetSessionID()
 		}
 		transport = &StreamableServerTransport{
 			SessionID:    sessionID,

@@ -83,6 +83,16 @@ type ServerOptions struct {
 	// If true, advertises the tools capability during initialization,
 	// even if no tools have been registered.
 	HasTools bool
+
+	// GetSessionID provides the next session ID to use for an incoming request.
+	// If nil, a default randomly generated ID will be used.
+	//
+	// Session IDs should be globally unique across the scope of the server,
+	// which may span multiple processes in the case of distributed servers.
+	//
+	// As a special case, if GetSessionID returns the empty string, the
+	// Mcp-Session-Id header will not be set.
+	GetSessionID func() string
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -114,6 +124,11 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	if opts.UnsubscribeHandler != nil && opts.SubscribeHandler == nil {
 		panic("UnsubscribeHandler requires SubscribeHandler")
 	}
+
+	if opts.GetSessionID == nil {
+		opts.GetSessionID = randText
+	}
+
 	return &Server{
 		impl:                    impl,
 		opts:                    opts,
