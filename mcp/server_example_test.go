@@ -55,6 +55,7 @@ func Example_prompts() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer cs.Close()
 
 	// List the prompts.
 	for p, err := range cs.Prompts(ctx, nil) {

@@ -24,16 +24,21 @@ func ExampleLoggingTransport() {
 	ctx := context.Background()
 	t1, t2 := mcp.NewInMemoryTransports()
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
-	if _, err := server.Connect(ctx, t1, nil); err != nil {
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer serverSession.Wait()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 	var b bytes.Buffer
 	logTransport := &mcp.LoggingTransport{Transport: t2, Writer: &b}
-	if _, err := client.Connect(ctx, logTransport, nil); err != nil {
+	clientSession, err := client.Connect(ctx, logTransport, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer clientSession.Close()
+
 	// Sort for stability: reads are concurrent to writes.
 	for _, line := range slices.Sorted(strings.SplitSeq(b.String(), "\n")) {
 		fmt.Println(line)
