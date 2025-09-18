@@ -93,18 +93,6 @@ func (*StdioTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
 }
 
-
-// NewStdioTransport constructs a transport that communicates over
-// stdin/stdout.
-//
-// Deprecated: use a StdioTransport literal.
-//
-//go:fix inline
-func NewStdioTransport() *StdioTransport {
-	return &StdioTransport{}
-}
-
-
 // An IOTransport is a [Transport] that communicates over separate
 // io.ReadCloser and io.WriteCloser using newline-delimited JSON.
 type IOTransport struct {
@@ -116,7 +104,6 @@ type IOTransport struct {
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(rwc{t.Reader, t.Writer}), nil
 }
-
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
