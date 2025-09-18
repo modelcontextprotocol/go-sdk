@@ -29,6 +29,65 @@ Call [`ClientSession.GetPrompt`](https://pkg.go.dev/github.com/modelcontextproto
 arguments for expansion.
 Set [`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler) to be notified of changes in the list of prompts.
 
+```go
+func Example_prompts() {
+	ctx := context.Background()
+
+	promptHandler := func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{
+			Description: "Hi prompt",
+			Messages: []*mcp.PromptMessage{
+				{
+					Role:    "user",
+					Content: &mcp.TextContent{Text: "Say hi to " + req.Params.Arguments["name"]},
+				},
+			},
+		}, nil
+	}
+
+	// Create a server with a single prompt.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	// The name is required: it uniquely identifies the prompt.
+	s.AddPrompt(&mcp.Prompt{Name: "greet"}, promptHandler)
+
+	// Create a client.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+
+	// Connect the server and client.
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// List the prompts.
+	for p, err := range cs.Prompts(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(p.Name)
+	}
+
+	// Get the prompt.
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{
+		Name:      "greet",
+		Arguments: map[string]string{"name": "Pat"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		fmt.Println(msg.Role, msg.Content.(*mcp.TextContent).Text)
+	}
+	// Output:
+	// greet
+	// user Say hi to Pat
+}
+```
+
 ## Resources
 
 <!-- TODO -->

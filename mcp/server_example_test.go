@@ -31,6 +31,7 @@ func Example_prompts() {
 
 	// Create a server with a single prompt.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	// The name is required: it uniquely identifies the prompt.
 	s.AddPrompt(&mcp.Prompt{Name: "greet"}, promptHandler)
 
 	// Create a client.

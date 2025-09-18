@@ -22,6 +22,8 @@ Call [`ClientSession.GetPrompt`](https://pkg.go.dev/github.com/modelcontextproto
 arguments for expansion.
 Set [`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler) to be notified of changes in the list of prompts.
 
+%include ../../mcp/server_example_test.go prompts -
+
 ## Resources
 
 <!-- TODO -->
