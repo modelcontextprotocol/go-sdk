@@ -24,9 +24,7 @@ func TestSSEServer(t *testing.T) {
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet"}, sayHi)
 
-			sseOptions := &SSEOptions{}
-
-			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, sseOptions)
+			sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
 
 			serverSessions := make(chan *ServerSession, 1)
 			sseHandler.onConnection = func(ss *ServerSession) {
