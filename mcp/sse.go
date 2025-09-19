@@ -77,10 +77,16 @@ func NewSSEHandler(getServer func(request *http.Request) *Server, opts *SSEOptio
 		getServer: getServer,
 		sessions:  make(map[string]*SSEServerTransport),
 	}
+
+	if opts != nil {
+		s.opts = *opts
+	}
+
 	if s.opts.Logger == nil { // ensure we have a logger
 		s.opts.Logger = ensureLogger(nil)
 	}
 	s.logger = s.opts.Logger
+
 	return s
 }
 
