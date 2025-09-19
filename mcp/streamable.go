@@ -40,11 +40,7 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
-	onTransportDeletion func(sessionID string) // for testing only
-
-	mu sync.Mutex
-	// TODO: we should store the ServerSession along with the transport, because
-	// we need to cancel keepalive requests when closing the transport.
+	mu         sync.Mutex
 	transports map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
 }
 
@@ -67,6 +63,11 @@ type StreamableHTTPOptions struct {
 	//
 	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
+
+	// OnSessionClose is a callback function that is invoked when a [ServerSession]
+	// is closed. This happens when a session is ended explicitly by the MCP client
+	// or when it is interrupted due to a timeout or other errors.
+	OnSessionClose func(sessionID string)
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -153,7 +154,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Lock()
 			delete(h.transports, transport.SessionID)
 			h.mu.Unlock()
-			transport.connection.Close()
+			// TODO: consider logging this error
+			_ = transport.session.Close()
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -286,8 +288,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 					h.mu.Lock()
 					delete(h.transports, transport.SessionID)
 					h.mu.Unlock()
-					if h.onTransportDeletion != nil {
-						h.onTransportDeletion(transport.SessionID)
+					if h.opts.OnSessionClose != nil {
+						h.opts.OnSessionClose(transport.SessionID)
 					}
 				},
 			}
@@ -307,6 +309,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		} else {
 			// Otherwise, save the transport so that it can be reused
 			h.mu.Lock()
+			transport.session = ss
 			h.transports[transport.SessionID] = transport
 			h.mu.Unlock()
 		}
@@ -369,6 +372,9 @@ type StreamableServerTransport struct {
 
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
+
+	// the server session associated with this transport.
+	session *ServerSession
 }
 
 // Connect implements the [Transport] interface.
