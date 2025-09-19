@@ -316,7 +316,10 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 		})
 
 	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
-	t.Cleanup(func() { realServer.Close() })
+	t.Cleanup(func() {
+		t.Log("Closing real HTTP server")
+		realServer.Close()
+	})
 	realServerURL, err := url.Parse(realServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to parse real server URL: %v", err)
@@ -342,21 +345,20 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	t.Cleanup(func() { clientSession.Close() })
+	t.Cleanup(func() {
+		t.Log("Closing clientSession")
+		clientSession.Close()
+	})
 
-	var (
-		wg      sync.WaitGroup
-		callErr error
-	)
-	wg.Add(1)
+	toolCallResult := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		_, callErr = clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+		_, callErr := clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+		toolCallResult <- callErr
 	}()
 
 	select {
 	case <-serverReadyToKillProxy:
-		// Server has sent the first two messages and is paused.
+		t.Log("Server has sent the first two messages and is paused.")
 	case <-ctx.Done():
 		t.Fatalf("Context timed out before server was ready to kill proxy")
 	}
@@ -386,7 +388,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	go restartedProxy.Serve(listener)
 	t.Cleanup(func() { restartedProxy.Close() })
 
-	wg.Wait()
+	callErr := <-toolCallResult
 
 	if test.wantRecovered {
 		// If we've recovered, we should get all 4 notifications and the tool call
