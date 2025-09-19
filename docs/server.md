@@ -158,7 +158,7 @@ _ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
 
 ### Logging
 
-MCP servers can send logging messages to MCP clients so their users can keep informed of progress.
+MCP servers can send logging messages to MCP clients.
 (This form of logging is distinct from server-side logging, where the
 server produces logs that remain server-side, for use by server maintainers.)
 
@@ -180,7 +180,6 @@ Servers always report the logging capability.
 
 
 **Client-side**:
-
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
 Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
@@ -193,12 +192,17 @@ func Example_logging() {
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
 
 	// Create a client that displays log messages.
+	done := make(chan struct{}) // solely for the example
+	var nmsgs atomic.Int32
 	c := mcp.NewClient(
 		&mcp.Implementation{Name: "client", Version: "v0.0.1"},
 		&mcp.ClientOptions{
 			LoggingMessageHandler: func(_ context.Context, r *mcp.LoggingMessageRequest) {
 				m := r.Params.Data.(map[string]any)
 				fmt.Println(m["msg"], m["value"])
+				if nmsgs.Add(1) == 2 { // number depends on logger calls below
+					close(done)
+				}
 			},
 		})
 
@@ -231,7 +235,7 @@ func Example_logging() {
 	// Wait for them to arrive on the client.
 	// In a real application, the log messages would appear asynchronously
 	// while other work was happening.
-	time.Sleep(500 * time.Millisecond)
+	<-done
 
 	// Output:
 	// info shows up 1

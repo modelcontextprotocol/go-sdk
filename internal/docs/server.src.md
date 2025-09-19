@@ -56,7 +56,7 @@ requests.
 
 ### Logging
 
-MCP servers can send logging messages to MCP clients so their users can keep informed of progress.
+MCP servers can send logging messages to MCP clients.
 (This form of logging is distinct from server-side logging, where the
 server produces logs that remain server-side, for use by server maintainers.)
 
@@ -78,7 +78,6 @@ Servers always report the logging capability.
 
 
 **Client-side**:
-
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
 Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
