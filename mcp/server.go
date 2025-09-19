@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -1124,13 +1125,21 @@ func (ss *ServerSession) Close() error {
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly
 		ss.keepaliveCancel()
 	}
-	err := ss.conn.Close()
+
+	var connErr, mcpConnErr error
+	if err := ss.conn.Close(); err != nil {
+		connErr = fmt.Errorf("failed to close connection: %w", err)
+	}
+
+	if err := ss.mcpConn.Close(); err != nil {
+		connErr = fmt.Errorf("failed to close mcp connection: %w", err)
+	}
 
 	if ss.onClose != nil {
 		ss.onClose()
 	}
 
-	return err
+	return errors.Join(connErr, mcpConnErr)
 }
 
 // Wait waits for the connection to be closed by the client.
