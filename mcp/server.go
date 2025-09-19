@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"log/slog"
 	"maps"
 	"net/url"
 	"path/filepath"
@@ -35,8 +36,9 @@ const DefaultPageSize = 1000
 // sessions by using [Server.Run].
 type Server struct {
 	// fixed at creation
-	impl *Implementation
-	opts ServerOptions
+	impl   *Implementation
+	opts   ServerOptions
+	logger *slog.Logger
 
 	mu                      sync.Mutex
 	prompts                 *featureSet[*serverPrompt]
@@ -53,6 +55,8 @@ type Server struct {
 type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
+	// Logger is used for server-side logging. If nil, disable logging.
+	Logger *slog.Logger
 	// If non-nil, called when "notifications/initialized" is received.
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
@@ -132,6 +136,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	return &Server{
 		impl:                    impl,
 		opts:                    opts,
+		logger:                  ensureLogger(opts.Logger),
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
@@ -659,6 +664,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	sessions := slices.Collect(maps.Keys(subscribedSessions))
 	s.mu.Unlock()
 	notifySessions(sessions, notificationResourceUpdated, params)
+	s.logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
 	return nil
 }
 
@@ -676,6 +682,7 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]bool)
 	}
 	s.resourceSubscriptions[req.Params.URI][req.Session] = true
+	s.logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
 }
@@ -697,6 +704,7 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 			delete(s.resourceSubscriptions, req.Params.URI)
 		}
 	}
+	s.logger.Info("resource unsubscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
 }
@@ -715,8 +723,10 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 // It need not be called on servers that are used for multiple concurrent connections,
 // as with [StreamableHTTPHandler].
 func (s *Server) Run(ctx context.Context, t Transport) error {
+	s.logger.Info("server run start")
 	ss, err := s.Connect(ctx, t, nil)
 	if err != nil {
+		s.logger.Error("server connect failed", "error", err)
 		return err
 	}
 
@@ -728,8 +738,14 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 	select {
 	case <-ctx.Done():
 		ss.Close()
+		s.logger.Info("server run cancelled", "error", ctx.Err())
 		return ctx.Err()
 	case err := <-ssClosed:
+		if err != nil {
+			s.logger.Error("server session ended with error", "error", err)
+		} else {
+			s.logger.Info("server session ended")
+		}
 		return err
 	}
 }
@@ -745,6 +761,7 @@ func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *Serv
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
+	s.logger.Info("server session connected", "session_id", ss.ID())
 	return ss
 }
 
@@ -760,6 +777,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 	for _, subscribedSessions := range s.resourceSubscriptions {
 		delete(subscribedSessions, cc)
 	}
+	s.logger.Info("server session disconnected", "session_id", cc.ID())
 }
 
 // ServerSessionOptions configures the server session.
@@ -784,7 +802,14 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		state = opts.State
 		onClose = opts.onClose
 	}
-	return connect(ctx, t, s, state, onClose)
+
+	s.logger.Info("server connecting")
+	ss, err := connect(ctx, t, s, state, onClose)
+	if err != nil {
+		s.logger.Error("server connect error", "error", err)
+		return nil, err
+	}
+	return ss, nil
 }
 
 // TODO: (nit) move all ServerSession methods below the ServerSession declaration.
@@ -804,9 +829,11 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	})
 
 	if !wasInit {
+		ss.server.logger.Warn("initialized before initialize")
 		return nil, fmt.Errorf("%q before %q", notificationInitialized, methodInitialize)
 	}
 	if wasInitd {
+		ss.server.logger.Warn("duplicate initialized notification")
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
 	}
 	if ss.server.opts.KeepAlive > 0 {
@@ -815,6 +842,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
 	}
+	ss.server.logger.Info("session initialized")
 	return nil, nil
 }
 
@@ -1052,6 +1080,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	case methodInitialize, methodPing, notificationInitialized:
 	default:
 		if !initialized {
+			ss.server.logger.Warn("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
 	}
@@ -1108,6 +1137,7 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})
+	ss.server.logger.Info("client log level set", "level", params.Level)
 	return &emptyResult{}, nil
 }
 
