@@ -104,11 +104,6 @@ func ensureLogger(l *slog.Logger) *slog.Logger {
 	return slog.New(discardHandler{})
 }
 
-// internalLogger is used for package-internal logging where we don't have a
-// specific server/handler context. It defaults to a discard logger to avoid
-// unsolicited output from library code.
-var internalLogger = slog.New(discardHandler{})
-
 // NewLoggingHandler creates a [LoggingHandler] that logs to the given [ServerSession] using a
 // [slog.JSONHandler].
 func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingHandler {
