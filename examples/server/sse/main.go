@@ -65,6 +65,6 @@ func main() {
 		default:
 			return nil
 		}
-	})
+	}, &mcp.SSEOptions{})
 	log.Fatal(http.ListenAndServe(addr, handler))
 }
