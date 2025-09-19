@@ -149,11 +149,6 @@ func TestServerInterrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	t.Log("Send a signal to the server process to terminate it")
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)

@@ -470,7 +470,7 @@ func TestServerTransportCleanup(t *testing.T) {
 		case <-ctx.Done():
 			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
 		case <-ch:
-			t.Log("Received transport deletion signal of this session")
+			t.Log("Received session transport deletion signal")
 		}
 	}
 
