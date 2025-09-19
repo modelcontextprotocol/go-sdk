@@ -181,6 +181,13 @@ If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.c
 the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
 Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).
 
+Server handlers, such as tool handlers, can obtain the `TokenInfo` returned by the `TokenVerifier`
+from `req.Extra.TokenInfo`, where `req` is the handler's request. (For example, a
+[`CallToolRequest`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CallToolRequest).)
+HTTP handlers wrapped by the `RequireBearerToken` middleware can obtain the `TokenInfo` from the context
+with [`auth.TokenInfoFromContext`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenInfoFromContext).
+ 
+
 The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
 
 ### Client

@@ -571,8 +571,9 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 	return handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 }
 
-// CallTool calls the tool with the given name and arguments.
-// The arguments can be any value that marshals into a JSON object.
+// CallTool calls the tool with the given parameters.
+//
+// The params.Arguments can be any value that marshals into a JSON object.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
 	if params == nil {
 		params = new(CallToolParams)
