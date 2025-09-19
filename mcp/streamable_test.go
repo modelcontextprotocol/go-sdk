@@ -316,7 +316,10 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 		})
 
 	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
-	defer realServer.Close()
+	t.Cleanup(func() {
+		t.Log("Closing real HTTP server")
+		realServer.Close()
+	})
 	realServerURL, err := url.Parse(realServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to parse real server URL: %v", err)
@@ -342,21 +345,20 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
-	defer clientSession.Close()
+	t.Cleanup(func() {
+		t.Log("Closing clientSession")
+		clientSession.Close()
+	})
 
-	var (
-		wg      sync.WaitGroup
-		callErr error
-	)
-	wg.Add(1)
+	toolCallResult := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		_, callErr = clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+		_, callErr := clientSession.CallTool(ctx, &CallToolParams{Name: "multiMessageTool"})
+		toolCallResult <- callErr
 	}()
 
 	select {
 	case <-serverReadyToKillProxy:
-		// Server has sent the first two messages and is paused.
+		t.Log("Server has sent the first two messages and is paused.")
 	case <-ctx.Done():
 		t.Fatalf("Context timed out before server was ready to kill proxy")
 	}
@@ -384,9 +386,9 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 
 	restartedProxy := &http.Server{Handler: proxyHandler}
 	go restartedProxy.Serve(listener)
-	defer restartedProxy.Close()
+	t.Cleanup(func() { restartedProxy.Close() })
 
-	wg.Wait()
+	callErr := <-toolCallResult
 
 	if test.wantRecovered {
 		// If we've recovered, we should get all 4 notifications and the tool call
@@ -460,14 +462,15 @@ func TestServerTransportCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatalf("client.Connect() failed: %v", err)
 		}
-		defer clientSession.Close()
+		t.Cleanup(func() { _ = clientSession.Close() })
 	}
 
 	for _, ch := range chans {
 		select {
 		case <-ctx.Done():
 			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
-		case <-ch: // Received transport deletion signal of this session
+		case <-ch:
+			t.Log("Received session transport deletion signal")
 		}
 	}
 
@@ -1252,6 +1255,7 @@ func TestStreamableStateless(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { cs.Close() })
 		res, err := cs.CallTool(ctx, &CallToolParams{Name: "greet", Arguments: hiParams{Name: "bar"}})
 		if err != nil {
 			t.Fatal(err)
@@ -1428,5 +1432,17 @@ func TestStreamableGET(t *testing.T) {
 	defer resp.Body.Close()
 	if got, want := resp.StatusCode, http.StatusOK; got != want {
 		t.Errorf("GET with session ID: got status %d, want %d", got, want)
+	}
+
+	t.Log("Sending final DELETE request to close session and release resources")
+	del := newReq("DELETE", nil)
+	del.Header.Set(sessionIDHeader, sessionID)
+	resp, err = http.DefaultClient.Do(del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, want := resp.StatusCode, http.StatusNoContent; got != want {
+		t.Errorf("DELETE with session ID: got status %d, want %d", got, want)
 	}
 }
