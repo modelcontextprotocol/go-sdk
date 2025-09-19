@@ -11,25 +11,32 @@
 
 ## Prompts
 
-**Server-side**:
-MCP servers can provide LLM prompt templates (called simply _prompts_) to clients.
-Every prompt has a required name which identifies it, and a set of named arguments, which are strings.
-Construct a prompt with a name and descriptions of its arguments.
-Associated with each prompt is a handler that expands the template given values for its arguments.
-Use [`Server.AddPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddPrompt)
-to add a prompt along with its handler.
-If `AddPrompt` is called before a server is connected, the server will have the `prompts` capability.
-If all prompts are to be added after connection, set [`ServerOptions.HasPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasPrompts)
-to advertise the capability.
+MCP servers can provide LLM prompt templates (called simply
+[_prompts_](https://modelcontextprotocol.io/specification/2025-06-18/server/prompts))
+to clients. Every prompt has a required name which identifies it, and a set of
+named arguments, which are strings.
 
-**Client-side**:
-To list the server's prompts, call
-Call [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts) to get an iterator.
-If needed, you can use the lower-level
-[`ClientSession.ListPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ListPrompts) to list the server's prompts.
-Call [`ClientSession.GetPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.GetPrompt) to retrieve a prompt by name, providing
-arguments for expansion.
-Set [`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler) to be notified of changes in the list of prompts.
+**Client-side**: To list the server's prompts, use the 
+[`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
+iterator, or the lower-level
+[`ClientSession.ListPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ListPrompts)
+(see [pagination](#pagination) below). Set
+[`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler)
+to be notified of changes in the list of prompts.
+
+Call
+[`ClientSession.GetPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.GetPrompt)
+to retrieve a prompt by name, providing arguments for expansion. 
+
+**Server-side**: Use
+[`Server.AddPrompt`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddPrompt)
+to add a prompt to the server along with its handler.
+The server will have the `prompts` capability if any prompt is added before the
+server is connected to a client, or if
+[`ServerOptions.HasPrompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasPrompts)
+is explicitly set. When a prompt is added, any clients already connected to the
+server will be notified via a `notifications/prompts/list_changed`
+notification.
 
 ```go
 func Example_prompts() {
@@ -73,6 +80,7 @@ func Example_prompts() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer cs.Close()
 
 	// List the prompts.
 	for p, err := range cs.Prompts(ctx, nil) {
@@ -105,7 +113,170 @@ func Example_prompts() {
 
 ## Tools
 
-<!-- TODO -->
+MCP servers can provide
+[tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)
+to allow clients to interact with external systems or functionality. Tools are
+effectively remote function calls, and the Go SDK provides mechanisms to bind
+them to ordinary Go functions.
+
+**Client-side**: To list the server's tools, use the
+[`ClientSession.Tools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Tools)
+iterator, or the lower-level
+[`ClientSession.ListTools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ListTools)
+(see [pagination](#pagination)). Set
+[`ClientOptions.ToolListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ToolListChangedHandler)
+to be notified of changes in the list of tools.
+
+To call a tool, use
+[`ClientSession.CallTool`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.CallTool)
+with `CallToolParams` holding the name and arguments of the tool to call.
+
+```go
+res, err := session.CallTool(ctx, &mcp.CallToolParams{
+	Name:      "my_tool",
+	Arguments: map[string]any{"name": "user"},
+})
+```
+
+Arguments may be any value that can be marshaled to JSON.
+
+**Server-side**: the basic API for adding a tool is symmetrical with the API
+for prompts or resources:
+[`Server.AddTool`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddTool)
+adds a
+[`Tool`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Tool) to
+the server along with its
+[`ToolHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ToolHandler)
+to handle it. The server will have the `tools` capability if any tool is added
+before the server is connected to a client, or if
+[`ServerOptions.HasTools`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasPrompts)
+is explicitly set. When a tool is added, any clients already connected to the
+server will be notified via a `notifications/tools/list_changed` notification.
+
+However, the `Server.AddTool` API leaves it to the user to implement the tool
+handler correctly according to the spec, providing very little out of the box.
+In order to implement a tool, the user must do all of the following:
+
+- Provide a tool input and output schema.
+- Validate the tool arguments against its input schema.
+- Unmarshal the input schema into a Go value
+- Execute the tool logic.
+- Marshal the tool's structured output (if any) to JSON, and store it in the
+  result's `StructuredOutput` field as well as the unstructured `Content` field.
+- Validate that output JSON against the tool's output schema.
+- If any tool errors occurred, pack them into the unstructured content and set
+  `IsError` to `true.`
+
+For this reason, the SDK provides a generic
+[`AddTool`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#AddTool)
+function that handles this for you. It can bind a tool to any function with the
+following shape:
+
+```go
+func(_ context.Context, request *CallToolRequest, input In) (result *CallToolResult, output Out, _ error)
+```
+
+This is like a `ToolHandler`, but with an extra arbitrary `In` input parameter,
+and `Out` output parameter.
+
+Such a function can then be bound to the server using `AddTool`:
+
+```go
+mcp.AddTool(server, &mcp.Tool{Name: "my_tool"}, handler)
+```
+
+This does the following automatically:
+
+- If `Tool.InputSchema` or `Tool.OutputSchema` are unset, the input and output
+  schemas are inferred from the `In` type, which must be a struct or map.
+  Optional `jsonschema` struct tags provide argument descriptions.
+- Tool arguments are validated against the input schema.
+- Tool arguments are marshaled into the `In` value.
+- Tool output (the `Out` value) is marshaled into the result's
+  `StructuredOutput`, as well as the unstructured `Content`.
+- Output is validated against the tool's output schema.
+- If an ordinary error is returned, it is stored int the `CallToolResult` and
+  `IsError` is set to `true`.
+
+In fact, under ordinary circumstances, the user can ignore `CallToolRequest`
+and `CallToolResult`.
+
+For a more realistic example, consider a tool that retrieves the weather:
+
+```go
+type WeatherInput struct {
+	Location Location `json:"location" jsonschema:"user location"`
+	Days     int      `json:"days" jsonschema:"number of days to forecast"`
+}
+
+type WeatherOutput struct {
+	Summary       string      `json:"summary" jsonschema:"a summary of the weather forecast"`
+	Confidence    Probability `json:"confidence" jsonschema:"confidence, between 0 and 1"`
+	AsOf          time.Time   `json:"asOf" jsonschema:"the time the weather was computed"`
+	DailyForecast []Forecast  `json:"dailyForecast" jsonschema:"the daily forecast"`
+	Source        string      `json:"source,omitempty" jsonschema:"the organization providing the weather forecast"`
+}
+
+func WeatherTool(ctx context.Context, req *mcp.CallToolRequest, in WeatherInput) (*mcp.CallToolResult, WeatherOutput, error) {
+	perfectWeather := WeatherOutput{
+		Summary:    "perfect",
+		Confidence: 1.0,
+		AsOf:       time.Now(),
+	}
+	for range in.Days {
+		perfectWeather.DailyForecast = append(perfectWeather.DailyForecast, Forecast{
+			Forecast: "another perfect day",
+			Type:     Sunny,
+			Rain:     0.0,
+			High:     72.0,
+			Low:      72.0,
+		})
+	}
+	return nil, perfectWeather, nil
+}
+```
+
+In this case, we want to customize part of the inferred schema, though we can
+still infer the rest. Since we want to control the inference ourselves, we set
+the `Tool.InputSchema` explicitly:
+
+```go
+// Distinguished Go types allow custom schemas to be reused during inference.
+customSchemas := map[any]*jsonschema.Schema{
+	Probability(0):  {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
+	WeatherType(""): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
+}
+opts := &jsonschema.ForOptions{TypeSchemas: customSchemas}
+in, err := jsonschema.For[WeatherInput](opts)
+if err != nil {
+	log.Fatal(err)
+}
+
+// Furthermore, we can tweak the inferred schema, in this case limiting
+// forecasts to 0-10 days.
+daysSchema := in.Properties["days"]
+daysSchema.Minimum = jsonschema.Ptr(0.0)
+daysSchema.Maximum = jsonschema.Ptr(10.0)
+
+// Output schema inference can reuse our custom schemas from input inference.
+out, err := jsonschema.For[WeatherOutput](opts)
+if err != nil {
+	log.Fatal(err)
+}
+
+// Now add our tool to a server. Since we've customized the schemas, we need
+// to override the default schema inference.
+server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+mcp.AddTool(server, &mcp.Tool{
+	Name:         "weather",
+	InputSchema:  in,
+	OutputSchema: out,
+}, WeatherTool)
+```
+
+_See [mcp/tool_example_test.go](../mcp/tool_example_test.go) for the full
+example, or [examples/server/toolschemas](examples/server/toolschemas/main.go)
+for more examples of customizing tool schemas._
 
 ## Utilities
 
