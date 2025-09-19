@@ -35,10 +35,10 @@ notification.
 
 ## Resources
 
-In MCP terms, a _resource_ is some data selected by a URI.
+In MCP terms, a _resource_ is some data referenced by a URI.
 MCP servers can serve resources to clients.
-Resource templates use a URI pattern to describe a collection of resources.
-Servers register resources and resource templates, and clients can list and read them.
+They can register resources individually, or register a _resource template_
+that uses a URI pattern to describe a collection of resources.
 
 **Server-side**:
 Servers use
@@ -52,8 +52,6 @@ If all resources or resource templates are to be added after connection, set
 [`ServerOptions.HasResources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasResources)
 to advertise the capability.
 
-TODO: list changed, subscriptions
-
 A
 [`ResourceHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceHandler)
 maps a URI to the contents of a resource, which can include text, binary data,
@@ -61,7 +59,8 @@ or both.
 
 
 **Client-side**:
-[`ClientSession.ReadResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ReadResource)
+Call [`ClientSession.ReadResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ReadResource)
+to read a resource.
 The SDK ensures that a read succeeds only if the URI matches a registered resource exactly,
 or matches the URI pattern of a resource template.
 
@@ -74,7 +73,7 @@ Set
 [`ClientOptions.ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler)
 to be notified of changes in the lists of resources or resource templates.
 
-Clients can be notified when the contents of a resource changes by subscribing to the resource.
+Clients can be notified when the contents of a resource changes by subscribing to the resource's URI.
 Call
 [`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
 to subscribe to a resource
