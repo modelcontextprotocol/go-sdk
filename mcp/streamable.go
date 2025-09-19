@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -40,7 +39,6 @@ const (
 type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
-	logger    *slog.Logger
 
 	onTransportDeletion func(sessionID string) // for testing only
 
@@ -69,10 +67,6 @@ type StreamableHTTPOptions struct {
 	//
 	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
-
-	// Logger specifies the logger to use.
-	// If nil, do not log.
-	Logger *slog.Logger
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -88,12 +82,6 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	if opts != nil {
 		h.opts = *opts
 	}
-
-	if h.opts.Logger == nil { // ensure we have a logger
-		h.opts.Logger = ensureLogger(nil)
-	}
-	h.logger = h.opts.Logger
-
 	return h
 }
 
@@ -379,8 +367,6 @@ type StreamableServerTransport struct {
 	// StreamableHTTPOptions.JSONResponse is exported.
 	jsonResponse bool
 
-	logger *slog.Logger
-
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
 }
@@ -395,7 +381,6 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
 		jsonResponse:   t.jsonResponse,
-		logger:         t.logger,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
 		streams:        make(map[string]*stream),
@@ -421,8 +406,6 @@ type streamableServerConn struct {
 	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
-
-	logger *slog.Logger
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -771,7 +754,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 		}
 		if _, err := writeEvent(w, e); err != nil {
 			// Connection closed or broken.
-			c.logger.Warn("error writing event", "error", err)
+			// TODO(#170): log when we add server-side logging.
 			return false
 		}
 		writes++
@@ -790,13 +773,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 				// simplify.
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			} else {
-				if ctx.Err() != nil {
-					// Client disconnected or cancelled the request.
-					c.logger.Info("stream context done", "error", ctx.Err())
-				} else {
-					// Some other error.
-					c.logger.Warn("error receiving message", "error", err)
-				}
+				// TODO(#170): log when we add server-side logging
 			}
 			return
 		}
