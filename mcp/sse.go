@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
@@ -43,10 +44,19 @@ import (
 // [2024-11-05 version]: https://modelcontextprotocol.io/specification/2024-11-05/basic/transports
 type SSEHandler struct {
 	getServer    func(request *http.Request) *Server
+	opts         SSEOptions
 	onConnection func(*ServerSession) // for testing; must not block
+	logger       *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*SSEServerTransport
+}
+
+// SSEOptions specifies options for an [SSEHandler].
+type SSEOptions struct {
+	// Logger specifies the logger to use.
+	// If nil, do not log.
+	Logger *slog.Logger
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -62,13 +72,16 @@ type SSEHandler struct {
 // The getServer function may return a distinct [Server] for each new
 // request, or reuse an existing server. If it returns nil, the handler
 // will return a 400 Bad Request.
-//
-// TODO(rfindley): add options.
-func NewSSEHandler(getServer func(request *http.Request) *Server) *SSEHandler {
-	return &SSEHandler{
+func NewSSEHandler(getServer func(request *http.Request) *Server, opts *SSEOptions) *SSEHandler {
+	s := &SSEHandler{
 		getServer: getServer,
 		sessions:  make(map[string]*SSEServerTransport),
 	}
+	if s.opts.Logger == nil { // ensure we have a logger
+		s.opts.Logger = ensureLogger(nil)
+	}
+	s.logger = s.opts.Logger
+	return s
 }
 
 // A SSEServerTransport is a logical SSE session created through a hanging GET
