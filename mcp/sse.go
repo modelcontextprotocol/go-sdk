@@ -119,6 +119,10 @@ type SSEServerTransport struct {
 	// Response is the hanging response body to the incoming GET request.
 	Response http.ResponseWriter
 
+	// logger is used for per-POST diagnostics and transport-level logs.
+	// If nil, logging is disabled.
+	logger *slog.Logger
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -143,6 +147,7 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	// Read and parse the message.
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
+		t.logger.Error("sse: failed to read body", "error", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -151,11 +156,13 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	// useful
 	msg, err := jsonrpc2.DecodeMessage(data)
 	if err != nil {
+		t.logger.Error("sse: failed to parse body", "error", err)
 		http.Error(w, "failed to parse body", http.StatusBadRequest)
 		return
 	}
 	if req, ok := msg.(*jsonrpc.Request); ok {
 		if _, err := checkRequest(req, serverMethodInfos); err != nil {
+			t.logger.Warn("sse: request validation failed", "error", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -164,6 +171,7 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	case t.incoming <- msg:
 		w.WriteHeader(http.StatusAccepted)
 	case <-t.done:
+		t.logger.Warn("sse: session closed while posting message")
 		http.Error(w, "session closed", http.StatusBadRequest)
 	}
 }
@@ -227,11 +235,12 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	sessionID = randText()
 	endpoint, err := req.URL.Parse("?sessionid=" + sessionID)
 	if err != nil {
+		h.logger.Error("sse: failed to create endpoint", "error", err)
 		http.Error(w, "internal error: failed to create endpoint", http.StatusInternalServerError)
 		return
 	}
 
-	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w}
+	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w, logger: h.logger}
 
 	// The session is terminated when the request exits.
 	h.mu.Lock()
@@ -251,6 +260,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	ss, err := server.Connect(req.Context(), transport, nil)
 	if err != nil {
+		h.logger.Error("sse: server connect failed", "error", err)
 		http.Error(w, "connection failed", http.StatusInternalServerError)
 		return
 	}
