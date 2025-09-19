@@ -24,7 +24,8 @@ import (
 
 const runAsServer = "_MCP_RUN_AS_SERVER"
 
-// TODO: remove this flag and always check for goroutine leaks once issue with TestClientReplay is fixed
+// TODO: remove this flag and always check for goroutine leaks once
+// .     https://github.com/modelcontextprotocol/go-sdk/issues/499 is fixed
 var leakCheck = flag.Bool("leak", false, "enable goroutine leak checking")
 
 type SayHiParams struct {
