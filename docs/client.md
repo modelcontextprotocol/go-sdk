@@ -56,9 +56,12 @@ func Example_roots() {
 	if _, err := s.Connect(ctx, t1, nil); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := c.Connect(ctx, t2, nil); err != nil {
+
+	clientSession, err := c.Connect(ctx, t2, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer clientSession.Close()
 
 	// ...and add a root. The server is notified about the change.
 	c.AddRoots(&mcp.Root{URI: "file://b"})
