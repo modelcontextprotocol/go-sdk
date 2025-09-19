@@ -42,11 +42,14 @@ type Annotations struct {
 
 // CallToolParams is used by clients to call a tool.
 type CallToolParams struct {
-	// This property is reserved by the protocol to allow clients and servers to
+	// Meta is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta      `json:"_meta,omitempty"`
-	Name      string `json:"name"`
-	Arguments any    `json:"arguments,omitempty"`
+	Meta `json:"_meta,omitempty"`
+	// Name is the name of the tool to call.
+	Name string `json:"name"`
+	// Arguments holds the tool arguments. It can hold any value that can be
+	// marshaled to JSON.
+	Arguments any `json:"arguments,omitempty"`
 }
 
 // CallToolParamsRaw is passed to tool handlers on the server. Its arguments
@@ -55,8 +58,12 @@ type CallToolParams struct {
 type CallToolParamsRaw struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta      `json:"_meta,omitempty"`
-	Name      string          `json:"name"`
+	Meta `json:"_meta,omitempty"`
+	// Name is the name of the tool being called.
+	Name string `json:"name"`
+	// Arguments is the raw arguments received over the wire from the client. It
+	// is the responsibility of the tool handler to unmarshal and validate the
+	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
