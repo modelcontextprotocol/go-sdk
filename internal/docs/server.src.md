@@ -35,7 +35,57 @@ notification.
 
 ## Resources
 
-<!-- TODO -->
+In MCP terms, a _resource_ is some data selected by a URI.
+MCP servers can serve resources to clients.
+Resource templates use a URI pattern to describe a collection of resources.
+Servers register resources and resource templates, and clients can list and read them.
+
+**Server-side**:
+Servers use
+[`Server.AddResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddResource)
+and
+[`Server.AddResourceTemplate`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddResourceTemplate)
+to register resources and resource templates and associate them with handlers.
+If `AddResource` or `AddResourceTemplate` is called before a server is connected, the server will have the
+`resources` capability.
+If all resources or resource templates are to be added after connection, set
+[`ServerOptions.HasResources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasResources)
+to advertise the capability.
+
+TODO: list changed, subscriptions
+
+A
+[`ResourceHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceHandler)
+maps a URI to the contents of a resource, which can include text, binary data,
+or both. 
+
+
+**Client-side**:
+[`ClientSession.ReadResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ReadResource)
+The SDK ensures that a read succeeds only if the URI matches a registered resource exactly,
+or matches the URI pattern of a resource template.
+
+To list a server's resources and resource templates, use the 
+[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+and
+[`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
+iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
+Set
+[`ClientOptions.ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler)
+to be notified of changes in the lists of resources or resource templates.
+
+Clients can be notified when the contents of a resource changes by subscribing to the resource.
+Call
+[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
+to subscribe to a resource
+and
+[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe)
+to unsubscribe.
+Set
+[`ClientOptions.ResourceUpdatedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceUpdatedHandler)
+to be notified of changes to subscribed resources.
+
+%include ../../mcp/server_example_test.go resources -
 
 ## Tools
 

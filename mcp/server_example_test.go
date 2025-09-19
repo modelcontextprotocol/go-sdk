@@ -82,3 +82,76 @@ func Example_prompts() {
 }
 
 // !-prompts
+
+// !+resources
+func Example_resources() {
+	ctx := context.Background()
+
+	resources := map[string]string{
+		"file:///a":     "a",
+		"file:///dir/x": "x",
+		"file:///dir/y": "y",
+	}
+
+	handler := func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		uri := req.Params.URI
+		c, ok := resources[uri]
+		if !ok {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{{URI: uri, Text: c}},
+		}, nil
+	}
+
+	// Create a server with a single resource.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddResource(&mcp.Resource{URI: "file:///a"}, handler)
+	s.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///dir/{f}"}, handler)
+
+	// Create a client.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+
+	// Connect the server and client.
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// List resources and resource templates.
+	for r, err := range cs.Resources(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(r.URI)
+	}
+	for r, err := range cs.ResourceTemplates(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(r.URITemplate)
+	}
+
+	// Read resources.
+	for _, path := range []string{"a", "dir/x", "b"} {
+		res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///" + path})
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Println(res.Contents[0].Text)
+		}
+	}
+	// Output:
+	// file:///a
+	// file:///dir/{f}
+	// a
+	// x
+	// calling "resources/read": Resource not found
+}
+
+// !-resources

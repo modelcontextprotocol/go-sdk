@@ -109,7 +109,127 @@ func Example_prompts() {
 
 ## Resources
 
-<!-- TODO -->
+In MCP terms, a _resource_ is some data selected by a URI.
+MCP servers can serve resources to clients.
+Resource templates use a URI pattern to describe a collection of resources.
+Servers register resources and resource templates, and clients can list and read them.
+
+**Server-side**:
+Servers use
+[`Server.AddResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddResource)
+and
+[`Server.AddResourceTemplate`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.AddResourceTemplate)
+to register resources and resource templates and associate them with handlers.
+If `AddResource` or `AddResourceTemplate` is called before a server is connected, the server will have the
+`resources` capability.
+If all resources or resource templates are to be added after connection, set
+[`ServerOptions.HasResources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.HasResources)
+to advertise the capability.
+
+TODO: list changed, subscriptions
+
+A
+[`ResourceHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceHandler)
+maps a URI to the contents of a resource, which can include text, binary data,
+or both. 
+
+
+**Client-side**:
+[`ClientSession.ReadResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ReadResource)
+The SDK ensures that a read succeeds only if the URI matches a registered resource exactly,
+or matches the URI pattern of a resource template.
+
+To list a server's resources and resource templates, use the 
+[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+and
+[`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
+iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
+Set
+[`ClientOptions.ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler)
+to be notified of changes in the lists of resources or resource templates.
+
+Clients can be notified when the contents of a resource changes by subscribing to the resource.
+Call
+[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
+to subscribe to a resource
+and
+[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe)
+to unsubscribe.
+Set
+[`ClientOptions.ResourceUpdatedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceUpdatedHandler)
+to be notified of changes to subscribed resources.
+
+```go
+func Example_resources() {
+	ctx := context.Background()
+
+	resources := map[string]string{
+		"file:///a":     "a",
+		"file:///dir/x": "x",
+		"file:///dir/y": "y",
+	}
+
+	handler := func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		uri := req.Params.URI
+		c, ok := resources[uri]
+		if !ok {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{{URI: uri, Text: c}},
+		}, nil
+	}
+
+	// Create a server with a single resource.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddResource(&mcp.Resource{URI: "file:///a"}, handler)
+	s.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///dir/{f}"}, handler)
+
+	// Create a client.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+
+	// Connect the server and client.
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// List resources and resource templates.
+	for r, err := range cs.Resources(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(r.URI)
+	}
+	for r, err := range cs.ResourceTemplates(ctx, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(r.URITemplate)
+	}
+
+	// Read resources.
+	for _, path := range []string{"a", "dir/x", "b"} {
+		res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///" + path})
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Println(res.Contents[0].Text)
+		}
+	}
+	// Output:
+	// file:///a
+	// file:///dir/{f}
+	// a
+	// x
+	// calling "resources/read": Resource not found
+}
+```
 
 ## Tools
 
