@@ -66,7 +66,11 @@ type Output struct {
 	Greeting string `json:"greeting" jsonschema:"the greeting to tell to the user"`
 }
 
-func SayHi(ctx context.Context, req *mcp.CallToolRequest, input Input) (*mcp.CallToolResult, Output, error) {
+func SayHi(ctx context.Context, req *mcp.CallToolRequest, input Input) (
+	*mcp.CallToolResult,
+	Output,
+	error,
+) {
 	return nil, Output{Greeting: "Hi " + input.Name}, nil
 }
 
