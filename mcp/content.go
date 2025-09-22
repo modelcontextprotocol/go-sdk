@@ -189,7 +189,7 @@ type ResourceContents struct {
 	Meta     Meta   `json:"_meta,omitempty"`
 }
 
-func (r ResourceContents) MarshalJSON() ([]byte, error) {
+func (r *ResourceContents) MarshalJSON() ([]byte, error) {
 	// If we could assume Go 1.24, we could use omitzero for Blob and avoid this method.
 	if r.URI == "" {
 		return nil, errors.New("ResourceContents missing URI")
@@ -197,7 +197,7 @@ func (r ResourceContents) MarshalJSON() ([]byte, error) {
 	if r.Blob == nil {
 		// Text. Marshal normally.
 		type wireResourceContents ResourceContents // (lacks MarshalJSON method)
-		return json.Marshal((wireResourceContents)(r))
+		return json.Marshal((wireResourceContents)(*r))
 	}
 	// Blob.
 	if r.Text != "" {

@@ -668,7 +668,7 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 // NotifyProgress sends a progress notification from the client to the server
 // associated with this session.
 // This can be used if the client is performing a long-running task that was
-// initiated by the server
+// initiated by the server.
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
 	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
 }
@@ -701,7 +701,7 @@ func (cs *ClientSession) Resources(ctx context.Context, params *ListResourcesPar
 
 // ResourceTemplates provides an iterator for all resource templates available on the server,
 // automatically fetching pages and managing cursors.
-// The `params` argument can set the initial cursor.
+// The params argument can set the initial cursor.
 // Iteration stops at the first encountered error, which will be yielded.
 func (cs *ClientSession) ResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) iter.Seq2[*ResourceTemplate, error] {
 	if params == nil {

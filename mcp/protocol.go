@@ -18,7 +18,7 @@ import (
 )
 
 // Optional annotations for the client. The client can use annotations to inform
-// how objects are used or displayed
+// how objects are used or displayed.
 type Annotations struct {
 	// Describes who the intended customer of this object or data is.
 	//

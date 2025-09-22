@@ -453,13 +453,13 @@ func clientRequestFor[P Params](s *ClientSession, p P) *ClientRequest[P] {
 
 // Params is a parameter (input) type for an MCP call or notification.
 type Params interface {
-	// isParams discourages implementation of Params outside of this package.
-	isParams()
-
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
+
+	// isParams discourages implementation of Params outside of this package.
+	isParams()
 }
 
 // RequestParams is a parameter (input) type for an MCP request.

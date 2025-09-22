@@ -27,6 +27,7 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
+// DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
 // A Server is an instance of an MCP server.
