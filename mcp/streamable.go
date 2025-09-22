@@ -1018,7 +1018,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
-	connCtx, cancel := context.WithCancel(context.Background())
+	connCtx, cancel := context.WithCancel(ctx)
 	conn := &streamableClientConn{
 		url:        t.Endpoint,
 		client:     client,
@@ -1394,14 +1394,10 @@ func (c *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 // Close implements the [Connection] interface.
 func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
-		// Cancel any hanging network requests.
-		c.cancel()
-		close(c.done)
-
 		if errors.Is(c.failure(), errSessionMissing) {
 			// If the session is missing, no need to delete it.
 		} else {
-			req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
 			if err != nil {
 				c.closeErr = err
 			} else {
@@ -1411,6 +1407,10 @@ func (c *streamableClientConn) Close() error {
 				}
 			}
 		}
+
+		// Cancel any hanging network requests after cleanup.
+		c.cancel()
+		close(c.done)
 	})
 	return c.closeErr
 }
