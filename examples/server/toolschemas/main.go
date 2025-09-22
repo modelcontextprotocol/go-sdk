@@ -54,34 +54,35 @@ func (t *manualGreeter) greet(_ context.Context, req *mcp.CallToolRequest) (*mcp
 	// Handle the parsing and validation of input and output.
 	//
 	// Note that errors here are treated as tool errors, not protocol errors.
+
+	// First, unmarshal to a map[string]any and validate.
+	if err := unmarshalAndValidate(req.Params.Arguments, t.inputSchema); err != nil {
+		return errf("invalid input: %v", err), nil
+	}
+
+	// Now unmarshal again to input.
 	var input Input
 	if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 		return errf("failed to unmarshal arguments: %v", err), nil
 	}
-	if err := validateStruct(input, t.inputSchema); err != nil {
-		return errf("invalid input: %v", err), nil
-	}
 	output := Output{Greeting: "Hi " + input.Name}
-	if err := validateStruct(output, t.outputSchema); err != nil {
-		return errf("tool produced invalid output: %v", err), nil
-	}
 	outputJSON, err := json.Marshal(output)
 	if err != nil {
 		return errf("output failed to marshal: %v", err), nil
 	}
+	//
+	if err := unmarshalAndValidate(outputJSON, t.outputSchema); err != nil {
+		return errf("invalid output: %v", err), nil
+	}
+
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(outputJSON)}},
 		StructuredContent: output,
 	}, nil
 }
 
-// validateStruct validates x against schema by first changing the struct to
-// a map[string]any, then validating that.
-func validateStruct(x any, res *jsonschema.Resolved) error {
-	data, err := json.Marshal(x)
-	if err != nil {
-		return err
-	}
+// unmarshalAndValidate unmarshals data to a map[string]any, then validates that against res.
+func unmarshalAndValidate(data []byte, res *jsonschema.Resolved) error {
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
