@@ -28,7 +28,7 @@ func ExampleLoggingTransport() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer serverSession.Wait()
+	defer serverSession.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 	var b bytes.Buffer

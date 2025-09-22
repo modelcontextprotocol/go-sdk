@@ -26,7 +26,7 @@ func ExampleStreamableHTTPHandler() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
+	}, &mcp.StreamableHTTPOptions{JSONResponse: true, Stateless: true})
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
@@ -45,7 +45,7 @@ func ExampleStreamableHTTPHandler_middleware() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
 	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// Example debugging; you could also capture the response.
 		body, err := io.ReadAll(req.Body)
