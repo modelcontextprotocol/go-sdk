@@ -1310,8 +1310,9 @@ func textContent(t *testing.T, res *CallToolResult) string {
 }
 
 func TestTokenInfo(t *testing.T) {
-	defer func(b bool) { testAuth = b }(testAuth)
-	testAuth = true
+	oldAuth := testAuth.Load()
+	defer testAuth.Store(oldAuth)
+	testAuth.Store(true)
 	ctx := context.Background()
 
 	// Create a server with a tool that returns TokenInfo.

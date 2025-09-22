@@ -1230,7 +1230,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 // testAuth controls whether a fake Authorization header is added to outgoing requests.
 // TODO: replace with a better mechanism when client-side auth is in place.
-var testAuth = false
+var testAuth atomic.Bool
 
 func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	c.mu.Lock()
@@ -1242,7 +1242,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
-	if testAuth {
+	if testAuth.Load() {
 		req.Header.Set("Authorization", "Bearer foo")
 	}
 }
