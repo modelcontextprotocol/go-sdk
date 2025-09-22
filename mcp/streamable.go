@@ -40,7 +40,6 @@ const (
 type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
-	logger    *slog.Logger
 
 	onTransportDeletion func(sessionID string) // for testing only
 
@@ -92,7 +91,6 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	if h.opts.Logger == nil { // ensure we have a logger
 		h.opts.Logger = ensureLogger(nil)
 	}
-	h.logger = h.opts.Logger
 
 	return h
 }

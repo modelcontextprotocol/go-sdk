@@ -89,7 +89,7 @@ type LoggingHandler struct {
 }
 
 // discardHandler is a slog.Handler that drops all logs.
-// TODO: use slog.NewNopHandler when we require Go 1.24+.
+// TODO: use slog.DiscardHandler when we require Go 1.24+.
 type discardHandler struct{}
 
 func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
