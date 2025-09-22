@@ -1430,3 +1430,106 @@ func TestStreamableGET(t *testing.T) {
 		t.Errorf("GET with session ID: got status %d, want %d", got, want)
 	}
 }
+
+// contextCapturingHandler wraps fakeStreamableServer and captures request contexts
+type contextCapturingHandler struct {
+	capturedGetContext    *context.Context
+	capturedDeleteContext *context.Context
+	mu                    *sync.Mutex
+	server                *fakeStreamableServer
+}
+
+func (h *contextCapturingHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.mu.Lock()
+	switch req.Method {
+	case http.MethodGet:
+		*h.capturedGetContext = req.Context()
+	case http.MethodDelete:
+		*h.capturedDeleteContext = req.Context()
+	}
+	h.mu.Unlock()
+
+	// Delegate to the fake server
+	h.server.ServeHTTP(w, req)
+}
+
+func TestStreamableClientContextPropagation(t *testing.T) {
+	// Test that context values are propagated to background HTTP requests
+	// (SSE GET and cleanup DELETE requests) in StreamableClientTransport.
+
+	type contextKey string
+	const testKey contextKey = "test-key"
+	const testValue = "test-value"
+
+	ctx := context.WithValue(context.Background(), testKey, testValue)
+
+	var capturedGetContext, capturedDeleteContext context.Context
+	var mu sync.Mutex
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "123", ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				optional:            true,
+				wantProtocolVersion: latestProtocolVersion,
+				callback: func() {
+					// This captures the context when GET request is made
+					// Note: We can't directly access req.Context() here, but
+					// the test verifies that the fix enables context propagation
+				},
+			},
+			{"DELETE", "123", ""}: {},
+		},
+	}
+
+	handler := &contextCapturingHandler{
+		capturedGetContext:    &capturedGetContext,
+		capturedDeleteContext: &capturedDeleteContext,
+		mu:                    &mu,
+		server:                fake,
+	}
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	streamTransport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	mcpClient := NewClient(testImpl, nil)
+	session, err := mcpClient.Connect(ctx, streamTransport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Errorf("closing session: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedGetContext == nil {
+		t.Error("GET request context was not captured")
+	} else if got := capturedGetContext.Value(testKey); got != testValue {
+		t.Errorf("GET request context value: got %v, want %v", got, testValue)
+	}
+
+	if capturedDeleteContext == nil {
+		t.Error("DELETE request context was not captured")
+	} else if got := capturedDeleteContext.Value(testKey); got != testValue {
+		t.Errorf("DELETE request context value: got %v, want %v", got, testValue)
+	}
+
+}
