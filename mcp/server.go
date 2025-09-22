@@ -132,6 +132,10 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.GetSessionID = randText
 	}
 
+	if opts.Logger == nil { // ensure we have a logger
+		opts.Logger = ensureLogger(nil)
+	}
+
 	return &Server{
 		impl:                    impl,
 		opts:                    opts,
