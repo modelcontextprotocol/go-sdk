@@ -1,8 +1,8 @@
-These docs are a work-in-progress.
-
 # Features
 
 These docs mirror the [official MCP spec](https://modelcontextprotocol.io/specification/2025-06-18).
+Use the index below to learn how the SDK implements a particular aspect of the
+protocol.
 
 ## Base Protocol
 

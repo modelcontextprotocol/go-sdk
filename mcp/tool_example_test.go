@@ -83,11 +83,6 @@ func ExampleAddTool_customMarshalling() {
 	// }
 }
 
-type WeatherInput struct {
-	Location Location `json:"location" jsonschema:"user location"`
-	Days     int      `json:"days" jsonschema:"number of days to forecast"`
-}
-
 type Location struct {
 	Name      string   `json:"name"`
 	Latitude  *float64 `json:"latitude,omitempty"`
@@ -113,6 +108,13 @@ const (
 )
 
 type Probability float64
+
+// !+weathertool
+
+type WeatherInput struct {
+	Location Location `json:"location" jsonschema:"user location"`
+	Days     int      `json:"days" jsonschema:"number of days to forecast"`
+}
 
 type WeatherOutput struct {
 	Summary       string      `json:"summary" jsonschema:"a summary of the weather forecast"`
@@ -140,10 +142,14 @@ func WeatherTool(ctx context.Context, req *mcp.CallToolRequest, in WeatherInput)
 	return nil, perfectWeather, nil
 }
 
+// !-weathertool
+
 func ExampleAddTool_complexSchema() {
 	// This example demonstrates a tool with a more 'realistic' input and output
 	// schema. We use a combination of techniques to tune our input and output
 	// schemas.
+
+	// !+customschemas
 
 	// Distinguished Go types allow custom schemas to be reused during inference.
 	customSchemas := map[any]*jsonschema.Schema{
@@ -176,6 +182,8 @@ func ExampleAddTool_complexSchema() {
 		InputSchema:  in,
 		OutputSchema: out,
 	}, WeatherTool)
+
+	// !-customschemas
 
 	ctx := context.Background()
 	session, err := connect(ctx, server) // create an in-memory connection
