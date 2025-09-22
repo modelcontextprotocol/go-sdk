@@ -58,11 +58,11 @@ func (t *manualGreeter) greet(_ context.Context, req *mcp.CallToolRequest) (*mcp
 	if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 		return errf("failed to unmarshal arguments: %v", err), nil
 	}
-	if err := t.inputSchema.Validate(input); err != nil {
+	if err := validateStruct(input, t.inputSchema); err != nil {
 		return errf("invalid input: %v", err), nil
 	}
 	output := Output{Greeting: "Hi " + input.Name}
-	if err := t.outputSchema.Validate(output); err != nil {
+	if err := validateStruct(output, t.outputSchema); err != nil {
 		return errf("tool produced invalid output: %v", err), nil
 	}
 	outputJSON, err := json.Marshal(output)
@@ -72,6 +72,50 @@ func (t *manualGreeter) greet(_ context.Context, req *mcp.CallToolRequest) (*mcp
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(outputJSON)}},
 		StructuredContent: output,
+	}, nil
+}
+
+// validateStruct validates x against schema by first changing the struct to
+// a map[string]any, then validating that.
+func validateStruct(x any, res *jsonschema.Resolved) error {
+	data, err := json.Marshal(x)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	return res.Validate(m)
+}
+
+var (
+	inputSchema = &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"name": {Type: "string", MaxLength: jsonschema.Ptr(10)},
+		},
+	}
+	outputSchema = &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"greeting": {Type: "string"},
+		},
+	}
+)
+
+func newManualGreeter() (*manualGreeter, error) {
+	resIn, err := inputSchema.Resolve(nil)
+	if err != nil {
+		return nil, err
+	}
+	resOut, err := outputSchema.Resolve(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &manualGreeter{
+		inputSchema:  resIn,
+		outputSchema: resOut,
 	}, nil
 }
 
@@ -90,30 +134,7 @@ func main() {
 	//
 	// We don't need to do all this work: below, we use jsonschema.For to start
 	// from the default schema.
-	var (
-		manual manualGreeter
-		err    error
-	)
-	inputSchema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"name": {Type: "string", MaxLength: jsonschema.Ptr(10)},
-		},
-	}
-	manual.inputSchema, err = inputSchema.Resolve(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	outputSchema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"greeting": {Type: "string"},
-		},
-	}
-	manual.outputSchema, err = outputSchema.Resolve(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	manual, err := newManualGreeter()
 	server.AddTool(&mcp.Tool{
 		Name:         "manual greeting",
 		InputSchema:  inputSchema,
