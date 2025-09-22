@@ -793,7 +793,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 					c.logger.Info("stream context done", "error", ctx.Err())
 				} else {
 					// Some other error.
-					c.logger.Warn("error receiving message", "error", err)
+					c.logger.Error("error receiving message", "error", err)
 				}
 			}
 			return
