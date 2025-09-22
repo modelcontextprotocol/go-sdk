@@ -790,7 +790,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 			} else {
 				if ctx.Err() != nil {
 					// Client disconnected or cancelled the request.
-					c.logger.Info("stream context done", "error", ctx.Err())
+					c.logger.Error("stream context done", "error", ctx.Err())
 				} else {
 					// Some other error.
 					c.logger.Error("error receiving message", "error", err)
