@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -17,9 +18,9 @@ import (
 func BenchmarkStreamableServing(b *testing.B) {
 	// This benchmark measures how fast we can handle a single tool on a
 	// streamable server, including tool validation and stream management.
-	customSchemas := map[any]*jsonschema.Schema{
-		Probability(0):  {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
-		WeatherType(""): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
+	customSchemas := map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[Probability](): {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
+		reflect.TypeFor[WeatherType](): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
 	}
 	opts := &jsonschema.ForOptions{TypeSchemas: customSchemas}
 	in, err := jsonschema.For[WeatherInput](opts)

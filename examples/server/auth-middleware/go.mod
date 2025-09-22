@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/google/jsonschema-go v0.2.4-0.20250922144851-e08864c65371 // indirect
+	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 )
 

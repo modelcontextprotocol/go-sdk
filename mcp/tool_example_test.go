@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -34,8 +35,8 @@ func ExampleAddTool_customMarshalling() {
 	// In this case, you can use jsonschema.For along with jsonschema.ForOptions
 	// to customize the schema inference for your custom type.
 	inputSchema, err := jsonschema.For[Input](&jsonschema.ForOptions{
-		TypeSchemas: map[any]*jsonschema.Schema{
-			MyDate{}: {Type: "string"},
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[MyDate](): {Type: "string"},
 		},
 	})
 	if err != nil {
@@ -152,9 +153,9 @@ func ExampleAddTool_complexSchema() {
 	// !+customschemas
 
 	// Distinguished Go types allow custom schemas to be reused during inference.
-	customSchemas := map[any]*jsonschema.Schema{
-		Probability(0):  {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
-		WeatherType(""): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
+	customSchemas := map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[Probability](): {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
+		reflect.TypeFor[WeatherType](): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
 	}
 	opts := &jsonschema.ForOptions{TypeSchemas: customSchemas}
 	in, err := jsonschema.For[WeatherInput](opts)

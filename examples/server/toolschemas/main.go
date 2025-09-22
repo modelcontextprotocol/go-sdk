@@ -136,6 +136,9 @@ func main() {
 	// We don't need to do all this work: below, we use jsonschema.For to start
 	// from the default schema.
 	manual, err := newManualGreeter()
+	if err != nil {
+		log.Fatal(err)
+	}
 	server.AddTool(&mcp.Tool{
 		Name:         "manual greeting",
 		InputSchema:  inputSchema,
