@@ -1433,74 +1433,55 @@ func TestStreamableGET(t *testing.T) {
 }
 
 func TestStreamableClientContextPropagation(t *testing.T) {
+	type contextKey string
+	const testKey = contextKey("test-key")
+	const testValue = "test-value"
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ctx2 := context.WithValue(ctx, testKey, testValue)
 
-	var getCtx, deleteCtx context.Context
-	var mu sync.Mutex
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		mu.Lock()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.Method {
-		case http.MethodGet:
-			if getCtx == nil {
-				getCtx = req.Context()
-			}
-		case http.MethodDelete:
-			if deleteCtx == nil {
-				deleteCtx = req.Context()
-			}
+		case "POST":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Mcp-Session-Id", "test-session")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}`))
+		case "GET":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "DELETE":
+			w.WriteHeader(http.StatusNoContent)
 		}
-		mu.Unlock()
+	}))
+	defer server.Close()
 
-		fake := &fakeStreamableServer{
-			t: t,
-			responses: fakeResponses{
-				{"POST", "", methodInitialize}: {
-					header: header{
-						"Content-Type":  "application/json",
-						sessionIDHeader: "123",
-					},
-					body: jsonBody(t, initResp),
-				},
-				{"POST", "123", notificationInitialized}: {
-					status:              http.StatusAccepted,
-					wantProtocolVersion: latestProtocolVersion,
-				},
-				{"GET", "123", ""}: {
-					header: header{
-						"Content-Type": "text/event-stream",
-					},
-					optional:            true,
-					wantProtocolVersion: latestProtocolVersion,
-				},
-				{"DELETE", "123", ""}: {},
-			},
-		}
-		fake.ServeHTTP(w, req)
-	})
-
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	transport := &StreamableClientTransport{Endpoint: server.URL}
+	conn, err := transport.Connect(ctx2)
 	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer conn.Close()
+
+	streamableConn, ok := conn.(*streamableClientConn)
+	if !ok {
+		t.Fatalf("Expected *streamableClientConn, got %T", conn)
 	}
 
-	if err := session.Close(); err != nil {
-		t.Errorf("session.Close() failed: %v", err)
+	if got := streamableConn.ctx.Value(testKey); got != testValue {
+		t.Errorf("Context value not propagated: got %v, want %v", got, testValue)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	if streamableConn.ctx.Done() == nil {
+		t.Error("Connection context is not cancellable")
+	}
 
-	if getCtx != nil && getCtx.Done() == nil {
-		t.Error("GET request context is not cancellable")
+	cancel()
+	select {
+	case <-streamableConn.ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Connection context was not cancelled when parent was cancelled")
 	}
-	if deleteCtx != nil && deleteCtx.Done() == nil {
-		t.Error("DELETE request context is not cancellable")
-	}
+
 }
