@@ -164,9 +164,9 @@ func (s *Server) RemovePrompts(names ...string) {
 //
 // The tool's input schema must be non-nil and have the type "object". For a tool
 // that takes no input, or one where any input is valid, set [Tool.InputSchema] to
-// &jsonschema.Schema{Type: "object"}.
+// `{"type": "object"}`, using your preferred library or `json.RawMessage`.
 //
-// If present, the output schema must also have type "object".
+// If present, [Tool.OutputSchema] must also have type "object".
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage.
@@ -189,11 +189,29 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		// discovered until runtime, when the LLM sent bad data.
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
-	if t.InputSchema.Type != "object" {
+	if s, ok := t.InputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
 		panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+	} else {
+		var m map[string]any
+		if err := remarshal(t.InputSchema, &m); err != nil {
+			panic(fmt.Errorf("AddTool %q: can't marshal input schema to a JSON object: %v", t.Name, err))
+		}
+		if typ := m["type"]; typ != "object" {
+			panic(fmt.Errorf(`AddTool %q: input schema must have type "object" (got %v)`, t.Name, typ))
+		}
 	}
-	if t.OutputSchema != nil && t.OutputSchema.Type != "object" {
-		panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+	if t.OutputSchema != nil {
+		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
+			panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+		} else {
+			var m map[string]any
+			if err := remarshal(t.OutputSchema, &m); err != nil {
+				panic(fmt.Errorf("AddTool %q: can't marshal output schema to a JSON object: %v", t.Name, err))
+			}
+			if typ := m["type"]; typ != "object" {
+				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
+			}
+		}
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -331,7 +349,8 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 //
 // TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
 // should have a jsonschema.Zero(schema) helper?
-func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) (zero any, err error) {
+func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err error) {
+	var internalSchema *jsonschema.Schema
 	if *sfield == nil {
 		rt := reflect.TypeFor[T]()
 		if rt.Kind() == reflect.Pointer {
@@ -339,28 +358,41 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 			zero = reflect.Zero(rt).Interface()
 		}
 		// TODO: we should be able to pass nil opts here.
-		*sfield, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+		internalSchema, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+		if err == nil {
+			*sfield = internalSchema
+		}
+	} else {
+		if err := remarshal(*sfield, &internalSchema); err != nil {
+			return zero, err
+		}
 	}
 	if err != nil {
 		return zero, err
 	}
-	*rfield, err = (*sfield).Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	*rfield, err = internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
 	return zero, err
 }
 
 // AddTool adds a tool and typed tool handler to the server.
 //
 // If the tool's input schema is nil, it is set to the schema inferred from the
-// In type parameter, using [jsonschema.For]. The In type argument must be a
-// map or a struct, so that its inferred JSON Schema has type "object".
+// In type parameter. Types are inferred from Go types, and property
+// descriptions are read from the 'jsonschema' struct tag. Internally, the SDK
+// uses the github.com/google/jsonschema-go package for ineference and
+// validation. The In type argument must be a map or a struct, so that its
+// inferred JSON Schema has type "object", as required by the spec. As a
+// special case, if the In type is 'any', the tool's input schema is set to an
+// empty object schema value.
 //
 // If the tool's output schema is nil, and the Out type is not 'any', the
 // output schema is set to the schema inferred from the Out type argument,
-// which also must be a map or struct.
+// which must also be a map or struct. If the Out type is 'any', the output
+// schema is omitted.
 //
-// Unlike [Server.AddTool], AddTool does a lot automatically, and forces tools
-// to conform to the MCP spec. See [ToolHandlerFor] for a detailed description
-// of this automatic behavior.
+// Unlike [Server.AddTool], AddTool does a lot automatically, and forces
+// tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
+// description of this automatic behavior.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	tt, hh, err := toolForErr(t, h)
 	if err != nil {

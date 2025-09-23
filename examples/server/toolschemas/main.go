@@ -126,15 +126,13 @@ func main() {
 	// Add the 'greeting' tool in a few different ways.
 
 	// First, we can just use [mcp.AddTool], and get the out-of-the-box handling
-	// it provides:
+	// it provides for schema inference, validation, parsing, and packing the
+	// result.
 	mcp.AddTool(server, &mcp.Tool{Name: "simple greeting"}, simpleGreeting)
 
-	// Next, we can create our schemas entirely manually, and add them using
-	// [mcp.Server.AddTool]. Since we're working manually, we can add some
-	// constraints on the length of the name.
-	//
-	// We don't need to do all this work: below, we use jsonschema.For to start
-	// from the default schema.
+	// Alternatively, we can create our schemas entirely manually, and add them
+	// using [mcp.Server.AddTool]. Since we're using the 'raw' API, we have to do
+	// the parsing and validation ourselves
 	manual, err := newManualGreeter()
 	if err != nil {
 		log.Fatal(err)
@@ -144,6 +142,22 @@ func main() {
 		InputSchema:  inputSchema,
 		OutputSchema: outputSchema,
 	}, manual.greet)
+
+	// We can even use raw schema values. In this case, note that we're not
+	// validating the input at all.
+	server.AddTool(&mcp.Tool{
+		Name:        "unvalidated greeting",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"user":{"type":"string"}}}`),
+	}, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Note: no validation!
+		var args struct{ User string }
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + args.User}},
+		}, nil
+	})
 
 	// Finally, note that we can also use custom schemas with a ToolHandlerFor.
 	// We can do this in two ways: by using one of the schema values constructed
