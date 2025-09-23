@@ -16,13 +16,13 @@ import (
 	"testing"
 )
 
-func TestAuthServerMetadataParse(t *testing.T) {
+func TestAuthServerMetaParse(t *testing.T) {
 	// Verify that we parse Google's auth server metadata.
 	data, err := os.ReadFile(filepath.FromSlash("testdata/google-auth-meta.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var a AuthServerMetadata
+	var a AuthServerMeta
 	if err := json.Unmarshal(data, &a); err != nil {
 		t.Fatal(err)
 	}
@@ -32,13 +32,13 @@ func TestAuthServerMetadataParse(t *testing.T) {
 	}
 }
 
-func TestAuthClientMetadataParse(t *testing.T) {
+func TestAuthClientMetaParse(t *testing.T) {
 	// Verify that we can parse a typical client metadata JSON.
 	data, err := os.ReadFile(filepath.FromSlash("testdata/client-auth-meta.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var a AuthClientMetadata
+	var a AuthClientMeta
 	if err := json.Unmarshal(data, &a); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRegisterClient(t *testing.T) {
 	testCases := []struct {
 		name         string
 		handler      http.HandlerFunc
-		clientMeta   *AuthClientMetadata
+		clientMeta   *AuthClientMeta
 		wantClientID string
 		wantErr      string
 	}{
@@ -69,7 +69,7 @@ func TestRegisterClient(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var receivedMeta AuthClientMetadata
+				var receivedMeta AuthClientMeta
 				if err := json.Unmarshal(body, &receivedMeta); err != nil {
 					t.Fatalf("Failed to unmarshal request body: %v", err)
 				}
@@ -80,7 +80,7 @@ func TestRegisterClient(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 				w.Write([]byte(`{"client_id":"test-client-id","client_secret":"test-client-secret","client_name":"Test App"}`))
 			},
-			clientMeta:   &AuthClientMetadata{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta:   &AuthClientMeta{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},
 			wantClientID: "test-client-id",
 		},
 		{
@@ -90,7 +90,7 @@ func TestRegisterClient(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 				w.Write([]byte(`{"client_secret":"test-client-secret"}`)) // No client_id
 			},
-			clientMeta: &AuthClientMetadata{RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://localhost/cb"}},
 			wantErr:    "registration response is missing required 'client_id' field",
 		},
 		{
@@ -100,7 +100,7 @@ func TestRegisterClient(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"Redirect URI is not valid."}`))
 			},
-			clientMeta: &AuthClientMetadata{RedirectURIs: []string{"http://invalid/cb"}},
+			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://invalid/cb"}},
 			wantErr:    "registration failed: invalid_redirect_uri (Redirect URI is not valid.)",
 		},
 		{
@@ -109,7 +109,7 @@ func TestRegisterClient(t *testing.T) {
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte("Internal Server Error"))
 			},
-			clientMeta: &AuthClientMetadata{RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://localhost/cb"}},
 			wantErr:    "registration failed with status 500 Internal Server Error",
 		},
 	}
@@ -119,7 +119,7 @@ func TestRegisterClient(t *testing.T) {
 			server := httptest.NewServer(tc.handler)
 			defer server.Close()
 
-			serverMeta := &AuthServerMetadata{RegistrationEndpoint: server.URL}
+			serverMeta := &AuthServerMeta{RegistrationEndpoint: server.URL}
 			info, err := RegisterClient(context.Background(), serverMeta, tc.clientMeta, server.Client())
 
 			if tc.wantErr != "" {
@@ -142,8 +142,8 @@ func TestRegisterClient(t *testing.T) {
 	}
 
 	t.Run("Error - No Endpoint in Metadata", func(t *testing.T) {
-		serverMeta := &AuthServerMetadata{Issuer: "http://localhost"} // No RegistrationEndpoint
-		_, err := RegisterClient(context.Background(), serverMeta, &AuthClientMetadata{}, nil)
+		serverMeta := &AuthServerMeta{Issuer: "http://localhost"} // No RegistrationEndpoint
+		_, err := RegisterClient(context.Background(), serverMeta, &AuthClientMeta{}, nil)
 		if err == nil {
 			t.Fatal("Expected an error for missing registration endpoint, got nil")
 		}
