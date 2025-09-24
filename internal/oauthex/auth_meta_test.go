@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-func TestAuthServerMetaParse(t *testing.T) {
+func TestAuthMetaParse(t *testing.T) {
 	// Verify that we parse Google's auth server metadata.
 	data, err := os.ReadFile(filepath.FromSlash("testdata/google-auth-meta.json"))
 	if err != nil {
@@ -32,13 +32,13 @@ func TestAuthServerMetaParse(t *testing.T) {
 	}
 }
 
-func TestAuthClientMetaParse(t *testing.T) {
+func TestClientRegistrationMetadataParse(t *testing.T) {
 	// Verify that we can parse a typical client metadata JSON.
 	data, err := os.ReadFile(filepath.FromSlash("testdata/client-auth-meta.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var a AuthClientMeta
+	var a ClientRegistrationMetadata
 	if err := json.Unmarshal(data, &a); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRegisterClient(t *testing.T) {
 	testCases := []struct {
 		name         string
 		handler      http.HandlerFunc
-		clientMeta   *AuthClientMeta
+		clientMeta   *ClientRegistrationMetadata
 		wantClientID string
 		wantErr      string
 	}{
@@ -69,7 +69,7 @@ func TestRegisterClient(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var receivedMeta AuthClientMeta
+				var receivedMeta ClientRegistrationMetadata
 				if err := json.Unmarshal(body, &receivedMeta); err != nil {
 					t.Fatalf("Failed to unmarshal request body: %v", err)
 				}
@@ -80,36 +80,36 @@ func TestRegisterClient(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 				w.Write([]byte(`{"client_id":"test-client-id","client_secret":"test-client-secret","client_name":"Test App"}`))
 			},
-			clientMeta:   &AuthClientMeta{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta:   &ClientRegistrationMetadata{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},
 			wantClientID: "test-client-id",
 		},
 		{
-			name: "Error - Missing ClientID in Response",
+			name: "Missing ClientID in Response",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusCreated)
 				w.Write([]byte(`{"client_secret":"test-client-secret"}`)) // No client_id
 			},
-			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta: &ClientRegistrationMetadata{RedirectURIs: []string{"http://localhost/cb"}},
 			wantErr:    "registration response is missing required 'client_id' field",
 		},
 		{
-			name: "Error - Standard OAuth Error",
+			name: "Standard OAuth Error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
 				w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"Redirect URI is not valid."}`))
 			},
-			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://invalid/cb"}},
+			clientMeta: &ClientRegistrationMetadata{RedirectURIs: []string{"http://invalid/cb"}},
 			wantErr:    "registration failed: invalid_redirect_uri (Redirect URI is not valid.)",
 		},
 		{
-			name: "Error - Non-JSON Server Error",
+			name: "Non-JSON Server Error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte("Internal Server Error"))
 			},
-			clientMeta: &AuthClientMeta{RedirectURIs: []string{"http://localhost/cb"}},
+			clientMeta: &ClientRegistrationMetadata{RedirectURIs: []string{"http://localhost/cb"}},
 			wantErr:    "registration failed with status 500 Internal Server Error",
 		},
 	}
@@ -119,8 +119,7 @@ func TestRegisterClient(t *testing.T) {
 			server := httptest.NewServer(tc.handler)
 			defer server.Close()
 
-			serverMeta := &AuthServerMeta{RegistrationEndpoint: server.URL}
-			info, err := RegisterClient(context.Background(), serverMeta, tc.clientMeta, server.Client())
+			info, err := RegisterClient(context.Background(), server.URL, tc.clientMeta, server.Client())
 
 			if tc.wantErr != "" {
 				if err == nil {
@@ -141,13 +140,12 @@ func TestRegisterClient(t *testing.T) {
 		})
 	}
 
-	t.Run("Error - No Endpoint in Metadata", func(t *testing.T) {
-		serverMeta := &AuthServerMeta{Issuer: "http://localhost"} // No RegistrationEndpoint
-		_, err := RegisterClient(context.Background(), serverMeta, &AuthClientMeta{}, nil)
+	t.Run("No Endpoint", func(t *testing.T) {
+		_, err := RegisterClient(context.Background(), "", &ClientRegistrationMetadata{}, nil)
 		if err == nil {
 			t.Fatal("Expected an error for missing registration endpoint, got nil")
 		}
-		expectedErr := "server metadata does not contain a registration_endpoint"
+		expectedErr := "registration_endpoint is required"
 		if err.Error() != expectedErr {
 			t.Errorf("Expected error '%s', got '%v'", expectedErr, err)
 		}

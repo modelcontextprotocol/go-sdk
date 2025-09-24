@@ -112,8 +112,8 @@ type AuthServerMeta struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
-// AuthClientMeta represents the client metadata fields for the DCR POST request (RFC 7591).
-type AuthClientMeta struct {
+// ClientRegistrationMetadata represents the client metadata fields for the DCR POST request (RFC 7591).
+type ClientRegistrationMetadata struct {
 	// RedirectURIs is a REQUIRED JSON array of redirection URI strings for use in
 	// redirect-based flows (such as the authorization code grant).
 	RedirectURIs []string `json:"redirect_uris"`
@@ -180,12 +180,12 @@ type AuthClientMeta struct {
 	SoftwareStatement string `json:"software_statement,omitempty"`
 }
 
-// AuthClientInformation represents the fields returned by the Authorization Server
+// ClientRegistrationResponse represents the fields returned by the Authorization Server
 // (RFC 7591, Section 3.2.1 and 3.2.2).
-type AuthClientInformation struct {
-	// AuthClientMeta contains all registered client metadata, returned by the
+type ClientRegistrationResponse struct {
+	// ClientRegistrationMetadata contains all registered client metadata, returned by the
 	// server on success, potentially with modified or defaulted values.
-	AuthClientMeta
+	ClientRegistrationMetadata
 
 	// ClientID is the REQUIRED newly issued OAuth 2.0 client identifier.
 	ClientID string `json:"client_id"`
@@ -202,14 +202,18 @@ type AuthClientInformation struct {
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
 }
 
-// AuthClientRegistrationError is the error response from the Authorization Server
+// ClientRegistrationError is the error response from the Authorization Server
 // for a failed registration attempt (RFC 7591, Section 3.2.2).
-type AuthClientRegistrationError struct {
-	// Error is the REQUIRED error code if registration failed (RFC 7591, 3.2.2).
-	Error string `json:"error"`
+type ClientRegistrationError struct {
+	// ErrorCode is the REQUIRED error code if registration failed (RFC 7591, 3.2.2).
+	ErrorCode string `json:"error"`
 
 	// ErrorDescription is an OPTIONAL human-readable error message.
 	ErrorDescription string `json:"error_description,omitempty"`
+}
+
+func (e *ClientRegistrationError) Error() string {
+	return fmt.Sprintf("registration failed: %s (%s)", e.ErrorCode, e.ErrorDescription)
 }
 
 var wellKnownPaths = []string{
@@ -248,9 +252,9 @@ func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*
 }
 
 // RegisterClient performs Dynamic Client Registration according to RFC 7591.
-func RegisterClient(ctx context.Context, serverMeta *AuthServerMeta, clientMeta *AuthClientMeta, c *http.Client) (*AuthClientInformation, error) {
-	if serverMeta == nil || serverMeta.RegistrationEndpoint == "" {
-		return nil, fmt.Errorf("server metadata does not contain a registration_endpoint")
+func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta *ClientRegistrationMetadata, c *http.Client) (*ClientRegistrationResponse, error) {
+	if registrationEndpoint == "" {
+		return nil, fmt.Errorf("registration_endpoint is required")
 	}
 
 	if c == nil {
@@ -262,7 +266,7 @@ func RegisterClient(ctx context.Context, serverMeta *AuthServerMeta, clientMeta 
 		return nil, fmt.Errorf("failed to marshal client metadata: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", serverMeta.RegistrationEndpoint, bytes.NewBuffer(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", registrationEndpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registration request: %w", err)
 	}
@@ -282,22 +286,22 @@ func RegisterClient(ctx context.Context, serverMeta *AuthServerMeta, clientMeta 
 	}
 
 	if resp.StatusCode == http.StatusCreated {
-		var authClientInfo AuthClientInformation
-		if err := json.Unmarshal(body, &authClientInfo); err != nil {
+		var regResponse ClientRegistrationResponse
+		if err := json.Unmarshal(body, &regResponse); err != nil {
 			return nil, fmt.Errorf("failed to decode successful registration response: %w (%s)", err, string(body))
 		}
-		if authClientInfo.ClientID == "" {
+		if regResponse.ClientID == "" {
 			return nil, fmt.Errorf("registration response is missing required 'client_id' field")
 		}
-		return &authClientInfo, nil
+		return &regResponse, nil
 	}
 
 	if resp.StatusCode == http.StatusBadRequest {
-		var regError AuthClientRegistrationError
+		var regError ClientRegistrationError
 		if err := json.Unmarshal(body, &regError); err != nil {
 			return nil, fmt.Errorf("failed to decode registration error response: %w (%s)", err, string(body))
 		}
-		return nil, fmt.Errorf("registration failed: %s (%s)", regError.Error, regError.ErrorDescription)
+		return nil, &regError
 	}
 
 	return nil, fmt.Errorf("registration failed with status %s: %s", resp.Status, string(body))
