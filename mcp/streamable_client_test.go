@@ -256,7 +256,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 				responses: fakeResponses{
 					{"POST", "", methodInitialize}: {
 						header: header{
-							"Content-Type":  "application/json",
+							"Content-Type":  "application/json; charset=utf-8", // should ignore the charset
 							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
@@ -293,8 +293,8 @@ func TestStreamableClientGETHandling(t *testing.T) {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
 
-			// wait for all required requests to be handled, with exponential
-			// backoff.
+			// Since we need the client to observe the result of the hanging GET,
+			// wait for all requests to be handled.
 			start := time.Now()
 			delay := 1 * time.Millisecond
 			for range 10 {
@@ -317,6 +317,94 @@ func TestStreamableClientGETHandling(t *testing.T) {
 				}
 			}
 
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamableClientStrictness(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		label             string
+		strict            bool
+		initializedStatus int
+		getStatus         int
+		wantConnectError  bool
+		wantListError     bool
+	}{
+		{"conformant server", true, http.StatusAccepted, http.StatusMethodNotAllowed, false, false},
+		{"strict initialized", true, http.StatusOK, http.StatusMethodNotAllowed, true, false},
+		{"unstrict initialized", false, http.StatusOK, http.StatusMethodNotAllowed, false, false},
+		{"strict GET", true, http.StatusAccepted, http.StatusNotFound, false, true},
+		{"unstrict GET", false, http.StatusOK, http.StatusNotFound, false, false},
+	}
+	for _, test := range tests {
+		t.Run(test.label, func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized}: {
+						status:              test.initializedStatus,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"GET", "123", ""}: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						status:              test.getStatus,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"POST", "123", methodListTools}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body:     jsonBody(t, resp(2, &ListToolsResult{Tools: []*Tool{}}, nil)),
+						optional: true,
+					},
+					{"DELETE", "123", ""}: {optional: true},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL, strict: test.strict}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if (err != nil) != test.wantConnectError {
+				t.Errorf("client.Connect() returned error %v; want error: %t", err, test.wantConnectError)
+			}
+			if err != nil {
+				return
+			}
+			// Since we need the client to observe the result of the hanging GET,
+			// wait for all requests to be handled.
+			start := time.Now()
+			delay := 1 * time.Millisecond
+			for range 10 {
+				if len(fake.missingRequests()) == 0 {
+					break
+				}
+				time.Sleep(delay)
+				delay *= 2
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests after %s: %v", time.Since(start), missing)
+			}
+			_, err = session.ListTools(ctx, nil)
+			if (err != nil) != test.wantListError {
+				t.Errorf("ListTools returned error %v; want error: %t", err, test.wantListError)
+			}
 			if err := session.Close(); err != nil {
 				t.Errorf("closing session: %v", err)
 			}

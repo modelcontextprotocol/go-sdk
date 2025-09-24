@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -981,6 +982,14 @@ type StreamableClientTransport struct {
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
 	MaxRetries int
+
+	// TODO(rfindley): propose exporting these.
+	// If strict is set, the transport is in 'strict mode', where any violation
+	// of the MCP spec causes a failure.
+	strict bool
+	// If logger is set, it is used to log aspects of the transport, such as spec
+	// violations that were ignored.
+	logger *slog.Logger
 }
 
 // These settings are not (yet) exposed to the user in
@@ -1025,6 +1034,8 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		incoming:   make(chan jsonrpc.Message, 10),
 		done:       make(chan struct{}),
 		maxRetries: maxRetries,
+		strict:     t.strict,
+		logger:     t.logger,
 		ctx:        connCtx,
 		cancel:     cancel,
 		failed:     make(chan struct{}),
@@ -1039,6 +1050,8 @@ type streamableClientConn struct {
 	cancel     context.CancelFunc
 	incoming   chan jsonrpc.Message
 	maxRetries int
+	strict     bool         // from [StreamableClientTransport.strict]
+	logger     *slog.Logger // from [StreamableClientTransport.logger]
 
 	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
@@ -1152,9 +1165,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	var requestSummary string
+	var isCall bool
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
 		requestSummary = fmt.Sprintf("sending %q", msg.Method)
+		isCall = msg.IsCall()
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
 	default:
@@ -1209,11 +1224,24 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	}
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
+		// [§2.1.4]: "If the input is a JSON-RPC response or notification:
+		// If the server accepts the input, the server MUST return HTTP status code 202 Accepted with no body."
+		//
+		// [§2.1.4]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
+		resp.Body.Close()
+		return nil
+	} else if !isCall && !c.strict {
+		// Some servers return 200, even with an empty json body.
+		// Ignore this response in non-strict mode.
+		if c.logger != nil {
+			c.logger.Warn(fmt.Sprintf("unexpected status code %d from non-call", resp.StatusCode))
+		}
 		resp.Body.Close()
 		return nil
 	}
 
-	switch ct := resp.Header.Get("Content-Type"); ct {
+	contentType := strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+	switch contentType {
 	case "application/json":
 		go c.handleJSON(requestSummary, resp)
 
@@ -1223,7 +1251,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	default:
 		resp.Body.Close()
-		return fmt.Errorf("%s: unsupported content type %q", requestSummary, ct)
+		return fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
 	}
 	return nil
 }
@@ -1294,18 +1322,36 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 		newResp, err := c.reconnect(lastEventID)
 		if err != nil {
 			// All reconnection attempts failed: fail the connection.
-			c.fail(fmt.Errorf("%s: failed to reconnect: %v", requestSummary, err))
+			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
 			return
 		}
 		resp = newResp
 		if resp.StatusCode == http.StatusMethodNotAllowed && persistent {
+			// [§2.2.3]: "The server MUST either return Content-Type:
+			// text/event-stream in response to this HTTP GET, or else return HTTP
+			// 405 Method Not Allowed, indicating that the server does not offer an
+			// SSE stream at this endpoint."
+			//
+			// [§2.2.3]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
+
 			// The server doesn't support the hanging GET.
+			resp.Body.Close()
+			return
+		}
+		if resp.StatusCode == http.StatusNotFound && persistent && !c.strict {
+			// modelcontextprotocol/gosdk#393: some servers return NotFound instead
+			// of MethodNotAllowed for the persistent GET.
+			//
+			// Treat this like MethodNotAllowed in non-strict mode.
+			if c.logger != nil {
+				c.logger.Warn("got 404 instead of 405 for hanging GET")
+			}
 			resp.Body.Close()
 			return
 		}
 		// (see equivalent handling in [streamableClientConn.Write]).
 		if resp.StatusCode == http.StatusNotFound {
-			c.fail(fmt.Errorf("%s: failed to reconnect: %w", requestSummary, errSessionMissing))
+			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing))
 			return
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -27,30 +27,51 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+var (
+	endpoint = flag.String("http", "", "if set, connect to this streamable endpoint rather than running a stdio server")
+)
+
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	if len(args) == 0 {
+	if len(args) == 0 && *endpoint == "" {
 		fmt.Fprintln(os.Stderr, "Usage: listfeatures <command> [<args>]")
+		fmt.Fprintln(os.Stderr, "Usage: listfeatures --http=\"https://example.com/server/mcp\"")
 		fmt.Fprintln(os.Stderr, "List all features for a stdio MCP server")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Example:\n\tlistfeatures npx @modelcontextprotocol/server-everything")
 		os.Exit(2)
 	}
 
-	ctx := context.Background()
-	cmd := exec.Command(args[0], args[1:]...)
+	var (
+		ctx       = context.Background()
+		transport mcp.Transport
+	)
+	if *endpoint != "" {
+		transport = &mcp.StreamableClientTransport{
+			Endpoint: *endpoint,
+		}
+	} else {
+		cmd := exec.Command(args[0], args[1:]...)
+		transport = &mcp.CommandTransport{Command: cmd}
+	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
-	cs, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	cs, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cs.Close()
 
-	printSection("tools", cs.Tools(ctx, nil), func(t *mcp.Tool) string { return t.Name })
-	printSection("resources", cs.Resources(ctx, nil), func(r *mcp.Resource) string { return r.Name })
-	printSection("resource templates", cs.ResourceTemplates(ctx, nil), func(r *mcp.ResourceTemplate) string { return r.Name })
-	printSection("prompts", cs.Prompts(ctx, nil), func(p *mcp.Prompt) string { return p.Name })
+	if cs.InitializeResult().Capabilities.Tools != nil {
+		printSection("tools", cs.Tools(ctx, nil), func(t *mcp.Tool) string { return t.Name })
+	}
+	if cs.InitializeResult().Capabilities.Resources != nil {
+		printSection("resources", cs.Resources(ctx, nil), func(r *mcp.Resource) string { return r.Name })
+		printSection("resource templates", cs.ResourceTemplates(ctx, nil), func(r *mcp.ResourceTemplate) string { return r.Name })
+	}
+	if cs.InitializeResult().Capabilities.Prompts != nil {
+		printSection("prompts", cs.Prompts(ctx, nil), func(p *mcp.Prompt) string { return p.Name })
+	}
 }
 
 func printSection[T any](name string, features iter.Seq2[T, error], featName func(T) string) {
