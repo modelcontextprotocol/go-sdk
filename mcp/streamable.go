@@ -976,8 +976,10 @@ func (c *streamableServerConn) Close() error {
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
 type StreamableClientTransport struct {
-	Endpoint   string
-	HTTPClient *http.Client
+	Endpoint string
+	// HTTPClient performs HTTP requests. If nil, http.DefaultClient is used.
+	// Any type implementing a Do(*http.Request) (*http.Response, error) method is supported.
+	HTTPClient HTTPClient
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
 	MaxRetries int
@@ -1034,7 +1036,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 
 type streamableClientConn struct {
 	url        string
-	client     *http.Client
+	client     HTTPClient
 	ctx        context.Context
 	cancel     context.CancelFunc
 	incoming   chan jsonrpc.Message
