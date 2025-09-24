@@ -541,3 +541,11 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 		}
 	}()
 }
+
+// HTTPClient is the minimal interface required by client transports for issuing HTTP requests.
+//
+// It matches the method set of (*http.Client).Do, allowing callers to provide custom HTTP clients
+// that incorporate middleware (auth, tracing, retries), or test doubles.
+type HTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
