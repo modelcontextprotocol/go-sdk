@@ -364,9 +364,9 @@ the `Tool.InputSchema` explicitly:
 
 ```go
 // Distinguished Go types allow custom schemas to be reused during inference.
-customSchemas := map[any]*jsonschema.Schema{
-	Probability(0):  {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
-	WeatherType(""): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
+customSchemas := map[reflect.Type]*jsonschema.Schema{
+	reflect.TypeFor[Probability](): {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
+	reflect.TypeFor[WeatherType](): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
 }
 opts := &jsonschema.ForOptions{TypeSchemas: customSchemas}
 in, err := jsonschema.For[WeatherInput](opts)

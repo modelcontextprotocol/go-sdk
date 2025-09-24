@@ -54,24 +54,69 @@ func (t *manualGreeter) greet(_ context.Context, req *mcp.CallToolRequest) (*mcp
 	// Handle the parsing and validation of input and output.
 	//
 	// Note that errors here are treated as tool errors, not protocol errors.
+
+	// First, unmarshal to a map[string]any and validate.
+	if err := unmarshalAndValidate(req.Params.Arguments, t.inputSchema); err != nil {
+		return errf("invalid input: %v", err), nil
+	}
+
+	// Now unmarshal again to input.
 	var input Input
 	if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 		return errf("failed to unmarshal arguments: %v", err), nil
 	}
-	if err := t.inputSchema.Validate(input); err != nil {
-		return errf("invalid input: %v", err), nil
-	}
 	output := Output{Greeting: "Hi " + input.Name}
-	if err := t.outputSchema.Validate(output); err != nil {
-		return errf("tool produced invalid output: %v", err), nil
-	}
 	outputJSON, err := json.Marshal(output)
 	if err != nil {
 		return errf("output failed to marshal: %v", err), nil
 	}
+	//
+	if err := unmarshalAndValidate(outputJSON, t.outputSchema); err != nil {
+		return errf("invalid output: %v", err), nil
+	}
+
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(outputJSON)}},
 		StructuredContent: output,
+	}, nil
+}
+
+// unmarshalAndValidate unmarshals data to a map[string]any, then validates that against res.
+func unmarshalAndValidate(data []byte, res *jsonschema.Resolved) error {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	return res.Validate(m)
+}
+
+var (
+	inputSchema = &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"name": {Type: "string", MaxLength: jsonschema.Ptr(10)},
+		},
+	}
+	outputSchema = &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"greeting": {Type: "string"},
+		},
+	}
+)
+
+func newManualGreeter() (*manualGreeter, error) {
+	resIn, err := inputSchema.Resolve(nil)
+	if err != nil {
+		return nil, err
+	}
+	resOut, err := outputSchema.Resolve(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &manualGreeter{
+		inputSchema:  resIn,
+		outputSchema: resOut,
 	}, nil
 }
 
@@ -90,27 +135,7 @@ func main() {
 	//
 	// We don't need to do all this work: below, we use jsonschema.For to start
 	// from the default schema.
-	var (
-		manual manualGreeter
-		err    error
-	)
-	inputSchema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"name": {Type: "string", MaxLength: jsonschema.Ptr(10)},
-		},
-	}
-	manual.inputSchema, err = inputSchema.Resolve(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	outputSchema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"greeting": {Type: "string"},
-		},
-	}
-	manual.outputSchema, err = outputSchema.Resolve(nil)
+	manual, err := newManualGreeter()
 	if err != nil {
 		log.Fatal(err)
 	}
