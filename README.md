@@ -33,7 +33,7 @@ The SDK consists of several importable packages:
   their own transports.
 - The
   [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
-  package provides some primitives for supporting oauth.
+  package provides some primitives for supporting OAuth.
 - The
   [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
   package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
@@ -78,7 +78,7 @@ func main() {
 	// Create a server with a single tool.
 	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v1.0.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
-	// Run the server over stdin/stdout, until the client disconnects
+	// Run the server over stdin/stdout, until the client disconnects.
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func main() {
 	// Create a new client, with no features.
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 
-	// Connect to a server over stdin/stdout
+	// Connect to a server over stdin/stdout.
 	transport := &mcp.CommandTransport{Command: exec.Command("myserver")}
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
