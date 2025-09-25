@@ -14,6 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestAuthMetaParse(t *testing.T) {
@@ -150,4 +153,79 @@ func TestRegisterClient(t *testing.T) {
 			t.Errorf("Expected error '%s', got '%v'", expectedErr, err)
 		}
 	})
+}
+
+func TestClientRegistrationResponseJSON(t *testing.T) {
+	testCases := []struct {
+		name     string
+		in       ClientRegistrationResponse
+		wantJSON string
+	}{
+		{
+			name: "full response",
+			in: ClientRegistrationResponse{
+				ClientID:              "test-client-id",
+				ClientSecret:          "test-client-secret",
+				ClientIDIssuedAt:      time.Unix(1758840047, 0),
+				ClientSecretExpiresAt: time.Unix(1790376047, 0),
+			},
+			wantJSON: `{"client_id":"test-client-id","client_secret":"test-client-secret","client_id_issued_at":1758840047,"client_secret_expires_at":1790376047, "redirect_uris": null}`,
+		},
+		{
+			name: "minimal response with only required fields",
+			in: ClientRegistrationResponse{
+				ClientID: "test-client-id-minimal",
+			},
+			wantJSON: `{"client_id":"test-client-id-minimal", "redirect_uris":null}`,
+		},
+		{
+			name: "response with a secret that does not expire",
+			in: ClientRegistrationResponse{
+				ClientID:     "test-client-id-no-expiry",
+				ClientSecret: "test-secret-no-expiry",
+			},
+			wantJSON: `{"client_id":"test-client-id-no-expiry","client_secret":"test-secret-no-expiry", "redirect_uris":null}`,
+		},
+		{
+			name:     "unmarshal with zero timestamp",
+			in:       ClientRegistrationResponse{ClientID: "client-id-zero"},
+			wantJSON: `{"client_id":"client-id-zero", "redirect_uris":null}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test MarshalJSON
+			t.Run("marshal", func(t *testing.T) {
+				b, err := json.Marshal(tc.in)
+				if err != nil {
+					t.Fatalf("Marshal() error = %v", err)
+				}
+
+				var gotMap, wantMap map[string]any
+				if err := json.Unmarshal(b, &gotMap); err != nil {
+					t.Fatalf("failed to unmarshal actual result: %v", err)
+				}
+				if err := json.Unmarshal([]byte(tc.wantJSON), &wantMap); err != nil {
+					t.Fatalf("failed to unmarshal expected result: %v", err)
+				}
+
+				if diff := cmp.Diff(wantMap, gotMap); diff != "" {
+					t.Errorf("Marshal() mismatch (-want +got):\n%s", diff)
+				}
+			})
+
+			// Test UnmarshalJSON
+			t.Run("unmarshal", func(t *testing.T) {
+				var got ClientRegistrationResponse
+				if err := json.Unmarshal([]byte(tc.wantJSON), &got); err != nil {
+					t.Fatalf("Unmarshal() error = %v", err)
+				}
+
+				if diff := cmp.Diff(tc.in, got); diff != "" {
+					t.Errorf("Unmarshal() mismatch (-want +got):\n%s", diff)
+				}
+			})
+		})
+	}
 }

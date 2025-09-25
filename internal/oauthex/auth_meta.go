@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -193,13 +194,56 @@ type ClientRegistrationResponse struct {
 	// ClientSecret is an OPTIONAL client secret string.
 	ClientSecret string `json:"client_secret,omitempty"`
 
-	// ClientIDIssuedAt is an OPTIONAL timestamp (seconds from 1970 UTC) when
-	// the ClientID was issued.
-	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
+	// ClientIDIssuedAt is an OPTIONAL Unix timestamp when the ClientID was issued.
+	ClientIDIssuedAt time.Time `json:"client_id_issued_at,omitempty"`
 
-	// ClientSecretExpiresAt is the REQUIRED (if client_secret is issued) timestamp
-	// when the secret expires, or 0 if it never expires.
-	ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
+	// ClientSecretExpiresAt is the REQUIRED (if client_secret is issued) Unix
+	// timestamp when the secret expires, or 0 if it never expires.
+	ClientSecretExpiresAt time.Time `json:"client_secret_expires_at,omitempty"`
+}
+
+func (r ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
+	type Alias ClientRegistrationResponse
+	var clientIDIssuedAt int64
+	var clientSecretExpiresAt int64
+
+	if !r.ClientIDIssuedAt.IsZero() {
+		clientIDIssuedAt = r.ClientIDIssuedAt.Unix()
+	}
+	if !r.ClientSecretExpiresAt.IsZero() {
+		clientSecretExpiresAt = r.ClientSecretExpiresAt.Unix()
+	}
+
+	return json.Marshal(&struct {
+		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
+		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
+		*Alias
+	}{
+		ClientIDIssuedAt:      clientIDIssuedAt,
+		ClientSecretExpiresAt: clientSecretExpiresAt,
+		Alias:                 (*Alias)(&r),
+	})
+}
+
+func (r *ClientRegistrationResponse) UnmarshalJSON(data []byte) error {
+	type Alias ClientRegistrationResponse
+	aux := &struct {
+		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
+		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.ClientIDIssuedAt != 0 {
+		r.ClientIDIssuedAt = time.Unix(aux.ClientIDIssuedAt, 0)
+	}
+	if aux.ClientSecretExpiresAt != 0 {
+		r.ClientSecretExpiresAt = time.Unix(aux.ClientSecretExpiresAt, 0)
+	}
+	return nil
 }
 
 // ClientRegistrationError is the error response from the Authorization Server
