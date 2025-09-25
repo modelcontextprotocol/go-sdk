@@ -202,8 +202,8 @@ type ClientRegistrationResponse struct {
 	ClientSecretExpiresAt time.Time `json:"client_secret_expires_at,omitempty"`
 }
 
-func (r ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
-	type Alias ClientRegistrationResponse
+func (r *ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
+	type alias ClientRegistrationResponse
 	var clientIDIssuedAt int64
 	var clientSecretExpiresAt int64
 
@@ -217,22 +217,22 @@ func (r ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(&struct {
 		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
 		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
-		*Alias
+		*alias
 	}{
 		ClientIDIssuedAt:      clientIDIssuedAt,
 		ClientSecretExpiresAt: clientSecretExpiresAt,
-		Alias:                 (*Alias)(&r),
+		alias:                 (*alias)(r),
 	})
 }
 
 func (r *ClientRegistrationResponse) UnmarshalJSON(data []byte) error {
-	type Alias ClientRegistrationResponse
+	type alias ClientRegistrationResponse
 	aux := &struct {
 		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
 		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
-		*Alias
+		*alias
 	}{
-		Alias: (*Alias)(r),
+		alias: (*alias)(r),
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err

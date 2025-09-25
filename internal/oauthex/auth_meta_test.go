@@ -197,7 +197,7 @@ func TestClientRegistrationResponseJSON(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Test MarshalJSON
 			t.Run("marshal", func(t *testing.T) {
-				b, err := json.Marshal(tc.in)
+				b, err := json.Marshal(&tc.in)
 				if err != nil {
 					t.Fatalf("Marshal() error = %v", err)
 				}
