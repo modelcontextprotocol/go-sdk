@@ -159,17 +159,23 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, header http.Hea
 
 // getPRM makes a GET request to the given URL, and validates the response.
 // As part of the validation, it compares the returned resource field to wantResource.
-func getPRM(ctx context.Context, url string, c *http.Client, wantResource string) (*ProtectedResourceMetadata, error) {
-	if !strings.HasPrefix(strings.ToUpper(url), "HTTPS://") {
-		return nil, fmt.Errorf("resource URL %q does not use HTTPS", url)
+func getPRM(ctx context.Context, purl string, c *http.Client, wantResource string) (*ProtectedResourceMetadata, error) {
+	if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
+		return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
 	}
-	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, url, 1<<20)
+	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, purl, 1<<20)
 	if err != nil {
 		return nil, err
 	}
 	// Validate the Resource field to thwart impersonation attacks (section 3.3).
 	if prm.Resource != wantResource {
 		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, wantResource)
+	}
+	// Validate the authorization server URLs to prevent XSS attacks (see #526).
+	for _, u := range prm.AuthorizationServers {
+		if err := checkURLScheme(u); err != nil {
+			return nil, err
+		}
 	}
 	return prm, nil
 }

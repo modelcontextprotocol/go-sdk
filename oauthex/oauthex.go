@@ -5,7 +5,9 @@
 // Package oauthex implements extensions to OAuth2.
 package oauthex
 
-import "github.com/modelcontextprotocol/go-sdk/internal/oauthex"
+import (
+	"github.com/modelcontextprotocol/go-sdk/internal/oauthex"
+)
 
 // ProtectedResourceMetadata is the metadata for an OAuth 2.0 protected resource,
 // as defined in section 2 of https://www.rfc-editor.org/rfc/rfc9728.html.
