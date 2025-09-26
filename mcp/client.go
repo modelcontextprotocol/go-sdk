@@ -283,7 +283,7 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support CreateMessage")
+		return nil, jsonrpc2.NewError(codeUnsupportedMethod, "client does not support CreateMessage")
 	}
 	return c.opts.CreateMessageHandler(ctx, req)
 }
@@ -291,13 +291,13 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
 	if c.opts.ElicitationHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, jsonrpc2.NewError(CodeUnsupportedMethod, "client does not support elicitation")
+		return nil, jsonrpc2.NewError(codeUnsupportedMethod, "client does not support elicitation")
 	}
 
 	// Validate that the requested schema only contains top-level properties without nesting
 	schema, err := validateElicitSchema(req.Params.RequestedSchema)
 	if err != nil {
-		return nil, jsonrpc2.NewError(CodeInvalidParams, err.Error())
+		return nil, jsonrpc2.NewError(codeInvalidParams, err.Error())
 	}
 
 	res, err := c.opts.ElicitationHandler(ctx, req)
@@ -312,11 +312,11 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		// this code to the server?
 		resolved, err := schema.Resolve(nil)
 		if err != nil {
-			return nil, jsonrpc2.NewError(CodeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
+			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
 		}
 
 		if err := resolved.Validate(res.Content); err != nil {
-			return nil, jsonrpc2.NewError(CodeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
+			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
 		}
 	}
 

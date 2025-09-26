@@ -322,7 +322,7 @@ func TestEndToEnd(t *testing.T) {
 		} {
 			rres, err := cs.ReadResource(ctx, &ReadResourceParams{URI: tt.uri})
 			if err != nil {
-				if code := errorCode(err); code == CodeResourceNotFound {
+				if code := errorCode(err); code == codeResourceNotFound {
 					if tt.mimeType != "" {
 						t.Errorf("%s: not found but expected it to be", tt.uri)
 					}
@@ -994,8 +994,8 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when ElicitationHandler is not provided, got nil")
 	}
-	if code := errorCode(err); code != CodeUnsupportedMethod {
-		t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, CodeUnsupportedMethod)
+	if code := errorCode(err); code != codeUnsupportedMethod {
+		t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, codeUnsupportedMethod)
 	}
 	if !strings.Contains(err.Error(), "does not support elicitation") {
 		t.Errorf("error should mention unsupported elicitation, got: %v", err)
@@ -1342,8 +1342,8 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				t.Errorf("expected error for invalid schema %q, got nil", tc.name)
 				return
 			}
-			if code := errorCode(err); code != CodeInvalidParams {
-				t.Errorf("got error code %d, want %d (CodeInvalidParams)", code, CodeInvalidParams)
+			if code := errorCode(err); code != codeInvalidParams {
+				t.Errorf("got error code %d, want %d (CodeInvalidParams)", code, codeInvalidParams)
 			}
 			if !strings.Contains(err.Error(), tc.expectedError) {
 				t.Errorf("error message %q does not contain expected text %q", err.Error(), tc.expectedError)
@@ -1462,8 +1462,8 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		if err == nil {
 			t.Error("expected UnsupportedMethod error when no capability declared")
 		}
-		if code := errorCode(err); code != CodeUnsupportedMethod {
-			t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, CodeUnsupportedMethod)
+		if code := errorCode(err); code != codeUnsupportedMethod {
+			t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, codeUnsupportedMethod)
 		}
 	})
 }

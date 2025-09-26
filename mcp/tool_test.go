@@ -66,7 +66,7 @@ func TestToolErrorHandling(t *testing.T) {
 	// Create a tool that returns a structured error
 	structuredErrorHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
 		return nil, nil, &jsonrpc2.WireError{
-			Code:    CodeInvalidParams,
+			Code:    codeInvalidParams,
 			Message: "internal server error",
 		}
 	}
@@ -111,8 +111,8 @@ func TestToolErrorHandling(t *testing.T) {
 			t.Fatalf("expected WireError, got %[1]T: %[1]v", err)
 		}
 
-		if wireErr.Code != CodeInvalidParams {
-			t.Errorf("expected error code %d, got %d", CodeInvalidParams, wireErr.Code)
+		if wireErr.Code != codeInvalidParams {
+			t.Errorf("expected error code %d, got %d", codeInvalidParams, wireErr.Code)
 		}
 	})
 

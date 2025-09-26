@@ -331,13 +331,11 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // Error codes
 const (
-	// TODO: should these be unexported?
-
-	CodeResourceNotFound = -32002
+	codeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
-	CodeUnsupportedMethod = -31001
+	codeUnsupportedMethod = -31001
 	// The error code for invalid parameters
-	CodeInvalidParams = -32602
+	codeInvalidParams = -32602
 )
 
 // notifySessions calls Notify on all the sessions.
