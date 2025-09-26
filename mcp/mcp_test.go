@@ -277,7 +277,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 
 		// Check tools-changed notifications.
-		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
+		s.AddRawTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 		waitForNotification(t, "tools")
 		s.RemoveTools("T")
 		waitForNotification(t, "tools")
@@ -1525,8 +1525,8 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 		// This case was written specifically to reproduce a bug where duplicate tools where causing jsonschema errors
 		t1 := &Tool{Name: "dup", Description: "first", InputSchema: &jsonschema.Schema{Type: "object"}}
 		t2 := &Tool{Name: "dup", Description: "second", InputSchema: &jsonschema.Schema{Type: "object"}}
-		s.AddTool(t1, nopHandler)
-		s.AddTool(t2, nopHandler)
+		s.AddRawTool(t1, nopHandler)
+		s.AddRawTool(t2, nopHandler)
 	})
 	defer cleanup()
 

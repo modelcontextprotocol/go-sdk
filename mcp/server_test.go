@@ -299,7 +299,7 @@ func TestServerCapabilities(t *testing.T) {
 		{
 			name: "With tools",
 			configureServer: func(s *Server) {
-				s.AddTool(tool, nil)
+				s.AddRawTool(tool, nil)
 			},
 			wantCapabilities: &ServerCapabilities{
 				Logging: &LoggingCapabilities{},
@@ -325,7 +325,7 @@ func TestServerCapabilities(t *testing.T) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
-				s.AddTool(tool, nil)
+				s.AddRawTool(tool, nil)
 			},
 			serverOpts: ServerOptions{
 				SubscribeHandler: func(context.Context, *SubscribeRequest) error {

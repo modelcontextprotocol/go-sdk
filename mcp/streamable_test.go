@@ -837,7 +837,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			// Create a server containing a single tool, which runs the test tool
 			// behavior, if any.
 			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-			server.AddTool(
+			server.AddRawTool(
 				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{Type: "object"}},
 				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 					if test.tool != nil {

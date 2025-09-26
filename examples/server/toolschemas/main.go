@@ -139,7 +139,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server.AddTool(&mcp.Tool{
+	server.AddRawTool(&mcp.Tool{
 		Name:         "manual greeting",
 		InputSchema:  inputSchema,
 		OutputSchema: outputSchema,

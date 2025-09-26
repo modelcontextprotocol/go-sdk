@@ -159,7 +159,18 @@ func (s *Server) RemovePrompts(names ...string) {
 		func() bool { return s.prompts.remove(names...) })
 }
 
-// AddTool adds a [Tool] to the server, or replaces one with the same name.
+// AddTool was a misnamed way to add a 'raw' tool, that doesn't perform any
+// parsing or validation validation. It is being renamed to AddRawTool so that
+// AddTool is available in the future (see #530).
+//
+// Deprecated: use AddRawTool. AddTool will be remove for v1.0.0.
+//
+//go:fix inline
+func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	s.AddRawTool(t, h)
+}
+
+// AddRawTool adds a [Tool] to the server, or replaces one with the same name.
 // The Tool argument must not be modified after this call.
 //
 // The tool's input schema must be non-nil and have the type "object". For a tool
@@ -179,9 +190,9 @@ func (s *Server) RemovePrompts(names ...string) {
 // Setting the result's Content, StructuredContent and IsError fields are the caller's
 // responsibility.
 //
-// Most users should use the top-level function [AddTool], which handles all these
+// Most users should use the top-level function [AddRawTool], which handles all these
 // responsibilities.
-func (s *Server) AddTool(t *Tool, h ToolHandler) {
+func (s *Server) AddRawTool(t *Tool, h ToolHandler) {
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
 		// one should be provided. If we papered over this by supplying the empty
@@ -358,7 +369,7 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 // output schema is set to the schema inferred from the Out type argument,
 // which also must be a map or struct.
 //
-// Unlike [Server.AddTool], AddTool does a lot automatically, and forces tools
+// Unlike [Server.AddRawTool], AddTool does a lot automatically, and forces tools
 // to conform to the MCP spec. See [ToolHandlerFor] for a detailed description
 // of this automatic behavior.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
@@ -366,7 +377,7 @@ func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	if err != nil {
 		panic(fmt.Sprintf("AddTool: tool %q: %v", t.Name, err))
 	}
-	s.AddTool(tt, hh)
+	s.AddRawTool(tt, hh)
 }
 
 // RemoveTools removes the tools with the given names.

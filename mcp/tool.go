@@ -14,7 +14,7 @@ import (
 
 // A ToolHandler handles a call to tools/call.
 //
-// This is a low-level API, for use with [Server.AddTool]. It does not do any
+// This is a low-level API, for use with [Server.AddRawTool]. It does not do any
 // pre- or post-processing of the request or result: the params contain raw
 // arguments, no input validation is performed, and the result is returned to
 // the user as-is, without any validation of the output.
