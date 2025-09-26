@@ -1,4 +1,4 @@
-# MCP Go SDK v0.7.0
+# MCP Go SDK v0.8.0
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
@@ -6,7 +6,7 @@
 
 This version contains minor breaking changes.
 See the [release notes](
-https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.7.0) for details.
+https://github.com/modelcontextprotocol/go-sdk/releases/tag/v0.8.0) for details.
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
 
