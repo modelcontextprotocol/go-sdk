@@ -230,7 +230,7 @@ func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 
 	if err != nil {
 		s.mu.Lock()
-		fmt.Fprintf(s.w, "read error: %v", err)
+		fmt.Fprintf(s.w, "read error: %v\n", err)
 		s.mu.Unlock()
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
@@ -250,7 +250,7 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	err := s.delegate.Write(ctx, msg)
 	if err != nil {
 		s.mu.Lock()
-		fmt.Fprintf(s.w, "write error: %v", err)
+		fmt.Fprintf(s.w, "write error: %v\n", err)
 		s.mu.Unlock()
 	} else {
 		data, err := jsonrpc2.EncodeMessage(msg)
