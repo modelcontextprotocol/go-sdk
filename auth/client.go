@@ -8,7 +8,7 @@ package auth
 
 import (
 	"context"
-	"log"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -40,7 +40,12 @@ type HTTPTransport struct {
 // It is called only once per transport. Once a TokenSource is obtained, it is used
 // for the lifetime of the transport; subsequent 401s are not processed.
 func NewHTTPTransport(handler OAuthHandler, opts *HTTPTransportOptions) (*HTTPTransport, error) {
-	t := &HTTPTransport{}
+	if handler == nil {
+		return nil, errors.New("handler cannot be nil")
+	}
+	t := &HTTPTransport{
+		handler: handler,
+	}
 	if opts != nil {
 		t.opts = *opts
 	}
@@ -60,7 +65,6 @@ type HTTPTransportOptions struct {
 func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.mu.Lock()
 	base := t.opts.Base
-	_, haveTokenSource := base.(*oauth2.Transport)
 	t.mu.Unlock()
 
 	resp, err := base.RoundTrip(req)
@@ -70,12 +74,15 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		return resp, nil
 	}
-	if haveTokenSource {
+	if _, ok := base.(*oauth2.Transport); ok {
 		// We failed to authorize even with a token source; give up.
 		return resp, nil
 	}
+
+	resp.Body.Close()
 	// Try to authorize.
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	// If we don't have a token source, get one by following the OAuth flow.
 	// (We may have obtained one while t.mu was not held above.)
 	if _, ok := t.opts.Base.(*oauth2.Transport); !ok {
@@ -84,20 +91,16 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			ResourceMetadataURL: extractResourceMetadataURL(authHeaders),
 		})
 		if err != nil {
-			t.mu.Unlock()
 			return nil, err
 		}
 		t.opts.Base = &oauth2.Transport{Base: t.opts.Base, Source: ts}
 	}
-	t.mu.Unlock()
-	// Only one level of recursion, because we now have a token source.
-	return t.RoundTrip(req)
+	return t.opts.Base.RoundTrip(req.Clone(req.Context()))
 }
 
 func extractResourceMetadataURL(authHeaders []string) string {
 	cs, err := oauthex.ParseWWWAuthenticate(authHeaders)
 	if err != nil {
-		log.Printf("parsing auth headers %q: %v", authHeaders, err)
 		return ""
 	}
 	return oauthex.ResourceMetadataURL(cs)
