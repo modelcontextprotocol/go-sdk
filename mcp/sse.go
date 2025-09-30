@@ -411,10 +411,10 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 //   - Reads are SSE 'message' events, and pushes them onto a buffered channel.
 //   - Close terminates the GET request.
 type sseClientConn struct {
-	client        *http.Client         // HTTP client to use for requests
-	msgEndpoint   *url.URL             // session endpoint for POSTs
-	modifyRequest func(*http.Request)  // optional callback to modify outgoing requests
-	incoming      chan []byte          // queue of incoming messages
+	client        *http.Client        // HTTP client to use for requests
+	msgEndpoint   *url.URL            // session endpoint for POSTs
+	modifyRequest func(*http.Request) // optional callback to modify outgoing requests
+	incoming      chan []byte         // queue of incoming messages
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
