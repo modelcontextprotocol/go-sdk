@@ -675,13 +675,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					headers: http.Header{"MCP-Protocol-Version": {"2025-03-26"}},
 					// Two messages => batch. Expect OK with two responses in order.
 					messages: []jsonrpc.Message{
+						// Note: only include one request here, because responses are not
+						// necessarily sorted.
 						req(201, "tools/call", &CallToolParams{Name: "tool"}),
-						req(202, "tools/call", &CallToolParams{Name: "tool"}),
+						req(0, "notifications/roots/list_changed", &RootsListChangedParams{}),
 					},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{
 						resp(201, &CallToolResult{Content: []Content{}}, nil),
-						resp(202, &CallToolResult{Content: []Content{}}, nil),
 					},
 				},
 			},
