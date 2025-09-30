@@ -380,7 +380,7 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err 
 // If the tool's input schema is nil, it is set to the schema inferred from the
 // In type parameter. Types are inferred from Go types, and property
 // descriptions are read from the 'jsonschema' struct tag. Internally, the SDK
-// uses the github.com/google/jsonschema-go package for ineference and
+// uses the github.com/google/jsonschema-go package for inference and
 // validation. The In type argument must be a map or a struct, so that its
 // inferred JSON Schema has type "object", as required by the spec. As a
 // special case, if the In type is 'any', the tool's input schema is set to an
@@ -498,6 +498,9 @@ func (s *Server) changeAndNotify(notification string, params Params, change func
 }
 
 // Sessions returns an iterator that yields the current set of server sessions.
+//
+// There is no guarantee that the iterator observes sessions that are added or
+// removed during iteration.
 func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	s.mu.Lock()
 	clients := slices.Clone(s.sessions)
