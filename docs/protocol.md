@@ -128,8 +128,8 @@ which starts the a `exec.Cmd` as a subprocess and communicates over its
 stdin/stdout.
 
 **Server-side**: the server side of the `stdio` transport is implemented by
-`StdioTransport`, which connects over the current processes `os.Stdin` and
-`os.Stdout`.
+[`StdioTransport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StdioTransport),
+which connects over the current processes `os.Stdin` and `os.Stdout`.
 
 ### Streamable Transport
 
@@ -201,7 +201,7 @@ to see the logical session
 > Stateless mode is not directly discussed in the spec, and is still being
 > defined. See modelcontextprotocol/modelcontextprotocol#1364,
 > modelcontextprotocol/modelcontextprotocol#1372, or
-> modelcontextprotocol/modelcontextprotocol#11442 for potential refinements.
+> modelcontextprotocol/modelcontextprotocol#1442 for potential refinements.
 
 _See [examples/server/distributed](../examples/server/distributed/main.go) for
 an example using statless mode to implement a server distributed across
@@ -267,7 +267,7 @@ The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/
 
 Client-side OAuth is implemented by setting  
 [`StreamableClientTransport.HTTPClient`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.5.0/mcp#StreamableClientTransport.HTTPClient) to a custom [`http.Client`](https://pkg.go.dev/net/http#Client)
-Additional support is forthcoming; see #493.
+Additional support is forthcoming; see modelcontextprotocol/go-sdk#493.
 
 ## Security
 
