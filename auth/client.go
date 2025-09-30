@@ -85,6 +85,8 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	defer t.mu.Unlock()
 	// If we don't have a token source, get one by following the OAuth flow.
 	// (We may have obtained one while t.mu was not held above.)
+	// TODO: We hold the lock for the entire OAuth flow. This could be a long
+	// time. Is there a better way?
 	if _, ok := t.opts.Base.(*oauth2.Transport); !ok {
 		authHeaders := resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")]
 		ts, err := t.handler(req.Context(), OAuthHandlerArgs{
