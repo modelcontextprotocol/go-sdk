@@ -1485,3 +1485,141 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 	}
 
 }
+
+func TestStreamableClientModifyRequest(t *testing.T) {
+	ctx := context.Background()
+
+	// Track all HTTP requests
+	var mu sync.Mutex
+	var requestMethods []string
+	var requestHeaders []http.Header
+
+	// Create a server
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		requestMethods = append(requestMethods, req.Method)
+		requestHeaders = append(requestHeaders, req.Header.Clone())
+		mu.Unlock()
+		handler.ServeHTTP(w, req)
+	}))
+	defer httpServer.Close()
+
+	// Create transport with ModifyRequest
+	transport := &StreamableClientTransport{
+		Endpoint: httpServer.URL,
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set("X-Custom-Header", "test-value")
+			req.Header.Set("Authorization", "Bearer test-token")
+		},
+	}
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	// Call a tool (which will make POST and potentially GET requests)
+	_, err = session.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "user"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+
+	// Close the session (which will make a DELETE request)
+	session.Close()
+
+	// Verify that we have POST and DELETE requests
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requestMethods) < 2 {
+		t.Fatalf("Expected at least 2 requests (POST and DELETE), got %d", len(requestMethods))
+	}
+
+	// Verify POST request has custom headers
+	foundPOST := false
+	for i, method := range requestMethods {
+		if method == "POST" {
+			foundPOST = true
+			if got := requestHeaders[i].Get("X-Custom-Header"); got != "test-value" {
+				t.Errorf("POST request: X-Custom-Header = %q, want %q", got, "test-value")
+			}
+			if got := requestHeaders[i].Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("POST request: Authorization = %q, want %q", got, "Bearer test-token")
+			}
+		}
+	}
+	if !foundPOST {
+		t.Error("No POST request found")
+	}
+
+	// Verify DELETE request has custom headers
+	foundDELETE := false
+	for i, method := range requestMethods {
+		if method == "DELETE" {
+			foundDELETE = true
+			if got := requestHeaders[i].Get("X-Custom-Header"); got != "test-value" {
+				t.Errorf("DELETE request: X-Custom-Header = %q, want %q", got, "test-value")
+			}
+			if got := requestHeaders[i].Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("DELETE request: Authorization = %q, want %q", got, "Bearer test-token")
+			}
+		}
+	}
+	if !foundDELETE {
+		t.Error("No DELETE request found")
+	}
+
+	// Verify GET request has custom headers (if any)
+	for i, method := range requestMethods {
+		if method == "GET" {
+			if got := requestHeaders[i].Get("X-Custom-Header"); got != "test-value" {
+				t.Errorf("GET request: X-Custom-Header = %q, want %q", got, "test-value")
+			}
+			if got := requestHeaders[i].Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("GET request: Authorization = %q, want %q", got, "Bearer test-token")
+			}
+		}
+	}
+}
+
+func TestStreamableClientModifyRequestNil(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a server
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// Create transport with nil ModifyRequest (should not panic)
+	transport := &StreamableClientTransport{
+		Endpoint:      httpServer.URL,
+		ModifyRequest: nil, // explicitly nil
+	}
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// Call a tool - should work normally
+	_, err = session.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "user"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+}
