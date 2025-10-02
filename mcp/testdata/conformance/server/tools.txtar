@@ -16,6 +16,7 @@ greet
 structured
 tomorrow
 inc
+progress
 
 -- client --
 {
@@ -40,7 +41,9 @@ inc
 { "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "tomorrow", "arguments": { "Now": "2025-06-18T15:04:05Z" } } }
 { "jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "greet" } }
 { "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "inc", "arguments": { "x": 3 } } }
-{ "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "inc" } }
+{ "jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "inc" } }
+{ "jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "progress" } }
+{ "jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "progress", "_meta": { "progressToken": "abc123" } } }
 
 -- server --
 {
@@ -105,6 +108,12 @@ inc
 					},
 					"additionalProperties": false
 				}
+			},
+			{
+				"inputSchema": {
+					"type": "object"
+				},
+				"name": "progress"
 			},
 			{
 				"inputSchema": {
@@ -267,7 +276,7 @@ inc
 }
 {
 	"jsonrpc": "2.0",
-	"id": 11,
+	"id": 12,
 	"result": {
 		"content": [
 			{
@@ -278,5 +287,125 @@ inc
 		"structuredContent": {
 			"y": 7
 		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 13,
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "no progress token"
+			}
+		],
+		"isError": true
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 0",
+		"progress": 1,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 1",
+		"progress": 2,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 2",
+		"progress": 3,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 3",
+		"progress": 4,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 4",
+		"progress": 5,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 5",
+		"progress": 6,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 6",
+		"progress": 7,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 7",
+		"progress": 8,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 8",
+		"progress": 9,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"method": "notifications/progress",
+	"params": {
+		"message": "message 9",
+		"progress": 10,
+		"progressToken": "abc123",
+		"total": 10
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 14,
+	"result": {
+		"content": []
 	}
 }
