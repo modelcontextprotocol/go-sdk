@@ -3,6 +3,9 @@
 // license that can be found in the LICENSE file.
 
 // Package oauthex implements extensions to OAuth2.
+
+//go:build mcp_go_client_oauth
+
 package oauthex
 
 import (

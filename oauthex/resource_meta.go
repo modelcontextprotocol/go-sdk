@@ -5,6 +5,8 @@
 // This file implements Protected Resource Metadata.
 // See https://www.rfc-editor.org/rfc/rfc9728.html.
 
+//go:build mcp_go_client_oauth
+
 package oauthex
 
 import (
