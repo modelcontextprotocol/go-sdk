@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"log/slog"
 	"maps"
 	"net/url"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
+// DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
 // A Server is an instance of an MCP server.
@@ -53,6 +55,8 @@ type Server struct {
 type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
+	// If non-nil, log server activity.
+	Logger *slog.Logger
 	// If non-nil, called when "notifications/initialized" is received.
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
@@ -129,6 +133,10 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.GetSessionID = randText
 	}
 
+	if opts.Logger == nil { // ensure we have a logger
+		opts.Logger = ensureLogger(nil)
+	}
+
 	return &Server{
 		impl:                    impl,
 		opts:                    opts,
@@ -164,9 +172,9 @@ func (s *Server) RemovePrompts(names ...string) {
 //
 // The tool's input schema must be non-nil and have the type "object". For a tool
 // that takes no input, or one where any input is valid, set [Tool.InputSchema] to
-// &jsonschema.Schema{Type: "object"}.
+// `{"type": "object"}`, using your preferred library or `json.RawMessage`.
 //
-// If present, the output schema must also have type "object".
+// If present, [Tool.OutputSchema] must also have type "object".
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage.
@@ -189,11 +197,29 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		// discovered until runtime, when the LLM sent bad data.
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
-	if t.InputSchema.Type != "object" {
+	if s, ok := t.InputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
 		panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+	} else {
+		var m map[string]any
+		if err := remarshal(t.InputSchema, &m); err != nil {
+			panic(fmt.Errorf("AddTool %q: can't marshal input schema to a JSON object: %v", t.Name, err))
+		}
+		if typ := m["type"]; typ != "object" {
+			panic(fmt.Errorf(`AddTool %q: input schema must have type "object" (got %v)`, t.Name, typ))
+		}
 	}
-	if t.OutputSchema != nil && t.OutputSchema.Type != "object" {
-		panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+	if t.OutputSchema != nil {
+		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
+			panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+		} else {
+			var m map[string]any
+			if err := remarshal(t.OutputSchema, &m); err != nil {
+				panic(fmt.Errorf("AddTool %q: can't marshal output schema to a JSON object: %v", t.Name, err))
+			}
+			if typ := m["type"]; typ != "object" {
+				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
+			}
+		}
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -331,7 +357,8 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 //
 // TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
 // should have a jsonschema.Zero(schema) helper?
-func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) (zero any, err error) {
+func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err error) {
+	var internalSchema *jsonschema.Schema
 	if *sfield == nil {
 		rt := reflect.TypeFor[T]()
 		if rt.Kind() == reflect.Pointer {
@@ -339,28 +366,41 @@ func setSchema[T any](sfield **jsonschema.Schema, rfield **jsonschema.Resolved) 
 			zero = reflect.Zero(rt).Interface()
 		}
 		// TODO: we should be able to pass nil opts here.
-		*sfield, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+		internalSchema, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+		if err == nil {
+			*sfield = internalSchema
+		}
+	} else {
+		if err := remarshal(*sfield, &internalSchema); err != nil {
+			return zero, err
+		}
 	}
 	if err != nil {
 		return zero, err
 	}
-	*rfield, err = (*sfield).Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	*rfield, err = internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
 	return zero, err
 }
 
 // AddTool adds a tool and typed tool handler to the server.
 //
 // If the tool's input schema is nil, it is set to the schema inferred from the
-// In type parameter, using [jsonschema.For]. The In type argument must be a
-// map or a struct, so that its inferred JSON Schema has type "object".
+// In type parameter. Types are inferred from Go types, and property
+// descriptions are read from the 'jsonschema' struct tag. Internally, the SDK
+// uses the github.com/google/jsonschema-go package for inference and
+// validation. The In type argument must be a map or a struct, so that its
+// inferred JSON Schema has type "object", as required by the spec. As a
+// special case, if the In type is 'any', the tool's input schema is set to an
+// empty object schema value.
 //
 // If the tool's output schema is nil, and the Out type is not 'any', the
 // output schema is set to the schema inferred from the Out type argument,
-// which also must be a map or struct.
+// which must also be a map or struct. If the Out type is 'any', the output
+// schema is omitted.
 //
-// Unlike [Server.AddTool], AddTool does a lot automatically, and forces tools
-// to conform to the MCP spec. See [ToolHandlerFor] for a detailed description
-// of this automatic behavior.
+// Unlike [Server.AddTool], AddTool does a lot automatically, and forces
+// tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
+// description of this automatic behavior.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
 	tt, hh, err := toolForErr(t, h)
 	if err != nil {
@@ -465,6 +505,9 @@ func (s *Server) changeAndNotify(notification string, params Params, change func
 }
 
 // Sessions returns an iterator that yields the current set of server sessions.
+//
+// There is no guarantee that the iterator observes sessions that are added or
+// removed during iteration.
 func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	s.mu.Lock()
 	clients := slices.Clone(s.sessions)
@@ -493,7 +536,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	if !ok {
 		// Return a proper JSON-RPC error with the correct error code
 		return nil, &jsonrpc2.WireError{
-			Code:    CodeInvalidParams,
+			Code:    codeInvalidParams,
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
@@ -520,7 +563,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	s.mu.Unlock()
 	if !ok {
 		return nil, &jsonrpc2.WireError{
-			Code:    CodeInvalidParams,
+			Code:    codeInvalidParams,
 			Message: fmt.Sprintf("unknown tool %q", req.Params.Name),
 		}
 	}
@@ -659,6 +702,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	sessions := slices.Collect(maps.Keys(subscribedSessions))
 	s.mu.Unlock()
 	notifySessions(sessions, notificationResourceUpdated, params)
+	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
 	return nil
 }
 
@@ -676,6 +720,7 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]bool)
 	}
 	s.resourceSubscriptions[req.Params.URI][req.Session] = true
+	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
 }
@@ -697,6 +742,7 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 			delete(s.resourceSubscriptions, req.Params.URI)
 		}
 	}
+	s.opts.Logger.Info("resource unsubscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
 }
@@ -715,8 +761,10 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 // It need not be called on servers that are used for multiple concurrent connections,
 // as with [StreamableHTTPHandler].
 func (s *Server) Run(ctx context.Context, t Transport) error {
+	s.opts.Logger.Info("server run start")
 	ss, err := s.Connect(ctx, t, nil)
 	if err != nil {
+		s.opts.Logger.Error("server connect failed", "error", err)
 		return err
 	}
 
@@ -729,8 +777,14 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 	case <-ctx.Done():
 		ss.Close()
 		<-ssClosed // wait until waiting go routine above actually completes
+		s.opts.Logger.Error("server run cancelled", "error", ctx.Err())
 		return ctx.Err()
 	case err := <-ssClosed:
+		if err != nil {
+			s.opts.Logger.Error("server session ended with error", "error", err)
+		} else {
+			s.opts.Logger.Info("server session ended")
+		}
 		return err
 	}
 }
@@ -746,6 +800,7 @@ func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *Serv
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
+	s.opts.Logger.Info("server session connected", "session_id", ss.ID())
 	return ss
 }
 
@@ -761,6 +816,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 	for _, subscribedSessions := range s.resourceSubscriptions {
 		delete(subscribedSessions, cc)
 	}
+	s.opts.Logger.Info("server session disconnected", "session_id", cc.ID())
 }
 
 // ServerSessionOptions configures the server session.
@@ -785,7 +841,14 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		state = opts.State
 		onClose = opts.onClose
 	}
-	return connect(ctx, t, s, state, onClose)
+
+	s.opts.Logger.Info("server connecting")
+	ss, err := connect(ctx, t, s, state, onClose)
+	if err != nil {
+		s.opts.Logger.Error("server connect error", "error", err)
+		return nil, err
+	}
+	return ss, nil
 }
 
 // TODO: (nit) move all ServerSession methods below the ServerSession declaration.
@@ -805,9 +868,11 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	})
 
 	if !wasInit {
+		ss.server.opts.Logger.Error("initialized before initialize")
 		return nil, fmt.Errorf("%q before %q", notificationInitialized, methodInitialize)
 	}
 	if wasInitd {
+		ss.server.opts.Logger.Error("duplicate initialized notification")
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
 	}
 	if ss.server.opts.KeepAlive > 0 {
@@ -816,6 +881,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
 	}
+	ss.server.opts.Logger.Info("session initialized")
 	return nil, nil
 }
 
@@ -1053,6 +1119,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	case methodInitialize, methodPing, notificationInitialized:
 	default:
 		if !initialized {
+			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
 	}
@@ -1109,6 +1176,7 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})
+	ss.server.opts.Logger.Info("client log level set", "level", params.Level)
 	return &emptyResult{}, nil
 }
 

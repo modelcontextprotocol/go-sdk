@@ -678,13 +678,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					headers: http.Header{"MCP-Protocol-Version": {"2025-03-26"}},
 					// Two messages => batch. Expect OK with two responses in order.
 					messages: []jsonrpc.Message{
+						// Note: only include one request here, because responses are not
+						// necessarily sorted.
 						req(201, "tools/call", &CallToolParams{Name: "tool"}),
-						req(202, "tools/call", &CallToolParams{Name: "tool"}),
+						req(0, "notifications/roots/list_changed", &RootsListChangedParams{}),
 					},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{
 						resp(201, &CallToolResult{Content: []Content{}}, nil),
-						resp(202, &CallToolResult{Content: []Content{}}, nil),
 					},
 				},
 			},
@@ -1314,8 +1315,9 @@ func textContent(t *testing.T, res *CallToolResult) string {
 }
 
 func TestTokenInfo(t *testing.T) {
-	defer func(b bool) { testAuth = b }(testAuth)
-	testAuth = true
+	oldAuth := testAuth.Load()
+	defer testAuth.Store(oldAuth)
+	testAuth.Store(true)
 	ctx := context.Background()
 
 	// Create a server with a tool that returns TokenInfo.
@@ -1445,4 +1447,58 @@ func TestStreamableGET(t *testing.T) {
 	if got, want := resp.StatusCode, http.StatusNoContent; got != want {
 		t.Errorf("DELETE with session ID: got status %d, want %d", got, want)
 	}
+}
+
+func TestStreamableClientContextPropagation(t *testing.T) {
+	type contextKey string
+	const testKey = contextKey("test-key")
+	const testValue = "test-value"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx2 := context.WithValue(ctx, testKey, testValue)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "POST":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Mcp-Session-Id", "test-session")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}`))
+		case "GET":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	transport := &StreamableClientTransport{Endpoint: server.URL}
+	conn, err := transport.Connect(ctx2)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer conn.Close()
+
+	streamableConn, ok := conn.(*streamableClientConn)
+	if !ok {
+		t.Fatalf("Expected *streamableClientConn, got %T", conn)
+	}
+
+	if got := streamableConn.ctx.Value(testKey); got != testValue {
+		t.Errorf("Context value not propagated: got %v, want %v", got, testValue)
+	}
+
+	if streamableConn.ctx.Done() == nil {
+		t.Error("Connection context is not cancellable")
+	}
+
+	cancel()
+	select {
+	case <-streamableConn.ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Connection context was not cancelled when parent was cancelled")
+	}
+
 }

@@ -19,8 +19,8 @@ type (
 	Response = jsonrpc2.Response
 )
 
-// MakeID coerces the given Go value to an ID. The value is assumed to be the
-// default JSON marshaling of a Request identifier -- nil, float64, or string.
+// MakeID coerces the given Go value to an ID. The value should be the
+// default JSON marshaling of a Request identifier: nil, float64, or string.
 //
 // Returns an error if the value type was not a valid Request ID type.
 func MakeID(v any) (ID, error) {

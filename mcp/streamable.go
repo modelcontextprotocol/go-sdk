@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -67,6 +68,10 @@ type StreamableHTTPOptions struct {
 	//
 	// [§2.1.5]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
 	JSONResponse bool
+
+	// Logger specifies the logger to use.
+	// If nil, do not log.
+	Logger *slog.Logger
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -82,6 +87,11 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	if opts != nil {
 		h.opts = *opts
 	}
+
+	if h.opts.Logger == nil { // ensure we have a logger
+		h.opts.Logger = ensureLogger(nil)
+	}
+
 	return h
 }
 
@@ -367,6 +377,8 @@ type StreamableServerTransport struct {
 	// StreamableHTTPOptions.JSONResponse is exported.
 	jsonResponse bool
 
+	logger *slog.Logger
+
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
 }
@@ -381,6 +393,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
 		jsonResponse:   t.jsonResponse,
+		logger:         t.logger,
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
 		streams:        make(map[string]*stream),
@@ -406,6 +419,8 @@ type streamableServerConn struct {
 	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
+
+	logger *slog.Logger
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -754,7 +769,7 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 		}
 		if _, err := writeEvent(w, e); err != nil {
 			// Connection closed or broken.
-			// TODO(#170): log when we add server-side logging.
+			c.logger.Warn("error writing event", "error", err)
 			return false
 		}
 		writes++
@@ -773,7 +788,13 @@ func (c *streamableServerConn) respondSSE(stream *stream, w http.ResponseWriter,
 				// simplify.
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			} else {
-				// TODO(#170): log when we add server-side logging
+				if ctx.Err() != nil {
+					// Client disconnected or cancelled the request.
+					c.logger.Error("stream context done", "error", ctx.Err())
+				} else {
+					// Some other error.
+					c.logger.Error("error receiving message", "error", err)
+				}
 			}
 			return
 		}
@@ -981,6 +1002,14 @@ type StreamableClientTransport struct {
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
 	MaxRetries int
+
+	// TODO(rfindley): propose exporting these.
+	// If strict is set, the transport is in 'strict mode', where any violation
+	// of the MCP spec causes a failure.
+	strict bool
+	// If logger is set, it is used to log aspects of the transport, such as spec
+	// violations that were ignored.
+	logger *slog.Logger
 }
 
 // These settings are not (yet) exposed to the user in
@@ -1018,13 +1047,15 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
-	connCtx, cancel := context.WithCancel(context.Background())
+	connCtx, cancel := context.WithCancel(ctx)
 	conn := &streamableClientConn{
 		url:        t.Endpoint,
 		client:     client,
 		incoming:   make(chan jsonrpc.Message, 10),
 		done:       make(chan struct{}),
 		maxRetries: maxRetries,
+		strict:     t.strict,
+		logger:     t.logger,
 		ctx:        connCtx,
 		cancel:     cancel,
 		failed:     make(chan struct{}),
@@ -1039,6 +1070,8 @@ type streamableClientConn struct {
 	cancel     context.CancelFunc
 	incoming   chan jsonrpc.Message
 	maxRetries int
+	strict     bool         // from [StreamableClientTransport.strict]
+	logger     *slog.Logger // from [StreamableClientTransport.logger]
 
 	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
@@ -1152,9 +1185,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	var requestSummary string
+	var isCall bool
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
 		requestSummary = fmt.Sprintf("sending %q", msg.Method)
+		isCall = msg.IsCall()
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
 	default:
@@ -1209,11 +1244,24 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	}
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
+		// [§2.1.4]: "If the input is a JSON-RPC response or notification:
+		// If the server accepts the input, the server MUST return HTTP status code 202 Accepted with no body."
+		//
+		// [§2.1.4]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
+		resp.Body.Close()
+		return nil
+	} else if !isCall && !c.strict {
+		// Some servers return 200, even with an empty json body.
+		// Ignore this response in non-strict mode.
+		if c.logger != nil {
+			c.logger.Warn(fmt.Sprintf("unexpected status code %d from non-call", resp.StatusCode))
+		}
 		resp.Body.Close()
 		return nil
 	}
 
-	switch ct := resp.Header.Get("Content-Type"); ct {
+	contentType := strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+	switch contentType {
 	case "application/json":
 		go c.handleJSON(requestSummary, resp)
 
@@ -1223,14 +1271,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	default:
 		resp.Body.Close()
-		return fmt.Errorf("%s: unsupported content type %q", requestSummary, ct)
+		return fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
 	}
 	return nil
 }
 
 // testAuth controls whether a fake Authorization header is added to outgoing requests.
 // TODO: replace with a better mechanism when client-side auth is in place.
-var testAuth = false
+var testAuth atomic.Bool
 
 func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	c.mu.Lock()
@@ -1242,7 +1290,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
-	if testAuth {
+	if testAuth.Load() {
 		req.Header.Set("Authorization", "Bearer foo")
 	}
 }
@@ -1294,18 +1342,36 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 		newResp, err := c.reconnect(lastEventID)
 		if err != nil {
 			// All reconnection attempts failed: fail the connection.
-			c.fail(fmt.Errorf("%s: failed to reconnect: %v", requestSummary, err))
+			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
 			return
 		}
 		resp = newResp
 		if resp.StatusCode == http.StatusMethodNotAllowed && persistent {
+			// [§2.2.3]: "The server MUST either return Content-Type:
+			// text/event-stream in response to this HTTP GET, or else return HTTP
+			// 405 Method Not Allowed, indicating that the server does not offer an
+			// SSE stream at this endpoint."
+			//
+			// [§2.2.3]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
+
 			// The server doesn't support the hanging GET.
+			resp.Body.Close()
+			return
+		}
+		if resp.StatusCode == http.StatusNotFound && persistent && !c.strict {
+			// modelcontextprotocol/gosdk#393: some servers return NotFound instead
+			// of MethodNotAllowed for the persistent GET.
+			//
+			// Treat this like MethodNotAllowed in non-strict mode.
+			if c.logger != nil {
+				c.logger.Warn("got 404 instead of 405 for hanging GET")
+			}
 			resp.Body.Close()
 			return
 		}
 		// (see equivalent handling in [streamableClientConn.Write]).
 		if resp.StatusCode == http.StatusNotFound {
-			c.fail(fmt.Errorf("%s: failed to reconnect: %w", requestSummary, errSessionMissing))
+			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing))
 			return
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -1394,14 +1460,10 @@ func (c *streamableClientConn) reconnect(lastEventID string) (*http.Response, er
 // Close implements the [Connection] interface.
 func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
-		// Cancel any hanging network requests.
-		c.cancel()
-		close(c.done)
-
 		if errors.Is(c.failure(), errSessionMissing) {
 			// If the session is missing, no need to delete it.
 		} else {
-			req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
 			if err != nil {
 				c.closeErr = err
 			} else {
@@ -1411,6 +1473,10 @@ func (c *streamableClientConn) Close() error {
 				}
 			}
 		}
+
+		// Cancel any hanging network requests after cleanup.
+		c.cancel()
+		close(c.done)
 	})
 	return c.closeErr
 }

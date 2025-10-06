@@ -492,7 +492,7 @@ func TestAddTool(t *testing.T) {
 
 type schema = jsonschema.Schema
 
-func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut *schema, wantErrContaining string) {
+func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut any, wantErrContaining string) {
 	t.Helper()
 	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
 		return nil, out, nil

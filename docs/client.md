@@ -56,9 +56,12 @@ func Example_roots() {
 	if _, err := s.Connect(ctx, t1, nil); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := c.Connect(ctx, t2, nil); err != nil {
+
+	clientSession, err := c.Connect(ctx, t2, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer clientSession.Close()
 
 	// ...and add a root. The server is notified about the change.
 	c.AddRoots(&mcp.Root{URI: "file://b"})
@@ -142,7 +145,7 @@ func Example_elicitation() {
 	}
 	defer ss.Close()
 
-	c := mcp.NewClient(testImpl, &mcp.ClientOptions{
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
 		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},

@@ -331,13 +331,11 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // Error codes
 const (
-	// TODO: should these be unexported?
-
-	CodeResourceNotFound = -32002
+	codeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
-	CodeUnsupportedMethod = -31001
+	codeUnsupportedMethod = -31001
 	// The error code for invalid parameters
-	CodeInvalidParams = -32602
+	codeInvalidParams = -32602
 )
 
 // notifySessions calls Notify on all the sessions.
@@ -453,13 +451,13 @@ func clientRequestFor[P Params](s *ClientSession, p P) *ClientRequest[P] {
 
 // Params is a parameter (input) type for an MCP call or notification.
 type Params interface {
-	// isParams discourages implementation of Params outside of this package.
-	isParams()
-
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
+
+	// isParams discourages implementation of Params outside of this package.
+	isParams()
 }
 
 // RequestParams is a parameter (input) type for an MCP request.

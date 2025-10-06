@@ -57,8 +57,6 @@ func TokenInfoFromContext(ctx context.Context) *TokenInfo {
 // If verification fails, the request fails with a 401 Unauthenticated, and the WWW-Authenticate header
 // is populated to enable [protected resource metadata].
 //
-
-//
 // [protected resource metadata]: https://datatracker.ietf.org/doc/rfc9728
 func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions) func(http.Handler) http.Handler {
 	// Based on typescript-sdk/src/server/auth/middleware/bearerAuth.ts.

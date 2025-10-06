@@ -114,7 +114,7 @@ func Example_elicitation() {
 	}
 	defer ss.Close()
 
-	c := mcp.NewClient(testImpl, &mcp.ClientOptions{
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
 		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
