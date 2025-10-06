@@ -269,6 +269,8 @@ func TestStreamableServerShutdown(t *testing.T) {
 // network failure and receive replayed messages (if replay is configured). It
 // uses a proxy that is killed and restarted to simulate a recoverable network
 // outage.
+//
+// TODO: Until we have a way to clean up abandoned sessions, this test will leak goroutines (see #499)
 func TestClientReplay(t *testing.T) {
 	for _, test := range []clientReplayTest{
 		{"default", 0, true},
