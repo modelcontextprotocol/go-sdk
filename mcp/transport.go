@@ -303,7 +303,7 @@ func (r rwc) Close() error {
 	rcErr := r.rc.Close()
 
 	var wcErr error
-	if r.wc != nil {
+	if r.wc != nil { // we only allow a nil writer in unit tests
 		wcErr = r.wc.Close()
 	}
 
