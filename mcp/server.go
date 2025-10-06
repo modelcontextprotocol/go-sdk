@@ -776,6 +776,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 	select {
 	case <-ctx.Done():
 		ss.Close()
+		<-ssClosed // wait until waiting go routine above actually completes
 		s.opts.Logger.Error("server run cancelled", "error", ctx.Err())
 		return ctx.Err()
 	case err := <-ssClosed:

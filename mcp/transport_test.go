@@ -25,7 +25,7 @@ func TestBatchFraming(t *testing.T) {
 	r, w := io.Pipe()
 	tport := newIOConn(rwc{r, w})
 	tport.outgoingBatch = make([]jsonrpc.Message, 0, 2)
-	defer tport.Close()
+	t.Cleanup(func() { tport.Close() })
 
 	// Read the two messages into a channel, for easy testing later.
 	read := make(chan jsonrpc.Message)
@@ -101,6 +101,7 @@ func TestIOConnRead(t *testing.T) {
 			tr := newIOConn(rwc{
 				rc: io.NopCloser(strings.NewReader(tt.input)),
 			})
+			t.Cleanup(func() { tr.Close() })
 			if tt.protocolVersion != "" {
 				tr.sessionUpdated(ServerSessionState{
 					InitializeParams: &InitializeParams{

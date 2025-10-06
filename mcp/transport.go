@@ -300,7 +300,14 @@ func (r rwc) Write(p []byte) (n int, err error) {
 }
 
 func (r rwc) Close() error {
-	return errors.Join(r.rc.Close(), r.wc.Close())
+	rcErr := r.rc.Close()
+
+	var wcErr error
+	if r.wc != nil { // we only allow a nil writer in unit tests
+		wcErr = r.wc.Close()
+	}
+
+	return errors.Join(rcErr, wcErr)
 }
 
 // An ioConn is a transport that delimits messages with newlines across
