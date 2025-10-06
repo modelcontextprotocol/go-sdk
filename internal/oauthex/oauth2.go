@@ -65,3 +65,21 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 	}
 	return &t, nil
 }
+
+// checkURLScheme ensures that its argument is a valid URL with a scheme
+// that prevents XSS attacks.
+// See #526.
+func checkURLScheme(u string) error {
+	if u == "" {
+		return nil
+	}
+	uu, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(uu.Scheme)
+	if scheme == "javascript" || scheme == "data" || scheme == "vbscript" {
+		return fmt.Errorf("URL has disallowed scheme %q", scheme)
+	}
+	return nil
+}

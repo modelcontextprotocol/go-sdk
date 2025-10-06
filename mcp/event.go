@@ -176,7 +176,6 @@ type EventStore interface {
 	// with all of its streams.
 	// A store cannot rely on this method being called for cleanup. It should institute
 	// additional mechanisms, such as timeouts, to reclaim storage.
-	//
 	SessionClosed(_ context.Context, sessionID string) error
 
 	// There is no StreamClosed method. A server doesn't know when a stream is finished, because

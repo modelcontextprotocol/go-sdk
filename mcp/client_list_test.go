@@ -6,6 +6,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"log"
 	"testing"
@@ -41,7 +42,13 @@ func TestList(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tt.InputSchema = is
+			data, err := json.Marshal(is)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &tt.InputSchema); err != nil {
+				t.Fatal(err)
+			}
 			wantTools = append(wantTools, tt)
 		}
 		t.Run("list", func(t *testing.T) {

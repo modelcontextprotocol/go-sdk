@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"crypto/rand"
+	"encoding/json"
 )
 
 func assert(cond bool, msg string) {
@@ -26,4 +27,17 @@ func randText() string {
 		src[i] = base32alphabet[src[i]%32]
 	}
 	return string(src)
+}
+
+// remarshal marshals from to JSON, and then unmarshals into to, which must be
+// a pointer type.
+func remarshal(from, to any) error {
+	data, err := json.Marshal(from)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, to); err != nil {
+		return err
+	}
+	return nil
 }

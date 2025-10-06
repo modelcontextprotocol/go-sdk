@@ -9,11 +9,55 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func ExampleServer_AddTool_rawSchema() {
+	// In some scenarios, you may want your server to be a pass-through, with
+	// JSON schema coming from another source. Or perhaps you want to implement
+	// tool validation using a different JSON schema library.
+	//
+	// For these cases, you can use [mcp.Server.AddTool], which is the "raw" form
+	// of the API. Note that it is the caller's responsibility to validate inputs
+	// and outputs.
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	server.AddTool(&mcp.Tool{
+		Name:        "greet",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"user":{"type":"string"}}}`),
+	}, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Note: no validation!
+		var args struct{ User string }
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			// TODO: we should use a jsonrpc error here, to be consistent with other
+			// SDKs.
+			return nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Hi " + args.User}},
+		}, nil
+	})
+
+	ctx := context.Background()
+	session, err := connect(ctx, server)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"user": "you"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
+	// Output: Hi you
+}
 
 func ExampleAddTool_customMarshalling() {
 	// Sometimes when you want to customize the input or output schema for a
@@ -34,8 +78,8 @@ func ExampleAddTool_customMarshalling() {
 	// In this case, you can use jsonschema.For along with jsonschema.ForOptions
 	// to customize the schema inference for your custom type.
 	inputSchema, err := jsonschema.For[Input](&jsonschema.ForOptions{
-		TypeSchemas: map[any]*jsonschema.Schema{
-			MyDate{}: {Type: "string"},
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[MyDate](): {Type: "string"},
 		},
 	})
 	if err != nil {
@@ -67,7 +111,7 @@ func ExampleAddTool_customMarshalling() {
 	}
 	// Output:
 	// my_tool {
-	// 	"type": "object",
+	// 	"additionalProperties": false,
 	// 	"properties": {
 	// 		"end": {
 	// 			"type": "string"
@@ -79,13 +123,8 @@ func ExampleAddTool_customMarshalling() {
 	// 			"type": "string"
 	// 		}
 	// 	},
-	// 	"additionalProperties": false
+	// 	"type": "object"
 	// }
-}
-
-type WeatherInput struct {
-	Location Location `json:"location" jsonschema:"user location"`
-	Days     int      `json:"days" jsonschema:"number of days to forecast"`
 }
 
 type Location struct {
@@ -114,6 +153,13 @@ const (
 
 type Probability float64
 
+// !+weathertool
+
+type WeatherInput struct {
+	Location Location `json:"location" jsonschema:"user location"`
+	Days     int      `json:"days" jsonschema:"number of days to forecast"`
+}
+
 type WeatherOutput struct {
 	Summary       string      `json:"summary" jsonschema:"a summary of the weather forecast"`
 	Confidence    Probability `json:"confidence" jsonschema:"confidence, between 0 and 1"`
@@ -140,15 +186,19 @@ func WeatherTool(ctx context.Context, req *mcp.CallToolRequest, in WeatherInput)
 	return nil, perfectWeather, nil
 }
 
+// !-weathertool
+
 func ExampleAddTool_complexSchema() {
 	// This example demonstrates a tool with a more 'realistic' input and output
 	// schema. We use a combination of techniques to tune our input and output
 	// schemas.
 
+	// !+customschemas
+
 	// Distinguished Go types allow custom schemas to be reused during inference.
-	customSchemas := map[any]*jsonschema.Schema{
-		Probability(0):  {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
-		WeatherType(""): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
+	customSchemas := map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[Probability](): {Type: "number", Minimum: jsonschema.Ptr(0.0), Maximum: jsonschema.Ptr(1.0)},
+		reflect.TypeFor[WeatherType](): {Type: "string", Enum: []any{Sunny, PartlyCloudy, Cloudy, Rainy, Snowy}},
 	}
 	opts := &jsonschema.ForOptions{TypeSchemas: customSchemas}
 	in, err := jsonschema.For[WeatherInput](opts)
@@ -177,6 +227,8 @@ func ExampleAddTool_complexSchema() {
 		OutputSchema: out,
 	}, WeatherTool)
 
+	// !-customschemas
+
 	ctx := context.Background()
 	session, err := connect(ctx, server) // create an in-memory connection
 	if err != nil {
@@ -191,9 +243,9 @@ func ExampleAddTool_complexSchema() {
 		}
 		// Formatting the entire schemas would be too much output.
 		// Just check that our customizations were effective.
-		fmt.Println("max days:", *t.InputSchema.Properties["days"].Maximum)
-		fmt.Println("max confidence:", *t.OutputSchema.Properties["confidence"].Maximum)
-		fmt.Println("weather types:", t.OutputSchema.Properties["dailyForecast"].Items.Properties["type"].Enum)
+		fmt.Println("max days:", jsonPath(t.InputSchema, "properties", "days", "maximum"))
+		fmt.Println("max confidence:", jsonPath(t.OutputSchema, "properties", "confidence", "maximum"))
+		fmt.Println("weather types:", jsonPath(t.OutputSchema, "properties", "dailyForecast", "items", "properties", "type", "enum"))
 	}
 	// Output:
 	// max days: 10
@@ -208,4 +260,11 @@ func connect(ctx context.Context, server *mcp.Server) (*mcp.ClientSession, error
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 	return client.Connect(ctx, t2, nil)
+}
+
+func jsonPath(s any, path ...string) any {
+	if len(path) == 0 {
+		return s
+	}
+	return jsonPath(s.(map[string]any)[path[0]], path[1:]...)
 }

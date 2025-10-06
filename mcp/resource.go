@@ -41,7 +41,7 @@ type ResourceHandler func(context.Context, *ReadResourceRequest) (*ReadResourceR
 // not be found.
 func ResourceNotFoundError(uri string) error {
 	return &jsonrpc2.WireError{
-		Code:    CodeResourceNotFound,
+		Code:    codeResourceNotFound,
 		Message: "Resource not found",
 		Data:    json.RawMessage(fmt.Sprintf(`{"uri":%q}`, uri)),
 	}
