@@ -53,10 +53,11 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 // GetProtectedResourceMetadataFromHeader retrieves protected resource metadata
 // using information in the given header, using the given client (or the default
 // client if nil).
-// It issues a GET request to a URL discovered by parsing the WWW-Authenticate headers in the given request,
-// It then validates the resource field of the resulting metadata against the given URL.
-// If there is no URL in the request, it returns nil, nil.
-func GetProtectedResourceMetadataFromHeader(ctx context.Context, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
+// It issues a GET request to a URL discovered by parsing the WWW-Authenticate headers in the given request.
+// Per RFC 9728 section 3.3, it validates that the resource field of the resulting metadata
+// matches the serverURL (the URL that the client used to make the original request to the resource server).
+// If there is no metadata URL in the header, it returns nil, nil.
+func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL string, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromHeader")
 	headers := header[http.CanonicalHeaderKey("WWW-Authenticate")]
 	if len(headers) == 0 {
@@ -66,11 +67,11 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, header http.Hea
 	if err != nil {
 		return nil, err
 	}
-	url := ResourceMetadataURL(cs)
-	if url == "" {
+	metadataURL := ResourceMetadataURL(cs)
+	if metadataURL == "" {
 		return nil, nil
 	}
-	return getPRM(ctx, url, c, url)
+	return getPRM(ctx, metadataURL, c, serverURL)
 }
 
 // getPRM makes a GET request to the given URL, and validates the response.
@@ -83,7 +84,7 @@ func getPRM(ctx context.Context, purl string, c *http.Client, wantResource strin
 	if err != nil {
 		return nil, err
 	}
-	// Validate the Resource field to thwart impersonation attacks (section 3.3).
+	// Validate the Resource field (see RFC 9728, section 3.3).
 	if prm.Resource != wantResource {
 		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, wantResource)
 	}
