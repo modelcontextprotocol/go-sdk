@@ -115,8 +115,8 @@ func (t *IOTransport) Connect(context.Context) (Connection, error) {
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
 //
-// InMemoryTransports should be connected using [NewInMemoryTranports], which
-// returns two transports connected to each other.
+// InMemoryTransports should be constructed using [NewInMemoryTransports],
+// which returns two transports connected to each other.
 type InMemoryTransport struct {
 	rwc io.ReadWriteCloser
 }
