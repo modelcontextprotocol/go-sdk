@@ -310,7 +310,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 
 			_, err = session.ListTools(ctx, nil)
 			if (err != nil) != (test.wantErrorContaining != "") {
-				t.Errorf("After initialization, got error %v, want %v", err, test.wantErrorContaining)
+				t.Errorf("After initialization, got error %v, want containing %q", err, test.wantErrorContaining)
 			} else if err != nil {
 				if !strings.Contains(err.Error(), test.wantErrorContaining) {
 					t.Errorf("After initialization, got error %s, want containing %q", err, test.wantErrorContaining)

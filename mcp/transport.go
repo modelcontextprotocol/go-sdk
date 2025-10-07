@@ -93,6 +93,18 @@ func (*StdioTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
 }
 
+// An IOTransport is a [Transport] that communicates over separate
+// io.ReadCloser and io.WriteCloser using newline-delimited JSON.
+type IOTransport struct {
+	Reader io.ReadCloser
+	Writer io.WriteCloser
+}
+
+// Connect implements the [Transport] interface.
+func (t *IOTransport) Connect(context.Context) (Connection, error) {
+	return newIOConn(rwc{t.Reader, t.Writer}), nil
+}
+
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
 type InMemoryTransport struct {
@@ -104,8 +116,12 @@ func (t *InMemoryTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(t.rwc), nil
 }
 
-// NewInMemoryTransports returns two [InMemoryTransports] that connect to each
-// other.
+// NewInMemoryTransports returns two [InMemoryTransport] objects that connect
+// to each other.
+//
+// The resulting transports are symmetrical: use either to connect to a server,
+// and then the other to connect to a client. Servers must be connected before
+// clients, as the client initializes the MCP session during connection.
 func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport) {
 	c1, c2 := net.Pipe()
 	return &InMemoryTransport{c1}, &InMemoryTransport{c2}
