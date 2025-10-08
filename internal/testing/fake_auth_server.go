@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -44,7 +45,22 @@ func NewFakeAuthMux() *http.ServeMux {
 }
 
 func (s *state) handleMetadata(w http.ResponseWriter, r *http.Request) {
-	issuer := "https://localhost:" + r.URL.Port()
+	// Derive the port from the request Host; r.URL.Port() is empty on server side.
+	hostPort := r.Host
+	port := ""
+
+	if hp := hostPort; hp != "" {
+		if _, p, err := net.SplitHostPort(hp); err == nil {
+			port = p
+		}
+	}
+
+	if port == "" {
+		// Fallback attempt; may still be empty depending on server/request.
+		port = r.URL.Port()
+	}
+
+	issuer := "https://localhost:" + port
 	metadata := map[string]any{
 		"issuer":                                issuer,
 		"authorization_endpoint":                issuer + "/authorize",

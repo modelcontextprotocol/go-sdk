@@ -145,3 +145,19 @@ func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*
 	}
 	return nil, fmt.Errorf("failed to get auth server metadata from %q: %w", issuerURL, errors.Join(errs...))
 }
+
+// RequirePKCE checks that the authorization server for issuerURL supports PKCE,
+// by verifying that CodeChallengeMethodsSupported is non-empty.
+// It returns an error if metadata cannot be fetched or PKCE is not advertised.
+func RequirePKCE(ctx context.Context, issuerURL string, c *http.Client) error {
+	asm, err := GetAuthServerMeta(ctx, issuerURL, c)
+	if err != nil {
+		return err
+	}
+
+	if len(asm.CodeChallengeMethodsSupported) == 0 {
+		return fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
+	}
+
+	return nil
+}

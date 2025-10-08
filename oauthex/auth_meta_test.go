@@ -7,10 +7,16 @@
 package oauthex
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+
+	itesting "github.com/modelcontextprotocol/go-sdk/internal/testing"
 )
 
 func TestAuthMetaParse(t *testing.T) {
@@ -27,4 +33,35 @@ func TestAuthMetaParse(t *testing.T) {
 	if g, w := a.Issuer, "https://accounts.google.com"; g != w {
 		t.Errorf("got %q, want %q", g, w)
 	}
+}
+
+func TestRequirePKCE(t *testing.T) {
+	ctx := context.Background()
+
+	// Start a fake OAuth 2.1 auth server that advertises PKCE (S256).
+	orig := itesting.NewFakeAuthMux()
+	wrapper := http.NewServeMux()
+	wrapper.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		orig.ServeHTTP(w, r)
+	})
+	ts := httptest.NewTLSServer(wrapper)
+	defer ts.Close()
+
+	// Validate that the server supports PKCE per MCP auth requirements.
+	// The fake server sets issuer to https://localhost:<port>, so compute that issuer.
+	u, _ := url.Parse(ts.URL)
+	issuer := "https://localhost:" + u.Port()
+
+	// The fake server presents a cert for example.com; set ServerName accordingly.
+	httpClient := ts.Client()
+	if tr, ok := httpClient.Transport.(*http.Transport); ok {
+		clone := tr.Clone()
+		clone.TLSClientConfig.ServerName = "example.com"
+		httpClient.Transport = clone
+	}
+
+	if err := RequirePKCE(ctx, issuer, httpClient); err != nil {
+		t.Fatal(err)
+	}
+
 }
