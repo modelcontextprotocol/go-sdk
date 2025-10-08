@@ -7,21 +7,21 @@
 package oauthex
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	authServerPort = ":8080"
-	issuer         = "http://localhost" + authServerPort
-	tokenExpiry    = time.Hour
+	tokenExpiry = time.Hour
 )
 
 var jwtSigningKey = []byte("fake-secret-key")
@@ -32,15 +32,17 @@ type authCodeInfo struct {
 }
 
 type state struct {
+	mu        sync.Mutex
 	authCodes map[string]authCodeInfo
 }
 
-// NewFakeAuthMux constructs a ServeMux that implements an OAuth 2.1 authentication
-// server. It should be used with [httptest.NewTLSServer].
-func NewFakeAuthMux() *http.ServeMux {
+// NewFakeMCPServerMux constructs a ServeMux that implements an MCP server
+// with an integrated OAuth 2.1 authentication server. It should be used with
+// [httptest.NewTLSServer].
+func NewFakeMCPServerMux() *http.ServeMux {
 	s := &state{authCodes: make(map[string]authCodeInfo)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", s.handleMcp)
+	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", s.handleProtectedResourceMetadata)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", s.handleServerMetadata)
 	mux.HandleFunc("/register", s.handleDynamicClientRegistration)
@@ -49,14 +51,14 @@ func NewFakeAuthMux() *http.ServeMux {
 	return mux
 }
 
-// handleMcp is the protected resource endpoint. It requires a valid Bearer token.
+// handleMCP is the protected resource endpoint. It requires a valid Bearer token.
 // If the token is missing or invalid, it returns a 401 Unauthorized response
 // with a WWW-Authenticate header pointing to the resource metadata.
-func (s *state) handleMcp(w http.ResponseWriter, r *http.Request) {
+func (s *state) handleMCP(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -64,11 +66,7 @@ func (s *state) handleMcp(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil || !token.Valid {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		metadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, r.Host)
+		metadataURL := getBaseURL(r) + "/.well-known/oauth-protected-resource"
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s", scope="openid profile email"`, metadataURL))
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -84,27 +82,24 @@ func (s *state) handleMcp(w http.ResponseWriter, r *http.Request) {
 // as defined in RFC 9728.
 func (s *state) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	// Construct the authorization server issuer URL dynamically.
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	authServerIssuer := fmt.Sprintf("%s://%s", scheme, r.Host)
+	authServerIssuer := getBaseURL(r)
 
 	metadata := ProtectedResourceMetadata{
 		ScopesSupported:      []string{"openid", "profile", "email"},
 		AuthorizationServers: []string{authServerIssuer},
 	}
-
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(metadata); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 func (s *state) handleServerMetadata(w http.ResponseWriter, r *http.Request) {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	issuer := scheme + "://" + r.Host
+	issuer := getBaseURL(r)
 	metadata := AuthServerMeta{
 		Issuer:                            issuer,
 		AuthorizationEndpoint:             issuer + "/authorize",
@@ -117,8 +112,14 @@ func (s *state) handleServerMetadata(w http.ResponseWriter, r *http.Request) {
 		TokenEndpointAuthMethodsSupported: []string{"none"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(metadata); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 // handleDynamicClientRegistration handles dynamic client registration requests,
@@ -129,22 +130,27 @@ func (s *state) handleDynamicClientRegistration(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var clientRegistrationMetadata ClientRegistrationMetadata
-	if err := json.NewDecoder(r.Body).Decode(&clientRegistrationMetadata); err != nil {
+	var crm ClientRegistrationMetadata
+	if err := json.NewDecoder(r.Body).Decode(&crm); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON in request body: %v", err), http.StatusBadRequest)
 		return
 	}
 	clientID := fmt.Sprintf("fake-client-%d", time.Now().UnixNano())
 
 	response := ClientRegistrationResponse{
-		ClientRegistrationMetadata: clientRegistrationMetadata,
+		ClientRegistrationMetadata: crm,
 		ClientID:                   clientID,
 		ClientIDIssuedAt:           time.Now(),
-		ClientSecret:               "fake-registration-access-token",
+		ClientSecret:               "fake-registration-access-secret",
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	w.Write(buf.Bytes())
 }
 
 func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -159,15 +165,16 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
 		return
 	}
-
+	s.mu.Lock()
 	authCodeInfo, ok := s.authCodes[code]
 	if !ok {
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
 	delete(s.authCodes, code)
+	s.mu.Unlock()
 
-	// PKCE verification
+	// PKCE verification.
 	hasher := sha256.New()
 	hasher.Write([]byte(codeVerifier))
 	calculatedChallenge := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
@@ -176,10 +183,10 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue JWT
+	// Issue JWT.
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"iss": issuer,
+		"iss": getBaseURL(r),
 		"sub": "fake-user-id",
 		"aud": "fake-client-id",
 		"exp": now.Add(tokenExpiry).Unix(),
@@ -197,8 +204,14 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 		"token_type":   "Bearer",
 		"expires_in":   int(tokenExpiry.Seconds()),
 	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(tokenResponse); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenResponse)
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 func (s *state) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -226,11 +239,22 @@ func (s *state) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authCode := "fake-auth-code-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	s.mu.Lock()
 	s.authCodes[authCode] = authCodeInfo{
 		codeChallenge: codeChallenge,
 		redirectURI:   redirectURI,
 	}
+	s.mu.Unlock()
 
 	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, authCode, query.Get("state"))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// getBaseURL constructs the base URL (scheme://host) from the request.
+func getBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
 }
