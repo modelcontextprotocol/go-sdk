@@ -118,7 +118,6 @@ func (s *state) handleServerMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	w.Write(buf.Bytes())
 }
 
@@ -210,7 +209,6 @@ func (s *state) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	w.Write(buf.Bytes())
 }
 
