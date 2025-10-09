@@ -17,8 +17,16 @@ import (
 type TokenInfo struct {
 	Scopes     []string
 	Expiration time.Time
-	// TODO: add standard JWT fields
-	Extra map[string]any
+	Extra      map[string]any
+
+	// Standard JWT fields
+	// See https://datatracker.ietf.org/doc/html/rfc7519#section-4.1
+	Issuer    string    `json:"iss,omitempty"`
+	Subject   string    `json:"sub,omitempty"`
+	Audience  []string  `json:"aud,omitempty"`
+	NotBefore time.Time `json:"nbf,omitempty"`
+	IssuedAt  time.Time `json:"iat,omitempty"`
+	JWTID     string    `json:"jti,omitempty"`
 }
 
 // The error that a TokenVerifier should return if the token cannot be verified.
