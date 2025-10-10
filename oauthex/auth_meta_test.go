@@ -35,7 +35,7 @@ func TestAuthMetaParse(t *testing.T) {
 	}
 }
 
-func TestRequirePKCE(t *testing.T) {
+func TestGetAuthServerMetaRequirePKCE(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a fake OAuth 2.1 auth server that advertises PKCE (S256).
@@ -60,7 +60,7 @@ func TestRequirePKCE(t *testing.T) {
 		httpClient.Transport = clone
 	}
 
-	if err := RequirePKCE(ctx, issuer, httpClient); err != nil {
+	if _, err := GetAuthServerMeta(ctx, issuer, httpClient); err != nil {
 		t.Fatal(err)
 	}
 
