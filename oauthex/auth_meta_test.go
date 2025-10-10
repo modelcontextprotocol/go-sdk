@@ -36,7 +36,6 @@ func TestAuthMetaParse(t *testing.T) {
 
 func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 	ctx := context.Background()
-
 	tests := []struct {
 		name           string
 		hasPKCESupport bool
@@ -61,7 +60,6 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			// Start a fake OAuth 2.1 auth server
 			wrapper := http.NewServeMux()
 			wrapper.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
-				// Create metadata
 				u, _ := url.Parse("https://" + r.Host)
 				issuer := "https://localhost:" + u.Port()
 				metadata := AuthServerMeta{
@@ -100,9 +98,7 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 				httpClient.Transport = clone
 			}
 
-			// Test the GetAuthServerMeta function
 			meta, err := GetAuthServerMeta(ctx, issuer, httpClient)
-
 			if tt.expectError {
 				if err == nil {
 					t.Fatal("expected error but got none")
