@@ -15,8 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	itesting "github.com/modelcontextprotocol/go-sdk/internal/testing"
 )
 
 func TestAuthMetaParse(t *testing.T) {
@@ -39,10 +37,9 @@ func TestGetAuthServerMetaRequirePKCE(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a fake OAuth 2.1 auth server that advertises PKCE (S256).
-	orig := itesting.NewFakeAuthMux()
 	wrapper := http.NewServeMux()
 	wrapper.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		orig.ServeHTTP(w, r)
+		NewFakeMCPServerMux().ServeHTTP(w, r)
 	})
 	ts := httptest.NewTLSServer(wrapper)
 	defer ts.Close()
