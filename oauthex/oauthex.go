@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 // Package oauthex implements extensions to OAuth2.
-
 package oauthex
 
 // ProtectedResourceMetadata is the metadata for an OAuth 2.0 protected resource,
