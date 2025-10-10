@@ -154,12 +154,12 @@ server := mcp.NewServer(&mcp.Implementation{Name: "authenticated-mcp-server"}, n
 
 // Create authentication middleware
 authMiddleware := auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
-  Scopes: []string{"read", "write"},
+	Scopes: []string{"read", "write"},
 })
 
 // Create MCP handler
 handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-  return server
+	return server
 }, nil)
 
 // Apply authentication middleware to MCP handler
@@ -185,9 +185,9 @@ authenticatedHandler := authMiddleware(customMiddleware(handler))
 
 ```go
 func jwtVerifier(ctx context.Context, tokenString string) (*auth.TokenInfo, error) {
-  // JWT token verification logic
-  // On success: Return TokenInfo
-  // On failure: Return auth.ErrInvalidToken
+	// JWT token verification logic
+	// On success: Return TokenInfo
+	// On failure: Return auth.ErrInvalidToken
 }
 ```
 
@@ -196,20 +196,20 @@ func jwtVerifier(ctx context.Context, tokenString string) (*auth.TokenInfo, erro
 ```go
 // Get authentication information in MCP tool
 func MyTool(ctx context.Context, req *mcp.CallToolRequest, args MyArgs) (*mcp.CallToolResult, any, error) {
-  // Extract authentication info from request
-  userInfo := req.Extra.TokenInfo
+	// Extract authentication info from request
+	userInfo := req.Extra.TokenInfo
 
-  // Check scopes
-  if !slices.Contains(userInfo.Scopes, "read") {
-    return nil, nil, fmt.Errorf("insufficient permissions: read scope required")
-  }
+	// Check scopes
+	if !slices.Contains(userInfo.Scopes, "read") {
+		return nil, nil, fmt.Errorf("insufficient permissions: read scope required")
+	}
 
-  // Execute tool logic
-  return &mcp.CallToolResult{
-    Content: []mcp.Content{
-      &mcp.TextContent{Text: "Tool executed successfully"},
-    },
-  }, nil, nil
+	// Execute tool logic
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "Tool executed successfully"},
+		},
+	}, nil, nil
 }
 ```
 

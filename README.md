@@ -40,36 +40,36 @@ stdin/stdout:
 package main
 
 import (
-  "context"
-  "log"
+	"context"
+	"log"
 
-  "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Input struct {
-  Name string `json:"name" jsonschema:"the name of the person to greet"`
+	Name string `json:"name" jsonschema:"the name of the person to greet"`
 }
 
 type Output struct {
-  Greeting string `json:"greeting" jsonschema:"the greeting to tell to the user"`
+	Greeting string `json:"greeting" jsonschema:"the greeting to tell to the user"`
 }
 
 func SayHi(ctx context.Context, req *mcp.CallToolRequest, input Input) (
-  *mcp.CallToolResult,
-  Output,
-  error,
+	*mcp.CallToolResult,
+	Output,
+	error,
 ) {
-  return nil, Output{Greeting: "Hi " + input.Name}, nil
+	return nil, Output{Greeting: "Hi " + input.Name}, nil
 }
 
 func main() {
-  // Create a server with a single tool.
-  server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v1.0.0"}, nil)
-  mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
-  // Run the server over stdin/stdout, until the client disconnects.
-  if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-    log.Fatal(err)
-  }
+	// Create a server with a single tool.
+	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v1.0.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
+	// Run the server over stdin/stdout, until the client disconnects.
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatal(err)
+	}
 }
 ```
 
@@ -81,42 +81,42 @@ stdin/stdout:
 package main
 
 import (
-  "context"
-  "log"
-  "os/exec"
+	"context"
+	"log"
+	"os/exec"
 
-  "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
-  ctx := context.Background()
+	ctx := context.Background()
 
-  // Create a new client, with no features.
-  client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
+	// Create a new client, with no features.
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 
-  // Connect to a server over stdin/stdout.
-  transport := &mcp.CommandTransport{Command: exec.Command("myserver")}
-  session, err := client.Connect(ctx, transport, nil)
-  if err != nil {
-    log.Fatal(err)
-  }
-  defer session.Close()
+	// Connect to a server over stdin/stdout.
+	transport := &mcp.CommandTransport{Command: exec.Command("myserver")}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
 
-  // Call a tool on the server.
-  params := &mcp.CallToolParams{
-    Name:      "greet",
-    Arguments: map[string]any{"name": "you"},
-  }
-  res, err := session.CallTool(ctx, params)
-  if err != nil {
-    log.Fatalf("CallTool failed: %v", err)
-  }
-  if res.IsError {
-    log.Fatal("tool failed")
-  }
-  for _, c := range res.Content {
-    log.Print(c.(*mcp.TextContent).Text)
-  }
+	// Call a tool on the server.
+	params := &mcp.CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"name": "you"},
+	}
+	res, err := session.CallTool(ctx, params)
+	if err != nil {
+		log.Fatalf("CallTool failed: %v", err)
+	}
+	if res.IsError {
+		log.Fatal("tool failed")
+	}
+	for _, c := range res.Content {
+		log.Print(c.(*mcp.TextContent).Text)
+	}
 }
 ```
 
