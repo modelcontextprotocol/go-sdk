@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,18 +34,34 @@ func TestAuthMetaParse(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetaRequirePKCE(t *testing.T) {
+func TestGetAuthServerMetaNotImplementPKCE(t *testing.T) {
 	ctx := context.Background()
 
-	// Start a fake OAuth 2.1 auth server that advertises PKCE (S256).
+	// Start a fake OAuth 2.1 auth server that does NOT advertise PKCE support.
 	wrapper := http.NewServeMux()
-	wrapper.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		NewFakeMCPServerMux().ServeHTTP(w, r)
+	wrapper.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		// Create metadata without PKCE support
+		u, _ := url.Parse("https://" + r.Host)
+		issuer := "https://localhost:" + u.Port()
+		metadata := AuthServerMeta{
+			Issuer:                            issuer,
+			AuthorizationEndpoint:             issuer + "/authorize",
+			TokenEndpoint:                     issuer + "/token",
+			RegistrationEndpoint:              issuer + "/register",
+			JWKSURI:                           issuer + "/.well-known/jwks.json",
+			ScopesSupported:                   []string{"openid", "profile", "email"},
+			ResponseTypesSupported:            []string{"code"},
+			GrantTypesSupported:               []string{"authorization_code"},
+			TokenEndpointAuthMethodsSupported: []string{"none"},
+			// CodeChallengeMethodsSupported is intentionally omitted/empty to test PKCE requirement
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(metadata)
 	})
 	ts := httptest.NewTLSServer(wrapper)
 	defer ts.Close()
 
-	// Validate that the server supports PKCE per MCP auth requirements.
 	// The fake server sets issuer to https://localhost:<port>, so compute that issuer.
 	u, _ := url.Parse(ts.URL)
 	issuer := "https://localhost:" + u.Port()
@@ -57,8 +74,15 @@ func TestGetAuthServerMetaRequirePKCE(t *testing.T) {
 		httpClient.Transport = clone
 	}
 
-	if _, err := GetAuthServerMeta(ctx, issuer, httpClient); err != nil {
-		t.Fatal(err)
+	// This should fail because the server doesn't support PKCE
+	_, err := GetAuthServerMeta(ctx, issuer, httpClient)
+	if err == nil {
+		t.Fatal("expected error when auth server doesn't support PKCE, but got none")
 	}
 
+	// Verify the error message mentions PKCE
+	expectedError := "does not implement PKCE"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("expected error to contain %q, but got: %v", expectedError, err)
+	}
 }
