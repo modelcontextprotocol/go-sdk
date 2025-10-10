@@ -35,6 +35,6 @@ protocol.
     1. [Logging](server.md#logging)
     1. [Pagination](server.md#pagination)
 
-# TroubleShooting
+# Troubleshooting
 
 See [troubleshooting.md](troubleshooting.md) for a troubleshooting guide.
