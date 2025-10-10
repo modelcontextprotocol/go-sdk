@@ -2,6 +2,9 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+// This file implements Authorization Server Metadata.
+// See https://www.rfc-editor.org/rfc/rfc8414.html.
+
 //go:build mcp_go_client_oauth
 
 package oauthex
