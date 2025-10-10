@@ -34,55 +34,94 @@ func TestAuthMetaParse(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetaNotImplementPKCE(t *testing.T) {
+func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 	ctx := context.Background()
 
-	// Start a fake OAuth 2.1 auth server that does NOT advertise PKCE support.
-	wrapper := http.NewServeMux()
-	wrapper.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
-		// Create metadata without PKCE support
-		u, _ := url.Parse("https://" + r.Host)
-		issuer := "https://localhost:" + u.Port()
-		metadata := AuthServerMeta{
-			Issuer:                            issuer,
-			AuthorizationEndpoint:             issuer + "/authorize",
-			TokenEndpoint:                     issuer + "/token",
-			RegistrationEndpoint:              issuer + "/register",
-			JWKSURI:                           issuer + "/.well-known/jwks.json",
-			ScopesSupported:                   []string{"openid", "profile", "email"},
-			ResponseTypesSupported:            []string{"code"},
-			GrantTypesSupported:               []string{"authorization_code"},
-			TokenEndpointAuthMethodsSupported: []string{"none"},
-			// CodeChallengeMethodsSupported is intentionally omitted/empty to test PKCE requirement
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(metadata)
-	})
-	ts := httptest.NewTLSServer(wrapper)
-	defer ts.Close()
-
-	// The fake server sets issuer to https://localhost:<port>, so compute that issuer.
-	u, _ := url.Parse(ts.URL)
-	issuer := "https://localhost:" + u.Port()
-
-	// The fake server presents a cert for example.com; set ServerName accordingly.
-	httpClient := ts.Client()
-	if tr, ok := httpClient.Transport.(*http.Transport); ok {
-		clone := tr.Clone()
-		clone.TLSClientConfig.ServerName = "example.com"
-		httpClient.Transport = clone
+	tests := []struct {
+		name           string
+		hasPKCESupport bool
+		expectError    bool
+		expectedError  string
+	}{
+		{
+			name:           "server_with_pkce_support",
+			hasPKCESupport: true,
+			expectError:    false,
+		},
+		{
+			name:           "server_without_pkce_support",
+			hasPKCESupport: false,
+			expectError:    true,
+			expectedError:  "does not implement PKCE",
+		},
 	}
 
-	// This should fail because the server doesn't support PKCE
-	_, err := GetAuthServerMeta(ctx, issuer, httpClient)
-	if err == nil {
-		t.Fatal("expected error when auth server doesn't support PKCE, but got none")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Start a fake OAuth 2.1 auth server
+			wrapper := http.NewServeMux()
+			wrapper.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+				// Create metadata
+				u, _ := url.Parse("https://" + r.Host)
+				issuer := "https://localhost:" + u.Port()
+				metadata := AuthServerMeta{
+					Issuer:                            issuer,
+					AuthorizationEndpoint:             issuer + "/authorize",
+					TokenEndpoint:                     issuer + "/token",
+					RegistrationEndpoint:              issuer + "/register",
+					JWKSURI:                           issuer + "/.well-known/jwks.json",
+					ScopesSupported:                   []string{"openid", "profile", "email"},
+					ResponseTypesSupported:            []string{"code"},
+					GrantTypesSupported:               []string{"authorization_code"},
+					TokenEndpointAuthMethodsSupported: []string{"none"},
+				}
 
-	// Verify the error message mentions PKCE
-	expectedError := "does not implement PKCE"
-	if !strings.Contains(err.Error(), expectedError) {
-		t.Errorf("expected error to contain %q, but got: %v", expectedError, err)
+				// Add PKCE support based on test case
+				if tt.hasPKCESupport {
+					metadata.CodeChallengeMethodsSupported = []string{"S256"}
+				}
+				// If hasPKCESupport is false, CodeChallengeMethodsSupported remains empty
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(metadata)
+			})
+			ts := httptest.NewTLSServer(wrapper)
+			defer ts.Close()
+
+			// The fake server sets issuer to https://localhost:<port>, so compute that issuer.
+			u, _ := url.Parse(ts.URL)
+			issuer := "https://localhost:" + u.Port()
+
+			// The fake server presents a cert for example.com; set ServerName accordingly.
+			httpClient := ts.Client()
+			if tr, ok := httpClient.Transport.(*http.Transport); ok {
+				clone := tr.Clone()
+				clone.TLSClientConfig.ServerName = "example.com"
+				httpClient.Transport = clone
+			}
+
+			// Test the GetAuthServerMeta function
+			meta, err := GetAuthServerMeta(ctx, issuer, httpClient)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatal("expected error but got none")
+				}
+				if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("expected error to contain %q, but got: %v", tt.expectedError, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if meta == nil {
+					t.Fatal("expected metadata but got nil")
+				}
+				// Verify PKCE support is present
+				if len(meta.CodeChallengeMethodsSupported) == 0 {
+					t.Error("expected PKCE support but CodeChallengeMethodsSupported is empty")
+				}
+			}
+		})
 	}
 }
