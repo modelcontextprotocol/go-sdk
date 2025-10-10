@@ -1004,6 +1004,10 @@ func (c *streamableServerConn) Close() error {
 type StreamableClientTransport struct {
 	Endpoint   string
 	HTTPClient *http.Client
+	// ModifyRequest, if non-nil, is invoked before every outbound HTTP request.
+	// It can be used to set headers (for example, auth headers) or otherwise
+	// adjust the request before it is sent.
+	ModifyRequest func(*http.Request)
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
 	MaxRetries int
@@ -1054,29 +1058,31 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// cancelling its blocking network operations, which prevents hangs on exit.
 	connCtx, cancel := context.WithCancel(ctx)
 	conn := &streamableClientConn{
-		url:        t.Endpoint,
-		client:     client,
-		incoming:   make(chan jsonrpc.Message, 10),
-		done:       make(chan struct{}),
-		maxRetries: maxRetries,
-		strict:     t.strict,
-		logger:     t.logger,
-		ctx:        connCtx,
-		cancel:     cancel,
-		failed:     make(chan struct{}),
+		url:           t.Endpoint,
+		client:        client,
+		incoming:      make(chan jsonrpc.Message, 10),
+		done:          make(chan struct{}),
+		maxRetries:    maxRetries,
+		strict:        t.strict,
+		logger:        t.logger,
+		ctx:           connCtx,
+		cancel:        cancel,
+		modifyRequest: t.ModifyRequest,
+		failed:        make(chan struct{}),
 	}
 	return conn, nil
 }
 
 type streamableClientConn struct {
-	url        string
-	client     *http.Client
-	ctx        context.Context
-	cancel     context.CancelFunc
-	incoming   chan jsonrpc.Message
-	maxRetries int
-	strict     bool         // from [StreamableClientTransport.strict]
-	logger     *slog.Logger // from [StreamableClientTransport.logger]
+	url           string
+	client        *http.Client
+	ctx           context.Context
+	cancel        context.CancelFunc
+	incoming      chan jsonrpc.Message
+	maxRetries    int
+	strict        bool                // from [StreamableClientTransport.strict]
+	logger        *slog.Logger        // from [StreamableClientTransport.logger]
+	modifyRequest func(*http.Request) // from [StreamableClientTransport.ModifyRequest]
 
 	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
@@ -1213,6 +1219,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	c.setMCPHeaders(req)
+	if c.modifyRequest != nil {
+		c.modifyRequest(req)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -1473,6 +1482,9 @@ func (c *streamableClientConn) Close() error {
 				c.closeErr = err
 			} else {
 				c.setMCPHeaders(req)
+				if c.modifyRequest != nil {
+					c.modifyRequest(req)
+				}
 				if _, err := c.client.Do(req); err != nil {
 					c.closeErr = err
 				}
@@ -1499,6 +1511,9 @@ func (c *streamableClientConn) establishSSE(lastEventID string) (*http.Response,
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if c.modifyRequest != nil {
+		c.modifyRequest(req)
+	}
 
 	return c.client.Do(req)
 }

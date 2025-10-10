@@ -329,6 +329,10 @@ type SSEClientTransport struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
+	// ModifyRequest, if non-nil, is called before each outbound HTTP request.
+	// It can be used to set headers (for example, auth headers) prior to sending
+	// the request.
+	ModifyRequest func(*http.Request)
 }
 
 // Connect connects through the client endpoint.
@@ -346,6 +350,9 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		httpClient = http.DefaultClient
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if c.ModifyRequest != nil {
+		c.ModifyRequest(req)
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -372,11 +379,12 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 
 	// From here on, the stream takes ownership of resp.Body.
 	s := &sseClientConn{
-		client:      httpClient,
-		msgEndpoint: msgEndpoint,
-		incoming:    make(chan []byte, 100),
-		body:        resp.Body,
-		done:        make(chan struct{}),
+		client:        httpClient,
+		msgEndpoint:   msgEndpoint,
+		incoming:      make(chan []byte, 100),
+		body:          resp.Body,
+		done:          make(chan struct{}),
+		modifyRequest: c.ModifyRequest,
 	}
 
 	go func() {
@@ -403,9 +411,10 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 //   - Reads are SSE 'message' events, and pushes them onto a buffered channel.
 //   - Close terminates the GET request.
 type sseClientConn struct {
-	client      *http.Client // HTTP client to use for requests
-	msgEndpoint *url.URL     // session endpoint for POSTs
-	incoming    chan []byte  // queue of incoming messages
+	client        *http.Client // HTTP client to use for requests
+	msgEndpoint   *url.URL     // session endpoint for POSTs
+	incoming      chan []byte  // queue of incoming messages
+	modifyRequest func(*http.Request)
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -456,6 +465,9 @@ func (c *sseClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.modifyRequest != nil {
+		c.modifyRequest(req)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err

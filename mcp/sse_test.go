@@ -125,6 +125,59 @@ func TestSSEServer(t *testing.T) {
 	}
 }
 
+func TestSSEClientTransportModifyRequest(t *testing.T) {
+	ctx := context.Background()
+	const headerName = "X-Test-Header"
+	const headerValue = "abc123"
+
+	server := NewServer(testImpl, nil)
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+
+	var getCount atomic.Int32
+	var postCount atomic.Int32
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get(headerName); got != headerValue {
+			t.Errorf("header mismatch for %s: got %q, want %q", req.Method, got, headerValue)
+		}
+		switch req.Method {
+		case http.MethodGet:
+			getCount.Add(1)
+		case http.MethodPost:
+			postCount.Add(1)
+		}
+		sseHandler.ServeHTTP(w, req)
+	}))
+	defer httpServer.Close()
+
+	clientTransport := &SSEClientTransport{
+		Endpoint: httpServer.URL,
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set(headerName, headerValue)
+		},
+	}
+
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Ping(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cs.Wait()
+
+	if getCount.Load() == 0 {
+		t.Errorf("expected GET request to include %s header", headerName)
+	}
+	if postCount.Load() == 0 {
+		t.Errorf("expected POST request to include %s header", headerName)
+	}
+}
+
 // roundTripperFunc is a helper to create a custom RoundTripper
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
