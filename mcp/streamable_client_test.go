@@ -33,6 +33,7 @@ type streamableResponse struct {
 	status              int    // or http.StatusOK
 	body                string // or ""
 	optional            bool   // if set, request need not be sent
+	wantHeader          header // optional request headers to verify
 	wantProtocolVersion string // if "", unchecked
 	callback            func() // if set, called after the request is handled
 }
@@ -95,6 +96,11 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		s.t.Errorf("missing response for %v", key)
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return
+	}
+	for hdr, want := range resp.wantHeader {
+		if got := req.Header.Get(hdr); got != want {
+			s.t.Errorf("%v: header %q = %q, want %q", key, hdr, got, want)
+		}
 	}
 	if resp.callback != nil {
 		defer resp.callback()
@@ -184,6 +190,69 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 	}
 	if diff := cmp.Diff(initResult, session.state.InitializeResult); diff != "" {
 		t.Errorf("mismatch (-want, +got):\n%s", diff)
+	}
+}
+
+func TestStreamableClientTransportModifyRequest(t *testing.T) {
+	ctx := context.Background()
+	const headerName = "X-Test-Header"
+	const headerValue = "abc123"
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+				wantHeader: header{
+					headerName: headerValue,
+				},
+			},
+			{"POST", "123", notificationInitialized}: {
+				status: http.StatusAccepted,
+				wantHeader: header{
+					headerName: headerValue,
+				},
+			},
+			{"GET", "123", ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				optional: true,
+				wantHeader: header{
+					headerName: headerValue,
+				},
+			},
+			{"DELETE", "123", ""}: {
+				wantHeader: header{
+					headerName: headerValue,
+				},
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint: httpServer.URL,
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set(headerName, headerValue)
+		},
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Errorf("closing session: %v", err)
+	}
+	if missing := fake.missingRequests(); len(missing) > 0 {
+		t.Errorf("did not receive expected requests: %v", missing)
 	}
 }
 
