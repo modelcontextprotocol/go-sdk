@@ -13,14 +13,14 @@ The example implements:
 ### Start the Server
 
 ```bash
-go run main.go server
+go run . server
 ```
 This starts an MCP server on `http://localhost:8080` (default) that provides a `cityTime` tool.
 
 To run a client in another terminal:
 
 ```bash
-go run main.go client
+go run . client
 ```
 
 The client will:
@@ -31,8 +31,9 @@ The client will:
 
 At any given time you can pass a custom URL to the program to run it on a custom host/port:
 
+
 ```bash
-go run main.go -host 0.0.0.0 -port 9000 server
+go run . -host 0.0.0.0 -port 9000 server
 ```
 
 ## Testing with real-world MCP Clients
