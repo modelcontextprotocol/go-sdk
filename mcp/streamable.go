@@ -1363,7 +1363,7 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 			resp.Body.Close()
 			return
 		}
-		if resp.StatusCode == http.StatusNotFound && persistent && !c.strict {
+		if persistent && !c.strict {
 			// modelcontextprotocol/gosdk#393: some servers return NotFound instead
 			// of MethodNotAllowed for the persistent GET.
 			//
