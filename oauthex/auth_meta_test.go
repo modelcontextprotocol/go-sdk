@@ -39,19 +39,16 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 	tests := []struct {
 		name           string
 		hasPKCESupport bool
-		expectError    bool
-		expectedError  string
+		wantError      string
 	}{
 		{
 			name:           "server_with_pkce_support",
 			hasPKCESupport: true,
-			expectError:    false,
 		},
 		{
 			name:           "server_without_pkce_support",
 			hasPKCESupport: false,
-			expectError:    true,
-			expectedError:  "does not implement PKCE",
+			wantError:      "does not implement PKCE",
 		},
 	}
 
@@ -99,23 +96,23 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			}
 
 			meta, err := GetAuthServerMeta(ctx, issuer, httpClient)
-			if tt.expectError {
+			if tt.wantError != "" {
 				if err == nil {
-					t.Fatal("expected error but got none")
+					t.Fatal("wanted error but got none")
 				}
-				if !strings.Contains(err.Error(), tt.expectedError) {
-					t.Errorf("expected error to contain %q, but got: %v", tt.expectedError, err)
+				if !strings.Contains(err.Error(), tt.wantError) {
+					t.Errorf("wanted error to contain %q, but got: %v", tt.wantError, err)
 				}
 			} else {
 				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
+					t.Fatalf("unwanted error: %v", err)
 				}
 				if meta == nil {
-					t.Fatal("expected metadata but got nil")
+					t.Fatal("wanted metadata but got nil")
 				}
 				// Verify PKCE support is present
 				if len(meta.CodeChallengeMethodsSupported) == 0 {
-					t.Error("expected PKCE support but CodeChallengeMethodsSupported is empty")
+					t.Error("wanted PKCE support but CodeChallengeMethodsSupported is empty")
 				}
 			}
 		})
