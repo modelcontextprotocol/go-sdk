@@ -41,8 +41,18 @@ func TestStreamableTransports(t *testing.T) {
 
 	ctx := context.Background()
 
-	for _, useJSON := range []bool{false, true} {
-		t.Run(fmt.Sprintf("JSONResponse=%v", useJSON), func(t *testing.T) {
+	tests := []struct {
+		useJSON bool
+		replay  bool
+	}{
+		{false, false},
+		{false, true},
+		{true, false},
+		{true, true},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("JSONResponse=%v;replay=%v", test.useJSON, test.replay), func(t *testing.T) {
 			// Create a server with some simple tools.
 			server := NewServer(testImpl, nil)
 			AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
@@ -86,7 +96,12 @@ func TestStreamableTransports(t *testing.T) {
 			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 			// cookie-checking middleware.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
-				JSONResponse: useJSON,
+				JSONResponse: test.useJSON,
+				configureTransport: func(_ *http.Request, transport *StreamableServerTransport) {
+					if test.replay {
+						transport.EventStore = NewMemoryEventStore(nil)
+					}
+				},
 			})
 
 			var (
@@ -370,7 +385,11 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 			return new(CallToolResult), nil, nil
 		})
 
-	realServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)))
+	realServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		configureTransport: func(_ *http.Request, t *StreamableServerTransport) {
+			t.EventStore = NewMemoryEventStore(nil) // necessary for replay
+		},
+	})))
 	t.Cleanup(func() {
 		t.Log("Closing real HTTP server")
 		realServer.Close()
@@ -543,7 +562,16 @@ func TestServerInitiatedSSE(t *testing.T) {
 	notifications := make(chan string)
 	server := NewServer(testImpl, nil)
 
-	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)))
+	opts := &StreamableHTTPOptions{
+		// TODO(#583): for now, this is required for guaranteed message delivery.
+		// However, it shouldn't be necessary to use replay here, as we should be
+		// guaranteed that the standalone SSE stream is started by the time the
+		// client is connected.
+		configureTransport: func(_ *http.Request, transport *StreamableServerTransport) {
+			transport.EventStore = NewMemoryEventStore(nil)
+		},
+	}
+	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, opts)))
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -640,6 +668,7 @@ func TestStreamableServerTransport(t *testing.T) {
 
 	tests := []struct {
 		name     string
+		replay   bool // if set, use a MemoryEventStore to enable stream replay
 		tool     func(*testing.T, context.Context, *ServerSession)
 		requests []streamableRequest // http requests
 	}{
@@ -804,10 +833,15 @@ func TestStreamableServerTransport(t *testing.T) {
 		},
 		{
 			name: "background",
+			// Enabling replay is necessary here because the standalone "GET" request
+			// is fully asynronous. Replay is needed to guarantee message delivery.
+			replay: true,
 			tool: func(t *testing.T, _ context.Context, ss *ServerSession) {
 				// Perform operations on a background context, and ensure the client
 				// receives it.
-				ctx := context.Background()
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				defer cancel()
+
 				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}
@@ -816,7 +850,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				// 	t.Errorf("Logging failed: %v", err)
 				// }
 				if _, err := ss.ListRoots(ctx, &ListRootsParams{}); err != nil {
-					t.Errorf("Notify failed: %v", err)
+					t.Errorf("ListRoots failed: %v", err)
 				}
 			},
 			requests: []streamableRequest{
@@ -906,8 +940,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					return &CallToolResult{}, nil
 				})
 
+			opts := &StreamableHTTPOptions{}
+			if test.replay {
+				opts.configureTransport = func(_ *http.Request, t *StreamableServerTransport) {
+					t.EventStore = NewMemoryEventStore(nil)
+				}
+			}
 			// Start the streamable handler.
-			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
 			defer handler.closeAll()
 
 			testStreamableHandler(t, handler, test.requests)

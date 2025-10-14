@@ -46,7 +46,7 @@ type Connection interface {
 
 	// Write writes a new message to the connection.
 	//
-	// Write may be called concurrently, as calls or reponses may occur
+	// Write may be called concurrently, as calls or responses may occur
 	// concurrently in user code.
 	Write(context.Context, jsonrpc.Message) error
 
