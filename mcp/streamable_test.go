@@ -105,7 +105,7 @@ func TestStreamableTransports(t *testing.T) {
 				}
 				handler.ServeHTTP(w, r)
 			})))
-			defer httpServer.Close()
+			t.Cleanup(func() { httpServer.Close() })
 
 			// Create a client and connect it to the server using our StreamableClientTransport.
 			// Check that all requests honor a custom client.
@@ -132,7 +132,12 @@ func TestStreamableTransports(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
-			defer session.Close()
+			t.Cleanup(func() {
+				err := session.Close()
+				if err != nil {
+					t.Errorf("session.Close() failed: %v", err)
+				}
+			})
 			sid := session.ID()
 			if sid == "" {
 				t.Fatalf("empty session ID")
@@ -222,7 +227,7 @@ func TestStreamableServerShutdown(t *testing.T) {
 			httpServer := httptest.NewUnstartedServer(handler)
 			httpServer.Config.RegisterOnShutdown(func() {
 				for session := range server.Sessions() {
-					session.Close()
+					_ = session.Close()
 				}
 			})
 			httpServer.Start()
@@ -432,10 +437,13 @@ func TestServerTransportCleanup(t *testing.T) {
 		},
 	})
 
-	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
-	handler.onTransportDeletion = func(sessionID string) {
-		chans[sessionID] <- struct{}{}
-	}
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{
+			OnSessionClose: func(sessionID string) {
+				chans[sessionID] <- struct{}{}
+			},
+		},
+	)
 
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
@@ -1488,6 +1496,44 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 		t.Error("Connection context was not cancelled when parent was cancelled")
 	}
 
+}
+
+// TestStreamableHTTPHandler_OnSessionClose_SessionDeletion tests that the
+// OnSessionClose callback is called when the client closes the session.
+func TestStreamableHTTPHandler_OnSessionClose_SessionDeletion(t *testing.T) {
+	var closedSessions []string
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		OnSessionClose: func(sessionID string) {
+			closedSessions = append(closedSessions, sessionID)
+		},
+	})
+
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	ctx := context.Background()
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+
+	sessionID := session.ID()
+	t.Log("Closing client session")
+	err = session.Close()
+	if err != nil {
+		t.Fatalf("session.Close() failed: %v", err)
+	}
+
+	if len(closedSessions) != 1 {
+		t.Fatalf("got %d closed sessions, want 1", len(closedSessions))
+	}
+	if closedSessions[0] != sessionID {
+		t.Fatalf("got session ID %q, want %q", closedSessions[0], sessionID)
+	}
 }
 
 // mustNotPanic is a helper to enforce that test handlers do not panic (see
