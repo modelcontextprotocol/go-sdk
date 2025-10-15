@@ -18,6 +18,8 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -91,7 +93,7 @@ func TestStreamableTransports(t *testing.T) {
 				headerMu   sync.Mutex
 				lastHeader http.Header
 			)
-			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			httpServer := httptest.NewServer(mustNotPanic(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				headerMu.Lock()
 				lastHeader = r.Header
 				headerMu.Unlock()
@@ -102,7 +104,7 @@ func TestStreamableTransports(t *testing.T) {
 					t.Errorf("got cookie %q, want %q", cookie.Value, "test-value")
 				}
 				handler.ServeHTTP(w, r)
-			}))
+			})))
 			t.Cleanup(func() { httpServer.Close() })
 
 			// Create a client and connect it to the server using our StreamableClientTransport.
@@ -320,7 +322,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 			return new(CallToolResult), nil, nil
 		})
 
-	realServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	realServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)))
 	defer realServer.Close()
 	realServerURL, err := url.Parse(realServer.URL)
 	if err != nil {
@@ -329,6 +331,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 
 	// Configure a proxy that sits between the client and the real server.
 	proxyHandler := httputil.NewSingleHostReverseProxy(realServerURL)
+	// note: don't use mustNotPanic here as the proxy WILL panic when killed.
 	proxy := httptest.NewServer(proxyHandler)
 	proxyAddr := proxy.Listener.Addr().String() // Get the address to restart it later.
 
@@ -442,7 +445,7 @@ func TestServerTransportCleanup(t *testing.T) {
 		},
 	)
 
-	httpServer := httptest.NewServer(handler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -492,7 +495,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	notifications := make(chan string)
 	server := NewServer(testImpl, nil)
 
-	httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)))
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -865,7 +868,7 @@ func TestStreamableServerTransport(t *testing.T) {
 }
 
 func testStreamableHandler(t *testing.T, handler http.Handler, requests []streamableRequest) {
-	httpServer := httptest.NewServer(handler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	// blocks records request blocks by jsonrpc. ID.
@@ -1255,7 +1258,7 @@ func TestStreamableStateless(t *testing.T) {
 
 	testClientCompatibility := func(t *testing.T, handler http.Handler) {
 		ctx := context.Background()
-		httpServer := httptest.NewServer(handler)
+		httpServer := httptest.NewServer(mustNotPanic(t, handler))
 		defer httpServer.Close()
 		cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 		if err != nil {
@@ -1340,7 +1343,7 @@ func TestTokenInfo(t *testing.T) {
 		}, nil
 	}
 	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
-	httpServer := httptest.NewServer(handler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
@@ -1374,7 +1377,7 @@ func TestStreamableGET(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	httpServer := httptest.NewServer(handler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1450,7 +1453,7 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 	defer cancel()
 	ctx2 := context.WithValue(ctx, testKey, testValue)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	server := httptest.NewServer(mustNotPanic(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.Method {
 		case "POST":
 			w.Header().Set("Content-Type", "application/json")
@@ -1463,7 +1466,7 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 		case "DELETE":
 			w.WriteHeader(http.StatusNoContent)
 		}
-	}))
+	})))
 	defer server.Close()
 
 	transport := &StreamableClientTransport{Endpoint: server.URL}
@@ -1531,4 +1534,20 @@ func TestStreamableHTTPHandler_OnSessionClose_SessionDeletion(t *testing.T) {
 	if closedSessions[0] != sessionID {
 		t.Fatalf("got session ID %q, want %q", closedSessions[0], sessionID)
 	}
+}
+
+// mustNotPanic is a helper to enforce that test handlers do not panic (see
+// issue #556).
+func mustNotPanic(t *testing.T, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 1<<20)
+				n := runtime.Stack(buf, false)
+				fmt.Fprintf(os.Stderr, "handler panic: %v\n\n%s", r, buf[:n])
+				t.Errorf("handler panicked: %v", r)
+			}
+		}()
+		h.ServeHTTP(w, req)
+	})
 }

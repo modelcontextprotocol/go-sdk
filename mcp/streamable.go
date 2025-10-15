@@ -238,6 +238,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			SessionID:    sessionID,
 			Stateless:    h.opts.Stateless,
 			jsonResponse: h.opts.JSONResponse,
+			logger:       h.opts.Logger,
 		}
 
 		// To support stateless mode, we initialize the session with a default
@@ -380,6 +381,10 @@ type StreamableServerTransport struct {
 	// StreamableHTTPOptions.JSONResponse is exported.
 	jsonResponse bool
 
+	// optional logger provided through the [StreamableHTTPOptions.Logger].
+	//
+	// TODO(rfindley): logger should be exported, since we want to allow people
+	// to write their own streamable HTTP handler.
 	logger *slog.Logger
 
 	// connection is non-nil if and only if the transport has been connected.
@@ -399,7 +404,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
 		jsonResponse:   t.jsonResponse,
-		logger:         t.logger,
+		logger:         ensureLogger(t.logger), // see #556: must be non-nil
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
 		streams:        make(map[string]*stream),

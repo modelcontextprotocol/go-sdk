@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/oauthex"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
 

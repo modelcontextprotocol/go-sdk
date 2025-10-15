@@ -2,6 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build mcp_go_client_oauth
+
 package oauthex
 
 import (
@@ -18,22 +20,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 )
-
-func TestAuthMetaParse(t *testing.T) {
-	// Verify that we parse Google's auth server metadata.
-	data, err := os.ReadFile(filepath.FromSlash("testdata/google-auth-meta.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var a AuthServerMeta
-	if err := json.Unmarshal(data, &a); err != nil {
-		t.Fatal(err)
-	}
-	// Spot check.
-	if g, w := a.Issuer, "https://accounts.google.com"; g != w {
-		t.Errorf("got %q, want %q", g, w)
-	}
-}
 
 func TestClientRegistrationMetadataParse(t *testing.T) {
 	// Verify that we can parse a typical client metadata JSON.
