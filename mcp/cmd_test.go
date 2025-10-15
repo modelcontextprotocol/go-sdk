@@ -7,7 +7,6 @@ package mcp_test
 import (
 	"context"
 	"errors"
-	"flag"
 	"log"
 	"os"
 	"os/exec"
@@ -19,14 +18,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.uber.org/goleak"
 )
 
 const runAsServer = "_MCP_RUN_AS_SERVER"
-
-// TODO: remove this flag and always check for goroutine leaks once
-// .     https://github.com/modelcontextprotocol/go-sdk/issues/499 is fixed
-var leakCheck = flag.Bool("leak", false, "enable goroutine leak checking")
 
 type SayHiParams struct {
 	Name string `json:"name"`
@@ -52,13 +46,6 @@ func TestMain(m *testing.M) {
 		run()
 		return
 	}
-
-	flag.Parse()
-	if *leakCheck {
-		goleak.VerifyTestMain(m)
-		return
-	}
-
 	os.Exit(m.Run())
 }
 

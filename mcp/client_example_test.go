@@ -42,17 +42,17 @@ func Example_roots() {
 
 	// Connect the server and client...
 	t1, t2 := mcp.NewInMemoryTransports()
-	sess1, err := s.Connect(ctx, t1, nil)
+	serverSession, err := s.Connect(ctx, t1, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer sess1.Close()
+	defer serverSession.Close()
 
-	sess2, err := c.Connect(ctx, t2, nil)
+	clientSession, err := c.Connect(ctx, t2, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer sess2.Close()
+	defer clientSession.Close()
 
 	// ...and add a root. The server is notified about the change.
 	c.AddRoots(&mcp.Root{URI: "file://b"})
