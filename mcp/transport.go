@@ -90,8 +90,15 @@ type StdioTransport struct{}
 
 // Connect implements the [Transport] interface.
 func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, os.Stdout}), nil
+	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
 }
+
+// nopCloserWriter is an io.WriteCloser with a trivial Close method.
+type nopCloserWriter struct {
+	io.Writer
+}
+
+func (nopCloserWriter) Close() error { return nil }
 
 // An IOTransport is a [Transport] that communicates over separate
 // io.ReadCloser and io.WriteCloser using newline-delimited JSON.
@@ -107,6 +114,9 @@ func (t *IOTransport) Connect(context.Context) (Connection, error) {
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
 // network connection, using newline-delimited JSON.
+//
+// InMemoryTransports should be constructed using [NewInMemoryTransports],
+// which returns two transports connected to each other.
 type InMemoryTransport struct {
 	rwc io.ReadWriteCloser
 }

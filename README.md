@@ -125,7 +125,7 @@ servers.
 
 ## Contributing
 
-We welcome contributions to the SDK! Please see See
+We welcome contributions to the SDK! Please see
 [CONTRIBUTING.md](/CONTRIBUTING.md) for details of how to contribute.
 
 ## Acknowledgements / Alternatives
