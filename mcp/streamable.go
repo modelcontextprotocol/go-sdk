@@ -367,8 +367,10 @@ type StreamableServerTransport struct {
 	// See also [StreamableHTTPOptions.Stateless].
 	Stateless bool
 
-	// Storage for events, to enable stream resumption.
-	// If nil, a [MemoryEventStore] with the default maximum size will be used.
+	// EventStore enables stream resumption.
+	//
+	// If set, EventStore will be used to persist stream events and replay them
+	// upon stream resumption.
 	EventStore EventStore
 
 	// jsonResponse, if set, tells the server to prefer to respond to requests
