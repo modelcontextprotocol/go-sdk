@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -130,4 +131,128 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestSSEClientModifyRequest(t *testing.T) {
+	ctx := context.Background()
+
+	// Track all HTTP requests
+	var mu sync.Mutex
+	var requestMethods []string
+	var requestHeaders []http.Header
+
+	// Create a server
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		requestMethods = append(requestMethods, req.Method)
+		requestHeaders = append(requestHeaders, req.Header.Clone())
+		mu.Unlock()
+		sseHandler.ServeHTTP(w, req)
+	}))
+	defer httpServer.Close()
+
+	// Create transport with ModifyRequest
+	clientTransport := &SSEClientTransport{
+		Endpoint: httpServer.URL,
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set("X-Custom-Header", "test-value")
+			req.Header.Set("Authorization", "Bearer test-token")
+		},
+	}
+
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer cs.Close()
+
+	// Call a tool (which will make a POST request)
+	_, err = cs.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "user"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+
+	// Verify that we have both GET and POST requests
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requestMethods) < 2 {
+		t.Fatalf("Expected at least 2 requests (GET and POST), got %d", len(requestMethods))
+	}
+
+	// Verify GET request has custom headers
+	foundGET := false
+	for i, method := range requestMethods {
+		if method == "GET" {
+			foundGET = true
+			if got := requestHeaders[i].Get("X-Custom-Header"); got != "test-value" {
+				t.Errorf("GET request: X-Custom-Header = %q, want %q", got, "test-value")
+			}
+			if got := requestHeaders[i].Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("GET request: Authorization = %q, want %q", got, "Bearer test-token")
+			}
+		}
+	}
+	if !foundGET {
+		t.Error("No GET request found")
+	}
+
+	// Verify POST request has custom headers
+	foundPOST := false
+	for i, method := range requestMethods {
+		if method == "POST" {
+			foundPOST = true
+			if got := requestHeaders[i].Get("X-Custom-Header"); got != "test-value" {
+				t.Errorf("POST request: X-Custom-Header = %q, want %q", got, "test-value")
+			}
+			if got := requestHeaders[i].Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("POST request: Authorization = %q, want %q", got, "Bearer test-token")
+			}
+		}
+	}
+	if !foundPOST {
+		t.Error("No POST request found")
+	}
+}
+
+func TestSSEClientModifyRequestNil(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a server
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(sseHandler)
+	defer httpServer.Close()
+
+	// Create transport with nil ModifyRequest (should not panic)
+	clientTransport := &SSEClientTransport{
+		Endpoint:      httpServer.URL,
+		ModifyRequest: nil, // explicitly nil
+	}
+
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer cs.Close()
+
+	// Call a tool - should work normally
+	_, err = cs.CallTool(ctx, &CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"Name": "user"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
 }
