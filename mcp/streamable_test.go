@@ -1288,7 +1288,7 @@ func TestStreamableStateless(t *testing.T) {
 			Tools:   &ToolCapabilities{ListChanged: true},
 		},
 		ProtocolVersion: latestProtocolVersion,
-		ServerInfo:      testImpl,
+		ServerInfo:      &Implementation{Name: "test", Version: "v1.0.0"},
 	}, nil)
 	// This version of sayHi expects
 	// that request from our client).
