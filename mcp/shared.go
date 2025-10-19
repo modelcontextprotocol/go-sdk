@@ -33,8 +33,10 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion   = protocolVersion20250618
-	protocolVersion20250618 = "2025-06-18"
+	latestProtocolVersion = protocolVersion20250618
+
+	protocolVersionDraft    = "draft"      // draft protocol version with experimental features for testing
+	protocolVersion20250618 = "2025-06-18" // latest stable version
 	protocolVersion20250326 = "2025-03-26"
 	protocolVersion20241105 = "2024-11-05"
 )
@@ -48,6 +50,12 @@ var supportedProtocolVersions = []string{
 // negotiatedVersion returns the effective protocol version to use, given a
 // client version.
 func negotiatedVersion(clientVersion string) string {
+	// If client sends protocol version draft, enable draft features.
+	if clientVersion == protocolVersionDraft {
+		log.Printf("Using draft protocol version features")
+		return protocolVersionDraft
+	}
+
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version.
 	//
