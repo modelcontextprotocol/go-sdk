@@ -46,7 +46,7 @@ type Connection interface {
 
 	// Write writes a new message to the connection.
 	//
-	// Write may be called concurrently, as calls or reponses may occur
+	// Write may be called concurrently, as calls or responses may occur
 	// concurrently in user code.
 	Write(context.Context, jsonrpc.Message) error
 
@@ -310,7 +310,14 @@ func (r rwc) Write(p []byte) (n int, err error) {
 }
 
 func (r rwc) Close() error {
-	return errors.Join(r.rc.Close(), r.wc.Close())
+	rcErr := r.rc.Close()
+
+	var wcErr error
+	if r.wc != nil { // we only allow a nil writer in unit tests
+		wcErr = r.wc.Close()
+	}
+
+	return errors.Join(rcErr, wcErr)
 }
 
 // An ioConn is a transport that delimits messages with newlines across

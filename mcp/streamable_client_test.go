@@ -246,7 +246,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	}{
 		{http.StatusOK, ""},
 		{http.StatusMethodNotAllowed, ""},
-		{http.StatusBadRequest, "hanging GET"},
+		{http.StatusBadRequest, "standalone SSE"},
 	}
 
 	for _, test := range tests {

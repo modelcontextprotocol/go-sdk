@@ -18,6 +18,7 @@ import (
 
 // !+streamablehandler
 
+// TODO: Until we have a way to clean up abandoned sessions, this test will leak goroutines (see #499)
 func ExampleStreamableHTTPHandler() {
 	// Create a new streamable handler, using the same MCP server for every request.
 	//
@@ -45,7 +46,7 @@ func ExampleStreamableHTTPHandler_middleware() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
 	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// Example debugging; you could also capture the response.
 		body, err := io.ReadAll(req.Body)

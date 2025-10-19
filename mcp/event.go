@@ -153,11 +153,9 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 //
 // All of an EventStore's methods must be safe for use by multiple goroutines.
 type EventStore interface {
-	// Open prepares the event store for a given stream. It ensures that the
-	// underlying data structure for the stream is initialized, making it
-	// ready to store event streams.
-	//
-	// streamIDs must be globally unique.
+	// Open is called when a new stream is created. It may be used to ensure that
+	// the underlying data structure for the stream is initialized, making it
+	// ready to store and replay event streams.
 	Open(_ context.Context, sessionID, streamID string) error
 
 	// Append appends data for an outgoing event to given stream, which is part of the
@@ -166,6 +164,7 @@ type EventStore interface {
 
 	// After returns an iterator over the data for the given session and stream, beginning
 	// just after the given index.
+	//
 	// Once the iterator yields a non-nil error, it will stop.
 	// After's iterator must return an error immediately if any data after index was
 	// dropped; it must not return partial results.
@@ -174,6 +173,7 @@ type EventStore interface {
 
 	// SessionClosed informs the store that the given session is finished, along
 	// with all of its streams.
+	//
 	// A store cannot rely on this method being called for cleanup. It should institute
 	// additional mechanisms, such as timeouts, to reclaim storage.
 	SessionClosed(_ context.Context, sessionID string) error

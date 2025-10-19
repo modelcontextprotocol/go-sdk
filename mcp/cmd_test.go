@@ -97,6 +97,8 @@ func TestServerRunContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { session.Close() })
+
 	if err := session.Ping(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -122,35 +124,30 @@ func TestServerInterrupt(t *testing.T) {
 	}
 	requireExec(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	t.Log("Starting server command")
 	cmd := createServerCommand(t, "default")
 
 	client := mcp.NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	t.Log("Connecting to server")
+
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// get a signal when the server process exits
-	onExit := make(chan struct{})
-	go func() {
-		cmd.Process.Wait()
-		close(onExit)
-	}()
-
-	// send a signal to the server process to terminate it
+	t.Log("Send a signal to the server process to terminate it")
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 
-	// wait for the server to exit
-	// TODO: use synctest when available
-	select {
-	case <-time.After(5 * time.Second):
-		t.Fatal("server did not exit after SIGINT")
-	case <-onExit:
+	t.Log("Closing client session so server can exit immediately")
+	session.Close()
+
+	t.Log("Wait for process to terminate after interrupt signal")
+	_, err = cmd.Process.Wait()
+	if err == nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

@@ -197,8 +197,10 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		// discovered until runtime, when the LLM sent bad data.
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
-	if s, ok := t.InputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
-		panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+	if s, ok := t.InputSchema.(*jsonschema.Schema); ok {
+		if s.Type != "object" {
+			panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
+		}
 	} else {
 		var m map[string]any
 		if err := remarshal(t.InputSchema, &m); err != nil {
@@ -209,8 +211,10 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		}
 	}
 	if t.OutputSchema != nil {
-		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok && s.Type != "object" {
-			panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok {
+			if s.Type != "object" {
+				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
+			}
 		} else {
 			var m map[string]any
 			if err := remarshal(t.OutputSchema, &m); err != nil {
@@ -370,10 +374,8 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err 
 		if err == nil {
 			*sfield = internalSchema
 		}
-	} else {
-		if err := remarshal(*sfield, &internalSchema); err != nil {
-			return zero, err
-		}
+	} else if err := remarshal(*sfield, &internalSchema); err != nil {
+		return zero, err
 	}
 	if err != nil {
 		return zero, err
@@ -776,6 +778,7 @@ func (s *Server) Run(ctx context.Context, t Transport) error {
 	select {
 	case <-ctx.Done():
 		ss.Close()
+		<-ssClosed // wait until waiting go routine above actually completes
 		s.opts.Logger.Error("server run cancelled", "error", ctx.Err())
 		return ctx.Err()
 	case err := <-ssClosed:

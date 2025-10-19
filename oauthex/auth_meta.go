@@ -139,6 +139,11 @@ func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*
 				// Security violation; don't keep trying.
 				return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
 			}
+
+			if len(asm.CodeChallengeMethodsSupported) == 0 {
+				return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
+			}
+
 			return asm, nil
 		}
 		errs = append(errs, err)
