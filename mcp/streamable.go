@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -40,12 +41,76 @@ type StreamableHTTPHandler struct {
 	getServer func(*http.Request) *Server
 	opts      StreamableHTTPOptions
 
-	onTransportDeletion func(sessionID string) // for testing only
+	onTransportDeletion func(sessionID string) // for testing
 
-	mu sync.Mutex
-	// TODO: we should store the ServerSession along with the transport, because
-	// we need to cancel keepalive requests when closing the transport.
-	transports map[string]*StreamableServerTransport // keyed by IDs (from Mcp-Session-Id header)
+	mu       sync.Mutex
+	sessions map[string]*sessionInfo // keyed by session ID
+}
+
+type sessionInfo struct {
+	session   *ServerSession
+	transport *StreamableServerTransport
+
+	// If timeout is set, automatically close the session after an idle period.
+	timeout time.Duration
+	timerMu sync.Mutex
+	refs    int // reference count
+	timer   *time.Timer
+}
+
+// startPOST signals that a POST request for this session is starting (which
+// carries a client->server message), pausing the session timeout if it was
+// running.
+//
+// TODO: we may want to also pause the timer when resuming non-standalone SSE
+// streams, but that is tricy to implement. Clients should generally make
+// keepalive pings if they want to keep the session live.
+func (i *sessionInfo) startPOST() {
+	if i.timeout <= 0 {
+		return
+	}
+
+	i.timerMu.Lock()
+	defer i.timerMu.Unlock()
+
+	if i.timer == nil {
+		return // timer stopped permanently
+	}
+	if i.refs == 0 {
+		i.timer.Stop()
+	}
+	i.refs++
+}
+
+// endPOST sigals that a request for this session is ending, starting the
+// timeout if there are no other requests running.
+func (i *sessionInfo) endPOST() {
+	if i.timeout <= 0 {
+		return
+	}
+
+	i.timerMu.Lock()
+	defer i.timerMu.Unlock()
+
+	if i.timer == nil {
+		return // timer stopped permanently
+	}
+
+	i.refs--
+	assert(i.refs >= 0, "negative ref count")
+	if i.refs == 0 {
+		i.timer.Reset(i.timeout)
+	}
+}
+
+// stopTimer stops the inactivity timer permanently.
+func (i *sessionInfo) stopTimer() {
+	i.timerMu.Lock()
+	defer i.timerMu.Unlock()
+	if i.timer != nil {
+		i.timer.Stop()
+		i.timer = nil
+	}
 }
 
 // StreamableHTTPOptions configures the StreamableHTTPHandler.
@@ -77,6 +142,14 @@ type StreamableHTTPOptions struct {
 	// If set, EventStore will be used to persist stream events and replay them
 	// upon stream resumption.
 	EventStore EventStore
+
+	// SessionTimeout configures a timeout for idle sessions.
+	//
+	// When sessions receive no new HTTP requests from the client for this
+	// duration, they are automatically closed.
+	//
+	// If SessionTimeout is the zero value, idle sessions are never closed.
+	SessionTimeout time.Duration
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -86,8 +159,8 @@ type StreamableHTTPOptions struct {
 // If getServer returns nil, a 400 Bad Request will be served.
 func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler {
 	h := &StreamableHTTPHandler{
-		getServer:  getServer,
-		transports: make(map[string]*StreamableServerTransport),
+		getServer: getServer,
+		sessions:  make(map[string]*sessionInfo),
 	}
 	if opts != nil {
 		h.opts = *opts
@@ -100,7 +173,7 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	return h
 }
 
-// closeAll closes all ongoing sessions.
+// closeAll closes all ongoing sessions, for tests.
 //
 // TODO(rfindley): investigate the best API for callers to configure their
 // session lifecycle. (?)
@@ -108,12 +181,19 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 // Should we allow passing in a session store? That would allow the handler to
 // be stateless.
 func (h *StreamableHTTPHandler) closeAll() {
+	// TODO: if we ever expose this outside of tests, we'll need to do better
+	// than simply collecting sessions while holding the lock: we need to prevent
+	// new sessions from being added.
+	//
+	// Currently, sessions remove themselves from h.sessions when closed, so we
+	// can't call Close while holding the lock.
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, s := range h.transports {
-		s.connection.Close()
+	sessionInfos := slices.Collect(maps.Values(h.sessions))
+	h.sessions = nil
+	h.mu.Unlock()
+	for _, s := range sessionInfos {
+		s.session.Close()
 	}
-	h.transports = nil
 }
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -144,12 +224,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	sessionID := req.Header.Get(sessionIDHeader)
-	var transport *StreamableServerTransport
+	var sessInfo *sessionInfo
 	if sessionID != "" {
 		h.mu.Lock()
-		transport = h.transports[sessionID]
+		sessInfo = h.sessions[sessionID]
 		h.mu.Unlock()
-		if transport == nil && !h.opts.Stateless {
+		if sessInfo == nil && !h.opts.Stateless {
 			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
 			// validation, we require that the session ID matches a known session.
 			//
@@ -164,11 +244,10 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
 			return
 		}
-		if transport != nil { // transport may be nil in stateless mode
-			h.mu.Lock()
-			delete(h.transports, transport.SessionID)
-			h.mu.Unlock()
-			transport.connection.Close()
+		if sessInfo != nil { // sessInfo may be nil in stateless mode
+			// Closing the session also removes it from h.sessions, due to the
+			// onClose callback.
+			sessInfo.session.Close()
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -225,7 +304,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	if transport == nil {
+	if sessInfo == nil {
 		server := h.getServer(req)
 		if server == nil {
 			// The getServer argument to NewStreamableHTTPHandler returned nil.
@@ -237,7 +316,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			// existing transport.
 			sessionID = server.opts.GetSessionID()
 		}
-		transport = &StreamableServerTransport{
+		transport := &StreamableServerTransport{
 			SessionID:    sessionID,
 			Stateless:    h.opts.Stateless,
 			EventStore:   h.opts.EventStore,
@@ -301,10 +380,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			connectOpts = &ServerSessionOptions{
 				onClose: func() {
 					h.mu.Lock()
-					delete(h.transports, transport.SessionID)
-					h.mu.Unlock()
-					if h.onTransportDeletion != nil {
-						h.onTransportDeletion(transport.SessionID)
+					defer h.mu.Unlock()
+					if info, ok := h.sessions[transport.SessionID]; ok {
+						info.stopTimer()
+						delete(h.sessions, transport.SessionID)
+						if h.onTransportDeletion != nil {
+							h.onTransportDeletion(transport.SessionID)
+						}
 					}
 				},
 			}
@@ -313,23 +395,44 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		// Pass req.Context() here, to allow middleware to add context values.
 		// The context is detached in the jsonrpc2 library when handling the
 		// long-running stream.
-		ss, err := server.Connect(req.Context(), transport, connectOpts)
+		session, err := server.Connect(req.Context(), transport, connectOpts)
 		if err != nil {
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
+		sessInfo = &sessionInfo{
+			session:   session,
+			transport: transport,
+		}
+
 		if h.opts.Stateless {
 			// Stateless mode: close the session when the request exits.
-			defer ss.Close() // close the fake session after handling the request
+			defer session.Close() // close the fake session after handling the request
 		} else {
 			// Otherwise, save the transport so that it can be reused
+
+			// Clean up the session when it times out.
+			//
+			// Note that the timer here may fire multiple times, but
+			// sessInfo.session.Close is idempotent.
+			if h.opts.SessionTimeout > 0 {
+				sessInfo.timeout = h.opts.SessionTimeout
+				sessInfo.timer = time.AfterFunc(sessInfo.timeout, func() {
+					sessInfo.session.Close()
+				})
+			}
 			h.mu.Lock()
-			h.transports[transport.SessionID] = transport
+			h.sessions[transport.SessionID] = sessInfo
 			h.mu.Unlock()
 		}
 	}
 
-	transport.ServeHTTP(w, req)
+	if req.Method == http.MethodPost {
+		sessInfo.startPOST()
+		defer sessInfo.endPOST()
+	}
+
+	sessInfo.transport.ServeHTTP(w, req)
 }
 
 // A StreamableServerTransport implements the server side of the MCP streamable
@@ -1383,9 +1486,12 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		go c.handleJSON(requestSummary, resp)
 
 	case "text/event-stream":
-		jsonReq, _ := msg.(*jsonrpc.Request)
+		var forCall *jsonrpc.Request
+		if jsonReq, ok := msg.(*jsonrpc.Request); ok && jsonReq.IsCall() {
+			forCall = jsonReq
+		}
 		// TODO: should we cancel this logical SSE request if/when jsonReq is canceled?
-		go c.handleSSE(requestSummary, resp, false, jsonReq)
+		go c.handleSSE(requestSummary, resp, false, forCall)
 
 	default:
 		resp.Body.Close()
@@ -1435,9 +1541,9 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 // handleSSE manages the lifecycle of an SSE connection. It can be either
 // persistent (for the main GET listener) or temporary (for a POST response).
 //
-// If forReq is set, it is the request that initiated the stream, and the
+// If forCall is set, it is the call that initiated the stream, and the
 // stream is complete when we receive its response.
-func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *http.Response, persistent bool, forReq *jsonrpc2.Request) {
+func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *http.Response, persistent bool, forCall *jsonrpc2.Request) {
 	resp := initialResp
 	var lastEventID string
 	for {
@@ -1447,7 +1553,7 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 		// Eventually, if we don't get the response, we should stop trying and
 		// fail the request.
 		if resp != nil {
-			eventID, clientClosed := c.processStream(requestSummary, resp, forReq)
+			eventID, clientClosed := c.processStream(requestSummary, resp, forCall)
 			lastEventID = eventID
 
 			// If the connection was closed by the client, we're done.
@@ -1510,11 +1616,11 @@ func (c *streamableClientConn) handleSSE(requestSummary string, initialResp *htt
 // incoming channel. It returns the ID of the last processed event and a flag
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
-func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forReq *jsonrpc.Request) (lastEventID string, clientClosed bool) {
+func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, clientClosed bool) {
 	defer resp.Body.Close()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
-			return lastEventID, false
+			break
 		}
 
 		if evt.ID != "" {
@@ -1529,10 +1635,10 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 
 		select {
 		case c.incoming <- msg:
-			if jsonResp, ok := msg.(*jsonrpc.Response); ok && forReq != nil {
+			if jsonResp, ok := msg.(*jsonrpc.Response); ok && forCall != nil {
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
-				if jsonResp.ID == forReq.ID {
+				if jsonResp.ID == forCall.ID {
 					return "", true
 				}
 			}
@@ -1542,7 +1648,20 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 		}
 	}
 	// The loop finished without an error, indicating the server closed the stream.
-	return "", false
+	//
+	// If the lastEventID is "", the stream is not retryable and we should
+	// report a synthetic error for the call.
+	if lastEventID == "" && forCall != nil {
+		errmsg := &jsonrpc2.Response{
+			ID:    forCall.ID,
+			Error: fmt.Errorf("request terminated without response"),
+		}
+		select {
+		case c.incoming <- errmsg:
+		case <-c.done:
+		}
+	}
+	return lastEventID, false
 }
 
 // reconnect handles the logic of retrying a connection with an exponential

@@ -11,6 +11,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -177,7 +178,11 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 // Call [ClientSession.Close] to close the connection, or await server
 // termination with [ClientSession.Wait].
 type ClientSession struct {
-	onClose func()
+	// Ensure that onClose is called at most once.
+	// We defensively use an atomic CompareAndSwap rather than a sync.Once, in case the
+	// onClose callback triggers a re-entrant call to Close.
+	calledOnClose atomic.Bool
+	onClose       func()
 
 	conn            *jsonrpc2.Connection
 	client          *Client
@@ -205,6 +210,8 @@ func (cs *ClientSession) ID() string {
 // Close performs a graceful close of the connection, preventing new requests
 // from being handled, and waiting for ongoing requests to return. Close then
 // terminates the connection.
+//
+// Close is idempotent and concurrency safe.
 func (cs *ClientSession) Close() error {
 	// Note: keepaliveCancel access is safe without a mutex because:
 	// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
@@ -216,7 +223,7 @@ func (cs *ClientSession) Close() error {
 	}
 	err := cs.conn.Close()
 
-	if cs.onClose != nil {
+	if cs.onClose != nil && cs.calledOnClose.CompareAndSwap(false, true) {
 		cs.onClose()
 	}
 

@@ -34,7 +34,6 @@ type streamableResponse struct {
 	body                string // or ""
 	optional            bool   // if set, request need not be sent
 	wantProtocolVersion string // if "", unchecked
-	callback            func() // if set, called after the request is handled
 }
 
 type fakeResponses map[streamableRequestKey]*streamableResponse
@@ -95,9 +94,6 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		s.t.Errorf("missing response for %v", key)
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return
-	}
-	if resp.callback != nil {
-		defer resp.callback()
 	}
 	for k, v := range resp.header {
 		w.Header().Set(k, v)
@@ -409,5 +405,40 @@ func TestStreamableClientStrictness(t *testing.T) {
 				t.Errorf("closing session: %v", err)
 			}
 		})
+	}
+}
+
+func TestStreamableClientUnresumableRequest(t *testing.T) {
+	// This test verifies that the client fails fast when making a request that
+	// is unresumable, because it does not contain any events.
+	ctx := context.Background()
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize}: {
+				header: header{
+					"Content-Type":  "text/event-stream",
+					sessionIDHeader: "123",
+				},
+				body: "",
+			},
+			{"DELETE", "123", ""}: {optional: true},
+		},
+	}
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	cs, err := client.Connect(ctx, transport, nil)
+	if err == nil {
+		cs.Close()
+		t.Fatalf("Connect succeeded unexpectedly")
+	}
+	// This may be a bit of a change detector, but for now check that we're
+	// actually exercising the early failure codepath.
+	msg := "terminated without response"
+	if !strings.Contains(err.Error(), msg) {
+		t.Errorf("Connect: got error %v, want containing %q", err, msg)
 	}
 }

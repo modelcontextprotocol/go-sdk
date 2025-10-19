@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -581,8 +582,8 @@ func TestServerTransportCleanup(t *testing.T) {
 	}
 
 	handler.mu.Lock()
-	if len(handler.transports) != 0 {
-		t.Errorf("want empty transports map, find %v entries from handler's transports map", len(handler.transports))
+	if len(handler.sessions) != 0 {
+		t.Errorf("want empty transports map, find %v entries from handler's transports map", len(handler.sessions))
 	}
 	handler.mu.Unlock()
 }
@@ -1623,7 +1624,93 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Connection context was not cancelled when parent was cancelled")
 	}
+}
 
+func TestStreamableSessionTimeout(t *testing.T) {
+	// TODO: this test relies on timing and may be flaky.
+	// Fixing with testing/synctest is challenging because it uses real I/O (via
+	// httptest.NewServer).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	server := NewServer(testImpl, nil)
+
+	deleted := make(chan string, 1)
+	handler := NewStreamableHTTPHandler(
+		func(req *http.Request) *Server { return server },
+		&StreamableHTTPOptions{
+			SessionTimeout: 50 * time.Millisecond,
+		},
+	)
+	handler.onTransportDeletion = func(sessionID string) {
+		deleted <- sessionID
+	}
+
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	// Connect a client to create a session.
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	sessionID := session.ID()
+	if sessionID == "" {
+		t.Fatal("client session has empty ID")
+	}
+
+	// Verify the session exists on the server.
+	serverSessions := slices.Collect(server.Sessions())
+	if len(serverSessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(serverSessions))
+	}
+	if got := serverSessions[0].ID(); got != sessionID {
+		t.Fatalf("server session is %q, want %q", got, sessionID)
+	}
+
+	// Test that (possibly concurrent) requests keep the session alive.
+	//
+	// Spin up two goroutines, each making a request every 10ms. These requests
+	// should keep the server from timing out.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+
+			for range 20 {
+				if _, err := session.ListTools(ctx, nil); err != nil {
+					t.Errorf("ListTools failed: %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Wait for the session to be cleaned up.
+	select {
+	case deletedID := <-deleted:
+		if deletedID != sessionID {
+			t.Errorf("deleted session ID = %q, want %q", deletedID, sessionID)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for session cleanup")
+	}
+
+	// Verify the session is gone from both handler and server.
+	handler.mu.Lock()
+	if len(handler.sessions) != 0 {
+		t.Errorf("handler.sessions is not empty; length %d", len(handler.sessions))
+	}
+	if ss := slices.Collect(server.Sessions()); len(ss) != 0 {
+		t.Errorf("server.Sessions() is not empty; length %d", len(ss))
+	}
+	handler.mu.Unlock()
 }
 
 // mustNotPanic is a helper to enforce that test handlers do not panic (see
