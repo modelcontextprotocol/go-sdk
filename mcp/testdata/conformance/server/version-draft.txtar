@@ -1,5 +1,13 @@
-Check that when the client sends an arbitrary later version, the server
-response with its latest supported version.
+Check behavior of server with Icons and websiteUrl metadata added as part of SEP-973 specification.
+
+check modelcontextprotocol/go-sdk/issues/552 for more details.
+
+Checks following:
+- If client sends protocolVersion as "draft", server responds with same
+- Test setting websiteUrl, icons for mcp.Implementation
+- Test setting icons for mcp.Prompt
+- Test setting icons for mcp.Tool
+- Test setting icons for mcp.Resource
 
 -- tools --
 greetWithIcon
