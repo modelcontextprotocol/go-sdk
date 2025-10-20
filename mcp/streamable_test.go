@@ -73,23 +73,53 @@ func TestStreamableTransports(t *testing.T) {
 				return nil, nil, nil
 			}
 			AddTool(server, &Tool{Name: "hang"}, hang)
+			// We use sampling to test server->client requests, both before and after
+			// the related client->server request completes.
+			sampleDone := make(chan struct{})
+			var sampleWG sync.WaitGroup
 			AddTool(server, &Tool{Name: "sample"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+				type testCase struct {
+					label       string
+					ctx         context.Context
+					wantSuccess bool
+				}
+				testSample := func(tc testCase) {
+					res, err := req.Session.CreateMessage(tc.ctx, &CreateMessageParams{})
+					if gotSuccess := err == nil; gotSuccess != tc.wantSuccess {
+						t.Errorf("%s: CreateMessage success=%v, want %v", tc.label, gotSuccess, tc.wantSuccess)
+					}
+					if err != nil {
+						return
+					}
+					if g, w := res.Model, "aModel"; g != w {
+						t.Errorf("%s: got model %q, want %q", tc.label, g, w)
+					}
+				}
 				// Test that we can make sampling requests during tool handling.
 				//
 				// Try this on both the request context and a background context, so
 				// that messages may be delivered on either the POST or GET connection.
-				for _, ctx := range map[string]context.Context{
-					"request context":    ctx,
-					"background context": context.Background(),
+				for _, test := range []testCase{
+					{"request context", ctx, true},
+					{"background context", context.Background(), true},
 				} {
-					res, err := req.Session.CreateMessage(ctx, &CreateMessageParams{})
-					if err != nil {
-						return nil, nil, err
-					}
-					if g, w := res.Model, "aModel"; g != w {
-						return nil, nil, fmt.Errorf("got %q, want %q", g, w)
-					}
+					testSample(test)
 				}
+				// Now, spin off a goroutine that runs after the sampling request, to
+				// check behavior when the client request has completed.
+				sampleWG.Add(1)
+				go func() {
+					defer sampleWG.Done()
+					<-sampleDone
+					// Test that sampling requests in the tool context fail outside of
+					// tool handling, but succeed on the background context.
+					for _, test := range []testCase{
+						{"request context", ctx, false},
+						{"background context", context.Background(), true},
+					} {
+						testSample(test)
+					}
+				}()
 				return &CallToolResult{}, nil, nil
 			})
 
@@ -191,8 +221,8 @@ func TestStreamableTransports(t *testing.T) {
 				t.Fatal("timeout waiting for cancellation")
 			}
 
-			// The "sampling" tool should be able to issue sampling requests during
-			// tool operation.
+			// The "sampling" tool checks the validity of server->client requests
+			// both within and without the tool context.
 			result, err := session.CallTool(ctx, &CallToolParams{
 				Name:      "sample",
 				Arguments: map[string]any{},
@@ -200,6 +230,10 @@ func TestStreamableTransports(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Run the out-of-band checks.
+			close(sampleDone)
+			sampleWG.Wait()
+
 			if result.IsError {
 				t.Fatalf("tool failed: %s", result.Content[0].(*TextContent).Text)
 			}
