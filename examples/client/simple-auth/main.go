@@ -21,18 +21,25 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"golang.org/x/oauth2"
 )
 
 // registerClient performs Dynamic Client Registration (RFC 7591) with the authorization server.
@@ -61,6 +68,188 @@ func registerClient(ctx context.Context, authServerURL, redirectURI string, auth
 
 	fmt.Printf("Client registered with ID: %s\n", clientInfo.ClientID)
 	return clientInfo.ClientID, clientInfo.ClientSecret, nil
+}
+
+// generatePKCE generates PKCE code verifier and challenge using golang.org/x/oauth2.
+// Returns the verifier (43-128 characters) and the challenge (SHA256 hash).
+func generatePKCE() (verifier, challenge string) {
+	verifier = oauth2.GenerateVerifier()
+	challenge = oauth2.S256ChallengeFromVerifier(verifier)
+	return verifier, challenge
+}
+
+// openBrowser opens the specified URL in the default browser.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+
+	return cmd.Start()
+}
+
+// performOAuthFlow executes the OAuth 2.0 authorization code flow with PKCE.
+// This implements the auth.OAuthHandler signature.
+func performOAuthFlow(ctx context.Context, args auth.OAuthHandlerArgs) (oauth2.TokenSource, error) {
+	fmt.Println("Starting OAuth flow...")
+
+	// Fetch protected resource metadata
+	if args.ResourceMetadataURL == "" {
+		return nil, fmt.Errorf("no resource metadata URL provided")
+	}
+
+	// Extract resource ID from metadata URL
+	// The metadata URL is like http://host/.well-known/oauth-protected-resource
+	// GetProtectedResourceMetadataFromID expects just the resource ID (scheme + host + /)
+	metadataURL, err := url.Parse(args.ResourceMetadataURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid metadata URL: %w", err)
+	}
+
+	resourceID := url.URL{
+		Scheme: metadataURL.Scheme,
+		Host:   metadataURL.Host,
+		Path:   "/",
+	}
+
+	fmt.Printf("Fetching protected resource metadata for %s\n", resourceID.String())
+	metadata, err := oauthex.GetProtectedResourceMetadataFromID(ctx, resourceID.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch resource metadata: %w", err)
+	}
+
+	// Extract resource URL for RFC 8707
+	resourceURL := metadata.Resource
+	if resourceURL == "" {
+		resourceURL = resourceID.String()
+	}
+	fmt.Printf("Resource URL: %s\n", resourceURL)
+
+	// Get authorization server metadata
+	if metadata.AuthorizationServers == nil || len(metadata.AuthorizationServers) == 0 {
+		return nil, fmt.Errorf("no authorization servers in metadata")
+	}
+
+	authServerURL := metadata.AuthorizationServers[0]
+	fmt.Printf("Using authorization server: %s\n", authServerURL)
+
+	authMeta, err := oauthex.GetAuthServerMeta(ctx, authServerURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
+	}
+
+	// Register client dynamically
+	redirectURI := "http://localhost:3030/callback"
+	clientID, clientSecret, err := registerClient(ctx, authServerURL, redirectURI, authMeta)
+	if err != nil {
+		return nil, err
+	}
+
+	// Start callback server
+	callbackServer := NewCallbackServer(3030)
+	if err := callbackServer.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start callback server: %w", err)
+	}
+	defer callbackServer.Stop()
+
+	// Generate PKCE
+	verifier, challenge := generatePKCE()
+
+	// Generate state
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate state: %w", err)
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
+
+	// Build authorization URL
+	authURL, err := url.Parse(authMeta.AuthorizationEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid authorization endpoint: %w", err)
+	}
+
+	q := authURL.Query()
+	q.Set("response_type", "code")
+	q.Set("client_id", clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("state", state)
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	q.Set("scope", "user")
+	q.Set("resource", resourceURL) // RFC 8707: Resource Indicators for OAuth 2.0
+	authURL.RawQuery = q.Encode()
+
+	// Open browser for authorization
+	fmt.Printf("\nOpening browser for authorization...\n")
+	fmt.Printf("URL: %s\n\n", authURL.String())
+
+	if err := openBrowser(authURL.String()); err != nil {
+		fmt.Printf("Could not open browser automatically. Please visit the URL above.\n\n")
+	}
+
+	// Wait for callback
+	fmt.Println("Waiting for authorization callback...")
+	code, returnedState, err := callbackServer.WaitForCallback(5 * time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("callback error: %w", err)
+	}
+
+	if returnedState != state {
+		return nil, fmt.Errorf("state mismatch: expected %s, got %s", state, returnedState)
+	}
+
+	fmt.Println("Authorization code received")
+
+	// Exchange code for token
+	tokenURL := authMeta.TokenEndpoint
+	tokenReq := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
+		"code_verifier": {verifier},
+		"resource":      {resourceURL}, // RFC 8707: Resource Indicators for OAuth 2.0
+	}
+
+	// Add client secret if provided (client_secret_post method)
+	if clientSecret != "" {
+		tokenReq.Set("client_secret", clientSecret)
+	}
+
+	resp, err := http.PostForm(tokenURL, tokenReq)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed with status %d", resp.StatusCode)
+	}
+
+	var token oauth2.Token
+	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
+		return nil, fmt.Errorf("failed to decode token: %w", err)
+	}
+
+	fmt.Println("Access token obtained")
+
+	// Create OAuth2 config for token source
+	oauth2Config := &oauth2.Config{
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  authMeta.AuthorizationEndpoint,
+			TokenURL: authMeta.TokenEndpoint,
+		},
+	}
+
+	return oauth2Config.TokenSource(ctx, &token), nil
 }
 
 // CallbackServer handles OAuth callbacks on a local HTTP server.
