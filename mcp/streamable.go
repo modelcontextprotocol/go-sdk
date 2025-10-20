@@ -72,8 +72,11 @@ type StreamableHTTPOptions struct {
 	// If nil, do not log.
 	Logger *slog.Logger
 
-	// TODO(rfindley): file a proposal to export this option, or something equivalent.
-	configureTransport func(req *http.Request, transport *StreamableServerTransport)
+	// EventStore enables stream resumption.
+	//
+	// If set, EventStore will be used to persist stream events and replay them
+	// upon stream resumption.
+	EventStore EventStore
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -237,11 +240,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		transport = &StreamableServerTransport{
 			SessionID:    sessionID,
 			Stateless:    h.opts.Stateless,
+			EventStore:   h.opts.EventStore,
 			jsonResponse: h.opts.JSONResponse,
 			logger:       h.opts.Logger,
-		}
-		if h.opts.configureTransport != nil {
-			h.opts.configureTransport(req, transport)
 		}
 
 		// To support stateless mode, we initialize the session with a default

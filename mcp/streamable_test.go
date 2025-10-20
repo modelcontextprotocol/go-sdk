@@ -95,14 +95,13 @@ func TestStreamableTransports(t *testing.T) {
 
 			// Start an httptest.Server with the StreamableHTTPHandler, wrapped in a
 			// cookie-checking middleware.
-			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+			opts := &StreamableHTTPOptions{
 				JSONResponse: test.useJSON,
-				configureTransport: func(_ *http.Request, transport *StreamableServerTransport) {
-					if test.replay {
-						transport.EventStore = NewMemoryEventStore(nil)
-					}
-				},
-			})
+			}
+			if test.replay {
+				opts.EventStore = NewMemoryEventStore(nil)
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
 
 			var (
 				headerMu   sync.Mutex
@@ -386,9 +385,7 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 		})
 
 	realServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
-		configureTransport: func(_ *http.Request, t *StreamableServerTransport) {
-			t.EventStore = NewMemoryEventStore(nil) // necessary for replay
-		},
+		EventStore: NewMemoryEventStore(nil), // necessary for replay
 	})))
 	t.Cleanup(func() {
 		t.Log("Closing real HTTP server")
@@ -567,9 +564,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 		// However, it shouldn't be necessary to use replay here, as we should be
 		// guaranteed that the standalone SSE stream is started by the time the
 		// client is connected.
-		configureTransport: func(_ *http.Request, transport *StreamableServerTransport) {
-			transport.EventStore = NewMemoryEventStore(nil)
-		},
+		EventStore: NewMemoryEventStore(nil),
 	}
 	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, opts)))
 	defer httpServer.Close()
@@ -942,9 +937,7 @@ func TestStreamableServerTransport(t *testing.T) {
 
 			opts := &StreamableHTTPOptions{}
 			if test.replay {
-				opts.configureTransport = func(_ *http.Request, t *StreamableServerTransport) {
-					t.EventStore = NewMemoryEventStore(nil)
-				}
+				opts.EventStore = NewMemoryEventStore(nil)
 			}
 			// Start the streamable handler.
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
