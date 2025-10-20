@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"unicode"
@@ -74,11 +75,45 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL strin
 	return getPRM(ctx, metadataURL, c, serverURL)
 }
 
+// isSecureURL checks if a URL uses HTTPS or is allowed localhost HTTP.
+// RFC 8414 and RFC 9728 require HTTPS for security, but we allow localhost HTTP
+// when the MCP_ALLOW_HTTP_LOCALHOST environment variable is set to "1" or "true"
+// for development and testing purposes.
+func isSecureURL(urlStr string) error {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return err
+	}
+
+	// HTTPS is always allowed
+	if strings.EqualFold(u.Scheme, "https") {
+		return nil
+	}
+
+	// HTTP is only allowed for localhost when explicitly enabled
+	if strings.EqualFold(u.Scheme, "http") {
+		hostname := u.Hostname()
+		isLocalhost := strings.EqualFold(hostname, "localhost") ||
+			hostname == "127.0.0.1" ||
+			hostname == "[::1]"
+
+		if isLocalhost {
+			allowHTTP := os.Getenv("MCP_ALLOW_HTTP_LOCALHOST")
+			if allowHTTP == "1" || strings.EqualFold(allowHTTP, "true") {
+				return nil
+			}
+			return fmt.Errorf("resource URL %q uses HTTP with localhost; set MCP_ALLOW_HTTP_LOCALHOST=1 to allow for development", urlStr)
+		}
+	}
+
+	return fmt.Errorf("resource URL %q does not use HTTPS", urlStr)
+}
+
 // getPRM makes a GET request to the given URL, and validates the response.
 // As part of the validation, it compares the returned resource field to wantResource.
 func getPRM(ctx context.Context, purl string, c *http.Client, wantResource string) (*ProtectedResourceMetadata, error) {
-	if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
-		return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
+	if err := isSecureURL(purl); err != nil {
+		return nil, err
 	}
 	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, purl, 1<<20)
 	if err != nil {
