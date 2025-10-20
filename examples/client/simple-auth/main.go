@@ -22,13 +22,122 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// CallbackServer handles OAuth callbacks on a local HTTP server.
+type CallbackServer struct {
+	port   int
+	server *http.Server
+
+	mu             sync.Mutex
+	code           string
+	state          string
+	err            error
+	resultReceived chan struct{}
+}
+
+// NewCallbackServer creates a new callback server on the specified port.
+func NewCallbackServer(port int) *CallbackServer {
+	return &CallbackServer{
+		port:           port,
+		resultReceived: make(chan struct{}),
+	}
+}
+
+// Start starts the callback server.
+func (s *CallbackServer) Start() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", s.handleCallback)
+
+	s.server = &http.Server{
+		Addr:    fmt.Sprintf(":%d", s.port),
+		Handler: mux,
+	}
+
+	go func() {
+		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Callback server error: %v", err)
+		}
+	}()
+
+	fmt.Printf("Started callback server on http://localhost:%d\n", s.port)
+	return nil
+}
+
+// handleCallback handles the OAuth callback.
+func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := r.URL.Query()
+
+	if code := query.Get("code"); code != "" {
+		s.code = code
+		s.state = query.Get("state")
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>Authorization Successful</title></head>
+<body>
+	<h1>Authorization Successful!</h1>
+	<p>You can close this window and return to the terminal.</p>
+	<script>setTimeout(() => window.close(), 2000);</script>
+</body>
+</html>
+`))
+		close(s.resultReceived)
+	} else if errMsg := query.Get("error"); errMsg != "" {
+		s.err = fmt.Errorf("authorization error: %s", errMsg)
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><title>Authorization Failed</title></head>
+<body>
+	<h1>Authorization Failed</h1>
+	<p>Error: %s</p>
+	<p>You can close this window and return to the terminal.</p>
+</body>
+</html>
+`, errMsg)))
+		close(s.resultReceived)
+	} else {
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// WaitForCallback waits for the OAuth callback with a timeout.
+func (s *CallbackServer) WaitForCallback(timeout time.Duration) (code, state string, err error) {
+	select {
+	case <-s.resultReceived:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.code, s.state, s.err
+	case <-time.After(timeout):
+		return "", "", fmt.Errorf("timeout waiting for OAuth callback")
+	}
+}
+
+// Stop stops the callback server.
+func (s *CallbackServer) Stop() error {
+	if s.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.server.Shutdown(ctx)
+	}
+	return nil
+}
 
 // AuthClient is a simple MCP client.
 type AuthClient struct {
