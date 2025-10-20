@@ -533,15 +533,29 @@ func main() {
 
 	ctx := context.Background()
 
-	// Create MCP transport
+	// Create OAuth-enabled HTTP transport
+	oauthTransport, err := auth.NewHTTPTransport(performOAuthFlow, nil)
+	if err != nil {
+		log.Fatalf("Failed to create OAuth transport: %v", err)
+	}
+
+	// Create HTTP client with OAuth support
+	httpClient := &http.Client{
+		Transport: oauthTransport,
+		Timeout:   60 * time.Second,
+	}
+
+	// Create MCP transport with OAuth-enabled HTTP client
 	var transport mcp.Transport
 	if transportType == "sse" {
 		transport = &mcp.SSEClientTransport{
-			Endpoint: serverURL,
+			Endpoint:   serverURL,
+			HTTPClient: httpClient,
 		}
 	} else {
 		transport = &mcp.StreamableClientTransport{
-			Endpoint: serverURL,
+			Endpoint:   serverURL,
+			HTTPClient: httpClient,
 		}
 	}
 
