@@ -32,7 +32,36 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
+
+// registerClient performs Dynamic Client Registration (RFC 7591) with the authorization server.
+// Returns the client ID and client secret.
+func registerClient(ctx context.Context, authServerURL, redirectURI string, authMeta *oauthex.AuthServerMeta) (clientID, clientSecret string, err error) {
+	clientMeta := &oauthex.ClientRegistrationMetadata{
+		ClientName:              "Simple Auth Client",
+		RedirectURIs:            []string{redirectURI},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "client_secret_post",
+		Scope:                   "user",
+	}
+
+	registrationEndpoint := authMeta.RegistrationEndpoint
+	if registrationEndpoint == "" {
+		// Fallback to default registration endpoint if not in metadata
+		registrationEndpoint = authServerURL + "/register"
+	}
+
+	fmt.Printf("Registering client at %s\n", registrationEndpoint)
+	clientInfo, err := oauthex.RegisterClient(ctx, registrationEndpoint, clientMeta, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to register client: %w", err)
+	}
+
+	fmt.Printf("Client registered with ID: %s\n", clientInfo.ClientID)
+	return clientInfo.ClientID, clientInfo.ClientSecret, nil
+}
 
 // CallbackServer handles OAuth callbacks on a local HTTP server.
 type CallbackServer struct {
