@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
         with:
-          go-version: "^1.23"
+          go-version: "^1.25"
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -33,7 +33,8 @@ jobs:
       - name: Run staticcheck
         uses: dominikh/staticcheck-action@024238d2898c874f26d723e7d0ff4308c35589a2 # v1
         with:
-          version: "latest"
+          install-go: false
+          version: "v0.6.1"
 
   test:
     runs-on: ubuntu-latest
