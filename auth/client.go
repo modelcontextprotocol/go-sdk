@@ -7,8 +7,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 
@@ -67,6 +69,31 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	base := t.opts.Base
 	t.mu.Unlock()
 
+	// req1 is our first request in the authorization flow.
+	//
+	// If we mutate its body, we must clone it first.
+	var (
+		// If haveBody is set, the request has a nontrivial body, and we need avoid
+		// reading (or closing) it multiple times. In that case, bodyBytes is its
+		// content.
+		haveBody  bool
+		bodyBytes []byte
+	)
+	if req.Body != nil && req.Body != http.NoBody {
+		// if we're setting Body, we must mutate first.
+		req = req.Clone(req.Context())
+		haveBody = true
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		// Now that we've read the request body, http.RoundTripper requires that we
+		// close it.
+		req.Body.Close() // ignore error
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
 	resp, err := base.RoundTrip(req)
 	if err != nil {
 		return nil, err
@@ -97,7 +124,15 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		t.opts.Base = &oauth2.Transport{Base: t.opts.Base, Source: ts}
 	}
-	return t.opts.Base.RoundTrip(req.Clone(req.Context()))
+
+	// If we don't have a body, the request is reusable, though it will be cloned
+	// by the base. However, if we've had to read the body, we must clone.
+	if haveBody {
+		req = req.Clone(req.Context())
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	return t.opts.Base.RoundTrip(req)
 }
 
 func extractResourceMetadataURL(authHeaders []string) string {
