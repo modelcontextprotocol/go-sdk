@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -156,7 +155,6 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 				header: header{
 					"Content-Type": "text/event-stream",
 				},
-				optional:            true,
 				wantProtocolVersion: latestProtocolVersion,
 			},
 			{"DELETE", "123", ""}: {},
@@ -205,8 +203,7 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 				wantProtocolVersion: latestProtocolVersion,
 			},
 			{"GET", "123", ""}: {
-				status:   http.StatusMethodNotAllowed,
-				optional: true,
+				status: http.StatusMethodNotAllowed,
 			},
 			{"POST", "123", methodListTools}: {
 				status: http.StatusNotFound,
@@ -268,14 +265,6 @@ func TestStreamableClientGETHandling(t *testing.T) {
 						status:              test.status,
 						wantProtocolVersion: latestProtocolVersion,
 					},
-					{"POST", "123", methodListTools}: {
-						header: header{
-							"Content-Type":  "application/json",
-							sessionIDHeader: "123",
-						},
-						body:     jsonBody(t, resp(2, &ListToolsResult{Tools: []*Tool{}}, nil)),
-						optional: true,
-					},
 					{"DELETE", "123", ""}: {optional: true},
 				},
 			}
@@ -285,36 +274,18 @@ func TestStreamableClientGETHandling(t *testing.T) {
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
 			session, err := client.Connect(ctx, transport, nil)
-			if err != nil {
-				t.Fatalf("client.Connect() failed: %v", err)
+			if err == nil {
+				defer session.Close()
 			}
-
-			// Since we need the client to observe the result of the hanging GET,
-			// wait for all requests to be handled.
-			start := time.Now()
-			delay := 1 * time.Millisecond
-			for range 10 {
-				if len(fake.missingRequests()) == 0 {
-					break
+			if test.wantErrorContaining != "" {
+				if err == nil {
+					t.Fatalf("Connect succeeded unexpectedly, want error containing %q", test.wantErrorContaining)
 				}
-				time.Sleep(delay)
-				delay *= 2
-			}
-			if missing := fake.missingRequests(); len(missing) > 0 {
-				t.Errorf("did not receive expected requests after %s: %v", time.Since(start), missing)
-			}
-
-			_, err = session.ListTools(ctx, nil)
-			if (err != nil) != (test.wantErrorContaining != "") {
-				t.Errorf("After initialization, got error %v, want containing %q", err, test.wantErrorContaining)
+				if got := err.Error(); !strings.Contains(got, test.wantErrorContaining) {
+					t.Errorf("Connect error = %q, want containing %q", got, test.wantErrorContaining)
+				}
 			} else if err != nil {
-				if !strings.Contains(err.Error(), test.wantErrorContaining) {
-					t.Errorf("After initialization, got error %s, want containing %q", err, test.wantErrorContaining)
-				}
-			}
-
-			if err := session.Close(); err != nil {
-				t.Errorf("closing session: %v", err)
+				t.Fatalf("Connect failed: %v", err)
 			}
 		})
 	}
@@ -329,13 +300,12 @@ func TestStreamableClientStrictness(t *testing.T) {
 		initializedStatus int
 		getStatus         int
 		wantConnectError  bool
-		wantListError     bool
 	}{
-		{"conformant server", true, http.StatusAccepted, http.StatusMethodNotAllowed, false, false},
-		{"strict initialized", true, http.StatusOK, http.StatusMethodNotAllowed, true, false},
-		{"unstrict initialized", false, http.StatusOK, http.StatusMethodNotAllowed, false, false},
-		{"strict GET", true, http.StatusAccepted, http.StatusNotFound, false, true},
-		{"unstrict GET", false, http.StatusOK, http.StatusNotFound, false, false},
+		{"conformant server", true, http.StatusAccepted, http.StatusMethodNotAllowed, false},
+		{"strict initialized", true, http.StatusOK, http.StatusMethodNotAllowed, true},
+		{"unstrict initialized", false, http.StatusOK, http.StatusMethodNotAllowed, false},
+		{"strict GET", true, http.StatusAccepted, http.StatusNotFound, true},
+		{"unstrict GET", false, http.StatusOK, http.StatusNotFound, false},
 	}
 	for _, test := range tests {
 		t.Run(test.label, func(t *testing.T) {
@@ -383,23 +353,9 @@ func TestStreamableClientStrictness(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// Since we need the client to observe the result of the hanging GET,
-			// wait for all requests to be handled.
-			start := time.Now()
-			delay := 1 * time.Millisecond
-			for range 10 {
-				if len(fake.missingRequests()) == 0 {
-					break
-				}
-				time.Sleep(delay)
-				delay *= 2
-			}
-			if missing := fake.missingRequests(); len(missing) > 0 {
-				t.Errorf("did not receive expected requests after %s: %v", time.Since(start), missing)
-			}
 			_, err = session.ListTools(ctx, nil)
-			if (err != nil) != test.wantListError {
-				t.Errorf("ListTools returned error %v; want error: %t", err, test.wantListError)
+			if err != nil {
+				t.Errorf("ListTools failed: %v", err)
 			}
 			if err := session.Close(); err != nil {
 				t.Errorf("closing session: %v", err)

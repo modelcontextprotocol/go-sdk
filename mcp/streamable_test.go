@@ -594,14 +594,7 @@ func TestServerInitiatedSSE(t *testing.T) {
 	notifications := make(chan string)
 	server := NewServer(testImpl, nil)
 
-	opts := &StreamableHTTPOptions{
-		// TODO(#583): for now, this is required for guaranteed message delivery.
-		// However, it shouldn't be necessary to use replay here, as we should be
-		// guaranteed that the standalone SSE stream is started by the time the
-		// client is connected.
-		EventStore: NewMemoryEventStore(nil),
-	}
-	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, opts)))
+	httpServer := httptest.NewServer(mustNotPanic(t, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)))
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
