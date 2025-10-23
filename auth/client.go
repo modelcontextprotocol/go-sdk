@@ -69,9 +69,6 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	base := t.opts.Base
 	t.mu.Unlock()
 
-	// req1 is our first request in the authorization flow.
-	//
-	// If we mutate its body, we must clone it first.
 	var (
 		// If haveBody is set, the request has a nontrivial body, and we need avoid
 		// reading (or closing) it multiple times. In that case, bodyBytes is its

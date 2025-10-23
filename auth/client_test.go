@@ -122,7 +122,6 @@ func TestHTTPTransport(t *testing.T) {
 		client := &http.Client{Transport: transport}
 
 		resp, err := client.Post(authServer.URL, "application/json", &basicReader{strings.NewReader("{}")})
-		// resp, err := client.Post(authServer.URL, "application/json", strings.NewReader("{}"))
 		if err != nil {
 			t.Fatalf("client.Post() failed: %v", err)
 		}
