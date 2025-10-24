@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -51,3 +52,47 @@ func ExampleLoggingTransport() {
 }
 
 // !-loggingtransport
+
+func ExampleStreamableClientTransport_ModifyRequest() {
+	// Create a transport with ModifyRequest to add authentication headers
+	transport := &mcp.StreamableClientTransport{
+		Endpoint: "https://example.com/mcp",
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer my-secret-token")
+			req.Header.Set("X-Request-ID", "req-12345")
+		},
+	}
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "my-client", Version: "v1.0.0"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	// All HTTP requests (POST, GET, DELETE) will have the custom headers
+	// added by ModifyRequest before being sent to the server.
+}
+
+// This example demonstrates how to use ModifyRequest with SSEClientTransport.
+func ExampleSSEClientTransport_ModifyRequest() {
+	// Create a transport with ModifyRequest
+	transport := &mcp.SSEClientTransport{
+		Endpoint: "https://example.com/sse",
+		ModifyRequest: func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer my-token")
+			req.Header.Set("X-Custom-Header", "custom-value")
+		},
+	}
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "my-client", Version: "v1.0.0"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	// All HTTP requests will have the custom headers
+}
