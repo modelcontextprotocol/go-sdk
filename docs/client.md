@@ -53,9 +53,11 @@ func Example_roots() {
 
 	// Connect the server and client...
 	t1, t2 := mcp.NewInMemoryTransports()
-	if _, err := s.Connect(ctx, t1, nil); err != nil {
+	serverSession, err := s.Connect(ctx, t1, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer serverSession.Close()
 
 	clientSession, err := c.Connect(ctx, t2, nil)
 	if err != nil {
