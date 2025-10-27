@@ -324,10 +324,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			logger:       h.opts.Logger,
 		}
 
+		// Sessions without a session ID are also stateless: there's no way to
+		// address them.
+		stateless := h.opts.Stateless || sessionID == ""
 		// To support stateless mode, we initialize the session with a default
 		// state, so that it doesn't reject subsequent requests.
 		var connectOpts *ServerSessionOptions
-		if h.opts.Stateless {
+		if stateless {
 			// Peek at the body to see if it is initialize or initialized.
 			// We want those to be handled as usual.
 			var hasInitialize, hasInitialized bool
@@ -405,7 +408,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			transport: transport,
 		}
 
-		if h.opts.Stateless {
+		if stateless {
 			// Stateless mode: close the session when the request exits.
 			defer session.Close() // close the fake session after handling the request
 		} else {
@@ -424,6 +427,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Lock()
 			h.sessions[transport.SessionID] = sessInfo
 			h.mu.Unlock()
+			defer func() {
+				// If initialization failed, clean up the session (#578).
+				if session.InitializeParams() == nil {
+					// Initialization failed.
+					session.Close()
+				}
+			}()
 		}
 	}
 

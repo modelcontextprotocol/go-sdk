@@ -1145,7 +1145,13 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	return handleReceive(ctx, ss, req)
 }
 
-func (ss *ServerSession) InitializeParams() *InitializeParams { return ss.state.InitializeParams }
+// InitializeParams returns the InitializeParams provided during the client's
+// initial connection.
+func (ss *ServerSession) InitializeParams() *InitializeParams {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.state.InitializeParams
+}
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
 	if params == nil {
