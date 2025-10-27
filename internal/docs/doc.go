@@ -7,6 +7,7 @@
 //go:generate weave -o ../../docs/protocol.md ./protocol.src.md
 //go:generate weave -o ../../docs/client.md ./client.src.md
 //go:generate weave -o ../../docs/server.md ./server.src.md
+//go:generate weave -o ../../docs/warts.md ./warts.src.md
 //go:generate weave -o ../../docs/troubleshooting.md ./troubleshooting.src.md
 
 // The doc package generates the documentation at /doc, via go:generate.
