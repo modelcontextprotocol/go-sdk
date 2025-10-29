@@ -55,7 +55,7 @@ infoWithIcon
 		"serverInfo": {
 			"name": "testServer",
 			"version": "v1.0.0",
-			"websiteUrl": "https://modelcontextprotocol.io",
+			"websiteUrl": "https://github.com/modelcontextprotocol/go-sdk",
 			"icons": [
 				{
 					"src": "foobar",
