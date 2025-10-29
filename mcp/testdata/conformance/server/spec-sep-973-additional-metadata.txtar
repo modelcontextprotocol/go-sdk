@@ -1,0 +1,157 @@
+Check behavior of server with Icons and websiteUrl metadata added as part of SEP-973 specification.
+
+check modelcontextprotocol/go-sdk/issues/552 for more details.
+
+Checks following:
+- If client sends protocolVersion as "draft", server responds with same
+- Test setting websiteUrl, icons for mcp.Implementation
+- Test setting icons for mcp.Prompt
+- Test setting icons for mcp.Tool
+- Test setting icons for mcp.Resource
+
+-- tools --
+greetWithIcon
+
+-- prompts --
+code_reviewWithIcon
+
+-- resources --
+infoWithIcon
+
+-- client --
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
+  }
+}
+{ "jsonrpc": "2.0", "method": "notifications/initialized" }
+{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
+{ "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
+{ "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
+
+-- server --
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"result": {
+		"capabilities": {
+			"logging": {},
+			"prompts": {
+				"listChanged": true
+			},
+			"resources": {
+				"listChanged": true
+			},
+			"tools": {
+				"listChanged": true
+			}
+		},
+		"protocolVersion": "2025-06-18",
+		"serverInfo": {
+			"name": "testServer",
+			"version": "v1.0.0",
+			"websiteUrl": "https://modelcontextprotocol.io",
+			"icons": [
+				{
+					"src": "foobar",
+					"mimeType": "image/png",
+					"sizes": [
+						"48x48",
+						"96x96"
+					]
+				}
+			]
+		}
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 2,
+	"result": {
+		"tools": [
+			{
+				"description": "say hi",
+				"inputSchema": {
+					"type": "object",
+					"required": [
+						"Name"
+					],
+					"properties": {
+						"Name": {
+							"type": "string"
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "greetWithIcon",
+				"icons": [
+					{
+						"src": "foobar",
+						"mimeType": "image/png",
+						"sizes": [
+							"48x48",
+							"96x96"
+						]
+					}
+				]
+			}
+		]
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 3,
+	"result": {
+		"resources": [
+			{
+				"mimeType": "text/plain",
+				"name": "info",
+				"uri": "embedded:info",
+				"icons": [
+					{
+						"src": "foobar",
+						"mimeType": "image/png",
+						"sizes": [
+							"48x48",
+							"96x96"
+						]
+					}
+				]
+			}
+		]
+	}
+}
+{
+	"jsonrpc": "2.0",
+	"id": 4,
+	"result": {
+		"prompts": [
+			{
+				"arguments": [
+					{
+						"name": "Code",
+						"required": true
+					}
+				],
+				"description": "do a code review",
+				"name": "code_review",
+				"icons": [
+					{
+						"src": "foobar",
+						"mimeType": "image/png",
+						"sizes": [
+							"48x48",
+							"96x96"
+						]
+					}
+				]
+			}
+		]
+	}
+}
+
