@@ -7,7 +7,6 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -65,10 +64,11 @@ func TestHTTPTransport(t *testing.T) {
 
 	t.Run("successful auth flow", func(t *testing.T) {
 		var handlerCalls int
-		handler := func(ctx context.Context, args OAuthHandlerArgs) (oauth2.TokenSource, error) {
+		handler := func(req *http.Request, res *http.Response) (oauth2.TokenSource, error) {
 			handlerCalls++
-			if args.ResourceMetadataURL != "http://metadata.example.com" {
-				t.Errorf("handler got metadata URL %q, want %q", args.ResourceMetadataURL, "http://metadata.example.com")
+			// Verify that the response has the expected WWW-Authenticate header
+			if res.Header.Get("WWW-Authenticate") != `Bearer resource_metadata="http://metadata.example.com"` {
+				t.Errorf("handler got WWW-Authenticate header %q", res.Header.Get("WWW-Authenticate"))
 			}
 			return fakeTokenSource, nil
 		}
@@ -108,9 +108,10 @@ func TestHTTPTransport(t *testing.T) {
 	})
 
 	t.Run("request body is cloned", func(t *testing.T) {
-		handler := func(ctx context.Context, args OAuthHandlerArgs) (oauth2.TokenSource, error) {
-			if args.ResourceMetadataURL != "http://metadata.example.com" {
-				t.Errorf("handler got metadata URL %q, want %q", args.ResourceMetadataURL, "http://metadata.example.com")
+		handler := func(req *http.Request, res *http.Response) (oauth2.TokenSource, error) {
+			// Verify that the response has the expected WWW-Authenticate header
+			if res.Header.Get("WWW-Authenticate") != `Bearer resource_metadata="http://metadata.example.com"` {
+				t.Errorf("handler got WWW-Authenticate header %q", res.Header.Get("WWW-Authenticate"))
 			}
 			return fakeTokenSource, nil
 		}
@@ -134,7 +135,7 @@ func TestHTTPTransport(t *testing.T) {
 
 	t.Run("handler returns error", func(t *testing.T) {
 		handlerErr := errors.New("user rejected auth")
-		handler := func(ctx context.Context, args OAuthHandlerArgs) (oauth2.TokenSource, error) {
+		handler := func(req *http.Request, res *http.Response) (oauth2.TokenSource, error) {
 			return nil, handlerErr
 		}
 
