@@ -34,6 +34,7 @@ var (
 	timeout  = flag.Duration("timeout", 1*time.Second, "request timeout")
 	qps      = flag.Int("qps", 100, "tool calls per second, per worker")
 	verbose  = flag.Bool("v", false, "if set, enable verbose logging")
+	cleanup  = flag.Bool("cleanup", true, "whether to clean up sessions at the end of the test")
 )
 
 func main() {
@@ -76,7 +77,9 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			defer cs.Close()
+			if *cleanup {
+				defer cs.Close()
+			}
 
 			ticker := time.NewTicker(1 * time.Second / time.Duration(*qps))
 			defer ticker.Stop()

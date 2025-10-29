@@ -148,6 +148,7 @@ To create a streamable MCP server, you create a `StreamableHTTPHandler` and
 pass it an `mcp.Server`:
 
 ```go
+// TODO: Until we have a way to clean up abandoned sessions, this test will leak goroutines (see #499)
 func ExampleStreamableHTTPHandler() {
 	// Create a new streamable handler, using the same MCP server for every request.
 	//
@@ -184,6 +185,19 @@ client, err := mcp.Connect(ctx, transport, &mcp.ClientOptions{...})
 
 The `StreamableClientTransport` handles the HTTP requests and communicates with
 the server using the streamable transport protocol.
+
+#### Resumability and Redelivery
+
+By default, the streamable server does not support [resumability or
+redelivery](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#resumability-and-redelivery)
+of messages, because doing so requires either a persistent storage solution or
+unbounded memory usage (see also
+[#580](https://github.com/modelcontextprotocol/go-sdk/issues/580)).
+
+To enable resumability, set `StreamableHTTPOptions.EventStore` to a non-nil
+value. The SDK provides a `MemoryEventStore` for testing or simple use cases;
+for production use it is generally advisable to use a more sophisticated
+implementation.
 
 #### Stateless Mode
 

@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -825,7 +826,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 type ServerSessionOptions struct {
 	State *ServerSessionState
 
-	onClose func()
+	onClose func() // used to clean up associated resources
 }
 
 // Connect connects the MCP server over the given transport and starts handling
@@ -920,7 +921,11 @@ func newServerRequest[P Params](ss *ServerSession, params P) *ServerRequest[P] {
 // Call [ServerSession.Close] to close the connection, or await client
 // termination with [ServerSession.Wait].
 type ServerSession struct {
-	onClose func()
+	// Ensure that onClose is called at most once.
+	// We defensively use an atomic CompareAndSwap rather than a sync.Once, in case the
+	// onClose callback triggers a re-entrant call to Close.
+	calledOnClose atomic.Bool
+	onClose       func()
 
 	server          *Server
 	conn            *jsonrpc2.Connection
@@ -1140,7 +1145,13 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	return handleReceive(ctx, ss, req)
 }
 
-func (ss *ServerSession) InitializeParams() *InitializeParams { return ss.state.InitializeParams }
+// InitializeParams returns the InitializeParams provided during the client's
+// initial connection.
+func (ss *ServerSession) InitializeParams() *InitializeParams {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.state.InitializeParams
+}
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
 	if params == nil {
@@ -1185,6 +1196,8 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 // Close performs a graceful shutdown of the connection, preventing new
 // requests from being handled, and waiting for ongoing requests to return.
 // Close then terminates the connection.
+//
+// Close is idempotent and concurrency safe.
 func (ss *ServerSession) Close() error {
 	if ss.keepaliveCancel != nil {
 		// Note: keepaliveCancel access is safe without a mutex because:
@@ -1196,7 +1209,7 @@ func (ss *ServerSession) Close() error {
 	}
 	err := ss.conn.Close()
 
-	if ss.onClose != nil {
+	if ss.onClose != nil && ss.calledOnClose.CompareAndSwap(false, true) {
 		ss.onClose()
 	}
 
