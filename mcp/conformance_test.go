@@ -146,7 +146,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 
 	if test.name == "spec-sep-973-additional-metadata.txtar" {
 		impl.Icons = []Icon{iconObj}
-		impl.WebsiteURL = "https://modelcontextprotocol.io"
+		impl.WebsiteURL = "https://github.com/modelcontextprotocol/go-sdk"
 	}
 
 	s := NewServer(impl, nil)
