@@ -33,9 +33,8 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion = protocolVersion20250618
-
-	protocolVersion20250618 = "2025-06-18" // latest stable version
+	latestProtocolVersion   = protocolVersion20250618
+	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
 	protocolVersion20241105 = "2024-11-05"
 )
