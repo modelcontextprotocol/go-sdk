@@ -183,15 +183,69 @@ func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 type ClientCapabilities struct {
 	// Experimental, non-standard capabilities that the client supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
-	// Present if the client supports listing roots.
+
+	// Roots reports roots capabilities.
+	//
+	// Due to an API oversight (#607), roots is a non-pointer. Check the
+	// Supported field to see if the roots capability is present
 	Roots struct {
+		// Suppported reports whether roots/list is supported. It works around an
+		// API oversight: roots capabilities should have been a distinguished type,
+		// similar to other capabilities.
+		Supported bool `json:"-"`
+
 		// Whether the client supports notifications for changes to the roots list.
 		ListChanged bool `json:"listChanged,omitempty"`
-	} `json:"roots,omitempty"`
-	// Present if the client supports sampling from an LLM.
+	} `json:"roots"`
+
+	// Sampling is present if the client supports sampling from an LLM.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
-	// Present if the client supports elicitation from the server.
+
+	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+// clientCapabilitiesV2 is a version of ClientCapabilities fixes
+type clientCapabilitiesV2 struct {
+	Experimental map[string]any           `json:"experimental,omitempty"`
+	Roots        *rootsCapabilities       `json:"roots,omitempty"`
+	Sampling     *SamplingCapabilities    `json:"sampling,omitempty"`
+	Elicitation  *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+// See #607: rootsCapabilities is for internal use, fixing an API oversight.
+type rootsCapabilities struct {
+	Supported   bool `json:"-"`
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
+func (c ClientCapabilities) MarshalJSON() ([]byte, error) {
+	c2 := &clientCapabilitiesV2{
+		Experimental: c.Experimental,
+		Sampling:     c.Sampling,
+		Elicitation:  c.Elicitation,
+	}
+	if c.Roots.Supported {
+		c2.Roots = &rootsCapabilities{
+			ListChanged: c.Roots.ListChanged,
+		}
+	}
+	return json.Marshal(c2)
+}
+
+func (c *ClientCapabilities) UnmarshalJSON(data []byte) error {
+	var c2 clientCapabilitiesV2
+	if err := json.Unmarshal(data, &c2); err != nil {
+		return err
+	}
+	c.Experimental = c2.Experimental
+	c.Elicitation = c2.Elicitation
+	c.Sampling = c2.Sampling
+	if c2.Roots != nil {
+		c.Roots = *c2.Roots
+		c.Roots.Supported = true
+	}
+	return nil
 }
 
 type CompleteParamsArgument struct {
@@ -1034,8 +1088,6 @@ type ResourceUpdatedNotificationParams struct {
 }
 
 func (*ResourceUpdatedNotificationParams) isParams() {}
-
-// TODO(jba): add CompleteRequest and related types.
 
 // A request from the server to elicit additional information from the user via the client.
 type ElicitParams struct {
