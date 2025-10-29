@@ -37,3 +37,9 @@ protocol.
 # TroubleShooting
 
 See [troubleshooting.md](troubleshooting.md) for a troubleshooting guide.
+
+# Rough edges
+
+See [rough_edges.md](rough_edges.md) for a list of rough edges or API
+oversights that can't be addressed due to our compatibility promise. We'll
+revisit these if/when we move to a v2 of the SDK.
