@@ -305,7 +305,8 @@ func TestStreamableClientStrictness(t *testing.T) {
 		{"strict initialized", true, http.StatusOK, http.StatusMethodNotAllowed, true},
 		{"unstrict initialized", false, http.StatusOK, http.StatusMethodNotAllowed, false},
 		{"strict GET", true, http.StatusAccepted, http.StatusNotFound, true},
-		{"unstrict GET", false, http.StatusOK, http.StatusNotFound, false},
+		{"unstrict GET on StatusNotFound", false, http.StatusOK, http.StatusNotFound, false},
+		{"unstrict GET on StatusBadRequest", false, http.StatusOK, http.StatusBadRequest, false},
 	}
 	for _, test := range tests {
 		t.Run(test.label, func(t *testing.T) {
