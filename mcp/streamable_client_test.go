@@ -239,7 +239,11 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	}{
 		{http.StatusOK, ""},
 		{http.StatusMethodNotAllowed, ""},
-		{http.StatusBadRequest, "standalone SSE"},
+		// The client error status code is not treated as an error in non-strict
+		// mode.
+		{http.StatusNotFound, ""},
+		{http.StatusBadRequest, ""},
+		{http.StatusInternalServerError, "standalone SSE"},
 	}
 
 	for _, test := range tests {
@@ -305,8 +309,11 @@ func TestStreamableClientStrictness(t *testing.T) {
 		{"strict initialized", true, http.StatusOK, http.StatusMethodNotAllowed, true},
 		{"unstrict initialized", false, http.StatusOK, http.StatusMethodNotAllowed, false},
 		{"strict GET", true, http.StatusAccepted, http.StatusNotFound, true},
+		// The client error status code is not treated as an error in non-strict
+		// mode.
 		{"unstrict GET on StatusNotFound", false, http.StatusOK, http.StatusNotFound, false},
 		{"unstrict GET on StatusBadRequest", false, http.StatusOK, http.StatusBadRequest, false},
+		{"GET on InternlServerError", false, http.StatusOK, http.StatusInternalServerError, true},
 	}
 	for _, test := range tests {
 		t.Run(test.label, func(t *testing.T) {
