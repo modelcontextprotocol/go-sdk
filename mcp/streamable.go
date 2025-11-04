@@ -150,6 +150,12 @@ type StreamableHTTPOptions struct {
 	//
 	// If SessionTimeout is the zero value, idle sessions are never closed.
 	SessionTimeout time.Duration
+
+	// SessionStateStore enables persisting session state across process
+	// restarts. When configured, the handler will attempt to restore server
+	// sessions whose identifiers are unknown to the current process, allowing
+	// serverless deployments that spin up per-request.
+	SessionStateStore ServerSessionStateStore
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -223,19 +229,38 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
+	logger := ensureLogger(h.opts.Logger)
+
 	sessionID := req.Header.Get(sessionIDHeader)
-	var sessInfo *sessionInfo
+	var (
+		sessInfo      *sessionInfo
+		restoredState *ServerSessionState
+	)
 	if sessionID != "" {
 		h.mu.Lock()
 		sessInfo = h.sessions[sessionID]
 		h.mu.Unlock()
 		if sessInfo == nil && !h.opts.Stateless {
-			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
-			// validation, we require that the session ID matches a known session.
-			//
-			// In stateless mode, a temporary transport is be created below.
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
+			if store := h.opts.SessionStateStore; store != nil {
+				state, err := store.Load(req.Context(), sessionID)
+				if err != nil {
+					logger.Error("session state load failed", "session_id", sessionID, "error", err)
+					http.Error(w, "failed to load session state", http.StatusInternalServerError)
+					return
+				}
+				restoredState = state
+				if state == nil {
+					http.Error(w, "session not found", http.StatusNotFound)
+					return
+				}
+			} else {
+				// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
+				// validation, we require that the session ID matches a known session.
+				//
+				// In stateless mode, a temporary transport is be created below.
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
 		}
 	}
 
@@ -248,6 +273,16 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			// Closing the session also removes it from h.sessions, due to the
 			// onClose callback.
 			sessInfo.session.Close()
+		} else if restoredState != nil {
+			// There is no running session, but persisted state exists. Delete it so
+			// that clients can terminate resumed sessions without an active server.
+			if store := h.opts.SessionStateStore; store != nil {
+				if err := store.Delete(req.Context(), sessionID); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("session state delete failed", "session_id", sessionID, "error", err)
+					http.Error(w, "failed to delete session state", http.StatusInternalServerError)
+					return
+				}
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -322,6 +357,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			EventStore:   h.opts.EventStore,
 			jsonResponse: h.opts.JSONResponse,
 			logger:       h.opts.Logger,
+			StateStore:   h.opts.SessionStateStore,
 		}
 
 		// Sessions without a session ID are also stateless: there's no way to
@@ -329,7 +365,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		stateless := h.opts.Stateless || sessionID == ""
 		// To support stateless mode, we initialize the session with a default
 		// state, so that it doesn't reject subsequent requests.
-		var connectOpts *ServerSessionOptions
+		connectOpts := &ServerSessionOptions{
+			State: restoredState,
+		}
 		if stateless {
 			// Peek at the body to see if it is initialize or initialized.
 			// We want those to be handled as usual.
@@ -374,13 +412,12 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				state.InitializedParams = new(InitializedParams)
 			}
 			state.LogLevel = "info"
-			connectOpts = &ServerSessionOptions{
-				State: state,
-			}
+			connectOpts.State = state
 		} else {
 			// Cleanup is only required in stateful mode, as transportation is
 			// not stored in the map otherwise.
 			connectOpts = &ServerSessionOptions{
+				State: restoredState,
 				onClose: func() {
 					h.mu.Lock()
 					defer h.mu.Unlock()
@@ -389,6 +426,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 						delete(h.sessions, transport.SessionID)
 						if h.onTransportDeletion != nil {
 							h.onTransportDeletion(transport.SessionID)
+						}
+					}
+					if store := h.opts.SessionStateStore; store != nil && transport.SessionID != "" {
+						if err := store.Delete(context.Background(), transport.SessionID); err != nil {
+							logger.Error("session state delete failed", "session_id", transport.SessionID, "error", err)
 						}
 					}
 				},
@@ -487,6 +529,10 @@ type StreamableServerTransport struct {
 	// upon stream resumption.
 	EventStore EventStore
 
+	// StateStore receives session state updates so that callers can resume
+	// sessions across processes.
+	StateStore ServerSessionStateStore
+
 	// jsonResponse, if set, tells the server to prefer to respond to requests
 	// using application/json responses rather than text/event-stream.
 	//
@@ -519,6 +565,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		sessionID:      t.SessionID,
 		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
+		stateStore:     t.StateStore,
 		jsonResponse:   t.jsonResponse,
 		logger:         ensureLogger(t.logger), // see #556: must be non-nil
 		incoming:       make(chan jsonrpc.Message, 10),
@@ -543,6 +590,7 @@ type streamableServerConn struct {
 	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
+	stateStore   ServerSessionStateStore
 
 	logger *slog.Logger
 
@@ -577,6 +625,16 @@ type streamableServerConn struct {
 
 func (c *streamableServerConn) SessionID() string {
 	return c.sessionID
+}
+
+func (c *streamableServerConn) sessionUpdated(state ServerSessionState) {
+	if c.stateStore == nil || c.sessionID == "" || c.stateless {
+		return
+	}
+	stateCopy := state
+	if err := c.stateStore.Save(context.Background(), c.sessionID, &stateCopy); err != nil {
+		c.logger.Error("session state save failed", "session_id", c.sessionID, "error", err)
+	}
 }
 
 // A stream is a single logical stream of SSE events within a server session.
