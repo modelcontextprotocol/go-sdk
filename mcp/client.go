@@ -77,6 +77,14 @@ type ClientOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// ProtocolVersion is the version of the protocol to use.
+	// If empty, it defaults to the latest version.
+	ProtocolVersion string
+	// GetSessionID is the session ID to use for this client.
+	//
+	// If unset, no session ID will be used.
+	// Incompatible with protocol versions before 2025-11-30.
+	GetSessionID func() string
 }
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
@@ -113,7 +121,11 @@ func (e unsupportedProtocolVersionError) Error() string {
 }
 
 // ClientSessionOptions is reserved for future use.
-type ClientSessionOptions struct{}
+type ClientSessionOptions struct {
+	// If Initialize is set, do initialization even when on protocol version
+	// 2025-11-30 or later.
+	Initialize bool
+}
 
 func (c *Client) capabilities() *ClientCapabilities {
 	caps := &ClientCapabilities{}
@@ -134,14 +146,34 @@ func (c *Client) capabilities() *ClientCapabilities {
 // when it is no longer needed. However, if the connection is closed by the
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
-func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptions) (cs *ClientSession, err error) {
+func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOptions) (cs *ClientSession, err error) {
 	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil)
 	if err != nil {
 		return nil, err
 	}
 
+	protocolVersion := c.opts.ProtocolVersion
+	if protocolVersion == "" {
+		protocolVersion = latestProtocolVersion
+	}
+
+	if compareProtocolVersions(protocolVersion, protocolVersion20251130) >= 0 && (opts == nil || !opts.Initialize) {
+		// For protocol versions >= 2025-11-30, skip the initialize handshake.
+		cs.state.ProtocolVersion = protocolVersion
+		if c.opts.GetSessionID != nil {
+			cs.state.SessionID = c.opts.GetSessionID()
+		}
+		if hc, ok := cs.mcpConn.(clientConnection); ok {
+			hc.sessionUpdated(cs.state)
+		}
+		if c.opts.KeepAlive > 0 {
+			cs.startKeepalive(c.opts.KeepAlive)
+		}
+		return cs, nil
+	}
+
 	params := &InitializeParams{
-		ProtocolVersion: latestProtocolVersion,
+		ProtocolVersion: protocolVersion,
 		ClientInfo:      c.impl,
 		Capabilities:    c.capabilities(),
 	}
@@ -155,6 +187,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptio
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
 	cs.state.InitializeResult = res
+	cs.state.ProtocolVersion = res.ProtocolVersion
+	cs.state.SessionID = res.SessionID
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
 		hc.sessionUpdated(cs.state)
 	}
@@ -196,16 +230,25 @@ type ClientSession struct {
 
 type clientSessionState struct {
 	InitializeResult *InitializeResult
+	ProtocolVersion  string
+	SessionID        string
 }
 
 func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
 
 func (cs *ClientSession) ID() string {
+	if cs.state.SessionID != "" {
+		return cs.state.SessionID
+	}
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
 		return c.SessionID()
 	}
 	return ""
 }
+
+func (cs *ClientSession) ProtocolVersion() string { return cs.state.ProtocolVersion }
+
+func (cs *ClientSession) setProtocolVersion(v string) { cs.state.ProtocolVersion = v }
 
 // Close performs a graceful close of the connection, preventing new requests
 // from being handled, and waiting for ongoing requests to return. Close then
@@ -684,6 +727,11 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 // initiated by the server.
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
 	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
+}
+
+// Discover sends a "server/discover" request to the server and returns the result.
+func (cs *ClientSession) Discover(ctx context.Context, params *DiscoverParams) (*DiscoverResult, error) {
+	return handleSend[*DiscoverResult](ctx, methodServerDiscover, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Tools provides an iterator for all tools available on the server,

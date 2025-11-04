@@ -20,7 +20,7 @@ response with its latest supported version.
 		"capabilities": {
 			"logging": {}
 		},
-		"protocolVersion": "2025-06-18",
+		"protocolVersion": "2025-11-30",
 		"serverInfo": {
 			"name": "testServer",
 			"version": "v1.0.0"

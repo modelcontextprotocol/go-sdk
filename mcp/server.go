@@ -89,6 +89,10 @@ type ServerOptions struct {
 	// even if no tools have been registered.
 	HasTools bool
 
+	// ProtocolVersion is the version of the protocol to use.
+	// If empty, it defaults to the latest version.
+	ProtocolVersion string
+
 	// GetSessionID provides the next session ID to use for an incoming request.
 	// If nil, a default randomly generated ID will be used.
 	//
@@ -980,6 +984,18 @@ func (ss *ServerSession) ID() string {
 	return ""
 }
 
+func (ss *ServerSession) ProtocolVersion() string {
+	protocolVersion := ss.server.opts.ProtocolVersion
+	if protocolVersion == "" {
+		return latestProtocolVersion
+	}
+	return protocolVersion
+}
+
+func (ss *ServerSession) setProtocolVersion(v string) {
+	ss.server.opts.ProtocolVersion = v
+}
+
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
@@ -1086,6 +1102,7 @@ var serverMethodInfos = map[string]methodInfo{
 	methodSetLevel:               newServerMethodInfo(serverSessionMethod((*ServerSession).setLevel), 0),
 	methodSubscribe:              newServerMethodInfo(serverMethod((*Server).subscribe), 0),
 	methodUnsubscribe:            newServerMethodInfo(serverMethod((*Server).unsubscribe), 0),
+	methodServerDiscover:         newServerMethodInfo(serverSessionMethod((*ServerSession).discover), missingParamsOK),
 	notificationCancelled:        newServerMethodInfo(serverSessionMethod((*ServerSession).cancel), notification|missingParamsOK),
 	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
 	notificationRootsListChanged: newServerMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
@@ -1117,17 +1134,23 @@ func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
 	initialized := ss.state.InitializeParams != nil
+	protocolVersion := ss.server.opts.ProtocolVersion
+	if protocolVersion == "" {
+		protocolVersion = latestProtocolVersion
+	}
 	ss.mu.Unlock()
 
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
-	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
-	default:
-		if !initialized {
-			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+	if compareProtocolVersions(protocolVersion, protocolVersion20251130) < 0 {
+		switch req.Method {
+		case methodInitialize, methodPing, notificationInitialized:
+		default:
+			if !initialized {
+				ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
+				return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+			}
 		}
 	}
 
@@ -1154,21 +1177,46 @@ func (ss *ServerSession) InitializeParams() *InitializeParams {
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
-	if params == nil {
-		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
+	protocolVersion := ss.server.opts.ProtocolVersion
+	if protocolVersion == "" {
+		protocolVersion = latestProtocolVersion
 	}
-	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
-	})
+
+	// For older protocol versions, the initialize handshake is required.
+	if compareProtocolVersions(protocolVersion, protocolVersion20251130) < 0 {
+		if params == nil {
+			return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
+		}
+		ss.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = params
+		})
+	} else {
+		// For protocol versions >= 2025-11-30, the initialize handshake is optional.
+		// If params are provided, we process them.
+		if params != nil {
+			ss.updateState(func(state *ServerSessionState) {
+				state.InitializeParams = params
+			})
+		}
+	}
 
 	s := ss.server
 	return &InitializeResult{
-		// TODO(rfindley): alter behavior when falling back to an older version:
-		// reject unsupported features.
 		ProtocolVersion: negotiatedVersion(params.ProtocolVersion),
 		Capabilities:    s.capabilities(),
 		Instructions:    s.opts.Instructions,
 		ServerInfo:      s.impl,
+		SessionID:       ss.ID(),
+	}, nil
+}
+
+func (ss *ServerSession) discover(ctx context.Context, req *DiscoverParams) (*DiscoverResult, error) {
+	s := ss.server
+	return &DiscoverResult{
+		ProtocolVersion: ss.ProtocolVersion(),
+		ServerInfo:      s.impl,
+		Capabilities:    s.capabilities(),
+		Instructions:    s.opts.Instructions,
 	}, nil
 }
 

@@ -166,7 +166,7 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{Initialize: true})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{Initialize: true})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{Initialize: true})
 			if err == nil {
 				defer session.Close()
 			}
@@ -313,7 +313,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 		// mode.
 		{"unstrict GET on StatusNotFound", false, http.StatusOK, http.StatusNotFound, false},
 		{"unstrict GET on StatusBadRequest", false, http.StatusOK, http.StatusBadRequest, false},
-		{"GET on InternlServerError", false, http.StatusOK, http.StatusInternalServerError, true},
+		{"GET on InternalServerError", false, http.StatusOK, http.StatusInternalServerError, true},
 	}
 	for _, test := range tests {
 		t.Run(test.label, func(t *testing.T) {
@@ -354,7 +354,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL, strict: test.strict}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{Initialize: true})
 			if (err != nil) != test.wantConnectError {
 				t.Errorf("client.Connect() returned error %v; want error: %t", err, test.wantConnectError)
 			}
@@ -394,7 +394,7 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	cs, err := client.Connect(ctx, transport, nil)
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{Initialize: true})
 	if err == nil {
 		cs.Close()
 		t.Fatalf("Connect succeeded unexpectedly")
