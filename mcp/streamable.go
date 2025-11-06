@@ -1377,13 +1377,14 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		resp.Body.Close()
 		return
 	}
-	if resp.StatusCode == http.StatusNotFound && !c.strict {
-		// modelcontextprotocol/gosdk#393: some servers return NotFound instead
-		// of MethodNotAllowed for the standalone SSE stream.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && !c.strict {
+		// modelcontextprotocol/go-sdk#393,#610: some servers return NotFound or
+		// other status codes instead of MethodNotAllowed for the standalone SSE
+		// stream.
 		//
 		// Treat this like MethodNotAllowed in non-strict mode.
 		if c.logger != nil {
-			c.logger.Warn("got 404 instead of 405 for standalone SSE stream")
+			c.logger.Warn(fmt.Sprintf("got %d instead of 405 for standalone SSE stream", resp.StatusCode))
 		}
 		resp.Body.Close()
 		return
