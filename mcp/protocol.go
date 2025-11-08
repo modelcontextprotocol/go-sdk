@@ -671,6 +671,8 @@ type Icon struct {
 	MIMEType string `json:"mimeType,omitempty"`
 	// Optional size specification (e.g., ["48x48"], ["any"] for scalable formats like SVG, or ["48x48", "96x96"] for multiple sizes)
 	Sizes []string `json:"sizes,omitempty"`
+	// Optional Theme of the icon, e.g., "light" or "dark"
+	Theme string `json:"theme,omitempty"`
 }
 
 // A prompt or prompt template that the server offers.
@@ -841,6 +843,8 @@ type ResourceTemplate struct {
 	// A URI template (according to RFC 6570) that can be used to construct resource
 	// URIs.
 	URITemplate string `json:"uriTemplate"`
+	// Icons for the resource template, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 // The sender or recipient of messages and data in a conversation.

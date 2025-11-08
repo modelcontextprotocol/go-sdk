@@ -130,6 +130,8 @@ type ResourceLink struct {
 	Size        *int64
 	Meta        Meta
 	Annotations *Annotations
+	// Icons for the resource link, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 func (c *ResourceLink) MarshalJSON() ([]byte, error) {
