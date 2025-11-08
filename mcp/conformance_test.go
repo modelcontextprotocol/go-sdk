@@ -111,6 +111,19 @@ func structuredTool(ctx context.Context, req *CallToolRequest, args *structuredI
 	return nil, &structuredOutput{"Ack " + args.In}, nil
 }
 
+func contentTool(ctx context.Context, req *CallToolRequest, args *structuredInput) (*CallToolResult, any, error) {
+	return &CallToolResult{
+		Content: []Content{
+			&ResourceLink{
+				Name:     "Example Resource Link with Icons",
+				MIMEType: "text/plain",
+				URI:      "https://example.com/resource/" + args.In,
+				Icons:    []Icon{iconObj},
+			},
+		},
+	}, nil, nil
+}
+
 type tomorrowInput struct {
 	Now time.Time
 }
@@ -135,7 +148,12 @@ func incTool(_ context.Context, _ *CallToolRequest, args incInput) (*CallToolRes
 	return nil, incOutput{args.X + 1}, nil
 }
 
-var iconObj = Icon{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48", "96x96"}}
+var iconObj = Icon{
+	Source:   "foobar",
+	MIMEType: "image/png",
+	Sizes:    []string{"48x48", "96x96"},
+	Theme:    "light",
+}
 
 // runServerTest runs the server conformance test.
 // It must be executed in a synctest bubble.
@@ -174,6 +192,12 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			}
 			inSchema.Properties["x"].Default = json.RawMessage(`6`)
 			AddTool(s, &Tool{Name: "inc", InputSchema: inSchema}, incTool)
+		case "contentTool":
+			AddTool(s, &Tool{
+				Name:        "contentTool",
+				Title:       "contentTool",
+				Description: "return resourceLink content with Icon",
+			}, contentTool)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}

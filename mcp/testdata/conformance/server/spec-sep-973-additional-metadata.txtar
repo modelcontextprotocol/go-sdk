@@ -8,9 +8,12 @@ Checks following:
 - Test setting icons for mcp.Prompt
 - Test setting icons for mcp.Tool
 - Test setting icons for mcp.Resource
+- Test if tool call returning ResourceLink with icons works as expected
+
 
 -- tools --
 greetWithIcon
+contentTool
 
 -- prompts --
 code_reviewWithIcon
@@ -33,6 +36,17 @@ infoWithIcon
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
 { "jsonrpc": "2.0", "id": 3, "method": "resources/list" }
 { "jsonrpc": "2.0", "id": 4, "method": "prompts/list" }
+{
+	"jsonrpc": "2.0",
+	"id": 5,
+	"method": "tools/call",
+	"params": {
+		"name": "contentTool",
+		"arguments": {
+			"In": "resource1"
+		}
+	}
+}
 
 -- server --
 {
@@ -63,7 +77,8 @@ infoWithIcon
 					"sizes": [
 						"48x48",
 						"96x96"
-					]
+					],
+					"theme": "light"
 				}
 			]
 		}
@@ -74,6 +89,24 @@ infoWithIcon
 	"id": 2,
 	"result": {
 		"tools": [
+			{
+				"description": "return resourceLink content with Icon",
+				"inputSchema": {
+					"type": "object",
+					"required": [
+						"In"
+					],
+					"properties": {
+						"In": {
+							"type": "string",
+							"description": "the input"
+						}
+					},
+					"additionalProperties": false
+				},
+				"name": "contentTool",
+				"title": "contentTool"
+			},
 			{
 				"description": "say hi",
 				"inputSchema": {
@@ -96,7 +129,8 @@ infoWithIcon
 						"sizes": [
 							"48x48",
 							"96x96"
-						]
+						],
+						"theme": "light"
 					}
 				]
 			}
@@ -119,7 +153,8 @@ infoWithIcon
 						"sizes": [
 							"48x48",
 							"96x96"
-						]
+						],
+						"theme": "light"
 					}
 				]
 			}
@@ -147,11 +182,36 @@ infoWithIcon
 						"sizes": [
 							"48x48",
 							"96x96"
-						]
+						],
+						"theme": "light"
 					}
 				]
 			}
 		]
 	}
 }
-
+{
+	"jsonrpc": "2.0",
+	"id": 5,
+	"result": {
+		"content": [
+			{
+				"type": "resource_link",
+				"mimeType": "text/plain",
+				"uri": "https://example.com/resource/resource1",
+				"name": "Example Resource Link with Icons",
+				"icons": [
+					{
+						"src": "foobar",
+						"mimeType": "image/png",
+						"sizes": [
+							"48x48",
+							"96x96"
+						],
+						"theme": "light"
+					}
+				]
+			}
+		]
+	}
+}
