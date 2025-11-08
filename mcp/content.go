@@ -145,6 +145,7 @@ func (c *ResourceLink) MarshalJSON() ([]byte, error) {
 		Size:        c.Size,
 		Meta:        c.Meta,
 		Annotations: c.Annotations,
+		Icons:       c.Icons,
 	})
 }
 
@@ -157,6 +158,7 @@ func (c *ResourceLink) fromWire(wire *wireContent) {
 	c.Size = wire.Size
 	c.Meta = wire.Meta
 	c.Annotations = wire.Annotations
+	c.Icons = wire.Icons
 }
 
 // EmbeddedResource contains embedded resources.
@@ -239,6 +241,7 @@ type wireContent struct {
 	Size        *int64            `json:"size,omitempty"`
 	Meta        Meta              `json:"_meta,omitempty"`
 	Annotations *Annotations      `json:"annotations,omitempty"`
+	Icons       []Icon            `json:"icons,omitempty"`
 }
 
 func contentsFromWire(wires []*wireContent, allow map[string]bool) ([]Content, error) {
