@@ -61,13 +61,14 @@ func main() {
 
 	// Add tools that exercise different features of the protocol.
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, contentTool)
-	mcp.AddTool(server, &mcp.Tool{Name: "greet (structured)"}, structuredTool)               // returns structured output
-	mcp.AddTool(server, &mcp.Tool{Name: "greet (with Icons)", Icons: icons}, structuredTool) // tool with icons
-	mcp.AddTool(server, &mcp.Tool{Name: "ping"}, pingingTool)                                // performs a ping
-	mcp.AddTool(server, &mcp.Tool{Name: "log"}, loggingTool)                                 // performs a log
-	mcp.AddTool(server, &mcp.Tool{Name: "sample"}, samplingTool)                             // performs sampling
-	mcp.AddTool(server, &mcp.Tool{Name: "elicit"}, elicitingTool)                            // performs elicitation
-	mcp.AddTool(server, &mcp.Tool{Name: "roots"}, rootsTool)                                 // lists roots
+	mcp.AddTool(server, &mcp.Tool{Name: "greet (structured)"}, structuredTool)                                // returns structured output
+	mcp.AddTool(server, &mcp.Tool{Name: "greet (with Icons)", Icons: icons}, structuredTool)                  // tool with icons
+	mcp.AddTool(server, &mcp.Tool{Name: "greet (content with ResourceLink)"}, resourceLinkContentTool(icons)) // tool that returns content with a resource link
+	mcp.AddTool(server, &mcp.Tool{Name: "ping"}, pingingTool)                                                 // performs a ping
+	mcp.AddTool(server, &mcp.Tool{Name: "log"}, loggingTool)                                                  // performs a log
+	mcp.AddTool(server, &mcp.Tool{Name: "sample"}, samplingTool)                                              // performs sampling
+	mcp.AddTool(server, &mcp.Tool{Name: "elicit"}, elicitingTool)                                             // performs elicitation
+	mcp.AddTool(server, &mcp.Tool{Name: "roots"}, rootsTool)                                                  // lists roots
 
 	// Add a basic prompt.
 	server.AddPrompt(&mcp.Prompt{Name: "greet"}, prompt)
@@ -84,6 +85,14 @@ func main() {
 		MIMEType: "text/plain",
 		URI:      "embedded:info",
 		Icons:    icons,
+	}, embeddedResource)
+
+	// Add a resource template.
+	server.AddResourceTemplate(&mcp.ResourceTemplate{
+		Name:        "Resource template (with Icon)",
+		MIMEType:    "text/plain",
+		URITemplate: "http://example.com/~{resource_name}/",
+		Icons:       icons,
 	}, embeddedResource)
 
 	// Serve over stdio, or streamable HTTP if -http is set.
@@ -153,6 +162,23 @@ func contentTool(ctx context.Context, req *mcp.CallToolRequest, args args) (*mcp
 			&mcp.TextContent{Text: "Hi " + args.Name},
 		},
 	}, nil, nil
+}
+
+// resourceLinkContentTool returns a ResourceLink content with icons.
+func resourceLinkContentTool(icons []mcp.Icon) func(ctx context.Context, req *mcp.CallToolRequest, args args) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, args args) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.ResourceLink{
+					Name:     "greeting",
+					Title:    "A friendly greeting",
+					MIMEType: "text/plain",
+					URI:      "data:text/plain,Hi%20" + url.PathEscape(args.Name),
+					Icons:    icons,
+				},
+			},
+		}, nil, nil
+	}
 }
 
 type result struct {
@@ -247,5 +273,6 @@ func iconToBase64DataURL(path string) ([]mcp.Icon, error) {
 		Source:   "data:image/png;base64," + base64.StdEncoding.EncodeToString(data),
 		MIMEType: "image/png",
 		Sizes:    []string{"48x48"},
+		Theme:    "light", // or "dark" or empty
 	}}, nil
 }
