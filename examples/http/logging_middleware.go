@@ -24,8 +24,7 @@ func createLoggingMiddleware() mcp.Middleware {
 			sessionID := req.GetSession().ID()
 
 			// Log request details.
-			log.Printf("[REQUEST] %s | Session: %s | Method: %s",
-				start.Format(time.RFC3339),
+			log.Printf("[REQUEST] Session: %s | Method: %s",
 				sessionID,
 				method)
 
@@ -36,15 +35,13 @@ func createLoggingMiddleware() mcp.Middleware {
 			duration := time.Since(start)
 
 			if err != nil {
-				log.Printf("[RESPONSE] %s | Session: %s | Method: %s | Status: ERROR | Duration: %v | Error: %v",
-					time.Now().Format(time.RFC3339),
+				log.Printf("[RESPONSE] Session: %s | Method: %s | Status: ERROR | Duration: %v | Error: %v",
 					sessionID,
 					method,
 					duration,
 					err)
 			} else {
-				log.Printf("[RESPONSE] %s | Session: %s | Method: %s | Status: OK | Duration: %v",
-					time.Now().Format(time.RFC3339),
+				log.Printf("[RESPONSE] Session: %s | Method: %s | Status: OK | Duration: %v",
 					sessionID,
 					method,
 					duration)
