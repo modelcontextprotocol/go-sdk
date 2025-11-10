@@ -1356,7 +1356,7 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	// § 2.5: A server using the Streamable HTTP transport MAY assign a session
 	// ID at initialization time, by including it in an Mcp-Session-Id header
 	// on the HTTP response containing the InitializeResult.
-	c.connectStandaloneSSE()
+	go c.connectStandaloneSSE()
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
@@ -1394,7 +1394,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		c.fail(err)
 		return
 	}
-	go c.handleSSE(summary, resp, true, nil)
+	c.handleSSE(summary, resp, true, nil)
 }
 
 // fail handles an asynchronous error while reading.

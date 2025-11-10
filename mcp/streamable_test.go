@@ -590,6 +590,9 @@ func TestServerTransportCleanup(t *testing.T) {
 
 // TestServerInitiatedSSE verifies that the persistent SSE connection remains
 // open and can receive server-initiated events.
+// TODO: This test is flaky. Sometimes the server fails to send the notifications/tools/list_changed message
+// with error `rejected by transport: undelivered message`.
+// Both the `streamableServerConn.eventStore` and `deliver` are nil when it fails
 func TestServerInitiatedSSE(t *testing.T) {
 	notifications := make(chan string)
 	server := NewServer(testImpl, nil)
