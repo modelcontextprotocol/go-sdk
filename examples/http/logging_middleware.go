@@ -5,47 +5,49 @@
 package main
 
 import (
+	"context"
 	"log"
-	"net/http"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
+// createLoggingMiddleware creates an MCP middleware that logs method calls.
+func createLoggingMiddleware() mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(
+			ctx context.Context,
+			method string,
+			req mcp.Request,
+		) (mcp.Result, error) {
+			start := time.Now()
+			sessionID := req.GetSession().ID()
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
+			// Log request details.
+			log.Printf("[REQUEST] Session: %s | Method: %s",
+				sessionID,
+				method)
 
-func loggingHandler(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+			// Call the actual handler.
+			result, err := next(ctx, method, req)
 
-		// Create a response writer wrapper to capture status code.
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			// Log response details.
+			duration := time.Since(start)
 
-		// Log request details.
-		log.Printf("[REQUEST] %s | %s | %s %s",
-			start.Format(time.RFC3339),
-			r.RemoteAddr,
-			r.Method,
-			r.URL.Path)
+			if err != nil {
+				log.Printf("[RESPONSE] Session: %s | Method: %s | Status: ERROR | Duration: %v | Error: %v",
+					sessionID,
+					method,
+					duration,
+					err)
+			} else {
+				log.Printf("[RESPONSE] Session: %s | Method: %s | Status: OK | Duration: %v",
+					sessionID,
+					method,
+					duration)
+			}
 
-		// Call the actual handler.
-		handler.ServeHTTP(wrapped, r)
-
-		// Log response details.
-		duration := time.Since(start)
-		log.Printf("[RESPONSE] %s | %s | %s %s | Status: %d | Duration: %v",
-			time.Now().Format(time.RFC3339),
-			r.RemoteAddr,
-			r.Method,
-			r.URL.Path,
-			wrapped.statusCode,
-			duration)
-	})
+			return result, err
+		}
+	}
 }
