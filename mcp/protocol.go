@@ -660,7 +660,7 @@ func (*ProgressNotificationParams) isParams() {}
 
 // Icon provides visual identifiers for their resources, tools, prompts, and implementations
 // See [/specification/draft/basic/index#icons] for notes on icons
-
+//
 // TODO(iamsurajbobade): update specification url from draft.
 type Icon struct {
 	// Source is A URI pointing to the icon resource (required). This can be:
