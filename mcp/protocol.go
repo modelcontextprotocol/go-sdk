@@ -658,6 +658,23 @@ type ProgressNotificationParams struct {
 
 func (*ProgressNotificationParams) isParams() {}
 
+// Icon provides visual identifiers for their resources, tools, prompts, and implementations
+// See [/specification/draft/basic/index#icons] for notes on icons
+//
+// TODO(iamsurajbobade): update specification url from draft.
+type Icon struct {
+	// Source is A URI pointing to the icon resource (required). This can be:
+	// - An HTTP/HTTPS URL pointing to an image file
+	// - A data URI with base64-encoded image data
+	Source string `json:"src"`
+	// Optional MIME type if the server's type is missing or generic
+	MIMEType string `json:"mimeType,omitempty"`
+	// Optional size specification (e.g., ["48x48"], ["any"] for scalable formats like SVG, or ["48x48", "96x96"] for multiple sizes)
+	Sizes []string `json:"sizes,omitempty"`
+	// Optional Theme of the icon, e.g., "light" or "dark"
+	Theme string `json:"theme,omitempty"`
+}
+
 // A prompt or prompt template that the server offers.
 type Prompt struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
@@ -673,6 +690,8 @@ type Prompt struct {
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
 	Title string `json:"title,omitempty"`
+	// Icons for the prompt, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 // Describes an argument that a prompt can accept.
@@ -782,6 +801,8 @@ type Resource struct {
 	Title string `json:"title,omitempty"`
 	// The URI of this resource.
 	URI string `json:"uri"`
+	// Icons for the resource, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 type ResourceListChangedParams struct {
@@ -822,6 +843,8 @@ type ResourceTemplate struct {
 	// A URI template (according to RFC 6570) that can be used to construct resource
 	// URIs.
 	URITemplate string `json:"uriTemplate"`
+	// Icons for the resource template, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 // The sender or recipient of messages and data in a conversation.
@@ -948,6 +971,8 @@ type Tool struct {
 	// If not provided, Annotations.Title should be used for display if present,
 	// otherwise Name.
 	Title string `json:"title,omitempty"`
+	// Icons for the tool, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 // Additional properties describing a Tool to clients.
@@ -1090,6 +1115,10 @@ type Implementation struct {
 	// easily understood, even by those unfamiliar with domain-specific terminology.
 	Title   string `json:"title,omitempty"`
 	Version string `json:"version"`
+	// WebsiteURL for the server, if any.
+	WebsiteURL string `json:"websiteUrl,omitempty"`
+	// Icons for the Server, if any.
+	Icons []Icon `json:"icons,omitempty"`
 }
 
 // Present if the server supports argument autocompletion suggestions.

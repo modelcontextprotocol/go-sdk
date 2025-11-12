@@ -121,8 +121,9 @@ func TestContent(t *testing.T) {
 				Description: "This resource demonstrates all fields",
 				MIMEType:    "text/plain",
 				Meta:        mcp.Meta{"custom": "metadata"},
+				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: "light"}},
 			},
-			`{"type":"resource_link","mimeType":"text/plain","uri":"https://example.com/resource","name":"Example Resource","title":"A comprehensive example resource","description":"This resource demonstrates all fields","_meta":{"custom":"metadata"}}`,
+			`{"type":"resource_link","mimeType":"text/plain","uri":"https://example.com/resource","name":"Example Resource","title":"A comprehensive example resource","description":"This resource demonstrates all fields","_meta":{"custom":"metadata"},"icons":[{"src":"foobar","mimeType":"image/png","sizes":["48x48"],"theme":"light"}]}`,
 		},
 	}
 
@@ -190,5 +191,55 @@ func TestEmbeddedResource(t *testing.T) {
 		if diff := cmp.Diff(tt.rc, urc); diff != "" {
 			t.Errorf("mismatch (-want, +got):\n%s", diff)
 		}
+	}
+}
+
+// TestContentUnmarshal tests that unmarshaling JSON into various Content types
+// works correctly, including when the Content fields are initially nil.
+func TestContentUnmarshal(t *testing.T) {
+	valInt64 := int64(24)
+	tests := []struct {
+		name          string
+		json          string
+		content       mcp.Content
+		expectContent mcp.Content
+	}{
+		{
+			name:    "ResourceLink",
+			json:    `{"type":"resource_link","mimeType":"text/plain","uri":"https://example.com/resource","name":"Example Resource","title":"A comprehensive example resource","description":"This resource demonstrates all fields","_meta":{"custom":"metadata"},"icons":[{"src":"foobar","mimeType":"image/png","sizes":["48x48"],"theme":"light"}], "size":24,"annotations":{"audience":["user","assistant"],"lastModified":"2025-01-12T15:00:58Z","priority":0.5}}`,
+			content: &mcp.ResourceLink{},
+			expectContent: &mcp.ResourceLink{
+				URI:         "https://example.com/resource",
+				Name:        "Example Resource",
+				Title:       "A comprehensive example resource",
+				Description: "This resource demonstrates all fields",
+				MIMEType:    "text/plain",
+				// Meta:        mcp.Meta{"custom": "metadata"},
+				Size:        &valInt64,
+				Annotations: &mcp.Annotations{Audience: []mcp.Role{"user", "assistant"}, LastModified: "2025-01-12T15:00:58Z", Priority: 0.5},
+				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: "light"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test that unmarshaling doesn't panic on nil Content fields
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("UnmarshalJSON panicked: %v", r)
+				}
+			}()
+
+			err := json.Unmarshal([]byte(tt.json), tt.content)
+			if err != nil {
+				t.Errorf("UnmarshalJSON failed: %v", err)
+			}
+
+			// Verify that the Content field was properly populated
+			if cmp.Diff(tt.expectContent, tt.content) != "" {
+				t.Errorf("Content is not equal: %v", cmp.Diff(tt.expectContent, tt.content))
+			}
+		})
 	}
 }

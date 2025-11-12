@@ -111,6 +111,19 @@ func structuredTool(ctx context.Context, req *CallToolRequest, args *structuredI
 	return nil, &structuredOutput{"Ack " + args.In}, nil
 }
 
+func contentTool(ctx context.Context, req *CallToolRequest, args *structuredInput) (*CallToolResult, any, error) {
+	return &CallToolResult{
+		Content: []Content{
+			&ResourceLink{
+				Name:     "Example Resource Link with Icons",
+				MIMEType: "text/plain",
+				URI:      "https://example.com/resource/" + args.In,
+				Icons:    []Icon{iconObj},
+			},
+		},
+	}, nil, nil
+}
+
 type tomorrowInput struct {
 	Now time.Time
 }
@@ -135,18 +148,38 @@ func incTool(_ context.Context, _ *CallToolRequest, args incInput) (*CallToolRes
 	return nil, incOutput{args.X + 1}, nil
 }
 
+var iconObj = Icon{
+	Source:   "foobar",
+	MIMEType: "image/png",
+	Sizes:    []string{"48x48", "96x96"},
+	Theme:    "light",
+}
+
 // runServerTest runs the server conformance test.
 // It must be executed in a synctest bubble.
 func runServerTest(t *testing.T, test *conformanceTest) {
 	ctx := t.Context()
 	// Construct the server based on features listed in the test.
-	s := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	impl := &Implementation{Name: "testServer", Version: "v1.0.0"}
+
+	if test.name == "spec-sep-973-additional-metadata.txtar" {
+		impl.Icons = []Icon{iconObj}
+		impl.WebsiteURL = "https://github.com/modelcontextprotocol/go-sdk"
+	}
+
+	s := NewServer(impl, nil)
 	for _, tn := range test.tools {
 		switch tn {
 		case "greet":
 			AddTool(s, &Tool{
 				Name:        "greet",
 				Description: "say hi",
+			}, sayHi)
+		case "greetWithIcon":
+			AddTool(s, &Tool{
+				Name:        "greetWithIcon",
+				Description: "say hi",
+				Icons:       []Icon{iconObj},
 			}, sayHi)
 		case "structured":
 			AddTool(s, &Tool{Name: "structured"}, structuredTool)
@@ -159,6 +192,12 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			}
 			inSchema.Properties["x"].Default = json.RawMessage(`6`)
 			AddTool(s, &Tool{Name: "inc", InputSchema: inSchema}, incTool)
+		case "contentTool":
+			AddTool(s, &Tool{
+				Name:        "contentTool",
+				Title:       "contentTool",
+				Description: "return resourceLink content with Icon",
+			}, contentTool)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}
@@ -167,6 +206,13 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 		switch pn {
 		case "code_review":
 			s.AddPrompt(codeReviewPrompt, codReviewPromptHandler)
+		case "code_reviewWithIcon":
+			s.AddPrompt(&Prompt{
+				Name:        "code_review",
+				Description: "do a code review",
+				Arguments:   []*PromptArgument{{Name: "Code", Required: true}},
+				Icons:       []Icon{iconObj},
+			}, codReviewPromptHandler)
 		default:
 			t.Fatalf("unknown prompt %q", pn)
 		}
@@ -177,6 +223,13 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 			s.AddResource(resource1, readHandler)
 		case "info":
 			s.AddResource(resource3, handleEmbeddedResource)
+		case "infoWithIcon":
+			s.AddResource(&Resource{
+				Name:     "info",
+				MIMEType: "text/plain",
+				URI:      "embedded:info",
+				Icons:    []Icon{iconObj},
+			}, handleEmbeddedResource)
 		default:
 			t.Fatalf("unknown resource %q", rn)
 		}
