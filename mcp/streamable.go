@@ -1655,6 +1655,12 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 			lastEventID = evt.ID
 		}
 
+		// Skip non-message events (e.g., "ping" events used for keep-alive)
+		// According to SSE spec, events with no name default to "message"
+		if evt.Name != "" && evt.Name != "message" {
+			continue
+		}
+
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
 			c.fail(fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
