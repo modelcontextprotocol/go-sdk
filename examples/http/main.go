@@ -117,6 +117,9 @@ func runServer(url string) {
 		Version: "1.0.0",
 	}, nil)
 
+	// Add MCP-level logging middleware.
+	server.AddReceivingMiddleware(createLoggingMiddleware())
+
 	// Add the cityTime tool.
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cityTime",
@@ -128,13 +131,11 @@ func runServer(url string) {
 		return server
 	}, nil)
 
-	handlerWithLogging := loggingHandler(handler)
-
 	log.Printf("MCP server listening on %s", url)
 	log.Printf("Available tool: cityTime (cities: nyc, sf, boston)")
 
-	// Start the HTTP server with logging handler.
-	if err := http.ListenAndServe(url, handlerWithLogging); err != nil {
+	// Start the HTTP server.
+	if err := http.ListenAndServe(url, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
