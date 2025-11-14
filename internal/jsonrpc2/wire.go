@@ -32,7 +32,7 @@ var (
 	// server being temporarily unable to accept any new messages.
 	ErrServerOverloaded = NewError(-32000, "overloaded")
 	// ErrUnknown should be used for all non coded errors.
-	ErrUnknown = NewError(-32001, "unknown error")
+	ErrUnknown = NewError(-32099, "unknown error")
 	// ErrServerClosing is returned for calls that arrive while the server is closing.
 	ErrServerClosing = NewError(-32004, "server is closing")
 	// ErrClientClosing is a dummy error returned for calls initiated while the client is closing.

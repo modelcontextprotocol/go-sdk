@@ -37,7 +37,7 @@ func Example_lifecycle() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	clientSession, err := client.Connect(ctx, t2, nil)
+	clientSession, err := client.Connect(ctx, t2, &mcp.ClientSessionOptions{Initialize: true})
 	if err != nil {
 		log.Fatal(err)
 	}

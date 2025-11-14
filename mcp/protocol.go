@@ -347,6 +347,29 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// DiscoverParams is sent from the client to the server to request information
+// about the server's capabilities and other metadata.
+type DiscoverParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+}
+
+func (*DiscoverParams) isParams() {}
+
+// DiscoverResult is the server's response to a server/discover request.
+type DiscoverResult struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta            `json:"_meta,omitempty"`
+	ProtocolVersion string              `json:"protocolVersion"`
+	ServerInfo      *Implementation     `json:"serverInfo"`
+	Capabilities    *ServerCapabilities `json:"capabilities"`
+	Instructions    string              `json:"instructions,omitempty"`
+}
+
+func (*DiscoverResult) isResult() {}
+
 type GetPromptParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -406,6 +429,7 @@ type InitializeResult struct {
 	// support this version, it must disconnect.
 	ProtocolVersion string          `json:"protocolVersion"`
 	ServerInfo      *Implementation `json:"serverInfo"`
+	SessionID       string          `json:"sessionId,omitempty"`
 }
 
 func (*InitializeResult) isResult() {}
@@ -1191,4 +1215,5 @@ const (
 	methodSubscribe                 = "resources/subscribe"
 	notificationToolListChanged     = "notifications/tools/list_changed"
 	methodUnsubscribe               = "resources/unsubscribe"
+	methodServerDiscover            = "server/discover"
 )

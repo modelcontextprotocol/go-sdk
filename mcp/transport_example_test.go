@@ -30,7 +30,9 @@ func ExampleLoggingTransport() {
 	}
 	defer serverSession.Close()
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		ProtocolVersion: "2025-06-18",
+	})
 	var b bytes.Buffer
 	logTransport := &mcp.LoggingTransport{Transport: t2, Writer: &b}
 	clientSession, err := client.Connect(ctx, logTransport, nil)

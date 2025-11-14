@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
@@ -159,7 +160,7 @@ func TestEndToEnd(t *testing.T) {
 	c.AddRoots(&Root{URI: "file://" + rootAbs})
 
 	// Connect the client.
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{Initialize: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +406,7 @@ func TestEndToEnd(t *testing.T) {
 					t.Fatal("timed out waiting for log messages")
 				}
 			}
-			if diff := cmp.Diff(want, got); diff != "" {
+			if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(LoggingMessageParams{}, "Meta")); diff != "" {
 				t.Errorf("mismatch (-want, +got):\n%s", diff)
 			}
 		}
@@ -760,7 +761,7 @@ func TestMiddleware(t *testing.T) {
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{Initialize: true})
 	if err != nil {
 		t.Fatal(err)
 	}

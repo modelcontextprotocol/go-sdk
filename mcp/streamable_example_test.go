@@ -24,7 +24,9 @@ func ExampleStreamableHTTPHandler() {
 	//
 	// Here, we configure it to serves application/json responses rather than
 	// text/event-stream, just so the output below doesn't use random event ids.
-	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, &mcp.ServerOptions{
+		GetSessionID: func() string { return "123" },
+	})
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
@@ -35,7 +37,7 @@ func ExampleStreamableHTTPHandler() {
 	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
 	fmt.Println(resp)
 	// Output:
-	// {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"server","version":"v0.1.0"}}}
+	// {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-11-30","serverInfo":{"name":"server","version":"v0.1.0"},"sessionId":"123"}}
 }
 
 // !-streamablehandler

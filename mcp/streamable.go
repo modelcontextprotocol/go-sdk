@@ -223,48 +223,6 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	sessionID := req.Header.Get(sessionIDHeader)
-	var sessInfo *sessionInfo
-	if sessionID != "" {
-		h.mu.Lock()
-		sessInfo = h.sessions[sessionID]
-		h.mu.Unlock()
-		if sessInfo == nil && !h.opts.Stateless {
-			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
-			// validation, we require that the session ID matches a known session.
-			//
-			// In stateless mode, a temporary transport is be created below.
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-	}
-
-	if req.Method == http.MethodDelete {
-		if sessionID == "" {
-			http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
-			return
-		}
-		if sessInfo != nil { // sessInfo may be nil in stateless mode
-			// Closing the session also removes it from h.sessions, due to the
-			// onClose callback.
-			sessInfo.session.Close()
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	switch req.Method {
-	case http.MethodPost, http.MethodGet:
-		if req.Method == http.MethodGet && (h.opts.Stateless || sessionID == "") {
-			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
-			return
-		}
-	default:
-		w.Header().Set("Allow", "GET, POST, DELETE")
-		http.Error(w, "Method Not Allowed: streamable MCP servers support GET, POST, and DELETE requests", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// [§2.7] of the spec (2025-06-18) states:
 	//
 	// "If using HTTP, the client MUST include the MCP-Protocol-Version:
@@ -294,13 +252,71 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//
 	// This logic matches the typescript SDK.
 	//
-	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
+	// For backwards compatibility, if the server does not receive an
+	// MCP-Protocol-Version header, and has no other way to identify the version -
+	// for example, by relying on the protocol version negotiated during
+	// initialization - the server SHOULD assume protocol version 2025-03-26.
+	//
+	// If the server receives a request with an invalid or unsupported
+	// MCP-Protocol-Version, it MUST respond with 400 Bad Request."
+	//
+	// Since this wasn't present in the 2025-03-26 version of the spec, this
+	// effectively means:
+	//  1. IF the client provides a version header, it must be a supported
+	//     version.
+	//  2. In stateless mode, where we've lost the state of the initialize
+	//     request, we assume that whatever the client tells us is the truth (or
+	//     assume 2025-03-26 if the client doesn't say anything).
+	//
+	// This logic matches the typescript SDK.
 	protocolVersion := req.Header.Get(protocolVersionHeader)
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
 	if !slices.Contains(supportedProtocolVersions, protocolVersion) {
 		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
+		return
+	}
+
+	sessionID := req.Header.Get(sessionIDHeader)
+	var sessInfo *sessionInfo
+	if sessionID != "" {
+		h.mu.Lock()
+		sessInfo = h.sessions[sessionID]
+		h.mu.Unlock()
+		if sessInfo == nil && !h.opts.Stateless && compareProtocolVersions(protocolVersion, protocolVersion20251130) < 0 {
+			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
+			// validation, we require that the session ID matches a known session.
+			//
+			// In stateless mode, a temporary transport is be created below.
+			http.Error(w, "session not found: "+protocolVersion, http.StatusNotFound)
+			return
+		}
+	}
+
+	if req.Method == http.MethodDelete {
+		if sessionID == "" {
+			http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+			return
+		}
+		if sessInfo != nil { // sessInfo may be nil in stateless mode
+			// Closing the session also removes it from h.sessions, due to the
+			// onClose callback.
+			sessInfo.session.Close()
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	switch req.Method {
+	case http.MethodPost, http.MethodGet:
+		if req.Method == http.MethodGet && (h.opts.Stateless || sessionID == "") {
+			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
+			return
+		}
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		http.Error(w, "Method Not Allowed: streamable MCP servers support GET, POST, and DELETE requests", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -429,6 +445,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			h.mu.Unlock()
 			defer func() {
 				// If initialization failed, clean up the session (#578).
+				// TODO(SEP 1442): what should the lifecycle be here?
+				// Should we persist the session forever?
 				if session.InitializeParams() == nil {
 					// Initialization failed.
 					session.Close()
@@ -1322,6 +1340,7 @@ type streamableClientConn struct {
 	// Guard the initialization state.
 	mu                sync.Mutex
 	initializedResult *InitializeResult
+	protocolVersion   string // explicit protocol version, if no InitializeResult
 	sessionID         string
 }
 
@@ -1341,22 +1360,30 @@ var _ clientConnection = (*streamableClientConn)(nil)
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
+	c.protocolVersion = state.ProtocolVersion
+	// FIXME: document this.
+	// We only accept synthetic session IDs if not initializing.
+	if state.InitializeResult == nil {
+		c.sessionID = state.SessionID
+	}
 	c.mu.Unlock()
 
-	// Start the standalone SSE stream as soon as we have the initialized
-	// result.
-	//
-	// § 2.2: The client MAY issue an HTTP GET to the MCP endpoint. This can be
-	// used to open an SSE stream, allowing the server to communicate to the
-	// client, without the client first sending data via HTTP POST.
-	//
-	// We have to wait for initialized, because until we've received
-	// initialized, we don't know whether the server requires a sessionID.
-	//
-	// § 2.5: A server using the Streamable HTTP transport MAY assign a session
-	// ID at initialization time, by including it in an Mcp-Session-Id header
-	// on the HTTP response containing the InitializeResult.
-	c.connectStandaloneSSE()
+	if state.InitializeResult != nil {
+		// Start the standalone SSE stream as soon as we have the initialized
+		// result.
+		//
+		// § 2.2: The client MAY issue an HTTP GET to the MCP endpoint. This can be
+		// used to open an SSE stream, allowing the server to communicate to the
+		// client, without the client first sending data via HTTP POST.
+		//
+		// We have to wait for initialized, because until we've received
+		// initialized, we don't know whether the server requires a sessionID.
+		//
+		// § 2.5: A server using the Streamable HTTP transport MAY assign a session
+		// ID at initialization time, by including it in an Mcp-Session-Id header
+		// on the HTTP response containing the InitializeResult.
+		c.connectStandaloneSSE()
+	}
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
@@ -1548,6 +1575,8 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
 
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if c.protocolVersion != "" && compareProtocolVersions(c.protocolVersion, protocolVersion20251130) >= 0 {
+		req.Header.Set(protocolVersionHeader, c.protocolVersion)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
@@ -1748,7 +1777,9 @@ func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
 		if errors.Is(c.failure(), errSessionMissing) {
 			// If the session is missing, no need to delete it.
-		} else {
+		} else if c.sessionID != "" {
+			// TODO(rfindley): we should check that sessionID is nonempty here, independent
+			// of SEP 1442.
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
 			if err != nil {
 				c.closeErr = err

@@ -33,13 +33,15 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion   = protocolVersion20250618
+	latestProtocolVersion   = protocolVersion20251130 // (unreleased: an arbitrary future version)
+	protocolVersion20251130 = "2025-11-30"
 	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
 	protocolVersion20241105 = "2024-11-05"
 )
 
 var supportedProtocolVersions = []string{
+	protocolVersion20251130,
 	protocolVersion20250618,
 	protocolVersion20250326,
 	protocolVersion20241105,
@@ -59,6 +61,36 @@ func negotiatedVersion(clientVersion string) string {
 	return clientVersion
 }
 
+const unsupportedVersionErrorCode = -32000
+
+// UnsupportedVersionError returns a jsonrpc2.WireError that signals to the
+// peer that the requested protocol version is unsupported, and they should use
+// one of the provided alternative versions.
+func UnsupportedVersionError(supported []string) error {
+	s := supportedVersions{
+		SupportedVersions: supported,
+	}
+	m, err := json.Marshal(s)
+	if err != nil {
+		panic("impossible")
+	}
+	return &jsonrpc2.WireError{
+		Code:    unsupportedVersionErrorCode,
+		Message: "Unsupported protocol version",
+		Data:    json.RawMessage(m),
+	}
+}
+
+type supportedVersions struct {
+	SupportedVersions []string `json:"supportedVersions"`
+}
+
+// compareProtocolVersions compares two protocol version strings.
+// It returns -1 if v1 < v2, 0 if v1 == v2, and 1 if v1 > v2.
+func compareProtocolVersions(v1, v2 string) int {
+	return strings.Compare(v1, v2)
+}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
@@ -68,6 +100,12 @@ type MethodHandler func(ctx context.Context, method string, req Request) (result
 type Session interface {
 	// ID returns the session ID, or the empty string if there is none.
 	ID() string
+
+	// ProtocolVersion returns the protocol version for the session.
+	ProtocolVersion() string
+
+	// setProtocolVersion sets the protocol version for the session.
+	setProtocolVersion(string)
 
 	sendingMethodInfos() map[string]methodInfo
 	receivingMethodInfos() map[string]methodInfo
@@ -96,6 +134,20 @@ func defaultSendingMethodHandler[S Session](ctx context.Context, method string, 
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, req.GetParams())
 	}
+
+	// Add session metadata if the protocol version is >= 2025-11-30.
+	if compareProtocolVersions(req.GetSession().ProtocolVersion(), protocolVersion20251130) >= 0 {
+		params := req.GetParams()
+		if params != nil {
+			m := params.GetMeta()
+			if m == nil {
+				m = make(map[string]any)
+			}
+			m[protocolVersionKey] = req.GetSession().ProtocolVersion()
+			params.SetMeta(m)
+		}
+	}
+
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
@@ -151,10 +203,36 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 		return nil, fmt.Errorf("handling '%s': %w", jreq.Method, err)
 	}
 
-	mh := session.receivingMethodHandler()
 	re, _ := jreq.Extra.(*RequestExtra)
+	// Check for mcpProtocolVersion in metadata and validate it.
+	if params != nil {
+		m := params.GetMeta()
+		var (
+			protocolVersion string
+			ok              bool // whether protocol version is set
+		)
+		if m != nil {
+			protocolVersion, ok = m[protocolVersionKey].(string)
+		}
+		if !ok && re != nil {
+			if pv := re.Header.Get(protocolVersionHeader); pv != "" {
+				protocolVersion = pv
+				ok = true
+				if m == nil {
+					m = make(map[string]any)
+				}
+				m[protocolVersionKey] = pv
+				params.SetMeta(m)
+			}
+		}
+		if ok && !slices.Contains(supportedProtocolVersions, protocolVersion) {
+			return nil, UnsupportedVersionError(supportedProtocolVersions)
+		}
+	}
+
 	req := info.newRequest(session, params, re)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
+	mh := session.receivingMethodHandler()
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
 		return nil, err
@@ -236,10 +314,31 @@ const (
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
 	mi.newRequest = func(s Session, p Params, _ *RequestExtra) Request {
-		r := &ClientRequest[P]{Session: s.(*ClientSession)}
+		cs := s.(*ClientSession)
+		r := &ClientRequest[P]{Session: cs}
 		if p != nil {
 			r.Params = p.(P)
+
+			if compareProtocolVersions(cs.ProtocolVersion(), protocolVersion20251130) >= 0 {
+				m := p.GetMeta()
+				if m == nil {
+					m = make(map[string]any)
+				}
+				// Add sessionId to metadata if the protocol version is >= 2025-11-30 and a session ID exists.
+				sessionID := s.ID()
+				if sessionID != "" {
+					if _, ok := m[sessionIDKey]; !ok {
+						m[sessionIDKey] = sessionID
+					}
+				}
+				clientCaps := cs.client.capabilities()
+				if clientCaps != nil {
+					m[clientCapabilitiesKey] = clientCaps
+				}
+				p.SetMeta(m)
+			}
 		}
+
 		return r
 	}
 	mi.handleMethod = MethodHandler(func(ctx context.Context, _ string, req Request) (Result, error) {
@@ -379,7 +478,12 @@ func (m Meta) GetMeta() map[string]any { return m }
 // SetMeta sets the metadata on a value.
 func (m *Meta) SetMeta(x map[string]any) { *m = x }
 
-const progressTokenKey = "progressToken"
+const (
+	progressTokenKey      = "progressToken"
+	protocolVersionKey    = "mcpProtocolVersion"
+	sessionIDKey          = "sessionId"
+	clientCapabilitiesKey = "clientCapabilities"
+)
 
 func getProgressToken(p Params) any {
 	return p.GetMeta()[progressTokenKey]
