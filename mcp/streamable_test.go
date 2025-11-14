@@ -1757,7 +1757,7 @@ func mustNotPanic(t *testing.T, h http.Handler) http.Handler {
 func TestPingEventFiltering(t *testing.T) {
 	// This test verifies the low-level processStream filtering.
 	// We create a mock response with ping and message events.
-	
+
 	sseData := `event: ping
 data: ping
 
