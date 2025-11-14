@@ -10,3 +10,9 @@ v2.
   of the SDK where event persistence and delivery were combined.
   
   **Workaround**: `Open` may be implemented as a no-op.
+
+- Enforcing valid tool names: with
+  [SEP-986](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986)
+  landing after the SDK was at v1, we missed an opportunity to panic on invalid
+  tool names. Instead, we have to simply produce an error log. In v2, we should
+  panic.

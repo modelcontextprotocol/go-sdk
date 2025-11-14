@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -100,4 +101,27 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved) (json.RawM
 		}
 	}
 	return data, nil
+}
+
+func validateToolName(name string) error {
+	if name == "" {
+		return fmt.Errorf("tool name cannot be empty")
+	}
+	if len(name) > 128 {
+		return fmt.Errorf("tool name exceeds maximum length of 128 characters (current: %d)", len(name))
+	}
+	var invalidChars []string
+	seen := make(map[rune]bool)
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			if !seen[r] {
+				invalidChars = append(invalidChars, fmt.Sprintf("%q", string(r)))
+				seen[r] = true
+			}
+		}
+	}
+	if len(invalidChars) > 0 {
+		return fmt.Errorf("tool name contains invalid characters: %s", strings.Join(invalidChars, ", "))
+	}
+	return nil
 }
