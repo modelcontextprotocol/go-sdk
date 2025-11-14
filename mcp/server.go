@@ -191,6 +191,9 @@ func (s *Server) RemovePrompts(names ...string) {
 // Most users should use the top-level function [AddTool], which handles all these
 // responsibilities.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	if err := validateToolName(t.Name); err != nil {
+		s.opts.Logger.Error(fmt.Sprintf("AddTool: invalid tool name %q: %v", t.Name, err))
+	}
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
 		// one should be provided. If we papered over this by supplying the empty

@@ -5,9 +5,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -487,6 +489,69 @@ func TestAddTool(t *testing.T) {
 		})
 	}) {
 		t.Error("bad Out: expected panic")
+	}
+}
+
+func TestAddToolNameValidation(t *testing.T) {
+	tests := []struct {
+		label             string
+		name              string
+		wantLogContaining string
+	}{
+		{
+			label:             "empty name",
+			name:              "",
+			wantLogContaining: `tool name cannot be empty`,
+		},
+		{
+			label:             "long name",
+			name:              strings.Repeat("a", 129),
+			wantLogContaining: "exceeds maximum length of 128 characters",
+		},
+		{
+			label:             "name with spaces",
+			name:              "get user profile",
+			wantLogContaining: `tool name contains invalid characters: \" \"`,
+		},
+		{
+			label:             "name with multiple invalid chars",
+			name:              "user name@domain,com",
+			wantLogContaining: `tool name contains invalid characters: \" \", \"@\", \",\"`,
+		},
+		{
+			label:             "name with unicode",
+			name:              "tool-ñame",
+			wantLogContaining: `tool name contains invalid characters: \"ñ\"`,
+		},
+		{
+			label:             "valid name",
+			name:              "valid-tool_name.123",
+			wantLogContaining: "", // No log expected
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.label, func(t *testing.T) {
+			var buf bytes.Buffer
+			s := NewServer(testImpl, &ServerOptions{
+				Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+			})
+
+			// Use the generic AddTool as it also calls validateToolName.
+			AddTool(s, &Tool{Name: test.name}, func(context.Context, *CallToolRequest, any) (*CallToolResult, any, error) {
+				return nil, nil, nil
+			})
+
+			logOutput := buf.String()
+			if test.wantLogContaining != "" {
+				if !strings.Contains(logOutput, test.wantLogContaining) {
+					t.Errorf("log output =\n%s\nwant containing %q", logOutput, test.wantLogContaining)
+				}
+			} else {
+				if logOutput != "" {
+					t.Errorf("expected empty log output, got %q", logOutput)
+				}
+			}
+		})
 	}
 }
 

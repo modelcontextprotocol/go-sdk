@@ -145,3 +145,53 @@ func TestToolErrorHandling(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateToolName(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		validTests := []struct {
+			label    string
+			toolName string
+		}{
+			{"simple alphanumeric names", "getUser"},
+			{"names with underscores", "get_user_profile"},
+			{"names with dashes", "user-profile-update"},
+			{"names with dots", "admin.tools.list"},
+			{"mixed character names", "DATA_EXPORT_v2.1"},
+			{"single character names", "a"},
+			{"128 character names", strings.Repeat("a", 128)},
+		}
+		for _, test := range validTests {
+			t.Run(test.label, func(t *testing.T) {
+				if err := validateToolName(test.toolName); err != nil {
+					t.Errorf("validateToolName(%q) = %v, want nil", test.toolName, err)
+				}
+			})
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		invalidTests := []struct {
+			label             string
+			toolName          string
+			wantErrContaining string
+		}{
+			{"empty names", "", "tool name cannot be empty"},
+			{"names longer than 128 characters", strings.Repeat("a", 129), "tool name exceeds maximum length of 128 characters (current: 129)"},
+			{"names with spaces", "get user profile", `tool name contains invalid characters: " "`},
+			{"names with commas", "get,user,profile", `tool name contains invalid characters: ","`},
+			{"names with forward slashes", "user/profile/update", `tool name contains invalid characters: "/"`},
+			{"names with other special chars", "user@domain.com", `tool name contains invalid characters: "@"`},
+			{"names with multiple invalid chars", "user name@domain,com", `tool name contains invalid characters: " ", "@", ","`},
+			{"names with unicode characters", "user-ñame", `tool name contains invalid characters: "ñ"`},
+		}
+		for _, test := range invalidTests {
+			t.Run(test.label, func(t *testing.T) {
+				if err := validateToolName(test.toolName); err == nil || !strings.Contains(err.Error(), test.wantErrContaining) {
+					t.Errorf("validateToolName(%q) = %v, want error containing %q", test.toolName, err, test.wantErrContaining)
+				}
+			})
+		}
+
+	})
+
+}
