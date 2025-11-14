@@ -117,6 +117,7 @@ type ClientSessionOptions struct{}
 
 func (c *Client) capabilities() *ClientCapabilities {
 	caps := &ClientCapabilities{}
+	caps.Roots.Supported = true
 	caps.Roots.ListChanged = true
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}

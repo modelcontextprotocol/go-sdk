@@ -531,3 +531,30 @@ func TestContentUnmarshal(t *testing.T) {
 	var gotpm PromptMessage
 	roundtrip(pm, &gotpm)
 }
+
+func TestClientCapabilitiesJSON(t *testing.T) {
+	tests := []struct {
+		capabilities ClientCapabilities
+		want         string
+	}{
+		{ClientCapabilities{}, "{}"},
+		{ClientCapabilities{Roots: rootsCapabilities{Supported: true}}, `{"roots":{}}`},
+		{ClientCapabilities{Roots: rootsCapabilities{Supported: true, ListChanged: true}}, `{"roots":{"listChanged":true}}`},
+	}
+	for _, test := range tests {
+		gotBytes, err := json.Marshal(test.capabilities)
+		if err != nil {
+			t.Fatalf("json.Marshal(%+v) failed: %v", test.capabilities, err)
+		}
+		if got := string(gotBytes); got != test.want {
+			t.Fatalf("json.Marshal(%+v) = %q, want %q", test.capabilities, got, test.want)
+		}
+		var caps2 ClientCapabilities
+		if err := json.Unmarshal(gotBytes, &caps2); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		if diff := cmp.Diff(test.capabilities, caps2); diff != "" {
+			t.Errorf("Unmarshal mismatch (-original +unmarshaled):\n%s", diff)
+		}
+	}
+}
