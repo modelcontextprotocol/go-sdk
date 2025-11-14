@@ -147,6 +147,21 @@ _See [examples/server/distributed](../examples/server/distributed/main.go) for
 an example using statless mode to implement a server distributed across
 multiple processes._
 
+#### Serverless Deployments
+
+For serverless or short-lived processes, configure
+[`StreamableHTTPOptions.SessionStateStore`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableHTTPOptions.SessionStateStore)
+with an implementation of
+[`ServerSessionStateStore`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSessionStateStore).
+The handler will persist [`ServerSessionState`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSessionState)
+whenever it changes, and will automatically restore prior state when a request
+arrives carrying an existing `Mcp-Session-Id`. This allows one invocation to
+handle initialization while subsequent invocations resume the conversation
+without re-running a long-lived server. The SDK provides an in-memory
+[`MemoryServerSessionStateStore`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MemoryServerSessionStateStore)
+for testing; production deployments should supply a durable store (for example,
+backed by a database or object storage).
+
 ### Custom transports
 
 The SDK supports [custom
