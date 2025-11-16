@@ -88,7 +88,7 @@ type AudioContent struct {
 	Annotations *Annotations
 }
 
-func (c AudioContent) MarshalJSON() ([]byte, error) {
+func (c *AudioContent) MarshalJSON() ([]byte, error) {
 	// Custom wire format to ensure required fields are always included, even when empty.
 	data := c.Data
 	if data == nil {
