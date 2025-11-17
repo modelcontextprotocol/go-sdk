@@ -199,7 +199,34 @@ from `req.Extra.TokenInfo`, where `req` is the handler's request. (For example, 
 [`CallToolRequest`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CallToolRequest).)
 HTTP handlers wrapped by the `RequireBearerToken` middleware can obtain the `TokenInfo` from the context
 with [`auth.TokenInfoFromContext`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenInfoFromContext).
- 
+
+#### OAuth Protected Resource Metadata
+
+Servers implementing OAuth 2.0 authorization should expose a protected resource metadata endpoint
+as specified in [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728). This endpoint provides
+clients with information about the resource server's OAuth configuration, including which
+authorization servers can be used and what scopes are supported.
+
+The SDK provides [`ProtectedResourceMetadataHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#ProtectedResourceMetadataHandler)
+to serve this metadata. The handler automatically sets CORS headers (`Access-Control-Allow-Origin: *`)
+to support cross-origin client discovery, as the metadata contains only public configuration information.
+
+Example usage:
+
+```go
+metadata := &oauthex.ProtectedResourceMetadata{
+    Resource: "https://example.com/mcp",
+    AuthorizationServers: []string{
+        "https://auth.example.com/.well-known/openid-configuration",
+    },
+    ScopesSupported: []string{"read", "write"},
+}
+http.Handle("/.well-known/oauth-protected-resource",
+    auth.ProtectedResourceMetadataHandler(metadata))
+```
+
+For more sophisticated CORS policies, wrap the handler with a CORS middleware like
+[github.com/rs/cors](https://github.com/rs/cors) or [github.com/jub0bs/cors](https://github.com/jub0bs/cors).
 
 The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
 

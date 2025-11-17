@@ -44,6 +44,7 @@ go test -cover
 ### Public Endpoints (No Authentication Required)
 
 - `GET /health` - Health check
+- `GET /.well-known/oauth-protected-resource` - OAuth 2.0 Protected Resource Metadata (RFC 9728)
 
 ### MCP Endpoints (Authentication Required)
 
@@ -227,6 +228,41 @@ authenticatedHandler := authMiddleware(customMiddleware(mcpHandler))
 3. **HTTPS Usage**: Always use HTTPS in production environments
 4. **Token Expiration**: Set appropriate token expiration times
 5. **Principle of Least Privilege**: Grant only the minimum required scopes
+
+## CORS Support
+
+The OAuth metadata endpoint (`/.well-known/oauth-protected-resource`) supports CORS to enable
+cross-origin client discovery. It sets `Access-Control-Allow-Origin: *` by default because
+OAuth metadata is public information meant for client discovery (RFC 9728 §3.1).
+
+### Custom CORS Policies
+
+For more sophisticated CORS requirements (origin validation, credentials, etc.), wrap the handler
+with a CORS middleware library:
+
+**Using github.com/rs/cors:**
+```go
+import "github.com/rs/cors"
+
+c := cors.New(cors.Options{
+    AllowedOrigins: []string{"https://example.com"},
+    AllowedMethods: []string{"GET", "OPTIONS"},
+})
+http.Handle("/.well-known/oauth-protected-resource",
+    c.Handler(auth.ProtectedResourceMetadataHandler(metadata)))
+```
+
+**Using github.com/jub0bs/cors:**
+```go
+import "github.com/jub0bs/cors"
+
+corsMiddleware, err := cors.NewMiddleware(cors.Config{
+    Origins: []string{"https://example.com"},
+    Methods: []string{"GET", "OPTIONS"},
+})
+http.Handle("/.well-known/oauth-protected-resource",
+    corsMiddleware.Wrap(auth.ProtectedResourceMetadataHandler(metadata)))
+```
 
 ## Use Cases
 
