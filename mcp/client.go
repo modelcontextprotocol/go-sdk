@@ -370,8 +370,6 @@ func validateElicitProperty(propName string, propSchema *jsonschema.Schema) erro
 	if len(propSchema.Properties) > 0 {
 		return fmt.Errorf("elicit schema property %q contains nested properties, only primitive properties are allowed", propName)
 	}
-	//TODO: add validations for defaults for non-boolean types
-
 	// Validate based on the property type - only primitives are supported
 	switch propSchema.Type {
 	case "string":
