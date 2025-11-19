@@ -66,6 +66,11 @@ type ClientOptions struct {
 	// Setting ElicitationHandler to a non-nil value causes the client to
 	// advertise the elicitation capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
+	// ElicitationModes specifies the elicitation modes supported by the client.
+	// If ElicitationHandler is set and ElicitationModes is empty, it defaults to ["form"].
+	ElicitationModes []string
+	// ElicitationCompleteHandler handles incoming notifications for notifications/elicitation/complete.
+	ElicitationCompleteHandler func(context.Context, *ElicitationCompleteNotificationRequest)
 	// Handlers for notifications from the server.
 	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
 	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
@@ -123,6 +128,15 @@ func (c *Client) capabilities() *ClientCapabilities {
 	}
 	if c.opts.ElicitationHandler != nil {
 		caps.Elicitation = &ElicitationCapabilities{}
+		modes := c.opts.ElicitationModes
+		if len(modes) == 0 || slices.Contains(modes, "form") {
+			// Technically, the empty ElicitationCapabilities value is equivalent to
+			// {"form":{}} for backward compatibility, but we explicitly set the form
+			// capability.
+			caps.Elicitation.Form = &FormElicitationCapabilities{}
+		} else if slices.Contains(modes, "url") {
+			caps.Elicitation.URL = &URLElicitationCapabilities{}
+		}
 	}
 	return caps
 }
@@ -297,40 +311,55 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (
 
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
 	if c.opts.ElicitationHandler == nil {
-		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, jsonrpc2.NewError(codeUnsupportedMethod, "client does not support elicitation")
+		return nil, jsonrpc2.NewError(codeInvalidParams, "client does not support elicitation")
 	}
 
-	// Validate that the requested schema only contains top-level properties without nesting
-	schema, err := validateElicitSchema(req.Params.RequestedSchema)
-	if err != nil {
-		return nil, jsonrpc2.NewError(codeInvalidParams, err.Error())
+	// Validate the elicitation parameters based on the mode.
+	mode := req.Params.Mode
+	if mode == "" {
+		mode = "form"
 	}
 
-	res, err := c.opts.ElicitationHandler(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate elicitation result content against requested schema
-	if schema != nil && res.Content != nil {
-		// TODO: is this the correct behavior if validation fails?
-		// It isn't the *server's* params that are invalid, so why would we return
-		// this code to the server?
-		resolved, err := schema.Resolve(nil)
+	switch mode {
+	case "form":
+		if req.Params.URL != "" {
+			return nil, jsonrpc2.NewError(codeInvalidParams, "URL must not be set for form elicitation")
+		}
+		schema, err := validateElicitSchema(req.Params.RequestedSchema)
 		if err != nil {
-			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
+			return nil, jsonrpc2.NewError(codeInvalidParams, err.Error())
 		}
-		if err := resolved.Validate(res.Content); err != nil {
-			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
-		}
-		err = resolved.ApplyDefaults(&res.Content)
+		res, err := c.opts.ElicitationHandler(ctx, req)
 		if err != nil {
-			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err))
+			return nil, err
 		}
+		// Validate elicitation result content against requested schema.
+		if schema != nil && res.Content != nil {
+			resolved, err := schema.Resolve(nil)
+			if err != nil {
+				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
+			}
+			if err := resolved.Validate(res.Content); err != nil {
+				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
+			}
+			err = resolved.ApplyDefaults(&res.Content)
+			if err != nil {
+				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err))
+			}
+		}
+		return res, nil
+	case "url":
+		if req.Params.RequestedSchema != nil {
+			return nil, jsonrpc2.NewError(codeInvalidParams, "requestedSchema must not be set for URL elicitation")
+		}
+		if req.Params.URL == "" {
+			return nil, jsonrpc2.NewError(codeInvalidParams, "URL must be set for URL elicitation")
+		}
+		// No schema validation for URL mode, just pass through to handler.
+		return c.opts.ElicitationHandler(ctx, req)
+	default:
+		return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("unsupported elicitation mode: %q", mode))
 	}
-
-	return res, nil
 }
 
 // validateElicitSchema validates that the schema conforms to MCP elicitation schema requirements.
@@ -528,6 +557,7 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
 	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
+	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
@@ -688,6 +718,13 @@ func (c *Client) callLoggingHandler(ctx context.Context, req *LoggingMessageRequ
 func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, params *ProgressNotificationParams) (Result, error) {
 	if h := cs.client.opts.ProgressNotificationHandler; h != nil {
 		h(ctx, clientRequestFor(cs, params))
+	}
+	return nil, nil
+}
+
+func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *ElicitationCompleteNotificationRequest) (Result, error) {
+	if h := c.opts.ElicitationCompleteHandler; h != nil {
+		h(ctx, req)
 	}
 	return nil, nil
 }

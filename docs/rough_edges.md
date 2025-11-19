@@ -16,3 +16,10 @@ v2.
   landing after the SDK was at v1, we missed an opportunity to panic on invalid
   tool names. Instead, we have to simply produce an error log. In v2, we should
   panic.
+
+- Inconsistent naming.
+  - `ResourceUpdatedNotificationsParams` should probably have just been
+    `ResourceUpdatedParams`, as we don't include the word 'notification' in
+    other notification param types.
+  - Similarly, `ProgressNotificationParams` should probably have been
+    `ProgressParams`.
