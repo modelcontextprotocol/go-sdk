@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -1254,8 +1255,9 @@ func TestElicitationSchemaValidation(t *testing.T) {
 					"enabled": {Type: "boolean", Default: json.RawMessage(`"not-a-boolean"`)},
 				},
 			},
-			expectedError: "elicit schema property \"enabled\" has invalid default value, must be a boolean",
+			expectedError: "elicit schema property \"enabled\" has invalid default value, must be a bool",
 		},
+		// TODO: add tests where the default value is invalid for non-bool types
 		{
 			name: "enum with mismatched enumNames length",
 			schema: &jsonschema.Schema{
@@ -1457,6 +1459,106 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 			t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, codeUnsupportedMethod)
 		}
 	})
+}
+
+func TestElicitationDefaultValues(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept", Content: map[string]any{"enabled": "value"}}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	schemas := []struct {
+		name          string
+		schema        *jsonschema.Schema
+		expectedKey   string
+		expectedValue any
+	}{
+		{
+			name: "boolean with default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"key": {Type: "boolean", Default: json.RawMessage("true")},
+				},
+			},
+			expectedKey:   "key",
+			expectedValue: true,
+		},
+		{
+			name: "string with default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"key": {Type: "string", Default: json.RawMessage("\"potato\"")},
+				},
+			},
+			expectedKey:   "key",
+			expectedValue: "potato",
+		},
+		{
+			name: "int with default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"key": {Type: "integer", Default: json.RawMessage("123")},
+				},
+			},
+			expectedKey:   "key",
+			expectedValue: float64(123),
+		},
+		{
+			name: "enum with default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"key": {Type: "string", Enum: []any{"one", "two"}, Default: json.RawMessage("\"one\"")},
+				},
+			},
+			expectedKey:   "key",
+			expectedValue: "one",
+		},
+		// TODO: should we have a test with number (float) types?
+	}
+	for _, tc := range schemas {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := ss.Elicit(ctx, &ElicitParams{
+				Message:         "Test schema with defaults: " + tc.name,
+				RequestedSchema: tc.schema,
+			})
+			if err != nil {
+				t.Fatalf("expected no error for default schema %q, got: %v", tc.name, err)
+			}
+			val, ok := res.Content[tc.expectedKey]
+			if !ok {
+				t.Fatalf("did not find expected key '%s' in result: %s", tc.expectedKey, tc.name)
+			}
+			if f, ok := val.(float64); ok {
+				expectedFloat := tc.expectedValue.(float64)
+				if math.Abs(f-expectedFloat) > 1e-9 {
+					t.Fatalf("float not set to expected default value want %v got %v: %s", tc.expectedValue, val, tc.name)
+				}
+			} else if val != tc.expectedValue {
+				t.Logf("val: %v, %T", val, val)
+				t.Fatalf("did not find expected value at key '%s' in result: %s", tc.expectedKey, tc.name)
+			}
+		})
+	}
 }
 
 func TestKeepAliveFailure(t *testing.T) {

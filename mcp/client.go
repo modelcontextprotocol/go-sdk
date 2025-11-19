@@ -318,6 +318,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		// It isn't the *server's* params that are invalid, so why would we return
 		// this code to the server?
 		resolved, err := schema.Resolve(nil)
+		resolved.ApplyDefaults(&res.Content)
 		if err != nil {
 			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
 		}
@@ -369,6 +370,7 @@ func validateElicitProperty(propName string, propSchema *jsonschema.Schema) erro
 	if len(propSchema.Properties) > 0 {
 		return fmt.Errorf("elicit schema property %q contains nested properties, only primitive properties are allowed", propName)
 	}
+	//TODO: add validations for defaults for non-boolean types
 
 	// Validate based on the property type - only primitives are supported
 	switch propSchema.Type {
@@ -439,7 +441,7 @@ func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema
 		}
 	}
 
-	return nil
+	return validateDefaultProperty[string](propName, propSchema)
 }
 
 // validateElicitNumberProperty validates number and integer-type properties.
@@ -450,19 +452,28 @@ func validateElicitNumberProperty(propName string, propSchema *jsonschema.Schema
 		}
 	}
 
+	intDefaultError := validateDefaultProperty[int](propName, propSchema)
+	floatDefaultError := validateDefaultProperty[float64](propName, propSchema)
+	if intDefaultError != nil && floatDefaultError != nil {
+		return fmt.Errorf("elicit schema property %q has default value that cannot be interpreted as an int or float", propName)
+	}
+
 	return nil
 }
 
 // validateElicitBooleanProperty validates boolean-type properties.
 func validateElicitBooleanProperty(propName string, propSchema *jsonschema.Schema) error {
-	// Validate default value if specified - must be a valid boolean
+	return validateDefaultProperty[bool](propName, propSchema)
+}
+
+func validateDefaultProperty[T any](propName string, propSchema *jsonschema.Schema) error {
+	// Validate default value if specified - must be a valid T
 	if propSchema.Default != nil {
-		var defaultValue bool
+		var defaultValue T
 		if err := json.Unmarshal(propSchema.Default, &defaultValue); err != nil {
-			return fmt.Errorf("elicit schema property %q has invalid default value, must be a boolean: %v", propName, err)
+			return fmt.Errorf("elicit schema property %q has invalid default value, must be a %T: %v", propName, defaultValue, err)
 		}
 	}
-
 	return nil
 }
 
