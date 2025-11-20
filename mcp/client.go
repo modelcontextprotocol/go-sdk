@@ -318,13 +318,15 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		// It isn't the *server's* params that are invalid, so why would we return
 		// this code to the server?
 		resolved, err := schema.Resolve(nil)
-		resolved.ApplyDefaults(&res.Content)
 		if err != nil {
 			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
 		}
-
 		if err := resolved.Validate(res.Content); err != nil {
 			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
+		}
+		err = resolved.ApplyDefaults(&res.Content)
+		if err != nil {
+			return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err))
 		}
 	}
 
@@ -341,6 +343,9 @@ func validateElicitSchema(wireSchema any) (*jsonschema.Schema, error) {
 	var schema *jsonschema.Schema
 	if err := remarshal(wireSchema, &schema); err != nil {
 		return nil, err
+	}
+	if schema == nil {
+		return nil, nil
 	}
 
 	// The root schema must be of type "object" if specified

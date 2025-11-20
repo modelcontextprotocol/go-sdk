@@ -1015,7 +1015,43 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
 	}
-	return handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
+
+	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+
+	if params.RequestedSchema == nil {
+		return res, nil
+	}
+	val := reflect.ValueOf(params.RequestedSchema)
+	switch val.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+		if val.IsNil() {
+			return res, nil
+		}
+	default:
+		return res, nil
+	}
+
+	schema, err := validateElicitSchema(params.RequestedSchema)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		fmt.Printf("  resolve err: %s", err)
+		return nil, err
+	}
+	if err := resolved.Validate(res.Content); err != nil {
+		return nil, fmt.Errorf("elicitation result content does not match requested schema: %v", err)
+	}
+	err = resolved.ApplyDefaults(&res.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply schema defalts to elicitation result: %v", err)
+	}
+
+	return res, nil
 }
 
 // Log sends a log message to the client.
