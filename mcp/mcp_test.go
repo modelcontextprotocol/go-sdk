@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -1474,7 +1473,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 
 	c := NewClient(testImpl, &ClientOptions{
 		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
-			return &ElicitResult{Action: "accept", Content: map[string]any{"enabled": "value"}}, nil
+			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
 	cs, err := c.Connect(ctx, ct, nil)
@@ -1483,11 +1482,10 @@ func TestElicitationDefaultValues(t *testing.T) {
 	}
 	defer cs.Close()
 
-	schemas := []struct {
-		name          string
-		schema        *jsonschema.Schema
-		expectedKey   string
-		expectedValue any
+	testcases := []struct {
+		name     string
+		schema   *jsonschema.Schema
+		expected map[string]any
 	}{
 		{
 			name: "boolean with default",
@@ -1497,8 +1495,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 					"key": {Type: "boolean", Default: json.RawMessage("true")},
 				},
 			},
-			expectedKey:   "key",
-			expectedValue: true,
+			expected: map[string]any{"key": true, "default": "response"},
 		},
 		{
 			name: "string with default",
@@ -1508,19 +1505,27 @@ func TestElicitationDefaultValues(t *testing.T) {
 					"key": {Type: "string", Default: json.RawMessage("\"potato\"")},
 				},
 			},
-			expectedKey:   "key",
-			expectedValue: "potato",
+			expected: map[string]any{"key": "potato", "default": "response"},
 		},
 		{
-			name: "int with default",
+			name: "integer with default",
 			schema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"key": {Type: "integer", Default: json.RawMessage("123")},
 				},
 			},
-			expectedKey:   "key",
-			expectedValue: float64(123),
+			expected: map[string]any{"key": float64(123), "default": "response"},
+		},
+		{
+			name: "number with default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"key": {Type: "number", Default: json.RawMessage("89.7")},
+				},
+			},
+			expected: map[string]any{"key": float64(89.7), "default": "response"},
 		},
 		{
 			name: "enum with default",
@@ -1530,12 +1535,10 @@ func TestElicitationDefaultValues(t *testing.T) {
 					"key": {Type: "string", Enum: []any{"one", "two"}, Default: json.RawMessage("\"one\"")},
 				},
 			},
-			expectedKey:   "key",
-			expectedValue: "one",
+			expected: map[string]any{"key": "one", "default": "response"},
 		},
-		// TODO: should we have a test with number (float) types?
 	}
-	for _, tc := range schemas {
+	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			res, err := ss.Elicit(ctx, &ElicitParams{
 				Message:         "Test schema with defaults: " + tc.name,
@@ -1544,18 +1547,8 @@ func TestElicitationDefaultValues(t *testing.T) {
 			if err != nil {
 				t.Fatalf("expected no error for default schema %q, got: %v", tc.name, err)
 			}
-			val, ok := res.Content[tc.expectedKey]
-			if !ok {
-				t.Fatalf("did not find expected key '%s' in result: %s", tc.expectedKey, tc.name)
-			}
-			if f, ok := val.(float64); ok {
-				expectedFloat := tc.expectedValue.(float64)
-				if math.Abs(f-expectedFloat) > 1e-9 {
-					t.Fatalf("float not set to expected default value want %v got %v: %s", tc.expectedValue, val, tc.name)
-				}
-			} else if val != tc.expectedValue {
-				t.Logf("val: %v, %T", val, val)
-				t.Fatalf("did not find expected value at key '%s' in result: %s", tc.expectedKey, tc.name)
+			if diff := cmp.Diff(tc.expected, res.Content); diff != "" {
+				t.Errorf("%s: did not get expected value, -want +got:\n%s", tc.name, diff)
 			}
 		})
 	}
