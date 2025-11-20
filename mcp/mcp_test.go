@@ -1256,7 +1256,36 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			},
 			expectedError: "elicit schema property \"enabled\" has invalid default value, must be a bool",
 		},
-		// TODO: add tests where the default value is invalid for non-bool types
+		{
+			name: "string with invalid default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"enabled": {Type: "string", Default: json.RawMessage("true")},
+				},
+			},
+			expectedError: "elicit schema property \"enabled\" has invalid default value, must be a string",
+		},
+		{
+			name: "integer with invalid default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"enabled": {Type: "integer", Default: json.RawMessage("true")},
+				},
+			},
+			expectedError: "elicit schema property \"enabled\" has default value that cannot be interpreted as an int or float",
+		},
+		{
+			name: "number with invalid default",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"enabled": {Type: "number", Default: json.RawMessage("true")},
+				},
+			},
+			expectedError: "elicit schema property \"enabled\" has default value that cannot be interpreted as an int or float",
+		},
 		{
 			name: "enum with mismatched enumNames length",
 			schema: &jsonschema.Schema{
