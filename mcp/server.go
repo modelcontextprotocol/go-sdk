@@ -1024,20 +1024,14 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if params.RequestedSchema == nil {
 		return res, nil
 	}
-	val := reflect.ValueOf(params.RequestedSchema)
-	switch val.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
-		if val.IsNil() {
-			return res, nil
-		}
-	default:
-		return res, nil
-	}
-
 	schema, err := validateElicitSchema(params.RequestedSchema)
 	if err != nil {
 		return nil, err
 	}
+	if schema == nil {
+		return res, nil
+	}
+
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
 		fmt.Printf("  resolve err: %s", err)
