@@ -42,16 +42,16 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 	if impl == nil {
 		panic("nil Implementation")
 	}
-	c := &Client{
+	cc := &Client{
 		impl:                    impl,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ClientSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
 	if opts != nil {
-		c.opts = *opts
+		cc.opts = *opts
 	}
-	return c
+	return cc
 }
 
 // ClientOptions configures the behavior of the client.
