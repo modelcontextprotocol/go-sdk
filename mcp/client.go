@@ -337,6 +337,9 @@ func validateElicitSchema(wireSchema any) (*jsonschema.Schema, error) {
 		return nil, nil // nil schema is allowed
 	}
 
+	if err := checkSchemaVersion(wireSchema); err != nil {
+		return nil, err
+	}
 	var schema *jsonschema.Schema
 	if err := remarshal(wireSchema, &schema); err != nil {
 		return nil, err
@@ -361,6 +364,31 @@ func validateElicitSchema(wireSchema any) (*jsonschema.Schema, error) {
 	}
 
 	return schema, nil
+}
+
+func checkSchemaVersion(wireSchema any) error {
+	if wireSchema == nil {
+		return nil
+	}
+
+	var json map[string]any
+	if err := remarshal(wireSchema, &json); err != nil {
+		return fmt.Errorf("invalid elicitation schema format: unable to interpret as map[string]any")
+	}
+	val, ok := json["$schema"]
+	if !ok {
+		// No schema provided, use the default.
+		return nil
+	}
+
+	s, ok := val.(string)
+	if !ok {
+		return fmt.Errorf("invalid elicitation schema format: found non-string field for $schema property")
+	}
+	if s == "" || s == "https://json-schema.org/draft/2020-12/schema" {
+		return nil
+	}
+	return fmt.Errorf("unsupported elicitation schema version %s", val)
 }
 
 // validateElicitProperty validates a single property in an elicitation schema.

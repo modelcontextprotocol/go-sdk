@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -231,6 +232,66 @@ func TestClientCapabilities(t *testing.T) {
 			gotCapabilities := client.capabilities()
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
 				t.Errorf("capabilities() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCheckSchemaVersion(t *testing.T) {
+	testCases := []struct {
+		name        string
+		schema      any
+		expectedErr string
+	}{
+		{
+			name:        "nil schema is ok",
+			schema:      nil,
+			expectedErr: "",
+		},
+		{
+			name: "jsonschema.Schema is ok",
+			schema: &jsonschema.Schema{
+				Type: "object",
+			},
+			expectedErr: "",
+		},
+		{
+			name:        "empty string for $schema is ok",
+			schema:      &map[string]any{"$schema": ""},
+			expectedErr: "",
+		},
+		{
+			name:        "json 2020-12 schema is ok",
+			schema:      &map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema"},
+			expectedErr: "",
+		},
+		{
+			name:        "non json 2020-12 schema is not ok",
+			schema:      &map[string]any{"$schema": "json-schema.org/draft/blah"},
+			expectedErr: "unsupported elicitation schema version json-schema.org/draft/blah",
+		},
+		{
+			name:        "non string $schema property is not ok",
+			schema:      &map[string]any{"$schema": 123},
+			expectedErr: "found non-string field for $schema property",
+		},
+		{
+			name:        "invalid schema type is not ok",
+			schema:      123,
+			expectedErr: "schema format: unable to interpret as map[string]any",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkSchemaVersion(tc.schema)
+			if err == nil && tc.expectedErr == "" {
+				return
+			}
+			if err == nil && tc.expectedErr != "" {
+				t.Errorf("checkSchemaVersion(): got no error want %s: %s", tc.expectedErr, tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.expectedErr) {
+				t.Errorf("checkSchemaVersion() mismatch: want %v got %v: %s", tc.expectedErr, err, tc.name)
 			}
 		})
 	}
