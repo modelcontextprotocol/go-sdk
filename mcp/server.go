@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -1017,6 +1018,36 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*ElicitResult, error) {
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
+	}
+	if params == nil {
+		return nil, fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+
+	if params.Mode == "" {
+		params2 := *params
+		if params.URL != "" || params.ElicitationID != "" {
+			params2.Mode = "url"
+		} else {
+			params2.Mode = "form"
+		}
+		params = &params2
+	}
+
+	if iparams := ss.InitializeParams(); iparams == nil || iparams.Capabilities == nil || iparams.Capabilities.Elicitation == nil {
+		return nil, fmt.Errorf("client does not support elicitation")
+	}
+	caps := ss.InitializeParams().Capabilities.Elicitation
+	switch params.Mode {
+	case "form":
+		if caps.Form == nil && caps.URL != nil {
+			// Note: if both 'Form' and 'URL' are nil, we assume the client supports
+			// form elicitation for backward compatibility.
+			return nil, errors.New(`client does not support "form" elicitation`)
+		}
+	case "url":
+		if caps.URL == nil {
+			return nil, errors.New(`client does not support "url" elicitation`)
+		}
 	}
 
 	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))

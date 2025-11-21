@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -51,12 +53,8 @@ func main() {
 		CompletionHandler: complete, // support completions by setting this handler
 	}
 
-	// Optionally add an icon to the server implementation.
-	icons, err := iconToBase64DataURL("./mcp.png")
-	if err != nil {
-		log.Fatalf("failed to read icon: %v", err)
-	}
-
+	// Add an icon to the server implementation.
+	icons := mcpIcons()
 	server := mcp.NewServer(&mcp.Implementation{Name: "everything", WebsiteURL: "https://example.com", Icons: icons}, opts)
 
 	// Add tools that exercise different features of the protocol.
@@ -67,7 +65,8 @@ func main() {
 	mcp.AddTool(server, &mcp.Tool{Name: "ping"}, pingingTool)                                                 // performs a ping
 	mcp.AddTool(server, &mcp.Tool{Name: "log"}, loggingTool)                                                  // performs a log
 	mcp.AddTool(server, &mcp.Tool{Name: "sample"}, samplingTool)                                              // performs sampling
-	mcp.AddTool(server, &mcp.Tool{Name: "elicit"}, elicitingTool)                                             // performs elicitation
+	mcp.AddTool(server, &mcp.Tool{Name: "elicit (form)"}, elicitFormTool)                                     // performs form elicitation
+	mcp.AddTool(server, &mcp.Tool{Name: "elicit (url)"}, elicitURLTool)                                       // performs url elicitation
 	mcp.AddTool(server, &mcp.Tool{Name: "roots"}, rootsTool)                                                  // lists roots
 
 	// Add a basic prompt.
@@ -235,7 +234,7 @@ func samplingTool(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.Ca
 	}, nil, nil
 }
 
-func elicitingTool(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+func elicitFormTool(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 	res, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
 		Message: "provide a random string",
 		RequestedSchema: &jsonschema.Schema{
@@ -255,6 +254,26 @@ func elicitingTool(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.C
 	}, nil, nil
 }
 
+var elicitations atomic.Int32
+
+func elicitURLTool(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	elicitID := fmt.Sprintf("%d", elicitations.Add(1))
+	_, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
+		Message:       "submit a string",
+		URL:           fmt.Sprintf("http://localhost:6062?id=%s", elicitID),
+		ElicitationID: elicitID,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("eliciting failed: %v", err)
+	}
+	// TODO: actually wait for the elicitation form to be submitted.
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "(elicitation pending)"},
+		},
+	}, nil, nil
+}
+
 func complete(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 	return &mcp.CompleteResult{
 		Completion: mcp.CompletionResultDetails{
@@ -264,15 +283,14 @@ func complete(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResul
 	}, nil
 }
 
-func iconToBase64DataURL(path string) ([]mcp.Icon, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+//go:embed mcp.png
+var mcpIconData []byte
+
+func mcpIcons() []mcp.Icon {
 	return []mcp.Icon{{
-		Source:   "data:image/png;base64," + base64.StdEncoding.EncodeToString(data),
+		Source:   "data:image/png;base64," + base64.StdEncoding.EncodeToString(mcpIconData),
 		MIMEType: "image/png",
 		Sizes:    []string{"48x48"},
 		Theme:    "light", // or "dark" or empty
-	}}, nil
+	}}
 }

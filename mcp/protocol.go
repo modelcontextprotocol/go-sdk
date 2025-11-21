@@ -879,7 +879,20 @@ func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t
 type SamplingCapabilities struct{}
 
 // ElicitationCapabilities describes the capabilities for elicitation.
-type ElicitationCapabilities struct{}
+//
+// If neither Form nor URL is set, the 'Form' capabilitiy is assumed.
+type ElicitationCapabilities struct {
+	Form *FormElicitationCapabilities
+	URL  *URLElicitationCapabilities
+}
+
+// FormElicitationCapabilities describes capabilities for form elicitation.
+type FormElicitationCapabilities struct {
+}
+
+// URLElicitationCapabilities describes capabilities for url elicitation.
+type URLElicitationCapabilities struct {
+}
 
 // Describes a message issued to or received from an LLM API.
 type SamplingMessage struct {
@@ -1067,6 +1080,10 @@ type ElicitParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	// The mode of elicitation to use.
+	//
+	// If unset, will be inferred from the other fields.
+	Mode string `json:"mode"`
 	// The message to present to the user.
 	Message string `json:"message"`
 	// A JSON schema object defining the requested elicitation schema.
@@ -1080,7 +1097,17 @@ type ElicitParams struct {
 	// map[string]any).
 	//
 	// Only top-level properties are allowed, without nesting.
-	RequestedSchema any `json:"requestedSchema"`
+	//
+	// This is only used for "form" elicitation.
+	RequestedSchema any `json:"requestedSchema,omitempty"`
+	// The URL to present to the user.
+	//
+	// This is only used for "url" elicitation.
+	URL string `json:"url,omitempty"`
+	// The ID of the elicitation.
+	//
+	// This is only used for "url" elicitation.
+	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
 func (x *ElicitParams) isParams() {}
@@ -1104,6 +1131,18 @@ type ElicitResult struct {
 }
 
 func (*ElicitResult) isResult() {}
+
+// ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
+type ElicitationCompleteParams struct {
+	// This property is reserved by the protocol to allow clients and servers to
+	// attach additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// The ID of the elicitation that has completed. This must correspond to the
+	// elicitationId from the original elicitation/create request.
+	ElicitationID string `json:"elicitationId"`
+}
+
+func (*ElicitationCompleteParams) isParams() {}
 
 // An Implementation describes the name and version of an MCP implementation, with an optional
 // title for UI representation.
@@ -1171,6 +1210,7 @@ const (
 	methodComplete                  = "completion/complete"
 	methodCreateMessage             = "sampling/createMessage"
 	methodElicit                    = "elicitation/create"
+	notificationElicitationComplete = "notifications/elicitation/complete"
 	methodGetPrompt                 = "prompts/get"
 	methodInitialize                = "initialize"
 	notificationInitialized         = "notifications/initialized"
