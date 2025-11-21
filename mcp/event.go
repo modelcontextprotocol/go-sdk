@@ -29,14 +29,15 @@ const validateMemoryEventStore = false
 // An Event is a server-sent event.
 // See https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#fields.
 type Event struct {
-	Name string // the "event" field
-	ID   string // the "id" field
-	Data []byte // the "data" field
+	Name  string // the "event" field
+	ID    string // the "id" field
+	Data  []byte // the "data" field
+	Retry string // the "retry" field
 }
 
 // Empty reports whether the Event is empty.
 func (e Event) Empty() bool {
-	return e.Name == "" && e.ID == "" && len(e.Data) == 0
+	return e.Name == "" && e.ID == "" && len(e.Data) == 0 && e.Retry == ""
 }
 
 // writeEvent writes the event to w, and flushes.
@@ -47,6 +48,9 @@ func writeEvent(w io.Writer, evt Event) (int, error) {
 	}
 	if evt.ID != "" {
 		fmt.Fprintf(&b, "id: %s\n", evt.ID)
+	}
+	if evt.Retry != "" {
+		fmt.Fprintf(&b, "retry: %s\n", evt.Retry)
 	}
 	fmt.Fprintf(&b, "data: %s\n\n", string(evt.Data))
 	n, err := w.Write(b.Bytes())
@@ -73,6 +77,7 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 		eventKey = []byte("event")
 		idKey    = []byte("id")
 		dataKey  = []byte("data")
+		retryKey = []byte("retry")
 	)
 
 	return func(yield func(Event, error) bool) {
@@ -119,6 +124,8 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				evt.Name = strings.TrimSpace(string(after))
 			case bytes.Equal(before, idKey):
 				evt.ID = strings.TrimSpace(string(after))
+			case bytes.Equal(before, retryKey):
+				evt.Retry = strings.TrimSpace(string(after))
 			case bytes.Equal(before, dataKey):
 				data := bytes.TrimSpace(after)
 				if dataBuf != nil {
@@ -191,12 +198,8 @@ type dataList struct {
 }
 
 func (dl *dataList) appendData(d []byte) {
-	// If we allowed empty data, we would consume memory without incrementing the size.
-	// We could of course account for that, but we keep it simple and assume there is no
-	// empty data.
-	if len(d) == 0 {
-		panic("empty data item")
-	}
+	// Empty data consumes memory but doesn't increment size. However, it should
+	// be rare.
 	dl.data = append(dl.data, d)
 	dl.size += len(d)
 }

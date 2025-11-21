@@ -602,10 +602,23 @@ type stream struct {
 	// HTTP connection acquires ownership of the stream by setting this field.
 	deliver func(data []byte, final bool) error
 
+	// closeLocked sends a 'close' event to the client with a configurable retry
+	// delay, if there is a delivery channel available. The stream must be
+	// locked.
+	closeLocked func(reconnectAfter time.Duration)
+
 	// streamRequests is the set of unanswered incoming requests for the stream.
 	//
 	// Requests are removed when their response has been received.
 	requests map[jsonrpc.ID]struct{}
+}
+
+func (s *stream) close(reconnectAfter time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closeLocked != nil {
+		s.closeLocked(reconnectAfter)
+	}
 }
 
 // doneLocked reports whether the stream is logically complete.
@@ -704,6 +717,7 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	defer func() {
 		stream.mu.Lock()
 		stream.deliver = nil
+		stream.closeLocked = nil
 		stream.mu.Unlock()
 	}()
 
@@ -720,19 +734,30 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 // writeEvent writes an SSE event to w corresponding to the given stream, data, and index.
 // lastIdx is incremented before writing, so that it continues to point to the index of the
 // last event written to the stream.
-func (c *streamableServerConn) writeEvent(w http.ResponseWriter, stream *stream, data []byte, lastIdx *int) error {
+func (c *streamableServerConn) writeEvent(w http.ResponseWriter, streamID string, e Event, lastIdx *int) error {
 	*lastIdx++
-	e := Event{
-		Name: "message",
-		Data: data,
-	}
 	if c.eventStore != nil {
-		e.ID = formatEventID(stream.id, *lastIdx)
+		// TODO(rfindley): this isn't quite right: we should only set the ID if the
+		// message was actually stored successfully.
+		e.ID = formatEventID(streamID, *lastIdx)
 	}
 	if _, err := writeEvent(w, e); err != nil {
 		return err
 	}
 	return nil
+}
+
+// writeCloseEvent writes a 'close' event to the stream, signaling to the
+// caller that they should reconnect after the configured delay.
+func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectAfter time.Duration) {
+	reconnectStr := strconv.FormatInt(reconnectAfter.Milliseconds(), 10)
+	// Note: this event is not stored, since we don't want or need to replay it.
+	if _, err := writeEvent(w, Event{
+		Name:  "close", // don't make this empty, as the default event type is "message"
+		Retry: reconnectStr,
+	}); err != nil {
+		c.logger.Warn(fmt.Sprintf("Writing close event: %v", err))
+	}
 }
 
 // acquireStream acquires the stream and replays all events since lastIdx, if
@@ -805,7 +830,9 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 				http.Error(w, "failed to replay events", http.StatusBadRequest)
 				return nil, nil
 			}
-			toReplay = append(toReplay, data)
+			if len(data) > 0 {
+				toReplay = append(toReplay, data)
+			}
 		}
 	}
 
@@ -823,7 +850,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	}
 
 	for _, data := range toReplay {
-		if err := c.writeEvent(w, s, data, lastIdx); err != nil {
+		if err := c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx); err != nil {
 			return nil, nil
 		}
 	}
@@ -835,16 +862,31 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 
 	// The stream is not done: register a delivery function before the stream is
 	// unlocked, allowing the connection to write new events.
-	done := make(chan struct{})
+	var done = make(chan struct{})
 	s.deliver = func(data []byte, final bool) error {
+		select {
+		case <-done:
+			return fmt.Errorf("stream closed")
+		default:
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := c.writeEvent(w, s, data, lastIdx)
 		if final {
-			close(done)
+			defer close(done)
 		}
-		return err
+		return c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx)
+	}
+	s.closeLocked = func(reconnectAfter time.Duration) {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if reconnectAfter > 0 {
+			c.writeCloseEvent(w, reconnectAfter)
+		}
+		close(done)
 	}
 	return s, done
 }
@@ -914,6 +956,19 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			if jreq.IsCall() {
 				calls[jreq.ID] = struct{}{}
+				jreq.Extra.(*RequestExtra).CloseStream = func(reconnectAfter time.Duration) {
+					c.mu.Lock()
+					streamID, ok := c.requestStreams[jreq.ID]
+					var stream *stream
+					if ok {
+						stream = c.streams[streamID]
+					}
+					c.mu.Unlock()
+
+					if stream != nil {
+						stream.close(reconnectAfter)
+					}
+				}
 			}
 		}
 	}
@@ -993,11 +1048,39 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	} else {
 		// Write events in the order we receive them.
 		lastIndex := -1
+		if c.eventStore != nil {
+			// Write a priming event.
+			// We must also write it to the event store in order for indexes to
+			// align.
+			if err := c.eventStore.Append(req.Context(), c.sessionID, stream.id, nil); err != nil {
+				c.logger.Warn(fmt.Sprintf("Storing priming event: %v", err))
+			}
+			if err := c.writeEvent(w, stream.id, Event{Name: "prime"}, &lastIndex); err != nil {
+				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
+			}
+		}
+
 		stream.deliver = func(data []byte, final bool) error {
+			select {
+			case <-done:
+				return fmt.Errorf("stream closed")
+			default:
+			}
 			if final {
 				defer close(done)
 			}
-			return c.writeEvent(w, stream, data, &lastIndex)
+			return c.writeEvent(w, stream.id, Event{Name: "message", Data: data}, &lastIndex)
+		}
+		stream.closeLocked = func(reconnectAfter time.Duration) {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if reconnectAfter > 0 {
+				c.writeCloseEvent(w, reconnectAfter)
+			}
+			close(done)
 		}
 	}
 
@@ -1007,6 +1090,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		// TODO(rfindley): if we have no event store, we should really cancel all
 		// remaining requests here, since the client will never get the results.
 		stream.deliver = nil
+		stream.closeLocked = nil
 		stream.mu.Unlock()
 	}()
 
@@ -1187,22 +1271,25 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	delivered := false
+	var errs []error
+	// TODO(rfindley): we should only append if the response is SSE, not JSON, by
+	// pushing down into the delivery layer.
 	if c.eventStore != nil {
 		if err := c.eventStore.Append(ctx, c.sessionID, s.id, data); err != nil {
-			// TODO: report a side-channel error.
+			errs = append(errs, err)
 		} else {
 			delivered = true
 		}
 	}
 	if s.deliver != nil {
 		if err := s.deliver(data, s.doneLocked()); err != nil {
-			// TODO: report a side-channel error.
+			errs = append(errs, err)
 		} else {
 			delivered = true
 		}
 	}
 	if !delivered {
-		return fmt.Errorf("%w: undelivered message", jsonrpc2.ErrRejected)
+		return fmt.Errorf("%w: undelivered message: %v", jsonrpc2.ErrRejected, errors.Join(errs...))
 	}
 	return nil
 }
@@ -1360,7 +1447,7 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
-	resp, err := c.connectSSE("")
+	resp, err := c.connectSSE("", 0)
 	if err != nil {
 		c.fail(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
 		return
@@ -1589,7 +1676,7 @@ func (c *streamableClientConn) handleSSE(requestSummary string, resp *http.Respo
 		//
 		// Eventually, if we don't get the response, we should stop trying and
 		// fail the request.
-		lastEventID, clientClosed := c.processStream(requestSummary, resp, forCall)
+		lastEventID, reconnectDelay, clientClosed := c.processStream(requestSummary, resp, forCall)
 
 		// If the connection was closed by the client, we're done.
 		if clientClosed {
@@ -1602,7 +1689,7 @@ func (c *streamableClientConn) handleSSE(requestSummary string, resp *http.Respo
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, err := c.connectSSE(lastEventID)
+		newResp, err := c.connectSSE(lastEventID, reconnectDelay)
 		if err != nil {
 			// All reconnection attempts failed: fail the connection.
 			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
@@ -1644,7 +1731,7 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 // incoming channel. It returns the ID of the last processed event and a flag
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
-func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, clientClosed bool) {
+func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, reconnectDelay time.Duration, clientClosed bool) {
 	defer resp.Body.Close()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
@@ -1656,7 +1743,11 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 			lastEventID = evt.ID
 		}
 
-		// Skip non-message events (e.g., "ping" events used for keep-alive)
+		if evt.Retry != "" {
+			if n, err := strconv.ParseInt(evt.Retry, 10, 64); err == nil {
+				reconnectDelay = time.Duration(n) * time.Millisecond
+			}
+		}
 		// According to SSE spec, events with no name default to "message"
 		if evt.Name != "" && evt.Name != "message" {
 			continue
@@ -1665,7 +1756,7 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
 			c.fail(fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
-			return "", true
+			return "", 0, true
 		}
 
 		select {
@@ -1674,12 +1765,12 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
 				if jsonResp.ID == forCall.ID {
-					return "", true
+					return "", 0, true
 				}
 			}
 		case <-c.done:
 			// The connection was closed by the client; exit gracefully.
-			return "", true
+			return "", 0, true
 		}
 	}
 	// The loop finished without an error, indicating the server closed the stream.
@@ -1696,7 +1787,7 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 		case <-c.done:
 		}
 	}
-	return lastEventID, false
+	return lastEventID, reconnectDelay, false
 }
 
 // connectSSE handles the logic of connecting a text/event-stream connection.
@@ -1706,7 +1797,10 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 // If connection fails, connectSSE retries with an exponential backoff
 // strategy. It returns a new, valid HTTP response if successful, or an error
 // if all retries are exhausted.
-func (c *streamableClientConn) connectSSE(lastEventID string) (*http.Response, error) {
+//
+// reconnectDelay is the delay set by the server using the SSE retry field, or
+// 0.
+func (c *streamableClientConn) connectSSE(lastEventID string, reconnectDelay time.Duration) (*http.Response, error) {
 	var finalErr error
 	// If lastEventID is set, we've already connected successfully once, so
 	// consider that to be the first attempt.
@@ -1714,11 +1808,23 @@ func (c *streamableClientConn) connectSSE(lastEventID string) (*http.Response, e
 	if lastEventID != "" {
 		attempt = 1
 	}
+	delay := calculateReconnectDelay(attempt)
+	if reconnectDelay > 0 {
+		delay = reconnectDelay // honor the server's requested initial delay
+	}
 	for ; attempt <= c.maxRetries; attempt++ {
 		select {
 		case <-c.done:
 			return nil, fmt.Errorf("connection closed by client during reconnect")
-		case <-time.After(calculateReconnectDelay(attempt)):
+		case <-c.ctx.Done():
+			// If the connection context is canceled, the request below will not
+			// succeed anyway.
+			//
+			// TODO(#662): we should not be using the connection context for
+			// reconnection: we should instead be using the call context (from
+			// Write).
+			return nil, fmt.Errorf("connection context closed")
+		case <-time.After(delay):
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.url, nil)
 			if err != nil {
 				return nil, err
@@ -1731,6 +1837,7 @@ func (c *streamableClientConn) connectSSE(lastEventID string) (*http.Response, e
 			resp, err := c.client.Do(req)
 			if err != nil {
 				finalErr = err // Store the error and try again.
+				delay = calculateReconnectDelay(attempt + 1)
 				continue
 			}
 			return resp, nil
