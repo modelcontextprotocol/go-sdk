@@ -331,16 +331,19 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 	}
 }
 
-// Error codes
+// MCP-specific error codes.
 const (
-	codeResourceNotFound = -32002
+	// CodeResourceNotFound indicates that a requested resource could not be found.
+	CodeResourceNotFound = -32002
+)
+
+// Internal error codes
+const (
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	//
 	// TODO(rfindley): this code is wrong, and we should fix it to be
 	// consistent with other SDKs.
 	codeUnsupportedMethod = -31001
-	// The error code for invalid parameters
-	codeInvalidParams = -32602
 )
 
 // notifySessions calls Notify on all the sessions.

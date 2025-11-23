@@ -304,14 +304,14 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
 	if c.opts.CreateMessageHandler == nil {
 		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, jsonrpc2.NewError(codeUnsupportedMethod, "client does not support CreateMessage")
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
 	}
 	return c.opts.CreateMessageHandler(ctx, req)
 }
 
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
 	if c.opts.ElicitationHandler == nil {
-		return nil, jsonrpc2.NewError(codeInvalidParams, "client does not support elicitation")
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "client does not support elicitation"}
 	}
 
 	// Validate the elicitation parameters based on the mode.
@@ -323,11 +323,11 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 	switch mode {
 	case "form":
 		if req.Params.URL != "" {
-			return nil, jsonrpc2.NewError(codeInvalidParams, "URL must not be set for form elicitation")
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must not be set for form elicitation"}
 		}
 		schema, err := validateElicitSchema(req.Params.RequestedSchema)
 		if err != nil {
-			return nil, jsonrpc2.NewError(codeInvalidParams, err.Error())
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
 		}
 		res, err := c.opts.ElicitationHandler(ctx, req)
 		if err != nil {
@@ -337,28 +337,28 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if schema != nil && res.Content != nil {
 			resolved, err := schema.Resolve(nil)
 			if err != nil {
-				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to resolve requested schema: %v", err))
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("failed to resolve requested schema: %v", err)}
 			}
 			if err := resolved.Validate(res.Content); err != nil {
-				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("elicitation result content does not match requested schema: %v", err))
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("elicitation result content does not match requested schema: %v", err)}
 			}
 			err = resolved.ApplyDefaults(&res.Content)
 			if err != nil {
-				return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err))
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err)}
 			}
 		}
 		return res, nil
 	case "url":
 		if req.Params.RequestedSchema != nil {
-			return nil, jsonrpc2.NewError(codeInvalidParams, "requestedSchema must not be set for URL elicitation")
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "requestedSchema must not be set for URL elicitation"}
 		}
 		if req.Params.URL == "" {
-			return nil, jsonrpc2.NewError(codeInvalidParams, "URL must be set for URL elicitation")
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must be set for URL elicitation"}
 		}
 		// No schema validation for URL mode, just pass through to handler.
 		return c.opts.ElicitationHandler(ctx, req)
 	default:
-		return nil, jsonrpc2.NewError(codeInvalidParams, fmt.Sprintf("unsupported elicitation mode: %q", mode))
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unsupported elicitation mode: %q", mode)}
 	}
 }
 
