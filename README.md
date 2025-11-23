@@ -8,6 +8,12 @@
 This repository contains an implementation of the official Go software
 development kit (SDK) for the Model Context Protocol (MCP).
 
+## 🚀 Getting Started
+
+- **[Quick Start Guide](QUICKSTART.md)** - Common patterns and code snippets
+- **[Onboarding Guide](ONBOARDING.md)** - Comprehensive contributor guide
+- **[Feature Comparison](FEATURE_COMPARISON.md)** - SDK feature parity analysis
+
 ## Package / Feature documentation
 
 The SDK consists of several importable packages:
