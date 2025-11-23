@@ -53,6 +53,9 @@ func main() {
 	}, EchoTool)
 
 	// Create WebSocket upgrader
+	// See README.md: this is the "manual upgrade" example. If you need less
+	// boilerplate and a ready-to-use handler that manages upgrades use the
+	// `new_transport_main.go` example that uses NewWebSocketServerTransport.
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
 		CheckOrigin: func(r *http.Request) bool {
