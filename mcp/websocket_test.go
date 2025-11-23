@@ -318,3 +318,207 @@ func TestWebSocketConcurrentWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestWebSocketAcceptMethod tests the Accept method of WebSocketServerTransport.
+func TestWebSocketAcceptMethod(t *testing.T) {
+	transport := NewWebSocketServerTransport()
+
+	// Create a mock WebSocket connection
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := transport.upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Failed to upgrade: %v", err)
+			return
+		}
+
+		// Use Accept to wrap the connection
+		mcpConn := transport.Accept(conn)
+
+		// Verify SessionID is generated
+		if mcpConn.SessionID() == "" {
+			t.Error("SessionID should not be empty")
+		}
+
+		// Test basic read/write through accepted connection
+		msg, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
+		if err != nil {
+			t.Fatalf("Failed to create message: %v", err)
+		}
+
+		if err := mcpConn.Write(context.Background(), msg); err != nil {
+			t.Errorf("Write failed: %v", err)
+		}
+
+		mcpConn.Close()
+	}))
+	defer server.Close()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.DefaultDialer
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Read the message sent by server
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read: %v", err)
+	}
+
+	msg, err := jsonrpc.DecodeMessage(data)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok {
+		t.Fatalf("Expected Request message, got %T", msg)
+	}
+
+	if req.Method != "test" {
+		t.Errorf("Expected method 'test', got '%s'", req.Method)
+	}
+}
+
+// TestWebSocketConnectWithCustomDialer tests Connect with a custom dialer.
+func TestWebSocketConnectWithCustomDialer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"mcp"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Custom dialer with timeout
+	customDialer := &websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+
+	transport := &WebSocketClientTransport{
+		URL:    wsURL,
+		Dialer: customDialer,
+	}
+
+	ctx := context.Background()
+	conn, err := transport.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Failed to connect with custom dialer: %v", err)
+	}
+	conn.Close()
+}
+
+// TestWebSocketConnectWithCustomHeaders tests Connect with custom HTTP headers.
+func TestWebSocketConnectWithCustomHeaders(t *testing.T) {
+	expectedHeader := "test-value"
+	headerReceived := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Custom-Header") == expectedHeader {
+			headerReceived = true
+		}
+
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"mcp"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	transport := &WebSocketClientTransport{
+		URL: wsURL,
+		Header: http.Header{
+			"X-Custom-Header": []string{expectedHeader},
+		},
+	}
+
+	ctx := context.Background()
+	conn, err := transport.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Failed to connect with custom headers: %v", err)
+	}
+	conn.Close()
+
+	if !headerReceived {
+		t.Error("Custom header was not received by server")
+	}
+}
+
+// TestWebSocketReadMalformedJSON tests Read with malformed JSON data.
+func TestWebSocketReadMalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"mcp"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Send malformed JSON
+		conn.WriteMessage(websocket.TextMessage, []byte("{invalid json"))
+
+		// Keep connection alive
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	transport := &WebSocketClientTransport{
+		URL: wsURL,
+	}
+
+	ctx := context.Background()
+	conn, err := transport.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Try to read malformed JSON
+	_, err = conn.Read(ctx)
+	if err == nil {
+		t.Error("Expected error reading malformed JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode") && !strings.Contains(err.Error(), "JSON") {
+		t.Errorf("Expected JSON decode error, got: %v", err)
+	}
+}
+
+// TestWebSocketServeHTTPUpgradeFailure tests ServeHTTP with invalid upgrade request.
+func TestWebSocketServeHTTPUpgradeFailure(t *testing.T) {
+	transport := NewWebSocketServerTransport()
+
+	// Create a regular HTTP request (not a WebSocket upgrade)
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+
+	transport.ServeHTTP(w, req)
+
+	// Should return 400 Bad Request
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "upgrade") && !strings.Contains(body, "Upgrade") {
+		t.Errorf("Expected upgrade error message, got: %s", body)
+	}
+}
