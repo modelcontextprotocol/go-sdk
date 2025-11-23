@@ -439,7 +439,7 @@ func BenchmarkInMemoryTransportConcurrency(b *testing.B) {
 func BenchmarkWebSocketTransportConcurrency(b *testing.B) {
 	// Use buffered channel to coordinate server lifecycle
 	serverReady := make(chan string, 1)
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -501,7 +501,7 @@ func BenchmarkWebSocketWriteOptimization(b *testing.B) {
 		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		defer conn.Close()
-		
+
 		// Just consume messages
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -552,7 +552,7 @@ func BenchmarkWebSocketFramingOverhead(b *testing.B) {
 		upgrader := websocket.Upgrader{}
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		defer conn.Close()
-		
+
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
@@ -584,7 +584,7 @@ func BenchmarkWebSocketConnectionReuse(b *testing.B) {
 		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		defer conn.Close()
-		
+
 		for {
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {
