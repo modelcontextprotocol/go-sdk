@@ -335,6 +335,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 const (
 	codeResourceNotFound = -32002
 	// The error code if the method exists and was called properly, but the peer does not support it.
+	//
+	// TODO(rfindley): this code is wrong, and we should fix it to be
+	// consistent with other SDKs.
 	codeUnsupportedMethod = -31001
 	// The error code for invalid parameters
 	codeInvalidParams = -32602

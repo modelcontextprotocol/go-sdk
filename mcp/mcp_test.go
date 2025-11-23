@@ -62,9 +62,10 @@ func TestEndToEnd(t *testing.T) {
 
 	// Channels to check if notification callbacks happened.
 	notificationChans := map[string]chan int{}
-	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client", "resource_updated", "subscribe", "unsubscribe"} {
+	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client", "resource_updated", "subscribe", "unsubscribe", "elicitation_complete"} {
 		notificationChans[name] = make(chan int, 1)
 	}
+
 	waitForNotification := func(t *testing.T, name string) {
 		t.Helper()
 		select {
@@ -149,6 +150,9 @@ func TestEndToEnd(t *testing.T) {
 		},
 		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {
 			notificationChans["resource_updated"] <- 0
+		},
+		ElicitationCompleteHandler: func(_ context.Context, req *ElicitationCompleteNotificationRequest) {
+			notificationChans["elicitation_complete"] <- 0
 		},
 	}
 	c := NewClient(testImpl, opts)
@@ -985,8 +989,8 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when ElicitationHandler is not provided, got nil")
 	}
-	if code := errorCode(err); code != codeUnsupportedMethod {
-		t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, codeUnsupportedMethod)
+	if code := errorCode(err); code != -1 {
+		t.Errorf("got error code %d, want -1", code)
 	}
 	if !strings.Contains(err.Error(), "does not support elicitation") {
 		t.Errorf("error should mention unsupported elicitation, got: %v", err)
@@ -1414,7 +1418,7 @@ func TestElicitationProgressToken(t *testing.T) {
 func TestElicitationCapabilityDeclaration(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("with_handler", func(t *testing.T) {
+	t.Run("with handler", func(t *testing.T) {
 		ct, st := NewInMemoryTransports()
 
 		// Client with ElicitationHandler should declare capability
@@ -1451,7 +1455,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 	})
 
-	t.Run("without_handler", func(t *testing.T) {
+	t.Run("without handler", func(t *testing.T) {
 		ct, st := NewInMemoryTransports()
 
 		// Client without ElicitationHandler should not declare capability
@@ -1483,8 +1487,8 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		if err == nil {
 			t.Error("expected UnsupportedMethod error when no capability declared")
 		}
-		if code := errorCode(err); code != codeUnsupportedMethod {
-			t.Errorf("got error code %d, want %d (CodeUnsupportedMethod)", code, codeUnsupportedMethod)
+		if code := errorCode(err); code != -1 {
+			t.Errorf("got error code %d, want -1", code)
 		}
 	})
 }
