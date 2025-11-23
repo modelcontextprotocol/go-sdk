@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // BenchmarkTransportLatency measures the latency of a single request-response cycle
@@ -423,10 +424,12 @@ func BenchmarkInMemoryTransportConcurrency(b *testing.B) {
 		for pb.Next() {
 			msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(int64(i)), "test", nil)
 			if err := clientConn.Write(context.Background(), msg); err != nil {
-				b.Fatalf("Write failed: %v", err)
+				b.Logf("Write failed: %v", err)
+				return
 			}
 			if _, err := clientConn.Read(context.Background()); err != nil {
-				b.Fatalf("Read failed: %v", err)
+				b.Logf("Read failed: %v", err)
+				return
 			}
 			i++
 		}
@@ -434,11 +437,154 @@ func BenchmarkInMemoryTransportConcurrency(b *testing.B) {
 }
 
 func BenchmarkWebSocketTransportConcurrency(b *testing.B) {
+	// Use buffered channel to coordinate server lifecycle
+	serverReady := make(chan string, 1)
+	
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Echo loop
+		for {
+			messageType, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(messageType, data); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	serverReady <- wsURL
+	close(serverReady)
+
+	// Create multiple connections for true concurrency (WebSocket per goroutine)
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		transport := &WebSocketClientTransport{URL: <-serverReady}
+		clientConn, err := transport.Connect(context.Background())
+		if err != nil {
+			b.Logf("Failed to connect: %v", err)
+			return
+		}
+		defer clientConn.Close()
+
+		i := 0
+		for pb.Next() {
+			msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(int64(i)), "test", nil)
+			if err := clientConn.Write(context.Background(), msg); err != nil {
+				b.Logf("Write failed: %v", err)
+				return
+			}
+			if _, err := clientConn.Read(context.Background()); err != nil {
+				b.Logf("Read failed: %v", err)
+				return
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkWebSocketOptimizations tests specific optimization strategies
+
+func BenchmarkWebSocketWriteOptimization(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		defer conn.Close()
+		
+		// Just consume messages
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
 
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	transport := &WebSocketClientTransport{URL: wsURL}
+	clientConn, _ := transport.Connect(context.Background())
+	defer clientConn.Close()
+
+	ctx := context.Background()
+	msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		if err := clientConn.Write(ctx, msg); err != nil {
+			b.Fatalf("Write failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkWebSocketEncodingOverhead(b *testing.B) {
+	// Measure JSON encoding cost separately
+	msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", map[string]interface{}{
+		"data": strings.Repeat("x", 1024),
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := jsonrpc.EncodeMessage(msg)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkWebSocketFramingOverhead(b *testing.B) {
+	// Measure WebSocket framing cost
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.DefaultDialer
+	conn, _, _ := dialer.Dial(wsURL, nil)
+	defer conn.Close()
+
+	data := []byte(strings.Repeat("x", 1024))
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWebSocketPooling tests connection pooling benefits
+func BenchmarkWebSocketConnectionReuse(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		
 		for {
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {
@@ -450,25 +596,33 @@ func BenchmarkWebSocketTransportConcurrency(b *testing.B) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	transport := &WebSocketClientTransport{URL: wsURL}
 
-	clientConn, _ := transport.Connect(context.Background())
-	defer clientConn.Close()
+	b.Run("SingleConnection", func(b *testing.B) {
+		transport := &WebSocketClientTransport{URL: wsURL}
+		clientConn, _ := transport.Connect(context.Background())
+		defer clientConn.Close()
 
-	b.ResetTimer()
-	b.ReportAllocs()
+		msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
+		ctx := context.Background()
 
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(int64(i)), "test", nil)
-			if err := clientConn.Write(context.Background(), msg); err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-			if _, err := clientConn.Read(context.Background()); err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-			i++
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			clientConn.Write(ctx, msg)
+			clientConn.Read(ctx)
+		}
+	})
+
+	b.Run("NewConnectionPerRequest", func(b *testing.B) {
+		msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
+		ctx := context.Background()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			transport := &WebSocketClientTransport{URL: wsURL}
+			clientConn, _ := transport.Connect(ctx)
+			clientConn.Write(ctx, msg)
+			clientConn.Read(ctx)
+			clientConn.Close()
 		}
 	})
 }

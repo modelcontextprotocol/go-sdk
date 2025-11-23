@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -100,32 +101,39 @@ func (c *websocketConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 
 // Write sends a JSON-RPC message over the WebSocket connection.
 func (c *websocketConn) Write(ctx context.Context, msg jsonrpc.Message) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Encode the message
+	// Encode the message before acquiring lock to reduce contention
 	data, err := jsonrpc.EncodeMessage(msg)
 	if err != nil {
 		return fmt.Errorf("failed to encode JSON-RPC message: %w", err)
 	}
 
-	// Set up context cancellation
-	done := make(chan error, 1)
-
-	go func() {
-		done <- c.conn.WriteMessage(websocket.TextMessage, data)
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("websocket write error: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		c.conn.Close()
+	// Check context before expensive operations
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Fast path: if context is already done, bail out immediately
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Set write deadline if context has deadline
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetWriteDeadline(deadline)
+		defer c.conn.SetWriteDeadline(time.Time{}) // Reset deadline
+	}
+
+	// Write directly - gorilla/websocket handles blocking
+	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return fmt.Errorf("websocket write error: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the WebSocket connection gracefully.
