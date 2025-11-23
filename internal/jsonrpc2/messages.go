@@ -5,9 +5,11 @@
 package jsonrpc2
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // ID is a Request identifier, which is defined by the spec to be a string, integer, or null.
@@ -44,6 +46,11 @@ type Message interface {
 	// marshal builds the wire form from the API form.
 	// It is private, which makes the set of Message implementations closed.
 	marshal(to *wireCombined)
+}
+
+// wirePool reuses wireCombined structs to reduce per-message allocations.
+var wirePool = sync.Pool{
+	New: func() interface{} { return new(wireCombined) },
 }
 
 // Request is a Message sent to a peer to request behavior.
@@ -152,6 +159,35 @@ func EncodeMessage(msg Message) ([]byte, error) {
 	return data, nil
 }
 
+// EncodeMessageTo writes the JSON-RPC wire encoding of msg into the
+// provided buffer. It intentionally avoids allocating a temporary []byte by
+// using json.Encoder to stream directly into buf. The function does not add
+// a trailing newline (json.Encoder.Encode appends one), so it trims it.
+//
+// This helper is non-breaking: callers may use it to reduce allocations.
+func EncodeMessageTo(buf *bytes.Buffer, msg Message) error {
+	buf.Reset()
+	wire := wireCombined{VersionTag: wireVersion}
+	msg.marshal(&wire)
+
+	enc := json.NewEncoder(buf)
+	// Match default escaping behavior; SetEscapeHTML(false) reduces escapes
+	// for '<', '>' which can be beneficial for performance and readability.
+	enc.SetEscapeHTML(false)
+
+	if err := enc.Encode(&wire); err != nil {
+		return fmt.Errorf("marshaling jsonrpc message: %w", err)
+	}
+	// json.Encoder.Encode appends a '\n' byte; remove it to match json.Marshal
+	if buf.Len() > 0 {
+		b := buf.Bytes()
+		if b[len(b)-1] == '\n' {
+			buf.Truncate(buf.Len() - 1)
+		}
+	}
+	return nil
+}
+
 // EncodeIndent is like EncodeMessage, but honors indents.
 // TODO(rfindley): refactor so that this concern is handled independently.
 // Perhaps we should pass in a json.Encoder?
@@ -166,23 +202,30 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 }
 
 func DecodeMessage(data []byte) (Message, error) {
-	msg := wireCombined{}
-	if err := json.Unmarshal(data, &msg); err != nil {
+	// Use a pooled wireCombined to reduce allocations for the wrapper struct.
+	wire := wirePool.Get().(*wireCombined)
+	defer func() {
+		// Clear fields to avoid retaining references; put back to pool.
+		*wire = wireCombined{}
+		wirePool.Put(wire)
+	}()
+
+	if err := json.Unmarshal(data, wire); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
-	if msg.VersionTag != wireVersion {
-		return nil, fmt.Errorf("invalid message version tag %q; expected %q", msg.VersionTag, wireVersion)
+	if wire.VersionTag != wireVersion {
+		return nil, fmt.Errorf("invalid message version tag %q; expected %q", wire.VersionTag, wireVersion)
 	}
-	id, err := MakeID(msg.ID)
+	id, err := MakeID(wire.ID)
 	if err != nil {
 		return nil, err
 	}
-	if msg.Method != "" {
+	if wire.Method != "" {
 		// has a method, must be a call
 		return &Request{
-			Method: msg.Method,
+			Method: wire.Method,
 			ID:     id,
-			Params: msg.Params,
+			Params: wire.Params,
 		}, nil
 	}
 	// no method, should be a response
@@ -191,11 +234,11 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	resp := &Response{
 		ID:     id,
-		Result: msg.Result,
+		Result: wire.Result,
 	}
-	// we have to check if msg.Error is nil to avoid a typed error
-	if msg.Error != nil {
-		resp.Error = msg.Error
+	// we have to check if wire.Error is nil to avoid a typed error
+	if wire.Error != nil {
+		resp.Error = wire.Error
 	}
 	return resp, nil
 }

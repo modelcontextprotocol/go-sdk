@@ -6,7 +6,10 @@
 // for use by mcp transport authors.
 package jsonrpc
 
-import "github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+import (
+	"bytes"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+)
 
 type (
 	// ID is a JSON-RPC request ID.
@@ -30,6 +33,12 @@ func MakeID(v any) (ID, error) {
 // EncodeMessage serializes a JSON-RPC message to its wire format.
 func EncodeMessage(msg Message) ([]byte, error) {
 	return jsonrpc2.EncodeMessage(msg)
+}
+
+// EncodeMessageTo encodes msg into the provided buffer. It is a non-breaking
+// helper that allows callers to reuse buffers to reduce allocations.
+func EncodeMessageTo(buf *bytes.Buffer, msg Message) error {
+	return jsonrpc2.EncodeMessageTo(buf, msg)
 }
 
 // DecodeMessage deserializes JSON-RPC wire format data into a Message.
