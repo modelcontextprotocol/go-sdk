@@ -123,6 +123,12 @@ func BenchmarkWebSocketTransportLatency(b *testing.B) {
 	}
 }
 
+// Benchmarks in this file have different measurement focuses:
+// - Benchmarks named "WebSocketTransport_..." emulate MCP protocol usage and
+//   therefore use the 'mcp' subprotocol on both client and server.
+// - Framing/encode-only benchmarks (e.g., BenchmarkWebSocketFramingOverhead)
+//   intentionally do not set the MCP subprotocol to isolate frame-level cost.
+
 // BenchmarkTransportThroughput measures sustained message throughput
 // Expected ranking (highest to lowest throughput):
 // 1. InMemory - ~1M-10M msg/sec (limited only by Go scheduler)
@@ -437,9 +443,6 @@ func BenchmarkInMemoryTransportConcurrency(b *testing.B) {
 }
 
 func BenchmarkWebSocketTransportConcurrency(b *testing.B) {
-	// Use buffered channel to coordinate server lifecycle
-	serverReady := make(chan string, 1)
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{Subprotocols: []string{"mcp"}}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -462,15 +465,15 @@ func BenchmarkWebSocketTransportConcurrency(b *testing.B) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	serverReady <- wsURL
-	close(serverReady)
 
-	// Create multiple connections for true concurrency (WebSocket per goroutine)
+	// This benchmark creates separate WebSocket connections per goroutine to
+	// simulate many clients (not single-connection multiplexing). Use this to
+	// evaluate server and TCP stack behavior under high concurrency.
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	b.RunParallel(func(pb *testing.PB) {
-		transport := &WebSocketClientTransport{URL: <-serverReady}
+		transport := &WebSocketClientTransport{URL: wsURL}
 		clientConn, err := transport.Connect(context.Background())
 		if err != nil {
 			b.Logf("Failed to connect: %v", err)

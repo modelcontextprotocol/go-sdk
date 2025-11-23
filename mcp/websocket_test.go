@@ -17,6 +17,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
+// NOTE: WebSocket tests assume a negotiated subprotocol of "mcp" between
+// client and server (i.e., both sides select the 'mcp' subprotocol during the
+// WebSocket handshake). Tests validate that binary frames are rejected and
+// that context deadlines or cancellations cause Read/Write to return the
+// appropriate context errors.
+
 func TestWebSocketClientTransport(t *testing.T) {
 	// Create a test WebSocket server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +199,12 @@ func TestWebSocketConnectionFailure(t *testing.T) {
 }
 
 func TestWebSocketServerTransport(t *testing.T) {
-	serverTransport := NewWebSocketServerTransport()
+	// Create a dummy server
+	mcpServer := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+
+	serverTransport := NewWebSocketServerTransport(func(r *http.Request) *Server {
+		return mcpServer
+	})
 	if serverTransport == nil {
 		t.Fatal("NewWebSocketServerTransport returned nil")
 	}
@@ -319,70 +330,6 @@ func TestWebSocketConcurrentWrites(t *testing.T) {
 	}
 }
 
-// TestWebSocketAcceptMethod tests the Accept method of WebSocketServerTransport.
-func TestWebSocketAcceptMethod(t *testing.T) {
-	transport := NewWebSocketServerTransport()
-
-	// Create a mock WebSocket connection
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := transport.upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("Failed to upgrade: %v", err)
-			return
-		}
-
-		// Use Accept to wrap the connection
-		mcpConn := transport.Accept(conn)
-
-		// Verify SessionID is generated
-		if mcpConn.SessionID() == "" {
-			t.Error("SessionID should not be empty")
-		}
-
-		// Test basic read/write through accepted connection
-		msg, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
-		if err != nil {
-			t.Fatalf("Failed to create message: %v", err)
-		}
-
-		if err := mcpConn.Write(context.Background(), msg); err != nil {
-			t.Errorf("Write failed: %v", err)
-		}
-
-		mcpConn.Close()
-	}))
-	defer server.Close()
-
-	// Connect client
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to dial: %v", err)
-	}
-	defer conn.Close()
-
-	// Read the message sent by server
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Failed to read: %v", err)
-	}
-
-	msg, err := jsonrpc.DecodeMessage(data)
-	if err != nil {
-		t.Fatalf("Failed to decode: %v", err)
-	}
-
-	req, ok := msg.(*jsonrpc.Request)
-	if !ok {
-		t.Fatalf("Expected Request message, got %T", msg)
-	}
-
-	if req.Method != "test" {
-		t.Errorf("Expected method 'test', got '%s'", req.Method)
-	}
-}
-
 // TestWebSocketConnectWithCustomDialer tests Connect with a custom dialer.
 func TestWebSocketConnectWithCustomDialer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -504,7 +451,12 @@ func TestWebSocketReadMalformedJSON(t *testing.T) {
 
 // TestWebSocketServeHTTPUpgradeFailure tests ServeHTTP with invalid upgrade request.
 func TestWebSocketServeHTTPUpgradeFailure(t *testing.T) {
-	transport := NewWebSocketServerTransport()
+	// Create a dummy server
+	mcpServer := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+
+	transport := NewWebSocketServerTransport(func(r *http.Request) *Server {
+		return mcpServer
+	})
 
 	// Create a regular HTTP request (not a WebSocket upgrade)
 	req := httptest.NewRequest("GET", "/", nil)
@@ -518,7 +470,7 @@ func TestWebSocketServeHTTPUpgradeFailure(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "upgrade") && !strings.Contains(body, "Upgrade") {
+	if !strings.Contains(body, "upgrade") && !strings.Contains(body, "Upgrade") && !strings.Contains(body, "Bad Request") {
 		t.Errorf("Expected upgrade error message, got: %s", body)
 	}
 }

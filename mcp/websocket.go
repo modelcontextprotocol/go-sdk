@@ -48,55 +48,96 @@ func (t *WebSocketClientTransport) Connect(ctx context.Context) (Connection, err
 		return nil, fmt.Errorf("websocket connection failed: %w", err)
 	}
 
-	return &websocketConn{
-		conn:      conn,
-		sessionID: randText(),
-	}, nil
+	return newWebsocketConn(conn), nil
 }
+
+// NOTE: Connect sets the WebSocket subprotocol to "mcp" by overwriting any
+// Dialer.Subprotocols value on a provided Dialer. If you need to negotiate
+// different or additional subprotocols, perform dialing manually and wrap
+// the resulting *websocket.Conn in a transport using newWebsocketConn.
 
 // websocketConn implements the Connection interface for WebSocket connections.
 type websocketConn struct {
 	conn      *websocket.Conn
 	sessionID string
 	mu        sync.Mutex // Protects Write operations
+
+	incoming  chan jsonrpc.Message
+	err       error // terminal error
+	closed    chan struct{}
 	closeOnce sync.Once
+}
+
+func newWebsocketConn(conn *websocket.Conn) *websocketConn {
+	c := &websocketConn{
+		conn:      conn,
+		sessionID: randText(),
+		incoming:  make(chan jsonrpc.Message, 10),
+		closed:    make(chan struct{}),
+	}
+	go c.readLoop()
+	return c
+}
+
+func (c *websocketConn) readLoop() {
+	defer close(c.closed)
+	defer c.conn.Close()
+
+	for {
+		messageType, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.err = err
+			return
+		}
+
+		if messageType != websocket.TextMessage {
+			c.err = fmt.Errorf("unexpected websocket message type: %d (expected text)", messageType)
+			return
+		}
+
+		msg, err := jsonrpc.DecodeMessage(data)
+		if err != nil {
+			// TODO: Log error? For now, we treat decode errors as fatal to the connection
+			// or we could just skip bad messages.
+			// The spec implies strict JSON-RPC.
+			c.err = fmt.Errorf("failed to decode JSON-RPC message: %w", err)
+			return
+		}
+
+		select {
+		case c.incoming <- msg:
+		case <-c.closed:
+			return
+		}
+	}
 }
 
 // Read reads a JSON-RPC message from the WebSocket connection.
 func (c *websocketConn) Read(ctx context.Context) (jsonrpc.Message, error) {
-	// Set up context cancellation
-	done := make(chan struct{})
-	defer close(done)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			c.conn.Close()
-		case <-done:
-		}
-	}()
-
-	// Read message from WebSocket
-	messageType, data, err := c.conn.ReadMessage()
-	if err != nil {
-		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case msg, ok := <-c.incoming:
+		if !ok {
+			if c.err != nil {
+				// Check if it's a normal closure
+				if websocket.IsCloseError(c.err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					return nil, io.EOF
+				}
+				return nil, c.err
+			}
 			return nil, io.EOF
 		}
-		return nil, fmt.Errorf("websocket read error: %w", err)
+		return msg, nil
+	case <-c.closed:
+		if c.err != nil {
+			if websocket.IsCloseError(c.err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return nil, io.EOF
+			}
+			return nil, c.err
+		}
+		return nil, io.EOF
 	}
-
-	// Ensure we received a text message (JSON-RPC should be text)
-	if messageType != websocket.TextMessage {
-		return nil, fmt.Errorf("unexpected websocket message type: %d (expected text)", messageType)
-	}
-
-	// Decode the JSON-RPC message
-	msg, err := jsonrpc.DecodeMessage(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode JSON-RPC message: %w", err)
-	}
-
-	return msg, nil
 }
 
 // Write sends a JSON-RPC message over the WebSocket connection.
@@ -119,6 +160,8 @@ func (c *websocketConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-c.closed:
+		return io.EOF
 	default:
 	}
 
@@ -136,14 +179,20 @@ func (c *websocketConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	return nil
 }
 
+// Write is safe for concurrent use by multiple goroutines; writes are
+// serialized using an internal mutex because gorilla/websocket requires
+// only a single concurrent writer. If the provided ctx contains a deadline,
+// the underlying socket write deadline will be set to that deadline.
+
 // Close closes the WebSocket connection gracefully.
 func (c *websocketConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
-		// Close the connection directly
-		// The gorilla/websocket library handles the close handshake
+		// Close the connection to unblock ReadMessage
 		err = c.conn.Close()
 	})
+	// Wait for readLoop to finish
+	<-c.closed
 	return err
 }
 
@@ -152,42 +201,86 @@ func (c *websocketConn) SessionID() string {
 	return c.sessionID
 }
 
+// SessionID returns a small, random identifier associated with this
+// connection. It's intended for logging/correlation and is not intended to be
+// globally unique or secure.
+
 // WebSocketServerTransport provides a WebSocket server transport for MCP servers.
 // It can be used as an http.Handler to upgrade HTTP connections to WebSocket.
 type WebSocketServerTransport struct {
+	// Handler returns the Server instance to handle the connection.
+	// If nil, ServeHTTP will return 500 Internal Server Error.
+	Handler func(*http.Request) *Server
+
+	// CheckOrigin returns true if the request Origin header is acceptable.
+	// If nil, a safe default is used: return false if the Origin request header
+	// is present and the origin host is not equal to request Host header.
+	//
+	// A function that always returns true can be used to allow all origins.
+	CheckOrigin func(r *http.Request) bool
+
 	upgrader websocket.Upgrader
 }
 
 // NewWebSocketServerTransport creates a new WebSocket server transport.
-func NewWebSocketServerTransport() *WebSocketServerTransport {
+func NewWebSocketServerTransport(handler func(*http.Request) *Server) *WebSocketServerTransport {
 	return &WebSocketServerTransport{
-		upgrader: websocket.Upgrader{
-			Subprotocols: []string{"mcp"},
-			CheckOrigin: func(r *http.Request) bool {
-				// By default, allow all origins. In production, implement proper origin checking.
-				return true
-			},
-		},
+		Handler: handler,
 	}
 }
 
 // ServeHTTP handles HTTP requests and upgrades them to WebSocket connections.
 func (t *WebSocketServerTransport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := t.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("WebSocket upgrade failed: %v", err), http.StatusBadRequest)
+	if t.Handler == nil {
+		http.Error(w, "server handler not configured", http.StatusInternalServerError)
 		return
 	}
 
-	// Connection is now established; the server should handle it
-	// This is typically done by wrapping this in a Server and calling Serve()
-	_ = conn
+	server := t.Handler(r)
+	if server == nil {
+		http.Error(w, "server not found", http.StatusNotFound)
+		return
+	}
+
+	// Configure upgrader
+	// Note: The transport enforces the 'mcp' subprotocol for the upgraded
+	// connection; this will overwrite any Subprotocols previously set on the
+	// embedded upgrader. If you need custom subprotocol negotiation, perform a
+	// manual upgrade and wrap the connection; see examples/docs.
+	t.upgrader.Subprotocols = []string{"mcp"}
+	if t.CheckOrigin != nil {
+		t.upgrader.CheckOrigin = t.CheckOrigin
+	}
+
+	conn, err := t.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// Upgrade replies with an error if it fails
+		return
+	}
+
+	// Create a wrapper transport for this single connection
+	wrapper := &websocketServerConnTransport{conn: conn}
+
+	// Connect the server to this transport
+	// We use the request context for the connection
+	session, err := server.Connect(r.Context(), wrapper, nil)
+	if err != nil {
+		// If connect fails, close the connection
+		conn.Close()
+		return
+	}
+
+	// Wait for the session to close
+	// This blocks until the client disconnects or the server closes the session
+	_ = session.Wait()
 }
 
-// Accept accepts a new WebSocket connection. This is used internally by the server.
-func (t *WebSocketServerTransport) Accept(conn *websocket.Conn) Connection {
-	return &websocketConn{
-		conn:      conn,
-		sessionID: randText(),
-	}
+// websocketServerConnTransport is a temporary Transport implementation
+// that returns an already established WebSocket connection.
+type websocketServerConnTransport struct {
+	conn *websocket.Conn
+}
+
+func (t *websocketServerConnTransport) Connect(ctx context.Context) (Connection, error) {
+	return newWebsocketConn(t.conn), nil
 }
