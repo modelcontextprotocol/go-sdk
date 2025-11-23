@@ -105,8 +105,8 @@ func (c *websocketConn) readLoop() {
 			return
 		}
 
-		// Decode message - primary hotspot in profiling
-		msg, err := jsonrpc.DecodeMessage(data)
+		// Decode message using pooled reader/decoder to reduce allocations.
+		msg, err := jsonrpc.DecodeMessageFrom(data)
 		if err != nil {
 			// TODO: Log error? For now, we treat decode errors as fatal to the connection
 			// or we could just skip bad messages.

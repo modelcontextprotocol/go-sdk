@@ -53,6 +53,13 @@ var wirePool = sync.Pool{
 	New: func() interface{} { return new(wireCombined) },
 }
 
+// readerPool reuses bytes.Reader values so we can feed the same underlying
+// []byte returned by transports into a json.Decoder without allocating a new
+// reader each time.
+var readerPool = sync.Pool{
+	New: func() interface{} { return new(bytes.Reader) },
+}
+
 // Request is a Message sent to a peer to request behavior.
 // If it has an ID it is a call, otherwise it is a notification.
 type Request struct {
@@ -237,6 +244,54 @@ func DecodeMessage(data []byte) (Message, error) {
 		Result: wire.Result,
 	}
 	// we have to check if wire.Error is nil to avoid a typed error
+	if wire.Error != nil {
+		resp.Error = wire.Error
+	}
+	return resp, nil
+}
+
+// DecodeMessageFrom decodes a JSON-RPC message from the provided byte slice.
+// It uses a pooled bytes.Reader and the pooled wireCombined to reduce
+// temporary allocations during decoding. This helper is non-breaking and is
+// intended for transports that already have a []byte message buffer.
+func DecodeMessageFrom(data []byte) (Message, error) {
+	// Use a pooled reader to avoid allocating a new bytes.Reader.
+	r := readerPool.Get().(*bytes.Reader)
+	r.Reset(data)
+	defer func() { r.Reset(nil); readerPool.Put(r) }()
+
+	// Use a pooled wireCombined to reduce allocations for the wrapper struct.
+	wire := wirePool.Get().(*wireCombined)
+	defer func() {
+		*wire = wireCombined{}
+		wirePool.Put(wire)
+	}()
+
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(wire); err != nil {
+		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+	}
+	if wire.VersionTag != wireVersion {
+		return nil, fmt.Errorf("invalid message version tag %q; expected %q", wire.VersionTag, wireVersion)
+	}
+	id, err := MakeID(wire.ID)
+	if err != nil {
+		return nil, err
+	}
+	if wire.Method != "" {
+		return &Request{
+			Method: wire.Method,
+			ID:     id,
+			Params: wire.Params,
+		}, nil
+	}
+	if !id.IsValid() {
+		return nil, ErrInvalidRequest
+	}
+	resp := &Response{
+		ID:     id,
+		Result: wire.Result,
+	}
 	if wire.Error != nil {
 		resp.Error = wire.Error
 	}

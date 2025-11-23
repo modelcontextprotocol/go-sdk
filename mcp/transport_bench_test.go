@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -577,6 +578,63 @@ func BenchmarkWebSocketFramingOverhead(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWebSocketMicroEcho is a minimal in-process WebSocket echo benchmark
+// that measures JSON encoding + WebSocket framing + round-trip without going
+// through the higher-level MCP io/readBatch or EventStore paths that call
+// io.ReadAll. This isolates transport-level costs.
+func BenchmarkWebSocketMicroEcho(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		for {
+			mt, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(mt, data); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.DefaultDialer
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		b.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Prepare a message payload of moderate size to include encoding cost.
+	msg, _ := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", map[string]interface{}{
+		"data": strings.Repeat("x", 1024),
+	})
+
+	var buf bytes.Buffer
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		if err := jsonrpc.EncodeMessageTo(&buf, msg); err != nil {
+			b.Fatalf("encode failed: %v", err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, buf.Bytes()); err != nil {
+			b.Fatalf("write failed: %v", err)
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			b.Fatalf("read failed: %v", err)
 		}
 	}
 }

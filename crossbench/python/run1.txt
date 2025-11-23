@@ -1,0 +1,43 @@
+Collecting git+https://github.com/modelcontextprotocol/python-sdk.git
+  Cloning https://github.com/modelcontextprotocol/python-sdk.git to /tmp/pip-req-build-58v7trve
+  Running command git clone --filter=blob:none --quiet https://github.com/modelcontextprotocol/python-sdk.git /tmp/pip-req-build-58v7trve
+  Resolved https://github.com/modelcontextprotocol/python-sdk.git to commit 71c475588f263470a8fe116bc5648d72fceba170
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: anyio>=4.5 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (4.11.0)
+Requirement already satisfied: httpx-sse>=0.4 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.4.3)
+Requirement already satisfied: httpx>=0.27.1 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.28.1)
+Requirement already satisfied: jsonschema>=4.20.0 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (4.25.1)
+Requirement already satisfied: pydantic-settings>=2.5.2 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (2.12.0)
+Requirement already satisfied: pydantic<3.0.0,>=2.11.0 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (2.12.4)
+Requirement already satisfied: pyjwt>=2.10.1 in ./.venv-py/lib/python3.13/site-packages (from pyjwt[crypto]>=2.10.1->mcp==1.22.1.dev3+71c4755) (2.10.1)
+Requirement already satisfied: python-multipart>=0.0.9 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.0.20)
+Requirement already satisfied: sse-starlette>=1.6.1 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (3.0.3)
+Requirement already satisfied: starlette>=0.27 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.50.0)
+Requirement already satisfied: typing-extensions>=4.9.0 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (4.15.0)
+Requirement already satisfied: typing-inspection>=0.4.1 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.4.2)
+Requirement already satisfied: uvicorn>=0.31.1 in ./.venv-py/lib/python3.13/site-packages (from mcp==1.22.1.dev3+71c4755) (0.38.0)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv-py/lib/python3.13/site-packages (from pydantic<3.0.0,>=2.11.0->mcp==1.22.1.dev3+71c4755) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in ./.venv-py/lib/python3.13/site-packages (from pydantic<3.0.0,>=2.11.0->mcp==1.22.1.dev3+71c4755) (2.41.5)
+Requirement already satisfied: idna>=2.8 in ./.venv-py/lib/python3.13/site-packages (from anyio>=4.5->mcp==1.22.1.dev3+71c4755) (3.11)
+Requirement already satisfied: sniffio>=1.1 in ./.venv-py/lib/python3.13/site-packages (from anyio>=4.5->mcp==1.22.1.dev3+71c4755) (1.3.1)
+Requirement already satisfied: certifi in ./.venv-py/lib/python3.13/site-packages (from httpx>=0.27.1->mcp==1.22.1.dev3+71c4755) (2025.11.12)
+Requirement already satisfied: httpcore==1.* in ./.venv-py/lib/python3.13/site-packages (from httpx>=0.27.1->mcp==1.22.1.dev3+71c4755) (1.0.9)
+Requirement already satisfied: h11>=0.16 in ./.venv-py/lib/python3.13/site-packages (from httpcore==1.*->httpx>=0.27.1->mcp==1.22.1.dev3+71c4755) (0.16.0)
+Requirement already satisfied: attrs>=22.2.0 in ./.venv-py/lib/python3.13/site-packages (from jsonschema>=4.20.0->mcp==1.22.1.dev3+71c4755) (25.4.0)
+Requirement already satisfied: jsonschema-specifications>=2023.03.6 in ./.venv-py/lib/python3.13/site-packages (from jsonschema>=4.20.0->mcp==1.22.1.dev3+71c4755) (2025.9.1)
+Requirement already satisfied: referencing>=0.28.4 in ./.venv-py/lib/python3.13/site-packages (from jsonschema>=4.20.0->mcp==1.22.1.dev3+71c4755) (0.37.0)
+Requirement already satisfied: rpds-py>=0.7.1 in ./.venv-py/lib/python3.13/site-packages (from jsonschema>=4.20.0->mcp==1.22.1.dev3+71c4755) (0.29.0)
+Requirement already satisfied: python-dotenv>=0.21.0 in ./.venv-py/lib/python3.13/site-packages (from pydantic-settings>=2.5.2->mcp==1.22.1.dev3+71c4755) (1.2.1)
+Requirement already satisfied: cryptography>=3.4.0 in ./.venv-py/lib/python3.13/site-packages (from pyjwt[crypto]>=2.10.1->mcp==1.22.1.dev3+71c4755) (46.0.3)
+Requirement already satisfied: cffi>=2.0.0 in ./.venv-py/lib/python3.13/site-packages (from cryptography>=3.4.0->pyjwt[crypto]>=2.10.1->mcp==1.22.1.dev3+71c4755) (2.0.0)
+Requirement already satisfied: pycparser in ./.venv-py/lib/python3.13/site-packages (from cffi>=2.0.0->cryptography>=3.4.0->pyjwt[crypto]>=2.10.1->mcp==1.22.1.dev3+71c4755) (2.23)
+Requirement already satisfied: click>=7.0 in ./.venv-py/lib/python3.13/site-packages (from uvicorn>=0.31.1->mcp==1.22.1.dev3+71c4755) (8.3.1)
+Installing modelcontextprotocol/python-sdk from GitHub...
+Installed python-sdk (attempting to import)
+Python microbench: iters=2000 payload=1024 bytes/op=1069
+  total time: 0.2874s, ns/op: 143695, ops/s: 6959

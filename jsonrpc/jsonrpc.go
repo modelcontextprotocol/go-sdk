@@ -8,6 +8,7 @@ package jsonrpc
 
 import (
 	"bytes"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
@@ -45,4 +46,11 @@ func EncodeMessageTo(buf *bytes.Buffer, msg Message) error {
 // It returns either a Request or Response based on the message content.
 func DecodeMessage(data []byte) (Message, error) {
 	return jsonrpc2.DecodeMessage(data)
+}
+
+// DecodeMessageFrom decodes a JSON-RPC message from the supplied byte slice.
+// It is a non-breaking helper that reuses internal pools to reduce
+// allocations when decoding messages received by transports.
+func DecodeMessageFrom(data []byte) (Message, error) {
+	return jsonrpc2.DecodeMessageFrom(data)
 }

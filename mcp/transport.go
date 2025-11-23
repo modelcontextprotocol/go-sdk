@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -551,14 +552,19 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 // readBatch reads batch data, which may be either a single JSON-RPC message,
 // or an array of JSON-RPC messages.
 func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
-	// Try to read an array of messages first.
+	// Try to read an array of messages first using a pooled reader/decoder
+	// to avoid allocating intermediate []byte slices via json.Unmarshal.
+	r := bytes.NewReader(data)
+	dec := json.NewDecoder(r)
+	// Attempt to decode into a slice of raw messages.
 	var rawBatch []json.RawMessage
-	if err := json.Unmarshal(data, &rawBatch); err == nil {
+	if err := dec.Decode(&rawBatch); err == nil {
 		if len(rawBatch) == 0 {
 			return nil, true, fmt.Errorf("empty batch")
 		}
 		for _, raw := range rawBatch {
-			msg, err := jsonrpc2.DecodeMessage(raw)
+			// Use the transport-optimized decode helper which uses pooled readers.
+			msg, err := jsonrpc.DecodeMessageFrom(raw)
 			if err != nil {
 				return nil, true, err
 			}
@@ -567,7 +573,7 @@ func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 		return msgs, true, nil
 	}
 	// Try again with a single message.
-	msg, err := jsonrpc2.DecodeMessage(data)
+	msg, err := jsonrpc.DecodeMessageFrom(data)
 	return []jsonrpc.Message{msg}, false, err
 }
 
