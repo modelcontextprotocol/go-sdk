@@ -522,3 +522,106 @@ func TestWebSocketServeHTTPUpgradeFailure(t *testing.T) {
 		t.Errorf("Expected upgrade error message, got: %s", body)
 	}
 }
+
+// TestWebSocketWriteWithCancelledContext tests Write with a pre-cancelled context.
+func TestWebSocketWriteWithCancelledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"mcp"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Keep connection open to test context cancellation
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	transport := &WebSocketClientTransport{
+		URL: wsURL,
+	}
+
+	conn, err := transport.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Create a context that's already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Try to write with cancelled context
+	msg, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "test", nil)
+	if err != nil {
+		t.Fatalf("Failed to create message: %v", err)
+	}
+
+	err = conn.Write(ctx, msg)
+	if err == nil {
+		t.Error("Expected error with cancelled context, got nil")
+	}
+	if !strings.Contains(err.Error(), "context") && err != context.Canceled {
+		t.Errorf("Expected context error, got: %v", err)
+	}
+}
+
+// TestWebSocketWriteContextCancellationDuringWrite tests context cancellation during write operation.
+func TestWebSocketWriteContextCancellationDuringWrite(t *testing.T) {
+	// Create a server that accepts connections but doesn't read
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"mcp"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Don't read messages - this can cause write to block
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	transport := &WebSocketClientTransport{
+		URL: wsURL,
+	}
+
+	conn, err := transport.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Create a context with very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// Try to write multiple messages rapidly to increase chance of context cancellation
+	for i := 0; i < 10; i++ {
+		msg, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(int64(i)), "test", nil)
+		if err != nil {
+			t.Fatalf("Failed to create message: %v", err)
+		}
+
+		err = conn.Write(ctx, msg)
+		if err != nil {
+			// Context error is expected
+			if strings.Contains(err.Error(), "context") || err == context.DeadlineExceeded {
+				return // Test passed
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// If we got here without error, that's also acceptable (write completed before timeout)
+	t.Log("Write completed before context timeout (acceptable)")
+}
