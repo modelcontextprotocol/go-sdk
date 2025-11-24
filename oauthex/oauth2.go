@@ -87,3 +87,9 @@ func checkURLScheme(u string) error {
 	}
 	return nil
 }
+
+// CheckURLScheme validates a URL scheme for security.
+// This is exported for use by the auth package.
+func CheckURLScheme(u string) error {
+	return checkURLScheme(u)
+}
