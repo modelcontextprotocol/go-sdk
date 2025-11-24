@@ -45,7 +45,48 @@ type EnterpriseAuthConfig struct {
 // This function takes an ID Token that was obtained via SSO (e.g., OIDC login)
 // and exchanges it for an access token that can be used to call the MCP Server.
 //
-// Example:
+// There are two ways to obtain an ID Token for use with this function:
+//
+// Option 1: Use the OIDC login helper functions (full flow with SSO):
+//
+//	// Step 1: Initiate OIDC login
+//	oidcConfig := &OIDCLoginConfig{
+//		IssuerURL:   "https://acme.okta.com",
+//		ClientID:    "client-id",
+//		RedirectURL: "http://localhost:8080/callback",
+//		Scopes:      []string{"openid", "profile", "email"},
+//	}
+//	authReq, err := InitiateOIDCLogin(ctx, oidcConfig)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	// Step 2: Direct user to authReq.AuthURL for authentication
+//	fmt.Printf("Visit: %s\n", authReq.AuthURL)
+//
+//	// Step 3: After redirect, complete login with authorization code
+//	tokens, err := CompleteOIDCLogin(ctx, oidcConfig, authCode, authReq.CodeVerifier)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	// Step 4: Use ID token for enterprise auth
+//	enterpriseConfig := &EnterpriseAuthConfig{
+//		IdPIssuerURL:     "https://acme.okta.com",
+//		IdPClientID:      "client-id-at-idp",
+//		IdPClientSecret:  "secret-at-idp",
+//		MCPAuthServerURL: "https://auth.mcpserver.example",
+//		MCPResourceURL:   "https://mcp.mcpserver.example",
+//		MCPClientID:      "client-id-at-mcp",
+//		MCPClientSecret:  "secret-at-mcp",
+//		MCPScopes:        []string{"read", "write"},
+//	}
+//	accessToken, err := EnterpriseAuthFlow(ctx, enterpriseConfig, tokens.IDToken)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+// Option 2: Bring your own ID Token (if you already have one):
 //
 //	config := &EnterpriseAuthConfig{
 //		IdPIssuerURL:     "https://acme.okta.com",
@@ -58,8 +99,8 @@ type EnterpriseAuthConfig struct {
 //		MCPScopes:        []string{"read", "write"},
 //	}
 //
-//	// After user logs in via OIDC, you have an ID Token
-//	accessToken, err := EnterpriseAuthFlow(ctx, config, idToken)
+//	// If you already obtained an ID token through your own means
+//	accessToken, err := EnterpriseAuthFlow(ctx, config, myIDToken)
 //	if err != nil {
 //		log.Fatal(err)
 //	}
