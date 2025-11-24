@@ -1,0 +1,7 @@
+goos: linux
+goarch: amd64
+pkg: github.com/modelcontextprotocol/go-sdk/mcp
+cpu: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
+BenchmarkWebSocketMicroEcho-2   	   68702	     16243 ns/op	     224 B/op	       5 allocs/op
+PASS
+ok  	github.com/modelcontextprotocol/go-sdk/mcp	7.364s

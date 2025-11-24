@@ -1,0 +1,329 @@
+File: mcp_ws.test
+Build ID: b7e25901cd47f8a17d4e9694203c6a3cc07f1c6c
+Type: alloc_space
+Time: 2025-11-24 03:49:53 UTC
+Showing nodes accounting for 90.70MB, 100% of 90.70MB total
+      flat  flat%   sum%        cum   cum%
+    8.53MB  9.41%  9.41%     8.53MB  9.41%  bufio.(*Scanner).Scan
+    8.53MB  9.40% 18.81%     8.53MB  9.40%  bufio.NewReaderSize (inline)
+    7.50MB  8.27% 27.08%     7.50MB  8.27%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.EncodeMessageTo
+       6MB  6.62% 33.70%        6MB  6.62%  github.com/gorilla/websocket.(*Conn).NextWriter
+    5.02MB  5.53% 39.23%     5.02MB  5.53%  bufio.NewWriterSize (inline)
+    3.50MB  3.86% 43.09%     3.50MB  3.86%  encoding/json.(*Decoder).refill
+       3MB  3.31% 46.40%        3MB  3.31%  net/textproto.readMIMEHeader
+    2.50MB  2.76% 49.16%     2.50MB  2.76%  net/http.Header.Clone (inline)
+       2MB  2.21% 51.36%        2MB  2.21%  net/textproto.MIMEHeader.Set (inline)
+       2MB  2.21% 53.57%     2.50MB  2.76%  net/http.NewRequestWithContext
+       2MB  2.21% 55.78%        2MB  2.21%  context.(*cancelCtx).Done
+       2MB  2.21% 57.98%        2MB  2.21%  encoding/json.(*scanner).pushParseState
+    1.50MB  1.65% 59.63%     1.50MB  1.65%  encoding/json.(*decodeState).objectInterface
+    1.50MB  1.65% 61.29%     3.50MB  3.86%  net/http.(*persistConn).readLoop
+    1.16MB  1.28% 62.56%     1.16MB  1.28%  runtime/pprof.StartCPUProfile
+    1.03MB  1.13% 63.70%     1.91MB  2.10%  runtime/pprof.(*profileBuilder).emitLocation
+       1MB  1.10% 64.80%        1MB  1.10%  testing.(*T).Run
+       1MB  1.10% 65.90%     2.50MB  2.76%  net/http.readRequest
+       1MB  1.10% 67.00%        1MB  1.10%  reflect.mapassign_faststr0
+       1MB  1.10% 68.11%        1MB  1.10%  runtime/pprof.allFrames
+       1MB  1.10% 69.21%    13.54MB 14.93%  net/http.(*Transport).dialConn
+       1MB  1.10% 70.31%        1MB  1.10%  net/http.(*Transport).getConn
+       1MB  1.10% 71.41%     5.50MB  6.07%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).servePOST
+       1MB  1.10% 72.52%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).acquireStream
+       1MB  1.10% 73.62%        1MB  1.10%  net.(*netFD).connect
+       1MB  1.10% 74.72%        6MB  6.62%  encoding/json.(*decodeState).object
+    0.88MB  0.97% 75.69%     0.88MB  0.97%  compress/flate.NewWriter (inline)
+    0.53MB  0.59% 76.28%     0.53MB  0.59%  net.open
+    0.50MB  0.56% 76.84%     0.50MB  0.56%  net/http.(*Server).trackConn
+    0.50MB  0.55% 77.39%     0.50MB  0.55%  vendor/golang.org/x/net/http2/hpack.init
+    0.50MB  0.55% 77.94%     0.50MB  0.55%  regexp.mergeRuneSets.func2 (inline)
+    0.50MB  0.55% 78.50%        2MB  2.21%  crypto/x509.parseCertificate
+    0.50MB  0.55% 79.05%     0.50MB  0.55%  encoding/pem.Decode
+    0.50MB  0.55% 79.60%     0.50MB  0.55%  log/slog/internal/buffer.init.func1
+    0.50MB  0.55% 80.15%     0.50MB  0.55%  reflect.New
+    0.50MB  0.55% 80.70%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.runServerTest.func4
+    0.50MB  0.55% 81.25%     0.50MB  0.55%  runtime.malg
+    0.50MB  0.55% 81.81%     0.50MB  0.55%  encoding/json.NewDecoder (inline)
+    0.50MB  0.55% 82.36%     0.50MB  0.55%  math/big.nat.make (inline)
+    0.50MB  0.55% 82.91%     0.50MB  0.55%  net/http.setupRewindBody (inline)
+    0.50MB  0.55% 83.46%     0.50MB  0.55%  github.com/google/go-cmp/cmp.(*state).compareStruct
+    0.50MB  0.55% 84.01%     0.50MB  0.55%  crypto/x509/pkix.(*Name).FillFromRDNSequence
+    0.50MB  0.55% 84.56%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*StreamableClientTransport).Connect
+    0.50MB  0.55% 85.11%     0.50MB  0.55%  net/http.newTransferWriter
+    0.50MB  0.55% 85.67%     0.50MB  0.55%  bytes.growSlice
+    0.50MB  0.55% 86.22%        6MB  6.62%  encoding/json.Unmarshal
+    0.50MB  0.55% 86.77%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.NewClient (inline)
+    0.50MB  0.55% 87.32%        6MB  6.62%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).Call
+    0.50MB  0.55% 87.87%     0.50MB  0.55%  net.Pipe
+    0.50MB  0.55% 88.42%        1MB  1.10%  net/http.(*persistConn).roundTrip
+    0.50MB  0.55% 88.97%     0.50MB  0.55%  encoding/json.Marshal
+    0.50MB  0.55% 89.53%     0.50MB  0.55%  os.newFile
+    0.50MB  0.55% 90.08%     0.50MB  0.55%  runtime.(*scavengerState).init
+    0.50MB  0.55% 90.63%        1MB  1.10%  context.withCancel (inline)
+    0.50MB  0.55% 91.18%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.req
+    0.50MB  0.55% 91.73%     0.50MB  0.55%  net.(*conn).Read
+    0.50MB  0.55% 92.28%     0.50MB  0.55%  internal/godebug.registerMetric
+    0.50MB  0.55% 92.83%     0.50MB  0.55%  sync.NewCond (inline)
+    0.50MB  0.55% 93.38%        7MB  7.72%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).Write
+    0.50MB  0.55% 93.94%     0.50MB  0.55%  net.sockaddrToTCP
+    0.50MB  0.55% 94.49%        4MB  4.41%  net/http.(*conn).readRequest
+    0.50MB  0.55% 95.04%     0.50MB  0.55%  encoding/json.(*RawMessage).UnmarshalJSON
+    0.50MB  0.55% 95.59%     0.50MB  0.55%  net/http.(*Transport).prepareTransportCancel
+    0.50MB  0.55% 96.14%     0.50MB  0.55%  vendor/golang.org/x/crypto/cryptobyte.(*String).ReadASN1ObjectIdentifier
+    0.50MB  0.55% 96.69%     0.50MB  0.55%  encoding/json.(*decodeState).literalStore
+    0.50MB  0.55% 97.24%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.contentsFromWire
+    0.50MB  0.55% 97.79%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.testStreamableHandler.func1
+    0.50MB  0.55% 98.35%     0.50MB  0.55%  io.NopCloser (inline)
+    0.50MB  0.55% 98.90%        1MB  1.10%  net/http.(*Request).write
+    0.50MB  0.55% 99.45%     0.50MB  0.55%  github.com/gorilla/websocket.(*Conn).NextReader
+    0.50MB  0.55%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).handleAsync
+         0     0%   100%     0.50MB  0.55%  bufio.(*Reader).ReadLine
+         0     0%   100%     0.50MB  0.55%  bufio.(*Reader).ReadSlice
+         0     0%   100%     0.50MB  0.55%  bufio.(*Reader).fill
+         0     0%   100%     0.50MB  0.55%  bufio.NewReader (inline)
+         0     0%   100%     0.50MB  0.55%  bytes.(*Buffer).Write
+         0     0%   100%     0.50MB  0.55%  bytes.(*Buffer).grow
+         0     0%   100%     0.88MB  0.97%  compress/gzip.(*Writer).Write
+         0     0%   100%     0.50MB  0.55%  context.(*cancelCtx).propagateCancel
+         0     0%   100%        1MB  1.10%  context.WithCancel
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*Conn).HandshakeContext (inline)
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*Conn).clientHandshake
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*Conn).handshakeContext
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*Conn).verifyServerCertificate
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*clientHandshakeStateTLS13).handshake
+         0     0%   100%     2.50MB  2.76%  crypto/tls.(*clientHandshakeStateTLS13).readServerCertificate
+         0     0%   100%     2.50MB  2.76%  crypto/x509.(*CertPool).AppendCertsFromPEM
+         0     0%   100%     2.50MB  2.76%  crypto/x509.(*Certificate).Verify
+         0     0%   100%        2MB  2.21%  crypto/x509.ParseCertificate
+         0     0%   100%     2.50MB  2.76%  crypto/x509.initSystemRoots
+         0     0%   100%     2.50MB  2.76%  crypto/x509.loadSystemRoots
+         0     0%   100%     0.50MB  0.55%  crypto/x509.parseName
+         0     0%   100%     0.50MB  0.55%  crypto/x509.parsePublicKey
+         0     0%   100%     2.50MB  2.76%  crypto/x509.systemRootsPool
+         0     0%   100%     5.50MB  6.07%  encoding/json.(*Decoder).Decode
+         0     0%   100%     3.50MB  3.86%  encoding/json.(*Decoder).readValue
+         0     0%   100%     0.50MB  0.55%  encoding/json.(*decodeState).skip
+         0     0%   100%        6MB  6.62%  encoding/json.(*decodeState).unmarshal
+         0     0%   100%        6MB  6.62%  encoding/json.(*decodeState).value
+         0     0%   100%     1.50MB  1.65%  encoding/json.checkValid
+         0     0%   100%     0.50MB  0.55%  encoding/json.indirect
+         0     0%   100%        2MB  2.21%  encoding/json.stateBeginValue
+         0     0%   100%     0.50MB  0.55%  fmt.Fprintf
+         0     0%   100%     0.50MB  0.55%  github.com/google/go-cmp/cmp.(*state).callTRFunc
+         0     0%   100%        1MB  1.10%  github.com/google/go-cmp/cmp.(*state).compareAny
+         0     0%   100%     0.50MB  0.55%  github.com/google/go-cmp/cmp.(*state).comparePtr
+         0     0%   100%        1MB  1.10%  github.com/google/go-cmp/cmp.(*state).compareSlice
+         0     0%   100%     0.50MB  0.55%  github.com/google/go-cmp/cmp.(*state).tryOptions
+         0     0%   100%     0.50MB  0.55%  github.com/google/go-cmp/cmp.(*transformer).apply
+         0     0%   100%        1MB  1.10%  github.com/google/go-cmp/cmp.Diff
+         0     0%   100%     0.50MB  0.55%  github.com/google/go-cmp/cmp.init
+         0     0%   100%        1MB  1.10%  github.com/google/jsonschema-go/jsonschema.(*Schema).UnmarshalJSON
+         0     0%   100%        1MB  1.10%  github.com/google/jsonschema-go/jsonschema.unmarshalStructWithMap[go.shape.eceae3939ea80ab9487583c8147773fa607c5ade8616fd24fee4b34890d169c6]
+         0     0%   100%        2MB  2.21%  github.com/gorilla/websocket.(*Conn).WriteMessage
+         0     0%   100%        3MB  3.31%  github.com/gorilla/websocket.(*Dialer).DialContext
+         0     0%   100%     0.50MB  0.55%  github.com/gorilla/websocket.(*Dialer).DialContext.func4
+         0     0%   100%     0.50MB  0.55%  github.com/gorilla/websocket.(*Dialer).DialContext.func5
+         0     0%   100%     2.50MB  2.76%  github.com/gorilla/websocket.doHandshake
+         0     0%   100%        2MB  2.21%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*AsyncCall).Await
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).Close
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).Notify
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).acceptRequest
+         0     0%   100%     3.50MB  3.86%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).handleAsync.func3
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).processResult
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).readIncoming
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).updateInFlight
+         0     0%   100%     8.50MB  9.37%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).write
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.DecodeMessage
+         0     0%   100%        3MB  3.31%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.DecodeMessageFrom
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.EncodeMessage
+         0     0%   100%        2MB  2.21%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.HandlerFunc.Handle
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/jsonrpc.DecodeMessage (inline)
+         0     0%   100%        3MB  3.31%  github.com/modelcontextprotocol/go-sdk/jsonrpc.DecodeMessageFrom (inline)
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/jsonrpc.EncodeMessage (inline)
+         0     0%   100%     7.50MB  8.27%  github.com/modelcontextprotocol/go-sdk/jsonrpc.EncodeMessageTo (inline)
+         0     0%   100%        2MB  2.21%  github.com/modelcontextprotocol/go-sdk/mcp.(*CallToolResult).UnmarshalJSON
+         0     0%   100%     3.50MB  3.86%  github.com/modelcontextprotocol/go-sdk/mcp.(*Client).Connect
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*Client).elicit
+         0     0%   100%     7.50MB  8.27%  github.com/modelcontextprotocol/go-sdk/mcp.(*ClientSession).CallTool
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*ClientSession).Close
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*ClientSession).handle
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*LoggingHandler).Handle
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*LoggingHandler).handle
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*LoggingHandler).handle.func1
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*Server).callTool
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*ServerSession).Elicit
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*ServerSession).handle
+         0     0%   100%        7MB  7.72%  github.com/modelcontextprotocol/go-sdk/mcp.(*StreamableHTTPHandler).ServeHTTP
+         0     0%   100%        7MB  7.72%  github.com/modelcontextprotocol/go-sdk/mcp.(*StreamableServerTransport).ServeHTTP
+         0     0%   100%        3MB  3.31%  github.com/modelcontextprotocol/go-sdk/mcp.(*WebSocketClientTransport).Connect
+         0     0%   100%        2MB  2.21%  github.com/modelcontextprotocol/go-sdk/mcp.(*ioConn).Read
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).Close
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).Close.func1
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).connectSSE
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).connectStandaloneSSE
+         0     0%   100%    10.53MB 11.61%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).handleSSE
+         0     0%   100%    10.03MB 11.06%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).processStream
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).processStream-range1
+         0     0%   100%    10.03MB 11.06%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).processStream.scanEvents.func1
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).sessionUpdated
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).setMCPHeaders
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).Write
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).serveGET
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).servePOST.func2
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).writeEvent
+         0     0%   100%       10MB 11.03%  github.com/modelcontextprotocol/go-sdk/mcp.BenchmarkWebSocketMicroEcho
+         0     0%   100%        4MB  4.41%  github.com/modelcontextprotocol/go-sdk/mcp.BenchmarkWebSocketMicroEcho.func1
+         0     0%   100%     2.50MB  2.76%  github.com/modelcontextprotocol/go-sdk/mcp.FuzzWebSocketURL.func1
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.NewInMemoryTransports (inline)
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestElicitationSchemaValidation.func2
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestEndToEnd.func22.3
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestMemoryEventStoreAfter
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestSSEServer.func1
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerClosing
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerConformance
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerConformance.func1
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerConformance.func2.1
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerPaginateVariousPageSizes
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableClientGETHandling.func1
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableConcurrentHandling
+         0     0%   100%    11.50MB 12.68%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableConcurrentHandling.func3
+         0     0%   100%        7MB  7.72%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableConcurrentHandling.mustNotPanic.func4
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableGET
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableServerTransport.func4
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.TestWebSocketClientTransport
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.applySchema
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.basicClientServerConnection
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.basicConnection (inline)
+         0     0%   100%        8MB  8.82%  github.com/modelcontextprotocol/go-sdk/mcp.call
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.connect[go.shape.*uint8,go.shape.*uint8]
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.defaultReceivingMethodHandler[go.shape.*uint8]
+         0     0%   100%     9.50MB 10.48%  github.com/modelcontextprotocol/go-sdk/mcp.defaultSendingMethodHandler[go.shape.*uint8]
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.handleNotify
+         0     0%   100%        2MB  2.21%  github.com/modelcontextprotocol/go-sdk/mcp.handleReceive[go.shape.*uint8]
+         0     0%   100%        8MB  8.82%  github.com/modelcontextprotocol/go-sdk/mcp.handleSend[go.shape.*uint8]
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.init.clientMethod[go.shape.*uint8,go.shape.*uint8].func6
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.init.serverMethod[go.shape.*uint8,go.shape.*uint8].func20
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.loadConformanceTest
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.newClientMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.ElicitParams,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Message string "json:\"message\""; RequestedSchema interface {} "json:\"requestedSchema\"" }].func2
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.newIOConn.func1
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.newServerMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].func2
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.newServerMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].newMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].func3
+         0     0%   100%     5.50MB  6.07%  github.com/modelcontextprotocol/go-sdk/mcp.readBatch
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.remarshal
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.runServerTest
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.runServerTest.func2 (inline)
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp.testStreamableHandler
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.toolForErr[go.shape.interface {},go.shape.struct { Count int }].func1
+         0     0%   100%        1MB  1.10%  github.com/modelcontextprotocol/go-sdk/mcp.validateElicitSchema
+         0     0%   100%     1.50MB  1.65%  github.com/modelcontextprotocol/go-sdk/mcp.writeEvent
+         0     0%   100%     0.50MB  0.55%  github.com/modelcontextprotocol/go-sdk/mcp_test.TestList.func2
+         0     0%   100%     1.16MB  1.28%  github.com/modelcontextprotocol/go-sdk/mcp_test.TestMain
+         0     0%   100%     0.50MB  0.55%  internal/godebug.(*Setting).IncNonDefault
+         0     0%   100%     0.50MB  0.55%  internal/godebug.(*Setting).register
+         0     0%   100%     0.53MB  0.59%  internal/singleflight.(*Group).doCall
+         0     0%   100%     0.50MB  0.55%  log/slog.(*JSONHandler).Handle
+         0     0%   100%     0.50MB  0.55%  log/slog.(*Logger).Warn (inline)
+         0     0%   100%     0.50MB  0.55%  log/slog.(*Logger).log
+         0     0%   100%     0.50MB  0.55%  log/slog.(*commonHandler).handle
+         0     0%   100%     0.50MB  0.55%  log/slog.(*commonHandler).newHandleState
+         0     0%   100%     0.50MB  0.55%  log/slog/internal/buffer.New (inline)
+         0     0%   100%     1.16MB  1.28%  main.main
+         0     0%   100%     0.50MB  0.55%  math/big.(*Int).SetBytes (inline)
+         0     0%   100%     0.50MB  0.55%  math/big.nat.setBytes
+         0     0%   100%        1MB  1.10%  net.(*Dialer).DialContext
+         0     0%   100%     0.50MB  0.55%  net.(*ListenConfig).Listen
+         0     0%   100%     0.50MB  0.55%  net.(*ListenConfig).MultipathTCP (inline)
+         0     0%   100%     0.53MB  0.59%  net.(*Resolver).lookupIP
+         0     0%   100%     0.53MB  0.59%  net.(*Resolver).lookupIPAddr.func1
+         0     0%   100%     0.53MB  0.59%  net.(*conf).hostLookupOrder
+         0     0%   100%     0.53MB  0.59%  net.(*conf).lookupOrder
+         0     0%   100%     0.50MB  0.55%  net.(*mptcpStatusListen).get
+         0     0%   100%     1.50MB  1.65%  net.(*netFD).dial
+         0     0%   100%     0.53MB  0.59%  net.(*nsswitchConfig).init
+         0     0%   100%     0.53MB  0.59%  net.(*nsswitchConfig).tryUpdate
+         0     0%   100%        1MB  1.10%  net.(*sysDialer).dialParallel
+         0     0%   100%     0.50MB  0.55%  net.(*sysDialer).dialParallel.func1
+         0     0%   100%     1.50MB  1.65%  net.(*sysDialer).dialSerial
+         0     0%   100%     1.50MB  1.65%  net.(*sysDialer).dialSingle
+         0     0%   100%     1.50MB  1.65%  net.(*sysDialer).dialTCP
+         0     0%   100%     1.50MB  1.65%  net.(*sysDialer).doDialTCP (inline)
+         0     0%   100%     1.50MB  1.65%  net.(*sysDialer).doDialTCPProto
+         0     0%   100%     0.50MB  0.55%  net.Listen
+         0     0%   100%     0.53MB  0.59%  net.getSystemNSS
+         0     0%   100%     0.53MB  0.59%  net.init.func1
+         0     0%   100%     1.50MB  1.65%  net.internetSocket
+         0     0%   100%     0.53MB  0.59%  net.parseNSSConfFile
+         0     0%   100%     1.50MB  1.65%  net.socket
+         0     0%   100%     5.50MB  6.07%  net/http.(*Client).Do (inline)
+         0     0%   100%     5.50MB  6.07%  net/http.(*Client).do
+         0     0%   100%     1.50MB  1.65%  net/http.(*Client).makeHeadersCopier
+         0     0%   100%        4MB  4.41%  net/http.(*Client).send
+         0     0%   100%     0.50MB  0.56%  net/http.(*Server).Serve
+         0     0%   100%        4MB  4.41%  net/http.(*Transport).RoundTrip
+         0     0%   100%     0.50MB  0.55%  net/http.(*Transport).dial
+         0     0%   100%    13.54MB 14.93%  net/http.(*Transport).dialConnFor
+         0     0%   100%        4MB  4.41%  net/http.(*Transport).roundTrip
+         0     0%   100%    13.54MB 14.93%  net/http.(*Transport).startDialConnForLocked.func1
+         0     0%   100%    16.01MB 17.65%  net/http.(*conn).serve
+         0     0%   100%     0.50MB  0.56%  net/http.(*conn).setState
+         0     0%   100%     0.50MB  0.55%  net/http.(*connReader).Read
+         0     0%   100%     0.50MB  0.55%  net/http.(*connReader).backgroundRead
+         0     0%   100%     0.50MB  0.55%  net/http.(*connReader).lock
+         0     0%   100%        2MB  2.21%  net/http.(*persistConn).readResponse
+         0     0%   100%        1MB  1.10%  net/http.(*persistConn).writeLoop
+         0     0%   100%        1MB  1.10%  net/http.(*response).Write
+         0     0%   100%        1MB  1.10%  net/http.(*response).WriteHeader
+         0     0%   100%        1MB  1.10%  net/http.(*response).write
+         0     0%   100%       11MB 12.13%  net/http.HandlerFunc.ServeHTTP
+         0     0%   100%        2MB  2.21%  net/http.Header.Set (inline)
+         0     0%   100%        2MB  2.21%  net/http.ReadResponse
+         0     0%   100%     1.50MB  1.65%  net/http.cloneOrMakeHeader
+         0     0%   100%     0.50MB  0.55%  net/http.newBufioReader
+         0     0%   100%        1MB  1.11%  net/http.newBufioWriterSize
+         0     0%   100%        4MB  4.41%  net/http.send
+         0     0%   100%       11MB 12.13%  net/http.serverHandler.ServeHTTP
+         0     0%   100%     0.50MB  0.56%  net/http/httptest.(*Server).goServe.func1
+         0     0%   100%     0.50MB  0.55%  net/http/httptest.NewServer
+         0     0%   100%     0.50MB  0.55%  net/http/httptest.NewUnstartedServer (inline)
+         0     0%   100%     0.50MB  0.55%  net/http/httptest.newLocalListener
+         0     0%   100%     0.50MB  0.55%  net/textproto.(*Reader).ReadLine (inline)
+         0     0%   100%        3MB  3.31%  net/textproto.(*Reader).ReadMIMEHeader (inline)
+         0     0%   100%     0.50MB  0.55%  net/textproto.(*Reader).readLineSlice
+         0     0%   100%     0.50MB  0.55%  os.Open (inline)
+         0     0%   100%     0.50MB  0.55%  os.OpenFile
+         0     0%   100%     0.50MB  0.55%  os.ReadFile
+         0     0%   100%     0.50MB  0.55%  os.openFileNolog
+         0     0%   100%     0.50MB  0.55%  path/filepath.WalkDir
+         0     0%   100%     0.50MB  0.55%  path/filepath.walkDir
+         0     0%   100%        3MB  3.31%  reflect.Value.Call
+         0     0%   100%        1MB  1.10%  reflect.Value.SetMapIndex
+         0     0%   100%        3MB  3.31%  reflect.Value.call
+         0     0%   100%        1MB  1.10%  reflect.mapassign_faststr
+         0     0%   100%     0.50MB  0.55%  regexp.Compile (inline)
+         0     0%   100%     0.50MB  0.55%  regexp.MustCompile
+         0     0%   100%     0.50MB  0.55%  regexp.compile
+         0     0%   100%     0.50MB  0.55%  regexp.compileOnePass
+         0     0%   100%     0.50MB  0.55%  regexp.makeOnePass
+         0     0%   100%     0.50MB  0.55%  regexp.makeOnePass.func1
+         0     0%   100%     0.50MB  0.55%  regexp.mergeRuneSets
+         0     0%   100%     0.50MB  0.55%  runtime.bgscavenge
+         0     0%   100%        1MB  1.11%  runtime.doInit (inline)
+         0     0%   100%        1MB  1.11%  runtime.doInit1
+         0     0%   100%     2.16MB  2.38%  runtime.main
+         0     0%   100%     0.50MB  0.55%  runtime.newproc.func1
+         0     0%   100%     0.50MB  0.55%  runtime.newproc1
+         0     0%   100%     0.50MB  0.55%  runtime.systemstack
+         0     0%   100%     2.91MB  3.21%  runtime/pprof.(*profileBuilder).appendLocsForStack
+         0     0%   100%     2.91MB  3.21%  runtime/pprof.(*profileBuilder).build
+         0     0%   100%     0.88MB  0.97%  runtime/pprof.(*profileBuilder).flush
+         0     0%   100%     2.91MB  3.21%  runtime/pprof.profileWriter
+         0     0%   100%     4.53MB  5.00%  sync.(*Once).Do (inline)
+         0     0%   100%     4.53MB  5.00%  sync.(*Once).doSlow
+         0     0%   100%     0.50MB  0.55%  sync.(*Pool).Get
+         0     0%   100%       10MB 11.03%  testing.(*B).launch
+         0     0%   100%       10MB 11.03%  testing.(*B).runN
+         0     0%   100%     2.50MB  2.76%  testing.(*F).Fuzz.func1.1
+         0     0%   100%     1.16MB  1.28%  testing.(*M).Run
+         0     0%   100%     1.16MB  1.28%  testing.(*M).before
+         0     0%   100%    10.50MB 11.58%  testing.tRunner
+         0     0%   100%     1.16MB  1.28%  testing/internal/testdeps.TestDeps.StartCPUProfile
+         0     0%   100%     0.50MB  0.55%  vendor/golang.org/x/crypto/cryptobyte.(*String).ReadASN1Integer
+         0     0%   100%     0.50MB  0.55%  vendor/golang.org/x/crypto/cryptobyte.(*String).readASN1BigInt

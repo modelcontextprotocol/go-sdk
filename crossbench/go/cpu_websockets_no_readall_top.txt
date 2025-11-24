@@ -1,0 +1,419 @@
+File: mcp_ws.test
+Build ID: b7e25901cd47f8a17d4e9694203c6a3cc07f1c6c
+Type: cpu
+Time: 2025-11-24 03:49:46 UTC
+Duration: 7.35s, Total samples = 1.90s (25.84%)
+Showing nodes accounting for 1.90s, 100% of 1.90s total
+      flat  flat%   sum%        cum   cum%
+     0.81s 42.63% 42.63%      0.81s 42.63%  internal/runtime/syscall.Syscall6
+     0.25s 13.16% 55.79%      0.28s 14.74%  encoding/json.appendCompact
+     0.03s  1.58% 57.37%      0.03s  1.58%  github.com/gorilla/websocket.maskBytes
+     0.03s  1.58% 58.95%      0.03s  1.58%  runtime.memmove
+     0.03s  1.58% 60.53%      0.08s  4.21%  runtime.scanobject
+     0.02s  1.05% 61.58%      0.02s  1.05%  encoding/json.stateEndValue
+     0.02s  1.05% 62.63%      0.02s  1.05%  encoding/json.stateInString
+     0.02s  1.05% 63.68%      0.02s  1.05%  internal/runtime/atomic.(*Uint32).CompareAndSwap (inline)
+     0.02s  1.05% 64.74%      0.05s  2.63%  runtime.exitsyscall
+     0.02s  1.05% 65.79%      0.02s  1.05%  runtime.ifaceeq
+     0.02s  1.05% 66.84%      0.02s  1.05%  runtime.memclrNoHeapPointers
+     0.02s  1.05% 67.89%      0.02s  1.05%  runtime.pcvalue
+     0.02s  1.05% 68.95%      0.02s  1.05%  runtime.typePointers.next
+     0.02s  1.05% 70.00%      0.02s  1.05%  sync.(*Pool).Get
+     0.01s  0.53% 70.53%      0.01s  0.53%  bufio.(*Writer).Available (inline)
+     0.01s  0.53% 71.05%      0.01s  0.53%  bytes.(*Buffer).Write
+     0.01s  0.53% 71.58%      0.01s  0.53%  crypto/internal/fips140/nistec/fiat.p384CmovznzU64 (inline)
+     0.01s  0.53% 72.11%      0.01s  0.53%  encoding/json.(*Decoder).readValue
+     0.01s  0.53% 72.63%      0.01s  0.53%  encoding/json.(*decodeState).array
+     0.01s  0.53% 73.16%      0.29s 15.26%  encoding/json.addrMarshalerEncoder
+     0.01s  0.53% 73.68%      0.33s 17.37%  encoding/json.structEncoder.encode
+     0.01s  0.53% 74.21%      0.01s  0.53%  github.com/google/go-cmp/cmp.Options.filter
+     0.01s  0.53% 74.74%      0.25s 13.16%  github.com/gorilla/websocket.(*Conn).WriteMessage
+     0.01s  0.53% 75.26%      0.53s 27.89%  github.com/gorilla/websocket.(*Conn).write
+     0.01s  0.53% 75.79%      0.03s  1.58%  github.com/gorilla/websocket.(*messageReader).Read
+     0.01s  0.53% 76.32%      0.57s 30.00%  github.com/gorilla/websocket.(*messageWriter).Close
+     0.01s  0.53% 76.84%      0.56s 29.47%  github.com/gorilla/websocket.(*messageWriter).flushFrame
+     0.01s  0.53% 77.37%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.orZero[go.shape.interface { GetMeta map[string]interface {}; SetMeta; github.com/modelcontextprotocol/go-sdk/mcp.isParams },go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.RootsListChangedParams,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\"" }]
+     0.01s  0.53% 77.89%      0.01s  0.53%  indexbytebody
+     0.01s  0.53% 78.42%      0.01s  0.53%  internal/bytealg.LastIndexRabinKarp[go.shape.[]uint8]
+     0.01s  0.53% 78.95%      0.01s  0.53%  internal/runtime/atomic.(*Uint8).Load (inline)
+     0.01s  0.53% 79.47%      0.02s  1.05%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+     0.01s  0.53% 80.00%      0.01s  0.53%  internal/sync.(*Mutex).Lock (inline)
+     0.01s  0.53% 80.53%      0.01s  0.53%  memeqbody
+     0.01s  0.53% 81.05%      0.03s  1.58%  net.(*netFD).dial
+     0.01s  0.53% 81.58%      0.05s  2.63%  net.(*sysDialer).dialSingle
+     0.01s  0.53% 82.11%      0.04s  2.11%  net/http.(*Request).write
+     0.01s  0.53% 82.63%      0.02s  1.05%  net/http.(*chunkWriter).Write
+     0.01s  0.53% 83.16%      0.02s  1.05%  net/http.(*persistConn).readLoop
+     0.01s  0.53% 83.68%      0.01s  0.53%  net/http.(*persistConn).roundTrip
+     0.01s  0.53% 84.21%      0.01s  0.53%  net/http.Header.sortedKeyValues
+     0.01s  0.53% 84.74%      0.01s  0.53%  net/http/internal/ascii.Is (inline)
+     0.01s  0.53% 85.26%      0.01s  0.53%  net/netip.parseIPv4Fields
+     0.01s  0.53% 85.79%      0.01s  0.53%  reflect.Value.Field
+     0.01s  0.53% 86.32%      0.03s  1.58%  reflect.Value.call
+     0.01s  0.53% 86.84%      0.01s  0.53%  reflect.valueInterface
+     0.01s  0.53% 87.37%      0.01s  0.53%  runtime.(*gcBits).bitp (inline)
+     0.01s  0.53% 87.89%      0.01s  0.53%  runtime.(*mspan).refillAllocCache
+     0.01s  0.53% 88.42%      0.01s  0.53%  runtime.(*mspan).writeHeapBitsSmall
+     0.01s  0.53% 88.95%      0.01s  0.53%  runtime.(*pollDesc).setEventErr
+     0.01s  0.53% 89.47%      0.02s  1.05%  runtime.(*stkframe).getStackMap
+     0.01s  0.53% 90.00%      0.02s  1.05%  runtime.(*unwinder).resolveInternal
+     0.01s  0.53% 90.53%      0.02s  1.05%  runtime.chansend
+     0.01s  0.53% 91.05%      0.01s  0.53%  runtime.exitsyscallfast_reacquired
+     0.01s  0.53% 91.58%      0.01s  0.53%  runtime.findObject
+     0.01s  0.53% 92.11%      0.01s  0.53%  runtime.gopark
+     0.01s  0.53% 92.63%      0.02s  1.05%  runtime.greyobject
+     0.01s  0.53% 93.16%      0.01s  0.53%  runtime.growslice
+     0.01s  0.53% 93.68%      0.01s  0.53%  runtime.lock2
+     0.01s  0.53% 94.21%      0.10s  5.26%  runtime.mallocgc
+     0.01s  0.53% 94.74%      0.01s  0.53%  runtime.mapassign
+     0.01s  0.53% 95.26%      0.01s  0.53%  runtime.nanotime (inline)
+     0.01s  0.53% 95.79%      0.08s  4.21%  runtime.netpoll
+     0.01s  0.53% 96.32%      0.02s  1.05%  runtime.reentersyscall
+     0.01s  0.53% 96.84%      0.01s  0.53%  runtime.traceEnabled (inline)
+     0.01s  0.53% 97.37%      0.01s  0.53%  runtime.typeAssert
+     0.01s  0.53% 97.89%      0.01s  0.53%  runtime.typedmemmove
+     0.01s  0.53% 98.42%      0.01s  0.53%  runtime.unlock2
+     0.01s  0.53% 98.95%      0.76s 40.00%  syscall.RawSyscall6
+     0.01s  0.53% 99.47%      0.81s 42.63%  syscall.Syscall
+     0.01s  0.53%   100%      0.01s  0.53%  time.Month.String (inline)
+         0     0%   100%      0.25s 13.16%  bufio.(*Reader).Peek
+         0     0%   100%      0.01s  0.53%  bufio.(*Reader).Read
+         0     0%   100%      0.01s  0.53%  bufio.(*Reader).ReadSlice
+         0     0%   100%      0.26s 13.68%  bufio.(*Reader).fill
+         0     0%   100%      0.02s  1.05%  bufio.(*Scanner).Scan
+         0     0%   100%      0.08s  4.21%  bufio.(*Writer).Flush
+         0     0%   100%      0.01s  0.53%  bufio.(*Writer).WriteString
+         0     0%   100%      0.01s  0.53%  bytes.(*Buffer).WriteString
+         0     0%   100%      0.01s  0.53%  bytes.IndexByte (inline)
+         0     0%   100%      0.01s  0.53%  bytes.LastIndex
+         0     0%   100%      0.01s  0.53%  context.WithDeadline (inline)
+         0     0%   100%      0.01s  0.53%  context.WithDeadlineCause
+         0     0%   100%      0.01s  0.53%  crypto/ecdsa.VerifyASN1
+         0     0%   100%      0.01s  0.53%  crypto/ecdsa.verifyFIPS[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/ecdsa.Verify[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/ecdsa.verifyGeneric[go.shape.*crypto/internal/fips140/nistec.P384Point]
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/ecdsa.verify[go.shape.*crypto/internal/fips140/nistec.P384Point] (inline)
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec.(*P384Point).Add
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec.(*P384Point).ScalarBaseMult
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec.(*P384Point).generatorTable
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec.(*P384Point).generatorTable.func1
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec/fiat.(*P384Element).Mul (inline)
+         0     0%   100%      0.01s  0.53%  crypto/internal/fips140/nistec/fiat.p384Mul
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*Conn).HandshakeContext (inline)
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*Conn).clientHandshake
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*Conn).handshakeContext
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*Conn).verifyServerCertificate
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*clientHandshakeStateTLS13).handshake
+         0     0%   100%      0.02s  1.05%  crypto/tls.(*clientHandshakeStateTLS13).readServerCertificate
+         0     0%   100%      0.01s  0.53%  crypto/x509.(*CertPool).AppendCertsFromPEM
+         0     0%   100%      0.01s  0.53%  crypto/x509.(*Certificate).CheckSignatureFrom
+         0     0%   100%      0.02s  1.05%  crypto/x509.(*Certificate).Verify
+         0     0%   100%      0.01s  0.53%  crypto/x509.(*Certificate).buildChains
+         0     0%   100%      0.01s  0.53%  crypto/x509.(*Certificate).buildChains.func1
+         0     0%   100%      0.01s  0.53%  crypto/x509.checkSignature
+         0     0%   100%      0.01s  0.53%  crypto/x509.initSystemRoots
+         0     0%   100%      0.01s  0.53%  crypto/x509.loadSystemRoots
+         0     0%   100%      0.01s  0.53%  crypto/x509.systemRootsPool
+         0     0%   100%      0.02s  1.05%  encoding/json.(*Decoder).Decode
+         0     0%   100%      0.32s 16.84%  encoding/json.(*Encoder).Encode
+         0     0%   100%      0.01s  0.53%  encoding/json.(*decodeState).literalStore
+         0     0%   100%      0.05s  2.63%  encoding/json.(*decodeState).object
+         0     0%   100%      0.01s  0.53%  encoding/json.(*decodeState).skip
+         0     0%   100%      0.05s  2.63%  encoding/json.(*decodeState).unmarshal
+         0     0%   100%      0.05s  2.63%  encoding/json.(*decodeState).value
+         0     0%   100%      0.34s 17.89%  encoding/json.(*encodeState).marshal
+         0     0%   100%      0.34s 17.89%  encoding/json.(*encodeState).reflectValue
+         0     0%   100%      0.03s  1.58%  encoding/json.Marshal
+         0     0%   100%      0.05s  2.63%  encoding/json.Unmarshal
+         0     0%   100%      0.01s  0.53%  encoding/json.checkValid
+         0     0%   100%      0.29s 15.26%  encoding/json.condAddrEncoder.encode
+         0     0%   100%      0.02s  1.05%  encoding/json.mapEncoder.encode
+         0     0%   100%      0.01s  0.53%  encoding/json.marshalerEncoder
+         0     0%   100%      0.01s  0.53%  encoding/json.newEncodeState
+         0     0%   100%      0.01s  0.53%  encoding/json.newScanner
+         0     0%   100%      0.32s 16.84%  encoding/json.ptrEncoder.encode
+         0     0%   100%      0.01s  0.53%  encoding/pem.Decode
+         0     0%   100%      0.01s  0.53%  github.com/google/go-cmp/cmp.(*state).callTRFunc
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.(*state).compareAny
+         0     0%   100%      0.01s  0.53%  github.com/google/go-cmp/cmp.(*state).compareInterface
+         0     0%   100%      0.01s  0.53%  github.com/google/go-cmp/cmp.(*state).comparePtr
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.(*state).compareSlice
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.(*state).compareSlice.func2
+         0     0%   100%      0.01s  0.53%  github.com/google/go-cmp/cmp.(*state).compareStruct
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.(*state).statelessCompare
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.(*state).tryOptions
+         0     0%   100%      0.01s  0.53%  github.com/google/go-cmp/cmp.(*transformer).apply
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp.Diff
+         0     0%   100%      0.02s  1.05%  github.com/google/go-cmp/cmp/internal/diff.Difference
+         0     0%   100%      0.01s  0.53%  github.com/google/jsonschema-go/jsonschema.(*Schema).MarshalJSON
+         0     0%   100%      0.01s  0.53%  github.com/google/jsonschema-go/jsonschema.marshalStructWithMap[go.shape.struct { Type interface {} "json:\"type,omitempty\""; *github.com/google/jsonschema-go/jsonschema.schemaWithoutMethods }]
+         0     0%   100%      0.25s 13.16%  github.com/gorilla/websocket.(*Conn).NextReader
+         0     0%   100%      0.01s  0.53%  github.com/gorilla/websocket.(*Conn).NextWriter
+         0     0%   100%      0.25s 13.16%  github.com/gorilla/websocket.(*Conn).advanceFrame
+         0     0%   100%      0.25s 13.16%  github.com/gorilla/websocket.(*Conn).read
+         0     0%   100%      0.02s  1.05%  github.com/gorilla/websocket.(*Conn).write.func1
+         0     0%   100%      0.02s  1.05%  github.com/gorilla/websocket.(*Dialer).DialContext
+         0     0%   100%      0.02s  1.05%  github.com/gorilla/websocket.(*messageWriter).ReadFrom
+         0     0%   100%      0.02s  1.05%  github.com/gorilla/websocket.doHandshake
+         0     0%   100%      0.04s  2.11%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*AsyncCall).Await
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).Call
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).Notify
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).handleAsync
+         0     0%   100%      0.09s  4.74%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).handleAsync.func3
+         0     0%   100%      0.06s  3.16%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).processResult
+         0     0%   100%      0.08s  4.21%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.(*Connection).write
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.DecodeMessageFrom
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.EncodeMessage
+         0     0%   100%      0.32s 16.84%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.EncodeMessageTo
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.HandlerFunc.Handle
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.NewResponse (inline)
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2.marshalToRaw
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/jsonrpc.DecodeMessageFrom (inline)
+         0     0%   100%      0.32s 16.84%  github.com/modelcontextprotocol/go-sdk/jsonrpc.EncodeMessageTo (inline)
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*CallToolResult).UnmarshalJSON
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*Client).Connect
+         0     0%   100%      0.04s  2.11%  github.com/modelcontextprotocol/go-sdk/mcp.(*ClientSession).CallTool
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*ClientSession).GetPrompt
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*Server).AddResourceTemplate (inline)
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*Server).callTool
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*Server).changeAndNotify
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/mcp.(*ServerSession).handle
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/mcp.(*StreamableHTTPHandler).ServeHTTP
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/mcp.(*StreamableServerTransport).ServeHTTP
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.(*WebSocketClientTransport).Connect
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.(*ioConn).Write
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).Write
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).handleSSE
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).processStream
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableClientConn).processStream.scanEvents.func1
+         0     0%   100%      0.05s  2.63%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).Write
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).servePOST
+         0     0%   100%      0.05s  2.63%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).servePOST.func2
+         0     0%   100%      0.05s  2.63%  github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).writeEvent
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.AddTool[go.shape.struct { Location github.com/modelcontextprotocol/go-sdk/mcp_test.Location "json:\"location\" jsonschema:\"user location\""; Days int "json:\"days\" jsonschema:\"number of days to forecast\"" },go.shape.8b3db9b2862e95e6bd0b715a3d4eae8e07e0ef82170ca196a154d3e16da9ba24]
+         0     0%   100%      0.75s 39.47%  github.com/modelcontextprotocol/go-sdk/mcp.BenchmarkWebSocketMicroEcho
+         0     0%   100%      0.45s 23.68%  github.com/modelcontextprotocol/go-sdk/mcp.BenchmarkWebSocketMicroEcho.func1
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.FuzzWebSocketURL.func1
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestEndToEnd.func17
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestServerConformance.func2.1
+         0     0%   100%      0.05s  2.63%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableConcurrentHandling.func3
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableConcurrentHandling.mustNotPanic.func4
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableServerTransport.func4
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableTransports.func1.4
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestStreamableTransports.func1.mustNotPanic.6
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.TestValidateToolName.func2
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.applySchema
+         0     0%   100%      0.06s  3.16%  github.com/modelcontextprotocol/go-sdk/mcp.call
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.defaultReceivingMethodHandler[go.shape.*uint8]
+         0     0%   100%      0.07s  3.68%  github.com/modelcontextprotocol/go-sdk/mcp.defaultSendingMethodHandler[go.shape.*uint8]
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.handleNotify
+         0     0%   100%      0.03s  1.58%  github.com/modelcontextprotocol/go-sdk/mcp.handleReceive[go.shape.*uint8]
+         0     0%   100%      0.06s  3.16%  github.com/modelcontextprotocol/go-sdk/mcp.handleSend[go.shape.*uint8]
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.init.serverMethod[go.shape.*uint8,go.shape.*uint8].func20
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.newServerMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].func2
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.newServerMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].newMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.CallToolParamsRaw,go.shape.*uint8,go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\""; Name string "json:\"name\""; Arguments encoding/json.RawMessage "json:\"arguments,omitempty\"" }].func3
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.newServerMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.RootsListChangedParams,go.shape.interface { GetMeta map[string]interface {}; SetMeta; github.com/modelcontextprotocol/go-sdk/mcp.isResult },go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\"" }].newMethodInfo[go.shape.*github.com/modelcontextprotocol/go-sdk/mcp.RootsListChangedParams,go.shape.interface { GetMeta map[string]interface {}; SetMeta; github.com/modelcontextprotocol/go-sdk/mcp.isResult },go.shape.struct { github.com/modelcontextprotocol/go-sdk/mcp.Meta "json:\"_meta,omitempty\"" }].func3
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.notifySessions[go.shape.*uint8,go.shape.interface { GetMeta map[string]interface {}; SetMeta; github.com/modelcontextprotocol/go-sdk/mcp.isParams }]
+         0     0%   100%      0.02s  1.05%  github.com/modelcontextprotocol/go-sdk/mcp.readBatch
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.remarshal
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.runServerTest
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.setSchema[go.shape.struct { Location github.com/modelcontextprotocol/go-sdk/mcp_test.Location "json:\"location\" jsonschema:\"user location\""; Days int "json:\"days\" jsonschema:\"number of days to forecast\"" }]
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.testStreamableHandler
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.testStreamableHandler.func1
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.toolForErr[go.shape.interface {},go.shape.struct { Count int }].func1
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp.toolForErr[go.shape.struct { Location github.com/modelcontextprotocol/go-sdk/mcp_test.Location "json:\"location\" jsonschema:\"user location\""; Days int "json:\"days\" jsonschema:\"number of days to forecast\"" },go.shape.8b3db9b2862e95e6bd0b715a3d4eae8e07e0ef82170ca196a154d3e16da9ba24]
+         0     0%   100%      0.05s  2.63%  github.com/modelcontextprotocol/go-sdk/mcp.writeEvent
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp_test.ExampleAddTool_complexSchema
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp_test.TestList.func3
+         0     0%   100%      0.01s  0.53%  github.com/modelcontextprotocol/go-sdk/mcp_test.TestMain
+         0     0%   100%      0.01s  0.53%  internal/poll.(*FD).Close
+         0     0%   100%      0.26s 13.68%  internal/poll.(*FD).Read
+         0     0%   100%      0.03s  1.58%  internal/poll.(*FD).SetsockoptInt
+         0     0%   100%      0.55s 28.95%  internal/poll.(*FD).Write
+         0     0%   100%      0.01s  0.53%  internal/poll.(*FD).decref
+         0     0%   100%      0.02s  1.05%  internal/poll.(*FD).destroy
+         0     0%   100%      0.01s  0.53%  internal/poll.(*FD).readUnlock
+         0     0%   100%      0.02s  1.05%  internal/poll.(*SysFile).destroy (inline)
+         0     0%   100%      0.01s  0.53%  internal/poll.(*pollDesc).wait
+         0     0%   100%      0.01s  0.53%  internal/poll.(*pollDesc).waitRead (inline)
+         0     0%   100%      0.79s 41.58%  internal/poll.ignoringEINTRIO (inline)
+         0     0%   100%      0.01s  0.53%  internal/poll.runtime_pollWait
+         0     0%   100%      0.01s  0.53%  internal/runtime/atomic.(*Bool).Load (inline)
+         0     0%   100%      0.01s  0.53%  internal/runtime/maps.(*Map).growToSmall
+         0     0%   100%      0.01s  0.53%  internal/runtime/maps.newGroups (inline)
+         0     0%   100%      0.01s  0.53%  internal/runtime/maps.newarray
+         0     0%   100%      0.06s  3.16%  internal/runtime/syscall.EpollWait
+         0     0%   100%      0.04s  2.11%  io.Copy (inline)
+         0     0%   100%      0.01s  0.53%  io.CopyBuffer
+         0     0%   100%      0.05s  2.63%  io.copyBuffer
+         0     0%   100%      0.02s  1.05%  io.discard.ReadFrom
+         0     0%   100%      0.01s  0.53%  io.nopCloserWriterTo.WriteTo
+         0     0%   100%      0.01s  0.53%  main.main
+         0     0%   100%      0.07s  3.68%  net.(*Dialer).DialContext
+         0     0%   100%      0.01s  0.53%  net.(*Resolver).internetAddrList
+         0     0%   100%      0.01s  0.53%  net.(*Resolver).lookupIPAddr
+         0     0%   100%      0.01s  0.53%  net.(*Resolver).resolveAddrList
+         0     0%   100%      0.01s  0.53%  net.(*TCPAddr).String
+         0     0%   100%      0.02s  1.05%  net.(*TCPConn).SetKeepAliveConfig
+         0     0%   100%      0.02s  1.05%  net.(*TCPListener).Accept
+         0     0%   100%      0.02s  1.05%  net.(*TCPListener).accept
+         0     0%   100%      0.01s  0.53%  net.(*conn).Close
+         0     0%   100%      0.26s 13.68%  net.(*conn).Read
+         0     0%   100%      0.55s 28.95%  net.(*conn).Write
+         0     0%   100%      0.01s  0.53%  net.(*netFD).Close
+         0     0%   100%      0.26s 13.68%  net.(*netFD).Read
+         0     0%   100%      0.55s 28.95%  net.(*netFD).Write
+         0     0%   100%      0.02s  1.05%  net.(*netFD).connect
+         0     0%   100%      0.05s  2.63%  net.(*sysDialer).dialParallel
+         0     0%   100%      0.05s  2.63%  net.(*sysDialer).dialSerial
+         0     0%   100%      0.04s  2.11%  net.(*sysDialer).dialTCP
+         0     0%   100%      0.04s  2.11%  net.(*sysDialer).doDialTCP (inline)
+         0     0%   100%      0.04s  2.11%  net.(*sysDialer).doDialTCPProto
+         0     0%   100%      0.01s  0.53%  net.IP.String
+         0     0%   100%      0.03s  1.58%  net.internetSocket
+         0     0%   100%      0.01s  0.53%  net.ipEmptyString (inline)
+         0     0%   100%      0.03s  1.58%  net.newTCPConn
+         0     0%   100%      0.01s  0.53%  net.setKeepAlive
+         0     0%   100%      0.01s  0.53%  net.setKeepAliveInterval
+         0     0%   100%      0.01s  0.53%  net.setNoDelay
+         0     0%   100%      0.03s  1.58%  net.socket
+         0     0%   100%      0.02s  1.05%  net/http.(*Client).Do (inline)
+         0     0%   100%      0.02s  1.05%  net/http.(*Client).do
+         0     0%   100%      0.02s  1.05%  net/http.(*Client).send
+         0     0%   100%      0.02s  1.05%  net/http.(*Server).Serve
+         0     0%   100%      0.02s  1.05%  net/http.(*Transport).RoundTrip
+         0     0%   100%      0.01s  0.53%  net/http.(*Transport).connectMethodForRequest
+         0     0%   100%      0.07s  3.68%  net/http.(*Transport).dial
+         0     0%   100%      0.08s  4.21%  net/http.(*Transport).dialConn
+         0     0%   100%      0.09s  4.74%  net/http.(*Transport).dialConnFor
+         0     0%   100%      0.01s  0.53%  net/http.(*Transport).putOrCloseIdleConn
+         0     0%   100%      0.02s  1.05%  net/http.(*Transport).roundTrip
+         0     0%   100%      0.09s  4.74%  net/http.(*Transport).startDialConnForLocked.func1
+         0     0%   100%      0.01s  0.53%  net/http.(*Transport).tryPutIdleConn
+         0     0%   100%      0.02s  1.05%  net/http.(*body).Read
+         0     0%   100%      0.02s  1.05%  net/http.(*body).readLocked
+         0     0%   100%      0.02s  1.05%  net/http.(*bodyEOFSignal).Read
+         0     0%   100%      0.01s  0.53%  net/http.(*chunkWriter).close
+         0     0%   100%      0.02s  1.05%  net/http.(*chunkWriter).flush
+         0     0%   100%      0.02s  1.05%  net/http.(*chunkWriter).writeHeader
+         0     0%   100%      0.54s 28.42%  net/http.(*conn).serve
+         0     0%   100%      0.01s  0.53%  net/http.(*persistConn).Read
+         0     0%   100%      0.01s  0.53%  net/http.(*persistConn).close
+         0     0%   100%      0.01s  0.53%  net/http.(*persistConn).closeLocked
+         0     0%   100%      0.01s  0.53%  net/http.(*persistConn).readLoop.func2
+         0     0%   100%      0.05s  2.63%  net/http.(*persistConn).writeLoop
+         0     0%   100%      0.04s  2.11%  net/http.(*response).Flush
+         0     0%   100%      0.04s  2.11%  net/http.(*response).FlushError
+         0     0%   100%      0.01s  0.53%  net/http.(*response).Write
+         0     0%   100%      0.01s  0.53%  net/http.(*response).WriteHeader
+         0     0%   100%      0.04s  2.11%  net/http.(*response).finishRequest
+         0     0%   100%      0.01s  0.53%  net/http.(*response).write
+         0     0%   100%      0.01s  0.53%  net/http.(*transferWriter).doBodyCopy
+         0     0%   100%      0.01s  0.53%  net/http.(*transferWriter).writeBody
+         0     0%   100%      0.48s 25.26%  net/http.HandlerFunc.ServeHTTP
+         0     0%   100%      0.01s  0.53%  net/http.Header.Clone (inline)
+         0     0%   100%      0.01s  0.53%  net/http.Header.WriteSubset (inline)
+         0     0%   100%      0.02s  1.05%  net/http.Header.writeSubset
+         0     0%   100%      0.01s  0.53%  net/http.canonicalAddr
+         0     0%   100%      0.05s  2.63%  net/http.checkConnErrorWriter.Write
+         0     0%   100%      0.01s  0.53%  net/http.idnaASCII
+         0     0%   100%      0.01s  0.53%  net/http.idnaASCIIFromURL
+         0     0%   100%      0.01s  0.53%  net/http.persistConnWriter.Write
+         0     0%   100%      0.02s  1.05%  net/http.send
+         0     0%   100%      0.49s 25.79%  net/http.serverHandler.ServeHTTP
+         0     0%   100%      0.02s  1.05%  net/http/httptest.(*Server).goServe.func1
+         0     0%   100%      0.01s  0.53%  net/http/httputil.(*ReverseProxy).ServeHTTP
+         0     0%   100%      0.01s  0.53%  net/http/httputil.(*ReverseProxy).copyBuffer
+         0     0%   100%      0.01s  0.53%  net/http/httputil.(*ReverseProxy).copyResponse
+         0     0%   100%      0.02s  1.05%  net/http/internal.(*chunkedReader).Read
+         0     0%   100%      0.02s  1.05%  net/http/internal.(*chunkedReader).beginChunk
+         0     0%   100%      0.02s  1.05%  net/http/internal.readChunkLine
+         0     0%   100%      0.01s  0.53%  net/netip.ParseAddr
+         0     0%   100%      0.01s  0.53%  net/netip.parseIPv4
+         0     0%   100%      0.03s  1.58%  reflect.Value.Call
+         0     0%   100%      0.01s  0.53%  reflect.Value.Interface (inline)
+         0     0%   100%      0.01s  0.53%  runtime.(*mcache).nextFree
+         0     0%   100%      0.01s  0.53%  runtime.(*mcache).refill
+         0     0%   100%      0.01s  0.53%  runtime.(*mcentral).cacheSpan
+         0     0%   100%      0.01s  0.53%  runtime.(*mspan).markBitsForIndex (inline)
+         0     0%   100%      0.01s  0.53%  runtime.(*spanSet).push
+         0     0%   100%      0.01s  0.53%  runtime.(*sweepLocked).sweep
+         0     0%   100%      0.02s  1.05%  runtime.(*unwinder).next
+         0     0%   100%      0.01s  0.53%  runtime.bgsweep
+         0     0%   100%      0.02s  1.05%  runtime.casgstatus
+         0     0%   100%      0.02s  1.05%  runtime.chansend1
+         0     0%   100%      0.01s  0.53%  runtime.convTstring
+         0     0%   100%      0.05s  2.63%  runtime.deductAssistCredit
+         0     0%   100%      0.02s  1.05%  runtime.entersyscall
+         0     0%   100%      0.02s  1.05%  runtime.exitsyscallfast
+         0     0%   100%      0.09s  4.74%  runtime.findRunnable
+         0     0%   100%      0.01s  0.53%  runtime.funcspdelta (inline)
+         0     0%   100%      0.05s  2.63%  runtime.gcAssistAlloc
+         0     0%   100%      0.05s  2.63%  runtime.gcAssistAlloc.func2
+         0     0%   100%      0.05s  2.63%  runtime.gcAssistAlloc1
+         0     0%   100%      0.08s  4.21%  runtime.gcBgMarkWorker
+         0     0%   100%      0.07s  3.68%  runtime.gcBgMarkWorker.func2
+         0     0%   100%      0.07s  3.68%  runtime.gcDrain
+         0     0%   100%      0.03s  1.58%  runtime.gcDrainMarkWorkerFractional (inline)
+         0     0%   100%      0.04s  2.11%  runtime.gcDrainMarkWorkerIdle (inline)
+         0     0%   100%      0.05s  2.63%  runtime.gcDrainN
+         0     0%   100%      0.01s  0.53%  runtime.gcMarkDone
+         0     0%   100%      0.01s  0.53%  runtime.gcMarkTermination
+         0     0%   100%      0.01s  0.53%  runtime.gcMarkTermination.func3
+         0     0%   100%      0.01s  0.53%  runtime.heapSetTypeNoHeader (inline)
+         0     0%   100%      0.01s  0.53%  runtime.lock (inline)
+         0     0%   100%      0.01s  0.53%  runtime.lockWithRank (inline)
+         0     0%   100%      0.01s  0.53%  runtime.main
+         0     0%   100%      0.01s  0.53%  runtime.makechan
+         0     0%   100%      0.02s  1.05%  runtime.makeslice
+         0     0%   100%      0.04s  2.11%  runtime.mallocgcSmallScanNoHeader
+         0     0%   100%      0.02s  1.05%  runtime.mapaccess1_faststr
+         0     0%   100%      0.01s  0.53%  runtime.mapassign_faststr
+         0     0%   100%      0.04s  2.11%  runtime.markroot
+         0     0%   100%      0.04s  2.11%  runtime.markroot.func1
+         0     0%   100%      0.09s  4.74%  runtime.mcall
+         0     0%   100%      0.01s  0.53%  runtime.netpollblock
+         0     0%   100%      0.01s  0.53%  runtime.newarray
+         0     0%   100%      0.05s  2.63%  runtime.newobject
+         0     0%   100%      0.09s  4.74%  runtime.park_m
+         0     0%   100%      0.01s  0.53%  runtime.pcdatavalue
+         0     0%   100%      0.02s  1.05%  runtime.scanframeworker
+         0     0%   100%      0.04s  2.11%  runtime.scanstack
+         0     0%   100%      0.09s  4.74%  runtime.schedule
+         0     0%   100%      0.02s  1.05%  runtime.slicebytetostring
+         0     0%   100%      0.01s  0.53%  runtime.startTheWorldWithSema
+         0     0%   100%      0.01s  0.53%  runtime.sweepone
+         0     0%   100%      0.13s  6.84%  runtime.systemstack
+         0     0%   100%      0.01s  0.53%  runtime.traceAcquire (inline)
+         0     0%   100%      0.01s  0.53%  runtime.unlock (inline)
+         0     0%   100%      0.01s  0.53%  runtime.unlockWithRank (inline)
+         0     0%   100%      0.01s  0.53%  strings.Split (inline)
+         0     0%   100%      0.01s  0.53%  strings.genSplit
+         0     0%   100%      0.01s  0.53%  sync.(*Mutex).Lock (inline)
+         0     0%   100%      0.02s  1.05%  sync.(*Once).Do (inline)
+         0     0%   100%      0.02s  1.05%  sync.(*Once).doSlow
+         0     0%   100%      0.02s  1.05%  syscall.Close
+         0     0%   100%      0.01s  0.53%  syscall.Connect
+         0     0%   100%      0.01s  0.53%  syscall.Getpeername
+         0     0%   100%      0.23s 12.11%  syscall.Read (inline)
+         0     0%   100%      0.03s  1.58%  syscall.SetsockoptInt (inline)
+         0     0%   100%      0.03s  1.58%  syscall.Syscall6
+         0     0%   100%      0.55s 28.95%  syscall.Write (inline)
+         0     0%   100%      0.01s  0.53%  syscall.anyToSockaddr
+         0     0%   100%      0.01s  0.53%  syscall.connect
+         0     0%   100%      0.23s 12.11%  syscall.read
+         0     0%   100%      0.03s  1.58%  syscall.setsockopt
+         0     0%   100%      0.55s 28.95%  syscall.write
+         0     0%   100%      0.75s 39.47%  testing.(*B).launch
+         0     0%   100%      0.75s 39.47%  testing.(*B).runN
+         0     0%   100%      0.02s  1.05%  testing.(*F).Fuzz.func1.1
+         0     0%   100%      0.01s  0.53%  testing.(*M).Run
+         0     0%   100%      0.01s  0.53%  testing.(*T).Run
+         0     0%   100%      0.01s  0.53%  testing.(*matcher).fullName
+         0     0%   100%      0.01s  0.53%  testing.runExample
+         0     0%   100%      0.01s  0.53%  testing.runExamples
+         0     0%   100%      0.07s  3.68%  testing.tRunner
+         0     0%   100%      0.01s  0.53%  time.Time.AppendFormat
+         0     0%   100%      0.01s  0.53%  time.Time.appendFormat
+         0     0%   100%      0.01s  0.53%  time.Until
+         0     0%   100%      0.01s  0.53%  time.runtimeNano

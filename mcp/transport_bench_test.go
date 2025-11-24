@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -596,11 +597,18 @@ func BenchmarkWebSocketMicroEcho(b *testing.B) {
 		defer conn.Close()
 
 		for {
-			mt, data, err := conn.ReadMessage()
+			mt, r, err := conn.NextReader()
 			if err != nil {
 				return
 			}
-			if err := conn.WriteMessage(mt, data); err != nil {
+			w, err := conn.NextWriter(mt)
+			if err != nil {
+				return
+			}
+			if _, err := io.Copy(w, r); err != nil {
+				return
+			}
+			if err := w.Close(); err != nil {
 				return
 			}
 		}
@@ -633,8 +641,13 @@ func BenchmarkWebSocketMicroEcho(b *testing.B) {
 		if err := conn.WriteMessage(websocket.TextMessage, buf.Bytes()); err != nil {
 			b.Fatalf("write failed: %v", err)
 		}
-		if _, _, err := conn.ReadMessage(); err != nil {
+		
+		_, r, err := conn.NextReader()
+		if err != nil {
 			b.Fatalf("read failed: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			b.Fatalf("copy failed: %v", err)
 		}
 	}
 }
