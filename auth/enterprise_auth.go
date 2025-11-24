@@ -91,7 +91,13 @@ func EnterpriseAuthFlow(
 		httpClient = http.DefaultClient
 	}
 
-	// Step 1: Token Exchange (ID Token → ID-JAG)
+	// Step 1: Discover IdP token endpoint via OIDC discovery
+	idpMeta, err := oauthex.GetAuthServerMeta(ctx, config.IdPIssuerURL, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover IdP metadata: %w", err)
+	}
+
+	// Step 2: Token Exchange (ID Token → ID-JAG)
 	tokenExchangeReq := &oauthex.TokenExchangeRequest{
 		RequestedTokenType: oauthex.TokenTypeIDJAG,
 		Audience:           config.MCPAuthServerURL,
@@ -100,14 +106,10 @@ func EnterpriseAuthFlow(
 		SubjectToken:       idToken,
 		SubjectTokenType:   oauthex.TokenTypeIDToken,
 	}
-	// Construct IdP token endpoint (assuming standard path)
-	idpTokenEndpoint := config.IdPIssuerURL + "/oauth2/v1/token"
-	if config.IdPIssuerURL[len(config.IdPIssuerURL)-1] == '/' {
-		idpTokenEndpoint = config.IdPIssuerURL + "oauth2/v1/token"
-	}
+
 	tokenExchangeResp, err := oauthex.ExchangeToken(
 		ctx,
-		idpTokenEndpoint,
+		idpMeta.TokenEndpoint,
 		tokenExchangeReq,
 		config.IdPClientID,
 		config.IdPClientSecret,
@@ -117,15 +119,16 @@ func EnterpriseAuthFlow(
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
 
-	// Step 2: JWT Bearer Grant (ID-JAG → Access Token)
-	mcpTokenEndpoint := config.MCPAuthServerURL + "/v1/token"
-	if config.MCPAuthServerURL[len(config.MCPAuthServerURL)-1] == '/' {
-		mcpTokenEndpoint = config.MCPAuthServerURL + "v1/token"
+	// Step 3: JWT Bearer Grant (ID-JAG → Access Token)
+	mcpMeta, err := oauthex.GetAuthServerMeta(ctx, config.MCPAuthServerURL, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
 	}
+
 	accessToken, err := oauthex.ExchangeJWTBearer(
 		ctx,
-		mcpTokenEndpoint,
-		tokenExchangeResp.AccessToken, // The ID-JAG
+		mcpMeta.TokenEndpoint,
+		tokenExchangeResp.AccessToken,
 		config.MCPClientID,
 		config.MCPClientSecret,
 		httpClient,
