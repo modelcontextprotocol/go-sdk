@@ -58,9 +58,7 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 		return nil, fmt.Errorf("bad status %s", res.Status)
 	}
 	// Specs require application/json.
-	ct := res.Header.Get("Content-Type")
-	mediaType, _, err := mime.ParseMediaType(ct)
-	if err != nil || mediaType != "application/json" {
+	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
 		return nil, fmt.Errorf("bad content type %q", ct)
 	}
 
