@@ -562,7 +562,7 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
 		return nil, out, nil
 	}
-	gott, goth, err := toolForErr(tool, th)
+	gott, goth, err := toolForErr(tool, th, &jsonschema.ForOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
