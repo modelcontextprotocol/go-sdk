@@ -146,7 +146,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
-		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
+		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 	}

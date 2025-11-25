@@ -6,7 +6,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -114,4 +116,238 @@ func TestServerErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestURLElicitationRequired validates that URL elicitation required errors
+// are properly created and handled by the client.
+func TestURLElicitationRequired(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("error creation", func(t *testing.T) {
+		elicitations := []*ElicitParams{
+			{
+				Mode:          "url",
+				Message:       "Please authorize",
+				URL:           "https://example.com/auth",
+				ElicitationID: "auth-123",
+			},
+		}
+
+		err := URLElicitationRequiredError(elicitations)
+
+		var rpcErr *jsonrpc.Error
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("expected jsonrpc.Error, got %T", err)
+		}
+
+		if rpcErr.Code != CodeURLElicitationRequired {
+			t.Errorf("expected error code %d, got %d", CodeURLElicitationRequired, rpcErr.Code)
+		}
+
+		if rpcErr.Message != "URL elicitation required" {
+			t.Errorf("expected message 'URL elicitation required', got %q", rpcErr.Message)
+		}
+
+		if rpcErr.Data == nil {
+			t.Fatal("expected error data, got nil")
+		}
+
+		// Verify the elicitations can be unmarshaled from the error data
+		var errorData struct {
+			Elicitations []*ElicitParams `json:"elicitations"`
+		}
+		if err := json.Unmarshal(rpcErr.Data, &errorData); err != nil {
+			t.Fatalf("failed to unmarshal error data: %v", err)
+		}
+
+		if len(errorData.Elicitations) != 1 {
+			t.Fatalf("expected 1 elicitation, got %d", len(errorData.Elicitations))
+		}
+
+		if errorData.Elicitations[0].URL != "https://example.com/auth" {
+			t.Errorf("expected URL 'https://example.com/auth', got %q", errorData.Elicitations[0].URL)
+		}
+	})
+
+	t.Run("error creation with non-URL mode panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic when creating URLElicitationRequiredError with non-URL mode")
+			}
+		}()
+
+		// This should panic because mode is "form"
+		URLElicitationRequiredError([]*ElicitParams{
+			{
+				Mode:          "form",
+				Message:       "This should panic",
+				ElicitationID: "bad-123",
+			},
+		})
+	})
+
+	t.Run("error creation with empty mode panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic when creating URLElicitationRequiredError with empty mode (defaults to form)")
+			}
+		}()
+
+		// This should panic because empty mode defaults to "form"
+		URLElicitationRequiredError([]*ElicitParams{
+			{
+				Message:       "This should panic",
+				ElicitationID: "bad-123",
+			},
+		})
+	})
+
+	t.Run("client middleware", func(t *testing.T) {
+		// Declare ss outside so it can be captured in handlers.
+		var ss *ServerSession
+
+		elicitCalled := false
+		elicitURL := ""
+		elicitID := "form-123"
+
+		// Create client with elicitation handler and middleware.
+		client := NewClient(testImpl, &ClientOptions{
+			ElicitationModes: []string{"url"},
+			ElicitationHandler: func(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
+				elicitCalled = true
+				elicitURL = req.Params.URL
+
+				// Simulate the server sending elicitation complete notification.
+				// In a real scenario, this would happen out-of-band after the user
+				// completes the form submission.
+				go func() {
+					err := handleNotify(ctx, notificationElicitationComplete,
+						newServerRequest(ss, &ElicitationCompleteParams{
+							ElicitationID: elicitID,
+						}))
+					if err != nil {
+						t.Errorf("failed to send elicitation complete notification: %v", err)
+					}
+				}()
+
+				return &ElicitResult{Action: "accept"}, nil
+			},
+		})
+		// Add URL elicitation middleware for automatic retry.
+		client.AddSendingMiddleware(urlElicitationMiddleware())
+
+		callCount := 0
+
+		cs, serverSession, cleanup := basicClientServerConnection(t,
+			client,
+			nil,
+			func(s *Server) {
+				// Tool that requires form submission on first call, succeeds on second.
+				handler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
+					callCount++
+					if callCount == 1 {
+						// First call: require elicitation.
+						return nil, nil, URLElicitationRequiredError([]*ElicitParams{
+							{
+								Mode:          "url",
+								Message:       "Please complete the form",
+								URL:           "https://example.com/form",
+								ElicitationID: elicitID,
+							},
+						})
+					}
+					// Second call (after retry): return success.
+					return &CallToolResult{
+						Content: []Content{&TextContent{Text: "form submitted"}},
+					}, nil, nil
+				}
+				AddTool(s, &Tool{Name: "submit_form", Description: "requires form submission"}, handler)
+
+				// Tool that returns invalid elicitation mode (form instead of URL).
+				badHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
+					// Manually construct an error with form mode (bypassing validation).
+					data, _ := json.Marshal(map[string]any{
+						"elicitations": []*ElicitParams{
+							{
+								Mode:          "form",
+								Message:       "Invalid mode",
+								ElicitationID: "bad-form",
+							},
+						},
+					})
+					return nil, nil, &jsonrpc.Error{
+						Code:    CodeURLElicitationRequired,
+						Message: "URL elicitation required",
+						Data:    json.RawMessage(data),
+					}
+				}
+				AddTool(s, &Tool{Name: "bad_tool", Description: "returns invalid elicitation"}, badHandler)
+			},
+		)
+		ss = serverSession
+		defer cleanup()
+
+		t.Run("auto-retry after elicitation", func(t *testing.T) {
+			// Reset state for this subtest.
+			elicitCalled = false
+			elicitURL = ""
+			callCount = 0
+
+			// Call the tool that requires URL elicitation.
+			result, err := cs.CallTool(ctx, &CallToolParams{
+				Name:      "submit_form",
+				Arguments: map[string]any{},
+			})
+
+			// After automatic retry, the operation should succeed.
+			if err != nil {
+				t.Fatalf("expected success after retry, got error: %v", err)
+			}
+
+			// Verify the elicitation handler was called.
+			if !elicitCalled {
+				t.Error("expected elicitation handler to be called")
+			}
+
+			if elicitURL != "https://example.com/form" {
+				t.Errorf("expected elicit URL 'https://example.com/form', got %q", elicitURL)
+			}
+
+			// Verify the tool was called twice (first attempt + retry).
+			if callCount != 2 {
+				t.Errorf("expected tool to be called 2 times, got %d", callCount)
+			}
+
+			// Verify we got the successful result.
+			if len(result.Content) != 1 {
+				t.Fatalf("expected 1 content item, got %d", len(result.Content))
+			}
+
+			textContent, ok := result.Content[0].(*TextContent)
+			if !ok {
+				t.Fatalf("expected TextContent, got %T", result.Content[0])
+			}
+
+			if textContent.Text != "form submitted" {
+				t.Errorf("expected text 'form submitted', got %q", textContent.Text)
+			}
+		})
+
+		t.Run("reject non-URL mode", func(t *testing.T) {
+			// Call the tool that returns invalid elicitation mode.
+			_, err := cs.CallTool(ctx, &CallToolParams{
+				Name:      "bad_tool",
+				Arguments: map[string]any{},
+			})
+
+			// Should get an error about invalid mode.
+			if err == nil {
+				t.Fatal("expected error for non-URL mode elicitation, got nil")
+			}
+
+			if !strings.Contains(err.Error(), "URL mode") {
+				t.Errorf("expected error message to mention URL mode, got: %v", err)
+			}
+		})
+	})
 }
