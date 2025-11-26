@@ -366,7 +366,7 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (
 //	client.AddSendingMiddleware(mcp.urlElicitationMiddleware())
 //
 // TODO(rfindley): this isn't strictly necessary for the SEP, but may be
-// useful. Propose exporting it it.
+// useful. Propose exporting it.
 func urlElicitationMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {

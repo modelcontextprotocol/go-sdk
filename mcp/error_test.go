@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -99,20 +100,20 @@ func TestServerErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.executeCall()
 			if err == nil {
-				t.Fatal("expected error, got nil")
+				t.Fatal("got nil error, want non-nil")
 			}
 
 			var rpcErr *jsonrpc.Error
 			if !errors.As(err, &rpcErr) {
-				t.Fatalf("expected jsonrpc.Error, got %T: %v", err, err)
+				t.Fatalf("got error type %T, want jsonrpc.Error: %v", err, err)
 			}
 
 			if rpcErr.Code != tc.expectedCode {
-				t.Errorf("expected error code %d, got %d", tc.expectedCode, rpcErr.Code)
+				t.Errorf("got error code %d, want %d", rpcErr.Code, tc.expectedCode)
 			}
 
 			if rpcErr.Message == "" {
-				t.Error("expected non-empty error message")
+				t.Error("got empty error message, want non-empty")
 			}
 		})
 	}
@@ -137,19 +138,19 @@ func TestURLElicitationRequired(t *testing.T) {
 
 		var rpcErr *jsonrpc.Error
 		if !errors.As(err, &rpcErr) {
-			t.Fatalf("expected jsonrpc.Error, got %T", err)
+			t.Fatalf("got error type %T, want jsonrpc.Error", err)
 		}
 
 		if rpcErr.Code != CodeURLElicitationRequired {
-			t.Errorf("expected error code %d, got %d", CodeURLElicitationRequired, rpcErr.Code)
+			t.Errorf("got error code %d, want %d", rpcErr.Code, CodeURLElicitationRequired)
 		}
 
 		if rpcErr.Message != "URL elicitation required" {
-			t.Errorf("expected message 'URL elicitation required', got %q", rpcErr.Message)
+			t.Errorf("got message %q, want 'URL elicitation required'", rpcErr.Message)
 		}
 
 		if rpcErr.Data == nil {
-			t.Fatal("expected error data, got nil")
+			t.Fatal("got nil error data, want non-nil")
 		}
 
 		// Verify the elicitations can be unmarshaled from the error data
@@ -161,18 +162,18 @@ func TestURLElicitationRequired(t *testing.T) {
 		}
 
 		if len(errorData.Elicitations) != 1 {
-			t.Fatalf("expected 1 elicitation, got %d", len(errorData.Elicitations))
+			t.Fatalf("got %d elicitations, want 1", len(errorData.Elicitations))
 		}
 
 		if errorData.Elicitations[0].URL != "https://example.com/auth" {
-			t.Errorf("expected URL 'https://example.com/auth', got %q", errorData.Elicitations[0].URL)
+			t.Errorf("got URL %q, want 'https://example.com/auth'", errorData.Elicitations[0].URL)
 		}
 	})
 
 	t.Run("error creation with non-URL mode panics", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
-				t.Error("expected panic when creating URLElicitationRequiredError with non-URL mode")
+				t.Error("got no panic when creating URLElicitationRequiredError with non-URL mode, want panic")
 			}
 		}()
 
@@ -189,7 +190,7 @@ func TestURLElicitationRequired(t *testing.T) {
 	t.Run("error creation with empty mode panics", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
-				t.Error("expected panic when creating URLElicitationRequiredError with empty mode (defaults to form)")
+				t.Error("got no panic when creating URLElicitationRequiredError with empty mode (defaults to form), want panic")
 			}
 		}()
 
@@ -236,7 +237,7 @@ func TestURLElicitationRequired(t *testing.T) {
 		// Add URL elicitation middleware for automatic retry.
 		client.AddSendingMiddleware(urlElicitationMiddleware())
 
-		callCount := 0
+		var callCount atomic.Int32
 
 		cs, serverSession, cleanup := basicClientServerConnection(t,
 			client,
@@ -244,8 +245,7 @@ func TestURLElicitationRequired(t *testing.T) {
 			func(s *Server) {
 				// Tool that requires form submission on first call, succeeds on second.
 				handler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
-					callCount++
-					if callCount == 1 {
+					if callCount.Add(1) == 1 {
 						// First call: require elicitation.
 						return nil, nil, URLElicitationRequiredError([]*ElicitParams{
 							{
@@ -291,7 +291,7 @@ func TestURLElicitationRequired(t *testing.T) {
 			// Reset state for this subtest.
 			elicitCalled = false
 			elicitURL = ""
-			callCount = 0
+			callCount.Store(0)
 
 			// Call the tool that requires URL elicitation.
 			result, err := cs.CallTool(ctx, &CallToolParams{
@@ -301,35 +301,35 @@ func TestURLElicitationRequired(t *testing.T) {
 
 			// After automatic retry, the operation should succeed.
 			if err != nil {
-				t.Fatalf("expected success after retry, got error: %v", err)
+				t.Fatalf("CallTool failed: %v", err)
 			}
 
 			// Verify the elicitation handler was called.
 			if !elicitCalled {
-				t.Error("expected elicitation handler to be called")
+				t.Error("elicitation handler not called")
 			}
 
 			if elicitURL != "https://example.com/form" {
-				t.Errorf("expected elicit URL 'https://example.com/form', got %q", elicitURL)
+				t.Errorf("got elicit URL %q, want 'https://example.com/form'", elicitURL)
 			}
 
 			// Verify the tool was called twice (first attempt + retry).
-			if callCount != 2 {
-				t.Errorf("expected tool to be called 2 times, got %d", callCount)
+			if got, want := callCount.Load(), int32(2); got != want {
+				t.Errorf("CallTool(): with retry, got %d tool calls, want %d", got, want)
 			}
 
 			// Verify we got the successful result.
 			if len(result.Content) != 1 {
-				t.Fatalf("expected 1 content item, got %d", len(result.Content))
+				t.Fatalf("CallTool(): got %d content items, want 1", len(result.Content))
 			}
 
 			textContent, ok := result.Content[0].(*TextContent)
 			if !ok {
-				t.Fatalf("expected TextContent, got %T", result.Content[0])
+				t.Fatalf("CallTool(): got content type %T, want TextContent", result.Content[0])
 			}
 
 			if textContent.Text != "form submitted" {
-				t.Errorf("expected text 'form submitted', got %q", textContent.Text)
+				t.Errorf("CallTool(): got text %q, want 'form submitted'", textContent.Text)
 			}
 		})
 
@@ -342,11 +342,11 @@ func TestURLElicitationRequired(t *testing.T) {
 
 			// Should get an error about invalid mode.
 			if err == nil {
-				t.Fatal("expected error for non-URL mode elicitation, got nil")
+				t.Fatal("got nil error for non-URL mode elicitation, want error")
 			}
 
 			if !strings.Contains(err.Error(), "URL mode") {
-				t.Errorf("expected error message to mention URL mode, got: %v", err)
+				t.Errorf("got error %v, want mention of URL mode", err)
 			}
 		})
 	})
