@@ -23,3 +23,6 @@ v2.
     other notification param types.
   - Similarly, `ProgressNotificationParams` should probably have been
     `ProgressParams`.
+
+- `AudioContent.MarshalJSON` should have had a pointer receiver, to be
+  consistent with other content types.
