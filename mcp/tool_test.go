@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 func TestApplySchema(t *testing.T) {
@@ -65,8 +65,8 @@ func TestToolErrorHandling(t *testing.T) {
 
 	// Create a tool that returns a structured error
 	structuredErrorHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
-		return nil, nil, &jsonrpc2.WireError{
-			Code:    codeInvalidParams,
+		return nil, nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
 			Message: "internal server error",
 		}
 	}
@@ -106,13 +106,13 @@ func TestToolErrorHandling(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 
-		var wireErr *jsonrpc2.WireError
+		var wireErr *jsonrpc.Error
 		if !errors.As(err, &wireErr) {
-			t.Fatalf("expected WireError, got %[1]T: %[1]v", err)
+			t.Fatalf("expected jsonrpc.Error, got %[1]T: %[1]v", err)
 		}
 
-		if wireErr.Code != codeInvalidParams {
-			t.Errorf("expected error code %d, got %d", codeInvalidParams, wireErr.Code)
+		if wireErr.Code != jsonrpc.CodeInvalidParams {
+			t.Errorf("expected error code %d, got %d", jsonrpc.CodeInvalidParams, wireErr.Code)
 		}
 	})
 

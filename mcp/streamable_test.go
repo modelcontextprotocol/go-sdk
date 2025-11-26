@@ -962,7 +962,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					method:         "POST",
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc2.WireError{
+					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc.Error{
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
 				},

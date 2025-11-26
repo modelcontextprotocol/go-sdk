@@ -204,8 +204,7 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
-	// TODO: the "%w"s in this function effectively make jsonrpc2.WireError part of the API.
-	// Consider alternatives.
+	// The "%w"s in this function expose jsonrpc.Error as part of the API.
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {

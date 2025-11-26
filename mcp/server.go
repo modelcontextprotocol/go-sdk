@@ -146,7 +146,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
 		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
-		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
+		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 	}
@@ -293,12 +293,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 		// Call typed handler.
 		res, out, err := h(ctx, req, in)
 		// Handle server errors appropriately:
-		// - If the handler returns a structured error (like jsonrpc2.WireError), return it directly
+		// - If the handler returns a structured error (like jsonrpc.Error), return it directly
 		// - If the handler returns a regular error, wrap it in a CallToolResult with IsError=true
 		// - This allows tools to distinguish between protocol errors and tool execution errors
 		if err != nil {
 			// Check if this is already a structured JSON-RPC error
-			if wireErr, ok := err.(*jsonrpc2.WireError); ok {
+			if wireErr, ok := err.(*jsonrpc.Error); ok {
 				return nil, wireErr
 			}
 			// For regular errors, embed them in the tool result as per MCP spec
@@ -542,8 +542,8 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	s.mu.Unlock()
 	if !ok {
 		// Return a proper JSON-RPC error with the correct error code
-		return nil, &jsonrpc2.WireError{
-			Code:    codeInvalidParams,
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
@@ -569,8 +569,8 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	st, ok := s.tools.get(req.Params.Name)
 	s.mu.Unlock()
 	if !ok {
-		return nil, &jsonrpc2.WireError{
-			Code:    codeInvalidParams,
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
 			Message: fmt.Sprintf("unknown tool %q", req.Params.Name),
 		}
 	}

@@ -222,6 +222,61 @@ func TestClientCapabilities(t *testing.T) {
 				Sampling: &SamplingCapabilities{},
 			},
 		},
+		{
+			name:            "With form elicitation",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				ElicitationModes: []string{"form"},
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+				Elicitation: &ElicitationCapabilities{
+					Form: &FormElicitationCapabilities{},
+				},
+			},
+		},
+		{
+			name:            "With URL elicitation",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				ElicitationModes: []string{"url"},
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+				Elicitation: &ElicitationCapabilities{
+					URL: &URLElicitationCapabilities{},
+				},
+			},
+		},
+		{
+			name:            "With both form and URL elicitation",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				ElicitationModes: []string{"form", "url"},
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots: struct {
+					ListChanged bool "json:\"listChanged,omitempty\""
+				}{ListChanged: true},
+				Elicitation: &ElicitationCapabilities{
+					Form: &FormElicitationCapabilities{},
+					URL:  &URLElicitationCapabilities{},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
