@@ -517,6 +517,94 @@ func testClientReplay(t *testing.T, test clientReplayTest) {
 	}
 }
 
+func TestStreamableServerDisconnect(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	// Test that client replayability allows the server to terminate incoming
+	// requests immediately, and have the client replay them.
+
+	// testStream exercises stream resumption by interleaving stream termination
+	// with progress notifications.
+	testStream := func(ctx context.Context, session *ServerSession, extra *RequestExtra) {
+		// Close the stream before the first message. We should have sent an
+		// initial priming message already, so the client will be able to replay
+		extra.CloseStream(10 * time.Millisecond)
+		session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg1"})
+		time.Sleep(20 * time.Millisecond)
+		extra.CloseStream(10 * time.Millisecond) // Closing twice should still be supported.
+		session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg2"})
+	}
+
+	AddTool(server, &Tool{Name: "disconnect"},
+		func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, map[string]any, error) {
+			testStream(ctx, req.Session, req.Extra)
+			return new(CallToolResult), nil, nil
+		})
+
+	server.AddPrompt(&Prompt{Name: "disconnect"}, func(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		testStream(ctx, req.Session, req.Extra)
+		return nil, nil
+	})
+
+	tests := []struct {
+		name   string
+		doCall func(context.Context, *ClientSession) error
+	}{
+		{
+			"tool",
+			func(ctx context.Context, cs *ClientSession) error {
+				_, err := cs.CallTool(ctx, &CallToolParams{Name: "disconnect"})
+				return err
+			},
+		},
+		{
+			"prompt",
+			func(ctx context.Context, cs *ClientSession) error {
+				_, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "disconnect"})
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// memory event store to support replayability.
+			// Then implement the new SEP, and assert that the tool call succeeds.
+			notifications := make(chan string, 2)
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+				EventStore: NewMemoryEventStore(nil),
+			})
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			client := NewClient(testImpl, &ClientOptions{
+				ProgressNotificationHandler: func(ctx context.Context, req *ProgressNotificationClientRequest) {
+					notifications <- req.Params.Message
+				},
+			})
+			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
+				Endpoint: httpServer.URL,
+			}, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			defer clientSession.Close()
+
+			if err = test.doCall(ctx, clientSession); err != nil {
+				t.Fatalf("CallTool failed: %v", err)
+			}
+
+			got := readNotifications(t, ctx, notifications, 2)
+			want := []string{"msg1", "msg2"}
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("got unexpected notifications (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestServerTransportCleanup(t *testing.T) {
 	nClient := 3
 
@@ -691,10 +779,10 @@ func TestStreamableServerTransport(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		replay       bool // if set, use a MemoryEventStore to enable stream replay
-		tool         func(*testing.T, context.Context, *ServerSession)
-		requests     []streamableRequest // http requests
-		wantSessions int                 // number of sessions expected after the test
+		replay       bool                                                // if set, use a MemoryEventStore to enable replay
+		tool         func(*testing.T, context.Context, *CallToolRequest) // if set, called during execution
+		requests     []streamableRequest
+		wantSessions int // number of sessions expected after the test
 	}{
 		{
 			name: "basic",
@@ -818,9 +906,9 @@ func TestStreamableServerTransport(t *testing.T) {
 		},
 		{
 			name: "tool notification",
-			tool: func(t *testing.T, ctx context.Context, ss *ServerSession) {
+			tool: func(t *testing.T, ctx context.Context, req *CallToolRequest) {
 				// Send an arbitrary notification.
-				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
+				if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}
 			},
@@ -843,9 +931,9 @@ func TestStreamableServerTransport(t *testing.T) {
 		},
 		{
 			name: "tool upcall",
-			tool: func(t *testing.T, ctx context.Context, ss *ServerSession) {
+			tool: func(t *testing.T, ctx context.Context, req *CallToolRequest) {
 				// Make an arbitrary call.
-				if _, err := ss.ListRoots(ctx, &ListRootsParams{}); err != nil {
+				if _, err := req.Session.ListRoots(ctx, &ListRootsParams{}); err != nil {
 					t.Errorf("Call failed: %v", err)
 				}
 			},
@@ -878,21 +966,23 @@ func TestStreamableServerTransport(t *testing.T) {
 			name: "background",
 			// Enabling replay is necessary here because the standalone "GET" request
 			// is fully asynronous. Replay is needed to guarantee message delivery.
+			//
+			// TODO(rfindley): this should no longer be necessary.
 			replay: true,
-			tool: func(t *testing.T, _ context.Context, ss *ServerSession) {
+			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
 				// Perform operations on a background context, and ensure the client
 				// receives it.
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				defer cancel()
 
-				if err := ss.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
+				if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}
 				// TODO(rfindley): finish implementing logging.
 				// if err := ss.LoggingMessage(ctx, &LoggingMessageParams{}); err != nil {
 				// 	t.Errorf("Logging failed: %v", err)
 				// }
-				if _, err := ss.ListRoots(ctx, &ListRootsParams{}); err != nil {
+				if _, err := req.Session.ListRoots(ctx, &ListRootsParams{}); err != nil {
 					t.Errorf("ListRoots failed: %v", err)
 				}
 			},
@@ -938,6 +1028,60 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 0, // session deleted
 		},
 		{
+			name:   "priming message",
+			replay: true,
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					method:             "POST",
+					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:     http.StatusOK,
+					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyContaining: "prime",
+				},
+			},
+			wantSessions: 1,
+		},
+		{
+			name:   "close message",
+			replay: true,
+			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
+				req.Extra.CloseStream(time.Millisecond)
+			},
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					method:             "POST",
+					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:     http.StatusOK,
+					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyContaining: "close",
+				},
+			},
+			wantSessions: 1,
+		},
+		{
+			name:   "no close message",
+			replay: true,
+			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
+				req.Extra.CloseStream(0)
+			},
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					method:                "POST",
+					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:        http.StatusOK,
+					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyNotContaining: "close",
+				},
+			},
+			wantSessions: 1,
+		},
+		{
 			name: "errors",
 			requests: []streamableRequest{
 				{
@@ -980,7 +1124,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				&Tool{Name: "tool", InputSchema: &jsonschema.Schema{Type: "object"}},
 				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 					if test.tool != nil {
-						test.tool(t, ctx, req.Session)
+						test.tool(t, ctx, req)
 					}
 					return &CallToolResult{}, nil
 				})
@@ -1092,10 +1236,13 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 		}
 		wg.Wait()
 
-		if request.wantBodyContaining != "" {
+		if request.wantBodyContaining != "" || request.wantBodyNotContaining != "" {
 			body := string(gotBody)
-			if !strings.Contains(body, request.wantBodyContaining) {
+			if request.wantBodyContaining != "" && !strings.Contains(body, request.wantBodyContaining) {
 				t.Errorf("body does not contain %q:\n%s", request.wantBodyContaining, body)
+			}
+			if request.wantBodyNotContaining != "" && strings.Contains(body, request.wantBodyNotContaining) {
+				t.Errorf("body contains %q:\n%s", request.wantBodyNotContaining, body)
 			}
 		} else {
 			transform := cmpopts.AcyclicTransformer("jsonrpcid", func(id jsonrpc.ID) any { return id.Raw() })
@@ -1148,11 +1295,12 @@ type streamableRequest struct {
 	headers  http.Header       // additional headers to set, overlaid on top of the default headers
 	messages []jsonrpc.Message // messages to send
 
-	closeAfter         int               // if nonzero, close after receiving this many messages
-	wantStatusCode     int               // expected status code
-	wantBodyContaining string            // if set, expect the response body to contain this text; overrides wantMessages
-	wantMessages       []jsonrpc.Message // expected messages to receive; ignored if wantBodyContaining is set
-	wantSessionID      bool              // whether or not a session ID is expected in the response
+	closeAfter            int               // if nonzero, close after receiving this many messages
+	wantStatusCode        int               // expected status code
+	wantBodyContaining    string            // if set, expect the response body to contain this text; overrides wantMessages
+	wantBodyNotContaining string            // if set, a negative assertion on the body; overrides wantMessages
+	wantMessages          []jsonrpc.Message // expected messages to receive; ignored if wantBodyContaining is set
+	wantSessionID         bool              // whether or not a session ID is expected in the response
 }
 
 // streamingRequest makes a request to the given streamable server with the
@@ -1221,13 +1369,15 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 			if err != nil {
 				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
-			// TODO(rfindley): do we need to check evt.name?
-			// Does the MCP spec say anything about this?
-			msg, err := jsonrpc2.DecodeMessage(evt.Data)
-			if err != nil {
-				return newSessionID, resp.StatusCode, nil, fmt.Errorf("decoding message: %w", err)
+			if evt.Name == "" || evt.Name == "message" { // ordinary message
+				// TODO(rfindley): do we need to check evt.name?
+				// Does the MCP spec say anything about this?
+				msg, err := jsonrpc2.DecodeMessage(evt.Data)
+				if err != nil {
+					return newSessionID, resp.StatusCode, nil, fmt.Errorf("decoding message: %w", err)
+				}
+				out <- msg
 			}
-			out <- msg
 		}
 		respBody = r.w.Bytes()
 	} else if strings.HasPrefix(contentType, "application/json") {
@@ -1882,12 +2032,13 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 
 	// Verify that we can decode the message events but would fail on ping events
 	for i, evt := range events {
-		if evt.Name == "message" {
+		switch evt.Name {
+		case "message":
 			_, err := jsonrpc.DecodeMessage(evt.Data)
 			if err != nil {
 				t.Errorf("event %d: failed to decode message event: %v", i, err)
 			}
-		} else if evt.Name == "ping" {
+		case "ping":
 			// Ping events have non-JSON data and should fail decoding
 			_, err := jsonrpc.DecodeMessage(evt.Data)
 			if err == nil {

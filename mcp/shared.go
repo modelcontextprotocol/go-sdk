@@ -432,6 +432,14 @@ type ServerRequest[P Params] struct {
 type RequestExtra struct {
 	TokenInfo *auth.TokenInfo // bearer token info (e.g. from OAuth) if any
 	Header    http.Header     // header from HTTP request, if any
+
+	// CloseStream closes the current request stream, if the current transport
+	// supports replaying requests.
+	//
+	// If reconnectAfter is nonzero, it signals to the client to reconnect after
+	// the given duration. Otherwise, clients may determine their own
+	// reconnection policy.
+	CloseStream func(reconnectAfter time.Duration)
 }
 
 func (*ClientRequest[P]) isRequest() {}

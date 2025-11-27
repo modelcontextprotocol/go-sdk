@@ -10,6 +10,10 @@ v2.
   
   **Workaround**: `Open` may be implemented as a no-op.
 
+- `Event` need not have been exported: it's an implementation detail of the SSE
+  and streamable transports. Also the 'Name' field is a misnomer: it should be
+  'event'.
+
 - Enforcing valid tool names: with
   [SEP-986](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986)
   landing after the SDK was at v1, we missed an opportunity to panic on invalid
