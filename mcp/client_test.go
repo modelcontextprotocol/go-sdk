@@ -202,9 +202,10 @@ func TestClientCapabilities(t *testing.T) {
 			name:            "With initial capabilities",
 			configureClient: func(s *Client) {},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots: rootsCapabilities{
+					Supported:   true,
+					ListChanged: true,
+				},
 			},
 		},
 		{
@@ -216,9 +217,10 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots: rootsCapabilities{
+					Supported:   true,
+					ListChanged: true,
+				},
 				Sampling: &SamplingCapabilities{},
 			},
 		},
