@@ -9,3 +9,19 @@ v2.
   of the SDK where event persistence and delivery were combined.
   
   **Workaround**: `Open` may be implemented as a no-op.
+
+- Enforcing valid tool names: with
+  [SEP-986](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986)
+  landing after the SDK was at v1, we missed an opportunity to panic on invalid
+  tool names. Instead, we have to simply produce an error log. In v2, we should
+  panic.
+
+- Inconsistent naming.
+  - `ResourceUpdatedNotificationsParams` should probably have just been
+    `ResourceUpdatedParams`, as we don't include the word 'notification' in
+    other notification param types.
+  - Similarly, `ProgressNotificationParams` should probably have been
+    `ProgressParams`.
+
+- `AudioContent.MarshalJSON` should have had a pointer receiver, to be
+  consistent with other content types.

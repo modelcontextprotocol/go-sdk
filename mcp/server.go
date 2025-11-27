@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -191,6 +192,9 @@ func (s *Server) RemovePrompts(names ...string) {
 // Most users should use the top-level function [AddTool], which handles all these
 // responsibilities.
 func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	if err := validateToolName(t.Name); err != nil {
+		s.opts.Logger.Error(fmt.Sprintf("AddTool: invalid tool name %q: %v", t.Name, err))
+	}
 	if t.InputSchema == nil {
 		// This prevents the tool author from forgetting to write a schema where
 		// one should be provided. If we papered over this by supplying the empty
@@ -1015,7 +1019,67 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
 	}
-	return handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
+	if params == nil {
+		return nil, fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+
+	if params.Mode == "" {
+		params2 := *params
+		if params.URL != "" || params.ElicitationID != "" {
+			params2.Mode = "url"
+		} else {
+			params2.Mode = "form"
+		}
+		params = &params2
+	}
+
+	if iparams := ss.InitializeParams(); iparams == nil || iparams.Capabilities == nil || iparams.Capabilities.Elicitation == nil {
+		return nil, fmt.Errorf("client does not support elicitation")
+	}
+	caps := ss.InitializeParams().Capabilities.Elicitation
+	switch params.Mode {
+	case "form":
+		if caps.Form == nil && caps.URL != nil {
+			// Note: if both 'Form' and 'URL' are nil, we assume the client supports
+			// form elicitation for backward compatibility.
+			return nil, errors.New(`client does not support "form" elicitation`)
+		}
+	case "url":
+		if caps.URL == nil {
+			return nil, errors.New(`client does not support "url" elicitation`)
+		}
+	}
+
+	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+
+	if params.RequestedSchema == nil {
+		return res, nil
+	}
+	schema, err := validateElicitSchema(params.RequestedSchema)
+	if err != nil {
+		return nil, err
+	}
+	if schema == nil {
+		return res, nil
+	}
+
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		fmt.Printf("  resolve err: %s", err)
+		return nil, err
+	}
+	if err := resolved.Validate(res.Content); err != nil {
+		return nil, fmt.Errorf("elicitation result content does not match requested schema: %v", err)
+	}
+	err = resolved.ApplyDefaults(&res.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply schema defalts to elicitation result: %v", err)
+	}
+
+	return res, nil
 }
 
 // Log sends a log message to the client.
