@@ -381,7 +381,8 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 				var tr [1]byte
 				if n, readErr := dec.Buffered().Read(tr[:]); n > 0 {
 					// If read byte is not a newline, it is an error.
-					if tr[0] != '\n' {
+					// Support both Unix (\n) and Windows (\r\n) line endings.
+					if tr[0] != '\n' && tr[0] != '\r' {
 						err = fmt.Errorf("invalid trailing data at the end of stream")
 					}
 				} else if readErr != nil && readErr != io.EOF {

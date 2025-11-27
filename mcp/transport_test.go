@@ -84,6 +84,11 @@ func TestIOConnRead(t *testing.T) {
 			protocolVersion: "",
 		},
 		{
+			name:  "windows newline at the end of first valid json input",
+			input: "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"test\",\"params\":{}}\r\n",
+			want:  "",
+		},
+		{
 			name:            "batching old protocol",
 			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
 			want:            "",
