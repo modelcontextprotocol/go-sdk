@@ -304,37 +304,6 @@ For more sophisticated CORS policies, wrap the handler with a CORS middleware li
 
 The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
 
-#### Enterprise Managed Authorization (SEP-990)
-
-For enterprise environments with centralized identity providers, the SDK supports ID-JAG (Identity Assertion JWT Authorization Grant) token validation using [`NewIDJAGVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#NewIDJAGVerifier).
-
-This verifier validates ID-JAG tokens issued by trusted identity providers through:
-- Signature verification using the IdP's JWKS
-- Audience validation (ensures token was issued for this MCP server)
-- Expiration and clock skew handling
-- Replay attack prevention via JTI tracking
-
-Example configuration:
-
-```go
-config := &IDJAGVerifierConfig{
-	AuthServerIssuerURL: "https://auth.mcpserver.example",
-	TrustedIdPs: map[string]*TrustedIdPConfig{
-		"acme-okta": {
-			IssuerURL: "https://acme.okta.com",
-			JWKSURL:   "https://acme.okta.com/.well-known/jwks.json",
-		},
-	},
-}
-
-verifier := NewIDJAGVerifier(config)
-middleware := RequireBearerToken(verifier, &RequireBearerTokenOptions{
-	Scopes: []string{"read"},
-})
-```
-
-Tool handlers can access ID-JAG claims from `req.Extra.TokenInfo.Extra`, which includes the subject, client ID, resource, and issuer from the validated token.
-
 ### Client
 
 Client-side OAuth is implemented by setting  
@@ -343,10 +312,12 @@ Additional support is forthcoming; see modelcontextprotocol/go-sdk#493.
 
 #### Enterprise Authentication Flow (SEP-990)
 
-For enterprise SSO scenarios, the SDK provides an [`EnterpriseAuthFlow`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#EnterpriseAuthFlow) function that implements the complete token exchange flow:
+For enterprise SSO scenarios, the SDK provides an
+[`EnterpriseAuthFlow`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#EnterpriseAuthFlow)
+function that implements the complete token exchange flow:
 
-1. **Token Exchange** at IdP: ID Token -> ID-JAG
-2. **JWT Bearer Grant** at MCP Server: ID-JAG -> Access Token
+1. **Token Exchange** at IdP: ID Token → ID-JAG
+2. **JWT Bearer Grant** at MCP Server: ID-JAG → Access Token
 
 This flow is typically used after obtaining an ID Token via OIDC login:
 
@@ -355,17 +326,18 @@ This flow is typically used after obtaining an ID Token via OIDC login:
 idToken := "..." // from OIDC login
 
 // Step 2: Exchange for MCP access token
-enterpriseConfig := &EnterpriseAuthConfig{
-	IdPIssuerURL:     "https://acme.okta.com",
-	IdPClientID:      "client-id-at-idp",
-	IdPClientSecret:  "secret-at-idp",
-	MCPAuthServerURL: "https://auth.mcpserver.example",
-	MCPResourceURL:   "https://mcp.mcpserver.example",
-	MCPClientID:      "client-id-at-mcp",
-	MCPClientSecret:  "secret-at-mcp",
-	MCPScopes:        []string{"read", "write"},
+config := &auth.EnterpriseAuthConfig{
+    IdPIssuerURL:     "https://company.okta.com",
+    IdPClientID:      "client-id-at-idp",
+    IdPClientSecret:  "secret-at-idp",
+    MCPAuthServerURL: "https://auth.mcpserver.example",
+    MCPResourceURL:   "https://mcp.mcpserver.example",
+    MCPClientID:      "client-id-at-mcp",
+    MCPClientSecret:  "secret-at-mcp",
+    MCPScopes:        []string{"read", "write"},
 }
-accessToken, err := EnterpriseAuthFlow(ctx, enterpriseConfig, tokens.IDToken)
+
+accessToken, err := auth.EnterpriseAuthFlow(ctx, config, idToken)
 // Use accessToken with MCP client
 ```
 
@@ -567,3 +539,4 @@ func Example_progress() {
 	// frobbing widgets 2/2
 }
 ```
+
