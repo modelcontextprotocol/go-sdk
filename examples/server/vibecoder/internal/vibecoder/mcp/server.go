@@ -82,6 +82,11 @@ func NewServer(rootDir string) (*mcp.Server, error) {
 		URI:  "mcp://vibecoder/traceability_matrix",
 	}, vs.handleTraceability)
 
+	s.AddResource(&mcp.Resource{
+		Name: "architecture_diagram",
+		URI:  "mcp://vibecoder/architecture_diagram",
+	}, vs.handleExcalidraw)
+
 	return s, nil
 }
 
@@ -210,6 +215,18 @@ func (vs *VibecoderServer) handleStatus(ctx context.Context, req *mcp.ReadResour
 		"status":     "healthy",
 	}
 	bytes, _ := json.MarshalIndent(status, "", "  ")
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{
+			{URI: req.Params.URI, MIMEType: "application/json", Text: string(bytes)},
+		},
+	}, nil
+}
+
+func (vs *VibecoderServer) handleExcalidraw(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	bytes, err := generateExcalidraw(vs.Graph)
+	if err != nil {
+		return nil, err
+	}
 	return &mcp.ReadResourceResult{
 		Contents: []*mcp.ResourceContents{
 			{URI: req.Params.URI, MIMEType: "application/json", Text: string(bytes)},
