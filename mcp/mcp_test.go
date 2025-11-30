@@ -61,6 +61,8 @@ func TestEndToEnd(t *testing.T) {
 	var ct, st Transport = NewInMemoryTransports()
 
 	// Channels to check if notification callbacks happened.
+	// These test asynchronous sending of notifications after a small delay (see
+	// Server.sendNotification).
 	notificationChans := map[string]chan int{}
 	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client", "resource_updated", "subscribe", "unsubscribe", "elicitation_complete"} {
 		notificationChans[name] = make(chan int, 1)
@@ -1695,14 +1697,15 @@ func TestSynchronousNotifications(t *testing.T) {
 		},
 	}
 	server := NewServer(testImpl, serverOpts)
-	cs, ss, cleanup := basicClientServerConnection(t, client, server, func(s *Server) {
+	addTool := func(s *Server) {
 		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			if !rootsChanged.Load() {
 				return nil, nil, fmt.Errorf("didn't get root change notification")
 			}
 			return new(CallToolResult), nil, nil
 		})
-	})
+	}
+	cs, ss, cleanup := basicClientServerConnection(t, client, server, addTool)
 	defer cleanup()
 
 	t.Run("from client", func(t *testing.T) {
@@ -1717,7 +1720,11 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 
 	t.Run("from server", func(t *testing.T) {
-		server.RemoveTools("tool")
+		// Because server change notifications are batched, we must generate a lot of them.
+		for range maxPendingNotifications/2 + 1 {
+			server.RemoveTools("tool")
+			addTool(server)
+		}
 		if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
 			t.Errorf("CreateMessage failed: %v", err)
 		}
