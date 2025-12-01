@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"slices"
 	"strings"
 
@@ -51,3 +52,36 @@ func ExampleLoggingTransport() {
 }
 
 // !-loggingtransport
+
+// !+newinmemorytransport
+
+func ExampleNewInMemoryTransport() {
+	ctx := context.Background()
+
+	// Create a custom pair of connected pipes
+	c1, c2 := net.Pipe()
+
+	// Wrap them in InMemoryTransport using the new constructor
+	t1 := mcp.NewInMemoryTransport(c1)
+	t2 := mcp.NewInMemoryTransport(c2)
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	fmt.Println("Connected successfully!")
+	// Output:
+	// Connected successfully!
+}
+
+// !-newinmemorytransport

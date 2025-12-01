@@ -126,6 +126,15 @@ func (t *InMemoryTransport) Connect(context.Context) (Connection, error) {
 	return newIOConn(t.rwc), nil
 }
 
+// NewInMemoryTransport returns an [InMemoryTransport] that wraps the provided
+// io.ReadWriteCloser. This allows external consumers to provide their own
+// bidirectional connection (e.g., custom network connections, test doubles).
+//
+// The transport will use newline-delimited JSON over the provided rwc.
+func NewInMemoryTransport(rwc io.ReadWriteCloser) *InMemoryTransport {
+	return &InMemoryTransport{rwc: rwc}
+}
+
 // NewInMemoryTransports returns two [InMemoryTransport] objects that connect
 // to each other.
 //
@@ -134,7 +143,7 @@ func (t *InMemoryTransport) Connect(context.Context) (Connection, error) {
 // clients, as the client initializes the MCP session during connection.
 func NewInMemoryTransports() (*InMemoryTransport, *InMemoryTransport) {
 	c1, c2 := net.Pipe()
-	return &InMemoryTransport{c1}, &InMemoryTransport{c2}
+	return NewInMemoryTransport(c1), NewInMemoryTransport(c2)
 }
 
 type binder[T handler, State any] interface {
