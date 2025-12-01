@@ -24,7 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 type hiParams struct {
@@ -316,7 +316,7 @@ func TestEndToEnd(t *testing.T) {
 		} {
 			rres, err := cs.ReadResource(ctx, &ReadResourceParams{URI: tt.uri})
 			if err != nil {
-				if code := errorCode(err); code == codeResourceNotFound {
+				if code := errorCode(err); code == CodeResourceNotFound {
 					if tt.mimeType != "" {
 						t.Errorf("%s: not found but expected it to be", tt.uri)
 					}
@@ -576,7 +576,7 @@ func errorCode(err error) int64 {
 	if err == nil {
 		return 0
 	}
-	var werr *jsonrpc2.WireError
+	var werr *jsonrpc.Error
 	if errors.As(err, &werr) {
 		return werr.Code
 	}
@@ -1367,8 +1367,8 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				t.Errorf("expected error for invalid schema %q, got nil", tc.name)
 				return
 			}
-			if code := errorCode(err); code != codeInvalidParams {
-				t.Errorf("got error code %d, want %d (CodeInvalidParams)", code, codeInvalidParams)
+			if code := errorCode(err); code != jsonrpc.CodeInvalidParams {
+				t.Errorf("got error code %d, want %d (CodeInvalidParams)", code, jsonrpc.CodeInvalidParams)
 			}
 			if !strings.Contains(err.Error(), tc.expectedError) {
 				t.Errorf("error message %q does not contain expected text %q", err.Error(), tc.expectedError)

@@ -88,7 +88,7 @@ func addMiddleware(handlerp *MethodHandler, middleware []Middleware) {
 	}
 }
 
-func defaultSendingMethodHandler[S Session](ctx context.Context, method string, req Request) (Result, error) {
+func defaultSendingMethodHandler(ctx context.Context, method string, req Request) (Result, error) {
 	info, ok := req.GetSession().sendingMethodInfos()[method]
 	if !ok {
 		// This can be called from user code, with an arbitrary value for method.
@@ -331,16 +331,52 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 	}
 }
 
-// Error codes
+// MCP-specific error codes.
 const (
-	codeResourceNotFound = -32002
+	// CodeResourceNotFound indicates that a requested resource could not be found.
+	CodeResourceNotFound = -32002
+	// CodeURLElicitationRequired indicates that the server requires URL elicitation
+	// before processing the request. The client should execute the elicitation handler
+	// with the elicitations provided in the error data.
+	CodeURLElicitationRequired = -32042
+)
+
+// URLElicitationRequiredError returns an error indicating that URL elicitation is required
+// before the request can be processed. The elicitations parameter should contain the
+// elicitation requests that must be completed.
+func URLElicitationRequiredError(elicitations []*ElicitParams) error {
+	// Validate that all elicitations are URL mode
+	for _, elicit := range elicitations {
+		mode := elicit.Mode
+		if mode == "" {
+			mode = "form" // default mode
+		}
+		if mode != "url" {
+			panic(fmt.Sprintf("URLElicitationRequiredError requires all elicitations to be URL mode, got %q", mode))
+		}
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"elicitations": elicitations,
+	})
+	if err != nil {
+		// This should never happen with valid ElicitParams
+		panic(fmt.Sprintf("failed to marshal elicitations: %v", err))
+	}
+	return &jsonrpc.Error{
+		Code:    CodeURLElicitationRequired,
+		Message: "URL elicitation required",
+		Data:    json.RawMessage(data),
+	}
+}
+
+// Internal error codes
+const (
 	// The error code if the method exists and was called properly, but the peer does not support it.
 	//
 	// TODO(rfindley): this code is wrong, and we should fix it to be
 	// consistent with other SDKs.
 	codeUnsupportedMethod = -31001
-	// The error code for invalid parameters
-	codeInvalidParams = -32602
 )
 
 // notifySessions calls Notify on all the sessions.

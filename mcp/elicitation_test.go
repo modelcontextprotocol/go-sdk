@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // TODO: migrate other elicitation tests here.
@@ -74,7 +75,7 @@ func TestElicitationURLMode(t *testing.T) {
 				Message: "URL is missing",
 			},
 			wantErrMsg:  "URL must be set for URL elicitation",
-			wantErrCode: codeInvalidParams,
+			wantErrCode: jsonrpc.CodeInvalidParams,
 		},
 		{
 			name: "schema not allowed",
@@ -90,7 +91,7 @@ func TestElicitationURLMode(t *testing.T) {
 				},
 			},
 			wantErrMsg:  "requestedSchema must not be set for URL elicitation",
-			wantErrCode: codeInvalidParams,
+			wantErrCode: jsonrpc.CodeInvalidParams,
 		},
 	}
 	for _, tc := range testCases {
