@@ -25,6 +25,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -1336,10 +1337,15 @@ const (
 	// A value of 1.0 results in a constant delay, while a value of 2.0 would double it each time.
 	// It must be 1.0 or greater if MaxRetries is greater than 0.
 	reconnectGrowFactor = 1.5
-	// reconnectInitialDelay is the base delay for the first reconnect attempt.
-	reconnectInitialDelay = 1 * time.Second
 	// reconnectMaxDelay caps the backoff delay, preventing it from growing indefinitely.
 	reconnectMaxDelay = 30 * time.Second
+)
+
+var (
+	// reconnectInitialDelay is the base delay for the first reconnect attempt.
+	//
+	// Mutable for testing.
+	reconnectInitialDelay = 1 * time.Second
 )
 
 // Connect implements the [Transport] interface.
@@ -1364,7 +1370,10 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
-	connCtx, cancel := context.WithCancel(ctx)
+	//
+	// This context should be detached, to decouple the standalone SSE from the
+	// call to Connect.
+	connCtx, cancel := context.WithCancel(xcontext.Detach(ctx))
 	conn := &streamableClientConn{
 		url:        t.Endpoint,
 		client:     client,
@@ -1383,8 +1392,8 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 type streamableClientConn struct {
 	url        string
 	client     *http.Client
-	ctx        context.Context
-	cancel     context.CancelFunc
+	ctx        context.Context    // connection context, detached from Connect
+	cancel     context.CancelFunc // cancels ctx
 	incoming   chan jsonrpc.Message
 	maxRetries int
 	strict     bool         // from [StreamableClientTransport.strict]
@@ -1447,9 +1456,13 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
-	resp, err := c.connectSSE("", 0)
+	resp, err := c.connectSSE(c.ctx, "", 0, true)
 	if err != nil {
-		c.fail(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
+		// If the client didn't cancel the request, and failure breaks the logical
+		// session.
+		if c.ctx.Err() == nil {
+			c.fail(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
+		}
 		return
 	}
 
@@ -1481,7 +1494,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		c.fail(err)
 		return
 	}
-	go c.handleSSE(summary, resp, true, nil)
+	go c.handleSSE(c.ctx, summary, resp, true, nil)
 }
 
 // fail handles an asynchronous error while reading.
@@ -1616,7 +1629,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			forCall = jsonReq
 		}
 		// TODO: should we cancel this logical SSE request if/when jsonReq is canceled?
-		go c.handleSSE(requestSummary, resp, false, forCall)
+		go c.handleSSE(ctx, requestSummary, resp, false, forCall)
 
 	default:
 		resp.Body.Close()
@@ -1668,7 +1681,7 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 //
 // If forCall is set, it is the call that initiated the stream, and the
 // stream is complete when we receive its response.
-func (c *streamableClientConn) handleSSE(requestSummary string, resp *http.Response, persistent bool, forCall *jsonrpc2.Request) {
+func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, persistent bool, forCall *jsonrpc2.Request) {
 	for {
 		// Connection was successful. Continue the loop with the new response.
 		// TODO: we should set a reasonable limit on the number of times we'll try
@@ -1676,7 +1689,7 @@ func (c *streamableClientConn) handleSSE(requestSummary string, resp *http.Respo
 		//
 		// Eventually, if we don't get the response, we should stop trying and
 		// fail the request.
-		lastEventID, reconnectDelay, clientClosed := c.processStream(requestSummary, resp, forCall)
+		lastEventID, reconnectDelay, clientClosed := c.processStream(ctx, requestSummary, resp, forCall)
 
 		// If the connection was closed by the client, we're done.
 		if clientClosed {
@@ -1689,12 +1702,17 @@ func (c *streamableClientConn) handleSSE(requestSummary string, resp *http.Respo
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, err := c.connectSSE(lastEventID, reconnectDelay)
+		newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
 		if err != nil {
-			// All reconnection attempts failed: fail the connection.
-			c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+			// If the client didn't cancel this request, any failure to execute it
+			// breaks the logical MCP session.
+			if ctx.Err() == nil {
+				// All reconnection attempts failed: fail the connection.
+				c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+			}
 			return
 		}
+
 		resp = newResp
 		if err := c.checkResponse(requestSummary, resp); err != nil {
 			c.fail(err)
@@ -1731,11 +1749,13 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 // incoming channel. It returns the ID of the last processed event and a flag
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
-func (c *streamableClientConn) processStream(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, reconnectDelay time.Duration, clientClosed bool) {
+func (c *streamableClientConn) processStream(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, reconnectDelay time.Duration, clientClosed bool) {
 	defer resp.Body.Close()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
-			// TODO: we should differentiate EOF from other errors here.
+			if ctx.Err() != nil {
+				return "", 0, true // don't reconnect: client cancelled
+			}
 			break
 		}
 
@@ -1768,6 +1788,7 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 					return "", 0, true
 				}
 			}
+
 		case <-c.done:
 			// The connection was closed by the client; exit gracefully.
 			return "", 0, true
@@ -1777,6 +1798,9 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 	//
 	// If the lastEventID is "", the stream is not retryable and we should
 	// report a synthetic error for the call.
+	//
+	// Note that this is different from the cancellation case above, since the
+	// caller is still waiting for a response that will never come.
 	if lastEventID == "" && forCall != nil {
 		errmsg := &jsonrpc2.Response{
 			ID:    forCall.ID,
@@ -1800,12 +1824,20 @@ func (c *streamableClientConn) processStream(requestSummary string, resp *http.R
 //
 // reconnectDelay is the delay set by the server using the SSE retry field, or
 // 0.
-func (c *streamableClientConn) connectSSE(lastEventID string, reconnectDelay time.Duration) (*http.Response, error) {
+//
+// If initial is set, this is the initial attempt.
+//
+// If connectSSE exits due to context cancellation, the result is (nil, ctx.Err()).
+func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID string, reconnectDelay time.Duration, initial bool) (*http.Response, error) {
 	var finalErr error
-	// If lastEventID is set, we've already connected successfully once, so
-	// consider that to be the first attempt.
 	attempt := 0
-	if lastEventID != "" {
+	if !initial {
+		// We've already connected successfully once, so delay subsequent
+		// reconnections. Otherwise, if the server returns 200 but terminates the
+		// connection, we'll reconnect as fast as we can, ad infinitum.
+		//
+		// TODO: we should consider also setting a limit on total attempts for one
+		// logical request.
 		attempt = 1
 	}
 	delay := calculateReconnectDelay(attempt)
@@ -1816,16 +1848,14 @@ func (c *streamableClientConn) connectSSE(lastEventID string, reconnectDelay tim
 		select {
 		case <-c.done:
 			return nil, fmt.Errorf("connection closed by client during reconnect")
-		case <-c.ctx.Done():
+
+		case <-ctx.Done():
 			// If the connection context is canceled, the request below will not
 			// succeed anyway.
-			//
-			// TODO(#662): we should not be using the connection context for
-			// reconnection: we should instead be using the call context (from
-			// Write).
-			return nil, fmt.Errorf("connection context closed")
+			return nil, ctx.Err()
+
 		case <-time.After(delay):
-			req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.url, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 			if err != nil {
 				return nil, err
 			}
