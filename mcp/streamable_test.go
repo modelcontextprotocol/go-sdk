@@ -568,11 +568,9 @@ func TestStreamableServerDisconnect(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			// memory event store to support replayability.
-			// Then implement the new SEP, and assert that the tool call succeeds.
 			notifications := make(chan string, 2)
 			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
-				EventStore: NewMemoryEventStore(nil),
+				EventStore: NewMemoryEventStore(nil), // support replayability
 			})
 			httpServer := httptest.NewServer(mustNotPanic(t, handler))
 			defer httpServer.Close()
@@ -1053,11 +1051,12 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialize,
 				initialized,
 				{
-					method:             "POST",
-					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
-					wantStatusCode:     http.StatusOK,
-					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
-					wantBodyContaining: "close",
+					method:                "POST",
+					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:        http.StatusOK,
+					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyContaining:    "close",
+					wantBodyNotContaining: "result",
 				},
 			},
 			wantSessions: 1,
