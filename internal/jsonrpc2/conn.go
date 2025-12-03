@@ -361,17 +361,24 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 	if err := c.write(ctx, call); err != nil {
 		// Sending failed. We will never get a response, so deliver a fake one if it
 		// wasn't already retired by the connection breaking.
-		c.updateInFlight(func(s *inFlightState) {
-			if s.outgoingCalls[ac.id] == ac {
-				delete(s.outgoingCalls, ac.id)
-				ac.retire(&Response{ID: id, Error: err})
-			} else {
-				// ac was already retired by the readIncoming goroutine:
-				// perhaps our write raced with the Read side of the connection breaking.
-			}
-		})
+		c.Retire(ac, err)
 	}
 	return ac
+}
+
+// Retire stops tracking the call, and reports err as its terminal error.
+//
+// Retire is safe to call multiple times: if the call is already no longer
+// tracked, Retire is a no op.
+func (c *Connection) Retire(ac *AsyncCall, err error) {
+	c.updateInFlight(func(s *inFlightState) {
+		if s.outgoingCalls[ac.id] == ac {
+			delete(s.outgoingCalls, ac.id)
+			ac.retire(&Response{ID: ac.id, Error: err})
+		} else {
+			// ac was already retired elsewhere.
+		}
+	})
 }
 
 // Async, signals that the current jsonrpc2 request may be handled
@@ -437,6 +444,9 @@ func (ac *AsyncCall) IsReady() bool {
 }
 
 // retire processes the response to the call.
+//
+// It is an error to call retire more than once: retire is guarded by the
+// connection's outgoingCalls map.
 func (ac *AsyncCall) retire(response *Response) {
 	select {
 	case <-ac.ready:
@@ -450,6 +460,9 @@ func (ac *AsyncCall) retire(response *Response) {
 
 // Await waits for (and decodes) the results of a Call.
 // The response will be unmarshaled from JSON into the result.
+//
+// If the call is cancelled due to context cancellation, the result is
+// ctx.Err().
 func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 	select {
 	case <-ctx.Done():

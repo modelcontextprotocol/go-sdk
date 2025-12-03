@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -23,16 +24,18 @@ type streamableRequestKey struct {
 	httpMethod    string // http method
 	sessionID     string // session ID header
 	jsonrpcMethod string // jsonrpc method, or "" for non-requests
+	lastEventID   string // Last-Event-ID header
 }
 
 type header map[string]string
 
 type streamableResponse struct {
-	header              header // response headers
-	status              int    // or http.StatusOK
-	body                string // or ""
-	optional            bool   // if set, request need not be sent
-	wantProtocolVersion string // if "", unchecked
+	header              header        // response headers
+	status              int           // or http.StatusOK
+	body                string        // or ""
+	optional            bool          // if set, request need not be sent
+	wantProtocolVersion string        // if "", unchecked
+	done                chan struct{} // if set, receive from this channel before terminating the request
 }
 
 type fakeResponses map[streamableRequestKey]*streamableResponse
@@ -60,8 +63,9 @@ func (s *fakeStreamableServer) missingRequests() []streamableRequestKey {
 
 func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	key := streamableRequestKey{
-		httpMethod: req.Method,
-		sessionID:  req.Header.Get(sessionIDHeader),
+		httpMethod:  req.Method,
+		sessionID:   req.Header.Get(sessionIDHeader),
+		lastEventID: req.Header.Get("Last-Event-ID"), // TODO: extract this to a constant, like sessionIDHeader
 	}
 	if req.Method == http.MethodPost {
 		body, err := io.ReadAll(req.Body)
@@ -102,11 +106,17 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		status = http.StatusOK
 	}
 	w.WriteHeader(status)
+	w.(http.Flusher).Flush() // flush response headers
 
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
 	w.Write([]byte(resp.body))
+	w.(http.Flusher).Flush() // flush response
+
+	if resp.done != nil {
+		<-resp.done
+	}
 }
 
 var (
@@ -140,24 +150,24 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 	fake := &fakeStreamableServer{
 		t: t,
 		responses: fakeResponses{
-			{"POST", "", methodInitialize}: {
+			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
 					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
-			{"POST", "123", notificationInitialized}: {
+			{"POST", "123", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
 				wantProtocolVersion: latestProtocolVersion,
 			},
-			{"GET", "123", ""}: {
+			{"GET", "123", "", ""}: {
 				header: header{
 					"Content-Type": "text/event-stream",
 				},
 				wantProtocolVersion: latestProtocolVersion,
 			},
-			{"DELETE", "123", ""}: {},
+			{"DELETE", "123", "", ""}: {},
 		},
 	}
 
@@ -191,21 +201,21 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	fake := &fakeStreamableServer{
 		t: t,
 		responses: fakeResponses{
-			{"POST", "", methodInitialize}: {
+			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
 					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
-			{"POST", "123", notificationInitialized}: {
+			{"POST", "123", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
 				wantProtocolVersion: latestProtocolVersion,
 			},
-			{"GET", "123", ""}: {
+			{"GET", "123", "", ""}: {
 				status: http.StatusMethodNotAllowed,
 			},
-			{"POST", "123", methodListTools}: {
+			{"POST", "123", methodListTools, ""}: {
 				status: http.StatusNotFound,
 			},
 		},
@@ -251,25 +261,25 @@ func TestStreamableClientGETHandling(t *testing.T) {
 			fake := &fakeStreamableServer{
 				t: t,
 				responses: fakeResponses{
-					{"POST", "", methodInitialize}: {
+					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json; charset=utf-8", // should ignore the charset
 							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
-					{"POST", "123", notificationInitialized}: {
+					{"POST", "123", notificationInitialized, ""}: {
 						status:              http.StatusAccepted,
 						wantProtocolVersion: latestProtocolVersion,
 					},
-					{"GET", "123", ""}: {
+					{"GET", "123", "", ""}: {
 						header: header{
 							"Content-Type": "text/event-stream",
 						},
 						status:              test.status,
 						wantProtocolVersion: latestProtocolVersion,
 					},
-					{"DELETE", "123", ""}: {optional: true},
+					{"DELETE", "123", "", ""}: {optional: true},
 				},
 			}
 			httpServer := httptest.NewServer(fake)
@@ -320,25 +330,25 @@ func TestStreamableClientStrictness(t *testing.T) {
 			fake := &fakeStreamableServer{
 				t: t,
 				responses: fakeResponses{
-					{"POST", "", methodInitialize}: {
+					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
 							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
-					{"POST", "123", notificationInitialized}: {
+					{"POST", "123", notificationInitialized, ""}: {
 						status:              test.initializedStatus,
 						wantProtocolVersion: latestProtocolVersion,
 					},
-					{"GET", "123", ""}: {
+					{"GET", "123", "", ""}: {
 						header: header{
 							"Content-Type": "text/event-stream",
 						},
 						status:              test.getStatus,
 						wantProtocolVersion: latestProtocolVersion,
 					},
-					{"POST", "123", methodListTools}: {
+					{"POST", "123", methodListTools, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
 							sessionIDHeader: "123",
@@ -346,7 +356,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 						body:     jsonBody(t, resp(2, &ListToolsResult{Tools: []*Tool{}}, nil)),
 						optional: true,
 					},
-					{"DELETE", "123", ""}: {optional: true},
+					{"DELETE", "123", "", ""}: {optional: true},
 				},
 			}
 			httpServer := httptest.NewServer(fake)
@@ -379,14 +389,14 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 	fake := &fakeStreamableServer{
 		t: t,
 		responses: fakeResponses{
-			{"POST", "", methodInitialize}: {
+			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "text/event-stream",
 					sessionIDHeader: "123",
 				},
 				body: "",
 			},
-			{"DELETE", "123", ""}: {optional: true},
+			{"DELETE", "123", "", ""}: {optional: true},
 		},
 	}
 	httpServer := httptest.NewServer(fake)
@@ -404,5 +414,144 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 	msg := "terminated without response"
 	if !strings.Contains(err.Error(), msg) {
 		t.Errorf("Connect: got error %v, want containing %q", err, msg)
+	}
+}
+
+func TestStreamableClientResumption_Cancelled(t *testing.T) {
+	// This test verifies that the resumed requests are closed when their context
+	// is cancelled (issue #662).
+
+	// This test (unfortunately) relies on timing, so may have false positives.
+	//
+	// Set the reconnect initial delay to some small(ish) value so that the test
+	// doesn't take too long. But this value must be large enough that we mostly
+	// avoid races in the tests below, where one test cases is intended to be in
+	// between the initial attempt and first reconnection.
+	//
+	// For easier tuning (and debugging), factor out the tick size.
+	//
+	// TODO(#680): experiment with instead using synctest.
+	const tick = 10 * time.Millisecond
+	defer func(delay time.Duration) {
+		reconnectInitialDelay = delay
+	}(reconnectInitialDelay)
+	reconnectInitialDelay = 2 * tick
+
+	// The setup: terminate a request stream and make the resumed request hang
+	// indefinitely. CallTool should still exit when its context is canceled.
+	//
+	// This should work whether we're handling the initial request, waiting to
+	// retry, or handling the retry.
+	//
+	// Furthermore, closing the client connection should not hang, because there
+	// should be no ongoing requests.
+
+	tests := []struct {
+		label       string
+		cancelAfter time.Duration
+	}{
+		{"in process", 1 * tick}, // cancel while the request is being handled
+		// initial request terminates at 2 ticks (see below)
+		{"awaiting retry", 3 * tick}, // cancel in-between first and second attempt
+		// retry starts at 4 ticks (=2+2)
+		{"in retry", 5 * tick}, // cancel while second attempt is hanging
+	}
+
+	for _, test := range tests {
+		t.Run(test.label, func(t *testing.T) {
+			ctx := context.Background()
+
+			// done will be closed when the test exits: used to simulate requests that
+			// hang indefinitely.
+			initialRequestDone := make(chan struct{}) // closed below
+			allDone := make(chan struct{})
+
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"GET", "123", "", ""}: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						status: http.StatusMethodNotAllowed, // don't allow the standalone stream
+					},
+					{"POST", "123", methodCallTool, ""}: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						status: http.StatusOK,
+						body: `id: 1
+data: { "jsonrpc": "2.0", "method": "notifications/message", "params": { "level": "error", "data": "bad" } }
+
+`,
+						done: initialRequestDone,
+					},
+					{"POST", "123", methodListTools, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, resp(3, &ListToolsResult{Tools: []*Tool{}}, nil)),
+					},
+					{"GET", "123", "", "1"}: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						status: http.StatusOK,
+						done:   allDone, // hang indefinitely
+					},
+					{"POST", "123", notificationCancelled, ""}: {status: http.StatusAccepted},
+					{"DELETE", "123", "", ""}:                  {optional: true},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+			defer close(allDone) // must be deferred *after* httpServer.Close, to avoid deadlock
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			client := NewClient(testImpl, nil)
+			cs, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close() // ensure the session is closed, though we're also closing below
+
+			// start the timer on the initial request
+			go func() {
+				<-time.After(2 * tick)
+				close(initialRequestDone)
+			}()
+
+			// start the timer on the call cancellation
+			timeoutCtx, cancel := context.WithTimeout(ctx, test.cancelAfter)
+			defer cancel()
+
+			go func() {
+				<-timeoutCtx.Done()
+			}()
+
+			if _, err := cs.CallTool(timeoutCtx, &CallToolParams{
+				Name: "tool",
+			}); err == nil {
+				t.Errorf("CallTool succeeded unexpectedly")
+			}
+
+			// ...but cancellation should not break the session.
+			// Check that an arbitrary request succeeds.
+			if _, err := cs.ListTools(ctx, nil); err != nil {
+				t.Errorf("ListTools failed after cancellation")
+			}
+		})
 	}
 }

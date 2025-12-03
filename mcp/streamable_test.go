@@ -1788,8 +1788,8 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 	cancel()
 	select {
 	case <-streamableConn.ctx.Done():
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Connection context was not cancelled when parent was cancelled")
+		t.Errorf("cancelling the connection context after successful connection broke the connection")
+	default:
 	}
 }
 
@@ -1945,7 +1945,7 @@ data: keepalive
 	}
 
 	// Process the stream
-	go conn.processStream("test", resp, testReq)
+	go conn.processStream(ctx, "test", resp, testReq)
 
 	// Collect messages with timeout
 	var messages []jsonrpc.Message
