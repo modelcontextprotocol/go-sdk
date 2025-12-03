@@ -1424,6 +1424,9 @@ func TestElicitContentValidation(t *testing.T) {
 	}
 	defer ss.Close()
 
+	// Set up a client that exercises valid/invalid elicitation: the returned
+	// Content from the handler ("potato") is validated against the schemas
+	// defined in the testcases below.
 	c := NewClient(testImpl, &ClientOptions{
 		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
