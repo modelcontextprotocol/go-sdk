@@ -105,6 +105,30 @@ copyright header following the format below:
 // license that can be found in the LICENSE file.
 ```
 
+### Adding and updating dependencies
+
+In general, the SDK tries to use as few dependencies as possible. Each new
+dependency is a potential source for bugs, churn, and conflicts for our users.
+Therefore, we require a [proposal](#proposals) for any new module dependency,
+including upgrading an existing module to a new major version. New dependencies
+should be evaluated for their stability and security, and should be
+well-established in the Go ecosystem.
+
+In general, dependencies should be for internal use by the SDK implementation,
+or for testing. Do not include types from dependencies in the SDK API.
+
+On the other hand, updating existing dependencies can be done at any time
+without a proposal, as long as their major version does not change. Prefer to
+update dependencies immediately following a release of the SDK, to allow as
+much time as possible to find issues with the new version.
+
+After any change to dependencies, run govulncheck to check them for
+vulnerabilities.
+
+```
+go run golang.org/x/vuln/cmd/govulncheck@latest
+```
+
 ### Updating the README
 
 The top-level `README.md` file is generated from `internal/readme/README.src.md`
