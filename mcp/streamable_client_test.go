@@ -429,6 +429,8 @@ func TestStreamableClientResumption_Cancelled(t *testing.T) {
 	// between the initial attempt and first reconnection.
 	//
 	// For easier tuning (and debugging), factor out the tick size.
+	//
+	// TODO(#680): experiment with instead using synctest.
 	const tick = 10 * time.Millisecond
 	defer func(delay time.Duration) {
 		reconnectInitialDelay = delay

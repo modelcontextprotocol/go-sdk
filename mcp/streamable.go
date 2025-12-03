@@ -1371,8 +1371,18 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
 	//
-	// This context should be detached, to decouple the standalone SSE from the
-	// call to Connect.
+	// This context should be detached from the incoming context: the standalone
+	// SSE request should not break when the connection context is done.
+	//
+	// For example, consider that the user may want to wait at most 5s to connect
+	// to the server, and therefore uses a context with a 5s timeout when calling
+	// client.Connect. Let's suppose that Connect returns after 1s, and the user
+	// starts using the resulting session. If we didn't detach here, the session
+	// would break after 4s, when the background SSE stream is terminated.
+	//
+	// Instead, creating a cancellable context detached from the incoming context
+	// allows us to preserve context values (which may be necessary for auth
+	// middleware), yet only cancel the standalone stream when the connection is closed.
 	connCtx, cancel := context.WithCancel(xcontext.Detach(ctx))
 	conn := &streamableClientConn{
 		url:        t.Endpoint,
@@ -1684,8 +1694,10 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, persistent bool, forCall *jsonrpc2.Request) {
 	for {
 		// Connection was successful. Continue the loop with the new response.
-		// TODO: we should set a reasonable limit on the number of times we'll try
-		// getting a response for a given request.
+		//
+		// TODO(#679): we should set a reasonable limit on the number of times
+		// we'll try getting a response for a given request, or enforce that we
+		// actually make progress.
 		//
 		// Eventually, if we don't get the response, we should stop trying and
 		// fail the request.
