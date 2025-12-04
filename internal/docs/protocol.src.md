@@ -257,7 +257,7 @@ config := &auth.EnterpriseAuthConfig{
     IdPClientID:      "client-id-at-idp",
     IdPClientSecret:  "secret-at-idp",
     MCPAuthServerURL: "https://auth.mcpserver.example",
-    MCPResourceURL:   "https://mcp.mcpserver.example",
+    MCPResourceURI:   "https://mcp.mcpserver.example",
     MCPClientID:      "client-id-at-mcp",
     MCPClientSecret:  "secret-at-mcp",
     MCPScopes:        []string{"read", "write"},
