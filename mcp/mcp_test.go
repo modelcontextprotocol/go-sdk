@@ -1673,14 +1673,15 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 }
 
 func TestSynchronousNotifications(t *testing.T) {
-	var toolsChanged atomic.Bool
+	var toolsChanged atomic.Int32
 	clientOpts := &ClientOptions{
 		ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {
-			toolsChanged.Store(true)
+			toolsChanged.Add(1)
 		},
 		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			if !toolsChanged.Load() {
-				return nil, fmt.Errorf("didn't get a tools changed notification")
+			// See the comment after "from server" below.
+			if n := toolsChanged.Load(); n != 1 {
+				return nil, fmt.Errorf("got %d tools-changed notification, wanted 1", n)
 			}
 			// TODO(rfindley): investigate the error returned from this test if
 			// CreateMessageResult is new(CreateMessageResult): it's a mysterious
@@ -1720,7 +1721,12 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 
 	t.Run("from server", func(t *testing.T) {
-		// TODO: test that multiple changes result in a single notification.
+		// Despite all this tool-changed activity, we expect only one notification.
+		for range 10 {
+			server.RemoveTools("tool")
+			addTool(server)
+		}
+
 		time.Sleep(notificationDelay * 2) // Wait for delayed notification.
 		if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
 			t.Errorf("CreateMessage failed: %v", err)
