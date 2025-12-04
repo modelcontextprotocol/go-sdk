@@ -51,7 +51,7 @@ type Server struct {
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
-	pendingNotifications    map[string]int                     // notification name -> count of unsent changes
+	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -150,7 +150,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		sendingMethodHandler_:   defaultSendingMethodHandler[*ServerSession],
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
-		pendingNotifications:    make(map[string]int),
+		pendingNotifications:    make(map[string]*time.Timer),
 	}
 }
 
@@ -501,48 +501,34 @@ var changeNotificationParams = map[string]Params{
 	notificationResourceListChanged: &ResourceListChangedParams{},
 }
 
-// The maximum number of change notifications of a particular type (e.g. tools-changed)
-// that can be pending.
-const maxPendingNotifications = 10
-
 // How long to wait before sending a change notification.
-var notificationDelay = 50 * time.Millisecond
+const notificationDelay = 10 * time.Millisecond
 
 // changeAndNotify is called when a feature is added or removed.
 // It calls change, which should do the work and report whether a change actually occurred.
-// If there was a change, it notifies a snapshot of the sessions.
+// If there was a change, it sets a timer to send a notification.
+// This debounces change notifications: a single notification is sent after
+// multiple changes occur in close proximity.
 func (s *Server) changeAndNotify(notification string, change func() bool) {
-	var sessions []*ServerSession
-	send := false
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if change() {
-		pending := s.pendingNotifications[notification]
-		if pending >= maxPendingNotifications {
-			send = true
-			pending = 0
-			// Make a local copy of the session list so we can use it without holding the lock.
-			sessions = slices.Clone(s.sessions)
-		} else {
-			pending++
-			if pending == 1 {
-				time.AfterFunc(notificationDelay, func() { s.sendNotification(notification) })
-			}
+		// Stop the outstanding delayed call, if any.
+		if t := s.pendingNotifications[notification]; t != nil {
+			t.Stop()
 		}
-		s.pendingNotifications[notification] = pending
-	}
-	s.mu.Unlock() // Don't hold lock during notifications.
-	if send {
-		notifySessions(sessions, notification, changeNotificationParams[notification])
+		//
+		s.pendingNotifications[notification] = time.AfterFunc(notificationDelay, func() { s.notifySessions(notification) })
 	}
 }
 
-// sendNotification is called asynchronously to ensure that notifications are sent
-// soon after they occur.
-func (s *Server) sendNotification(n string) {
+// notifySessions sends the notification n to all existing sessions.
+// It is called asynchronously by changeAndNotify.
+func (s *Server) notifySessions(n string) {
 	s.mu.Lock()
 	sessions := slices.Clone(s.sessions)
-	s.pendingNotifications[n] = 0
-	s.mu.Unlock()
+	s.pendingNotifications[n] = nil
+	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 	notifySessions(sessions, n, changeNotificationParams[n])
 }
 
@@ -1103,7 +1089,6 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
-		fmt.Printf("  resolve err: %s", err)
 		return nil, err
 	}
 	if err := resolved.Validate(res.Content); err != nil {

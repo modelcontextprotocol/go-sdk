@@ -1720,11 +1720,8 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 
 	t.Run("from server", func(t *testing.T) {
-		// Because server change notifications are batched, we must generate a lot of them.
-		for range maxPendingNotifications/2 + 1 {
-			server.RemoveTools("tool")
-			addTool(server)
-		}
+		// TODO: test that multiple changes result in a single notification.
+		time.Sleep(notificationDelay * 2) // Wait for delayed notification.
 		if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
 			t.Errorf("CreateMessage failed: %v", err)
 		}

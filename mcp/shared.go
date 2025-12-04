@@ -349,6 +349,8 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P) 
 	if sessions == nil {
 		return
 	}
+	// Notify with the background context, so the messages are sent on the
+	// standalone stream.
 	// TODO: make this timeout configurable, or call handleNotify asynchronously.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
