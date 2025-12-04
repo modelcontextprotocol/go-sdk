@@ -29,7 +29,7 @@ type EnterpriseAuthConfig struct {
 
 	// MCP Server configuration (the resource being accessed)
 	MCPAuthServerURL string   // MCP Server's auth server issuer URL
-	MCPResourceURL   string   // MCP Server's resource identifier
+	MCPResourceURI   string   // MCP Server's resource identifier
 	MCPClientID      string   // MCP Client's ID at the MCP Server
 	MCPClientSecret  string   // MCP Client's secret at the MCP Server
 	MCPScopes        []string // Requested scopes at the MCP Server
@@ -76,7 +76,7 @@ type EnterpriseAuthConfig struct {
 //		IdPClientID:      "client-id-at-idp",
 //		IdPClientSecret:  "secret-at-idp",
 //		MCPAuthServerURL: "https://auth.mcpserver.example",
-//		MCPResourceURL:   "https://mcp.mcpserver.example",
+//		MCPResourceURI:   "https://mcp.mcpserver.example",
 //		MCPClientID:      "client-id-at-mcp",
 //		MCPClientSecret:  "secret-at-mcp",
 //		MCPScopes:        []string{"read", "write"},
@@ -93,7 +93,7 @@ type EnterpriseAuthConfig struct {
 //		IdPClientID:      "client-id-at-idp",
 //		IdPClientSecret:  "secret-at-idp",
 //		MCPAuthServerURL: "https://auth.mcpserver.example",
-//		MCPResourceURL:   "https://mcp.mcpserver.example",
+//		MCPResourceURI:   "https://mcp.mcpserver.example",
 //		MCPClientID:      "client-id-at-mcp",
 //		MCPClientSecret:  "secret-at-mcp",
 //		MCPScopes:        []string{"read", "write"},
@@ -124,8 +124,8 @@ func EnterpriseAuthFlow(
 	if config.MCPAuthServerURL == "" {
 		return nil, fmt.Errorf("MCPAuthServerURL is required")
 	}
-	if config.MCPResourceURL == "" {
-		return nil, fmt.Errorf("MCPResourceURL is required")
+	if config.MCPResourceURI == "" {
+		return nil, fmt.Errorf("MCPResourceURI is required")
 	}
 	httpClient := config.HTTPClient
 	if httpClient == nil {
@@ -142,7 +142,7 @@ func EnterpriseAuthFlow(
 	tokenExchangeReq := &oauthex.TokenExchangeRequest{
 		RequestedTokenType: oauthex.TokenTypeIDJAG,
 		Audience:           config.MCPAuthServerURL,
-		Resource:           config.MCPResourceURL,
+		Resource:           config.MCPResourceURI,
 		Scope:              config.MCPScopes,
 		SubjectToken:       idToken,
 		SubjectTokenType:   oauthex.TokenTypeIDToken,

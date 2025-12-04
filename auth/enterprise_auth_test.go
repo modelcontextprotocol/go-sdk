@@ -34,7 +34,7 @@ func TestEnterpriseAuthFlow(t *testing.T) {
 		IdPClientID:      "test-idp-client",
 		IdPClientSecret:  "test-idp-secret",
 		MCPAuthServerURL: mcpServer.URL,
-		MCPResourceURL:   "https://mcp.example.com",
+		MCPResourceURI:   "https://mcp.example.com",
 		MCPClientID:      "test-mcp-client",
 		MCPClientSecret:  "test-mcp-secret",
 		MCPScopes:        []string{"read", "write"},
