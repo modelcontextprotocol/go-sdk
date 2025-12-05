@@ -26,6 +26,34 @@ containing the SDK, run:
 go work init ./project ./go-sdk
 ```
 
+### Conformance tests
+
+The SDK includes a script to run the official MCP conformance tests against the
+SDK's conformance server:
+
+```sh
+./scripts/conformance.sh
+```
+
+By default, results are cleaned up after the script runs. To save results to a
+specific directory:
+
+```sh
+./scripts/conformance.sh --result_dir ./conformance-results
+```
+
+To run against a local checkout of the
+[conformance repo](https://github.com/modelcontextprotocol/conformance) instead
+of the latest npm release:
+
+```sh
+./scripts/conformance.sh --conformance_repo ~/src/conformance
+```
+
+Note: you must run `npm install` in the conformance repo first.
+
+Run `./scripts/conformance.sh --help` for more options.
+
 ## Filing issues
 
 This project uses the [GitHub issue
