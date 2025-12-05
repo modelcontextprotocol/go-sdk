@@ -2,6 +2,10 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+// NOTE: see streamable_server.go and streamable_client.go for detailed
+// documentation of the streamable server design.
+// TODO(cleanup): move the client and server logic into those files.
+
 package mcp
 
 import (
@@ -632,6 +636,9 @@ type stream struct {
 	// streamRequests is the set of unanswered incoming requests for the stream.
 	//
 	// Requests are removed when their response has been received.
+	// In practice, there is only one request, but in the 2025-03-26 version of
+	// the spec and earlier there was a concept of batching, in which POST
+	// payloads could hold multiple requests or responses.
 	requests map[jsonrpc.ID]struct{}
 }
 
@@ -644,6 +651,10 @@ func (s *stream) close(reconnectAfter time.Duration) {
 }
 
 // doneLocked reports whether the stream is logically complete.
+//
+// s.requests was populated when reading the POST body, requests are deleted as
+// they are responded to. Once all requests have been responded to, the stream
+// is done.
 //
 // s.mu must be held while calling this function.
 func (s *stream) doneLocked() bool {
@@ -751,6 +762,7 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 		stream.mu.Unlock()
 	}()
 
+	// TODO(cleanup): factor out, to clarify closing patterns.
 	select {
 	case <-ctx.Done():
 		// request cancelled
@@ -790,10 +802,10 @@ func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectA
 	}
 }
 
-// acquireStream acquires the stream and replays all events since lastIdx, if
-// any, updating lastIdx accordingly. If non-nil, the resulting stream will be
-// registered for receiving new messages, and the resulting done channel will
-// be closed when all related messages have been delivered.
+// acquireStream replays all events since lastIdx, and acquires the ongoing
+// stream, if any, updating lastIdx accordingly. If non-nil, the resulting
+// stream will be registered for receiving new messages, and the resulting done
+// channel will be closed when all related messages have been delivered.
 //
 // If any errors occur, they will be written to w and the resulting stream will
 // be nil. The resulting stream may also be nil if the stream is complete.
@@ -803,11 +815,13 @@ func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectA
 // the stream is still replaying.
 //
 // supportsPrimeClose indicates whether the client supports the prime and close
-// events (protocol version 2025-11-25 or later).
+// events (SEP-1699, added in protocol version 2025-11-25 or later).
 func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx *int, supportsPrimeClose bool) (*stream, chan struct{}) {
 	// if tempStream is set, the stream is done and we're just replaying messages.
 	//
-	// We record a temporary stream to claim exclusive replay rights.
+	// We record a temporary stream to claim exclusive replay rights. The spec
+	// (https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#resumability-and-redelivery)
+	// does not explicitly require exclusive replay, but we enforce it defensively.
 	tempStream := false
 	c.mu.Lock()
 	s, ok := c.streams[streamID]
@@ -896,20 +910,23 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	// The stream is not done: register a delivery function before the stream is
 	// unlocked, allowing the connection to write new events.
 	var done = make(chan struct{})
+	// TODO(cleanup): consolidate deliver functions, and be consistent about
+	// checking ctx.Err().
 	s.deliver = func(data []byte, final bool) error {
 		select {
 		case <-done:
 			return fmt.Errorf("stream closed")
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
-		}
-		if err := ctx.Err(); err != nil {
-			return err
 		}
 		if final {
 			defer close(done)
 		}
 		return c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx)
 	}
+	// TODO(cleanup): consolidate closeLocked functions, and be consistent about
+	// checking ctx.Err().
 	if supportsPrimeClose {
 		s.closeLocked = func(reconnectAfter time.Duration) {
 			select {
@@ -947,6 +964,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, "POST requires a non-empty body", http.StatusBadRequest)
 		return
 	}
+	// TODO(#674): once we've documented the support matrix for 2025-03-26 and
+	// earlier, drop support for matching entirely; that will simplify this
+	// logic.
 	incoming, isBatch, err := readBatch(body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
@@ -991,12 +1011,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					initializeProtocolVersion = params.ProtocolVersion
 				}
 			}
+			// Include metadata for all requests (including notifications).
 			jreq.Extra = &RequestExtra{
 				TokenInfo: tokenInfo,
 				Header:    req.Header,
 			}
 			if jreq.IsCall() {
 				calls[jreq.ID] = struct{}{}
+				// See the doc for CloseStream: allow the request handler to explicitly
+				// close the ongoing stream.
 				jreq.Extra.(*RequestExtra).CloseStream = func(reconnectAfter time.Duration) {
 					c.mu.Lock()
 					streamID, ok := c.requestStreams[jreq.ID]
@@ -1025,6 +1048,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 
 	// If we don't have any calls, we can just publish the incoming messages and return.
 	// No need to track a logical stream.
+	//
+	// See section [§2.1.4] of the spec: "If the server accepts the input, the
+	// server MUST return HTTP status code 202 Accepted with no body."
+	//
+	// [§2.1.4]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
 	if len(calls) == 0 {
 		for _, msg := range incoming {
 			select {
@@ -1074,6 +1102,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			//
 			// In recent protocol versions, there should only be one message as
 			// batching is disabled, as checked above.
+			//
+			// Note that in [streamableClientConn.Write], any non-response message is
+			// sent to the standalone stream (if any), when the connection is
+			// configured to respond with application/json.
 			msgs = append(msgs, data)
 			if !final {
 				return nil
@@ -1099,7 +1131,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		// Write events in the order we receive them.
 		lastIndex := -1
 		if c.eventStore != nil && supportsPrimeClose {
-			// Write a priming event.
+			// Write a priming event, as defined by [§2.1.6] of the spec.
+			//
+			// [§2.1.6]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
+			//
 			// We must also write it to the event store in order for indexes to
 			// align.
 			if err := c.eventStore.Append(req.Context(), c.sessionID, stream.id, nil); err != nil {
@@ -1110,6 +1145,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 
+		// TODO(cleanup): consolidate per other TODO, check ctx.Err()
 		stream.deliver = func(data []byte, final bool) error {
 			select {
 			case <-done:
@@ -1121,6 +1157,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			return c.writeEvent(w, stream.id, Event{Name: "message", Data: data}, &lastIndex)
 		}
+		// TODO(cleanup): consolidate per other TODO.
 		if supportsPrimeClose {
 			stream.closeLocked = func(reconnectAfter time.Duration) {
 				select {
@@ -1163,6 +1200,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		// Note: don't select on req.Context().Done() here, since we've already
 		// received the requests and may have already published a response message
 		// or notification. The client could resume the stream.
+		//
+		// In fact, this send could be in a separate goroutine.
 		case <-c.done:
 			// Session closed: we don't know if any data has been written, so it's
 			// too late to write a status code here.
@@ -1170,6 +1209,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// TODO(cleanup): factor this out, per other TODO.
 	select {
 	case <-req.Context().Done():
 		// request cancelled
@@ -1236,7 +1276,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if req, ok := msg.(*jsonrpc.Request); ok && req.ID.IsValid() && (c.stateless || c.sessionID == "") {
+	if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() && (c.stateless || c.sessionID == "") {
 		// Requests aren't possible with stateless servers, or when there's no session ID.
 		return fmt.Errorf("%w: stateless servers cannot make requests", jsonrpc2.ErrRejected)
 	}
@@ -1689,7 +1729,8 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		if jsonReq, ok := msg.(*jsonrpc.Request); ok && jsonReq.IsCall() {
 			forCall = jsonReq
 		}
-		// TODO: should we cancel this logical SSE request if/when jsonReq is canceled?
+		// TODO(cleanup): decide if we should cancel this logical SSE request
+		// if/when jsonReq is canceled.
 		go c.handleSSE(ctx, requestSummary, resp, false, forCall)
 
 	default:
@@ -1742,7 +1783,9 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 //
 // If forCall is set, it is the call that initiated the stream, and the
 // stream is complete when we receive its response.
-func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, persistent bool, forCall *jsonrpc2.Request) {
+func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, standalone bool, forCall *jsonrpc2.Request) {
+	// TODO(cleanup): standalone should be completely equivalent to forCall == nil.
+	// Enforce that at the callsite, and remove the standalone flag argument.
 	for {
 		// Connection was successful. Continue the loop with the new response.
 		//
@@ -1760,7 +1803,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		}
 		// If the stream has ended, then do not reconnect if the stream is
 		// temporary (POST initiated SSE).
-		if lastEventID == "" && !persistent {
+		if lastEventID == "" && !standalone {
 			return
 		}
 
@@ -1844,6 +1887,8 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 
 		select {
 		case c.incoming <- msg:
+			// Check if this is the response to our call, which terminates the request.
+			// (it could also be a server->client request or notification).
 			if jsonResp, ok := msg.(*jsonrpc.Response); ok && forCall != nil {
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
