@@ -61,6 +61,8 @@ func TestEndToEnd(t *testing.T) {
 	var ct, st Transport = NewInMemoryTransports()
 
 	// Channels to check if notification callbacks happened.
+	// These test asynchronous sending of notifications after a small delay (see
+	// Server.sendNotification).
 	notificationChans := map[string]chan int{}
 	for _, name := range []string{"initialized", "roots", "tools", "prompts", "resources", "progress_server", "progress_client", "resource_updated", "subscribe", "unsubscribe", "elicitation_complete"} {
 		notificationChans[name] = make(chan int, 1)
@@ -1797,14 +1799,15 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 }
 
 func TestSynchronousNotifications(t *testing.T) {
-	var toolsChanged atomic.Bool
+	var toolsChanged atomic.Int32
 	clientOpts := &ClientOptions{
 		ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {
-			toolsChanged.Store(true)
+			toolsChanged.Add(1)
 		},
 		CreateMessageHandler: func(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			if !toolsChanged.Load() {
-				return nil, fmt.Errorf("didn't get a tools changed notification")
+			// See the comment after "from server" below.
+			if n := toolsChanged.Load(); n != 1 {
+				return nil, fmt.Errorf("got %d tools-changed notification, wanted 1", n)
 			}
 			// TODO(rfindley): investigate the error returned from this test if
 			// CreateMessageResult is new(CreateMessageResult): it's a mysterious
@@ -1821,14 +1824,15 @@ func TestSynchronousNotifications(t *testing.T) {
 		},
 	}
 	server := NewServer(testImpl, serverOpts)
-	cs, ss, cleanup := basicClientServerConnection(t, client, server, func(s *Server) {
+	addTool := func(s *Server) {
 		AddTool(s, &Tool{Name: "tool"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			if !rootsChanged.Load() {
 				return nil, nil, fmt.Errorf("didn't get root change notification")
 			}
 			return new(CallToolResult), nil, nil
 		})
-	})
+	}
+	cs, ss, cleanup := basicClientServerConnection(t, client, server, addTool)
 	defer cleanup()
 
 	t.Run("from client", func(t *testing.T) {
@@ -1843,7 +1847,13 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 
 	t.Run("from server", func(t *testing.T) {
-		server.RemoveTools("tool")
+		// Despite all this tool-changed activity, we expect only one notification.
+		for range 10 {
+			server.RemoveTools("tool")
+			addTool(server)
+		}
+
+		time.Sleep(notificationDelay * 2) // Wait for delayed notification.
 		if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
 			t.Errorf("CreateMessage failed: %v", err)
 		}
