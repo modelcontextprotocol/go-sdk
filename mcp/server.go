@@ -1101,12 +1101,15 @@ func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) 
 	return handleNotify(ctx, notificationLoggingMessage, newServerRequest(ss, orZero[Params](params)))
 }
 
-// AddSendingMiddleware wraps the current sending method handler using the provided
-// middleware. Middleware is applied from right to left, so that the first one is
-// executed first.
+// AddSendingMiddleware wraps the current sending method handler using
+// the provided middleware.
+// Middleware supplied via arguments is applied from right to left at the time it is added,
+// so that the first one among these is executed first.
 //
 // For example, AddSendingMiddleware(m1, m2, m3) augments the method handler as
 // m1(m2(m3(handler))).
+// Then adding another set of middleware with AddSendingMiddleware(m4, m5, m6) yields
+// m4(m5(m6(m1(m2(m3(handler)))))).
 //
 // Sending middleware is called when a request is sent. It is useful for tasks
 // such as tracing, metrics, and adding progress tokens.
@@ -1117,11 +1120,14 @@ func (s *Server) AddSendingMiddleware(middleware ...Middleware) {
 }
 
 // AddReceivingMiddleware wraps the current receiving method handler using
-// the provided middleware. Middleware is applied from right to left, so that the
-// first one is executed first.
+// the provided middleware.
+// Middleware supplied via arguments is applied from right to left at the time it is added,
+// so that the first one among these is executed first.
 //
 // For example, AddReceivingMiddleware(m1, m2, m3) augments the method handler as
 // m1(m2(m3(handler))).
+// Then adding another set of middleware with AddReceivingMiddleware(m4, m5, m6) yields
+// m4(m5(m6(m1(m2(m3(handler)))))).
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
