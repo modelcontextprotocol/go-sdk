@@ -367,26 +367,68 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 // TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
 // should have a jsonschema.Zero(schema) helper?
 func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err error) {
-	var internalSchema *jsonschema.Schema
-	if *sfield == nil {
-		rt := reflect.TypeFor[T]()
-		if rt.Kind() == reflect.Pointer {
-			rt = rt.Elem()
-			zero = reflect.Zero(rt).Interface()
-		}
-		// TODO: we should be able to pass nil opts here.
-		internalSchema, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
-		if err == nil {
-			*sfield = internalSchema
-		}
-	} else if err := remarshal(*sfield, &internalSchema); err != nil {
-		return zero, err
+	rt := reflect.TypeFor[T]()
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+		zero = reflect.Zero(rt).Interface()
 	}
+
+	var internalSchema *jsonschema.Schema
+
+	if *sfield == nil {
+		// Case 1: No schema provided - check type cache first
+		if schema, resolved, ok := globalSchemaCache.getByType(rt); ok {
+			*sfield = schema
+			*rfield = resolved
+			return zero, nil
+		}
+
+		// Generate schema via reflection (expensive, but cached for next time)
+		internalSchema, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
+		if err != nil {
+			return zero, err
+		}
+		*sfield = internalSchema
+
+		// Resolve and cache
+		resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+		if err != nil {
+			return zero, err
+		}
+		*rfield = resolved
+		globalSchemaCache.setByType(rt, internalSchema, resolved)
+		return zero, nil
+	}
+
+	// Case 2: Schema was provided
+	// Check if it's a *jsonschema.Schema we can cache by pointer
+	if providedSchema, ok := (*sfield).(*jsonschema.Schema); ok {
+		if resolved, ok := globalSchemaCache.getBySchema(providedSchema); ok {
+			*rfield = resolved
+			return zero, nil
+		}
+		// Need to resolve and cache
+		internalSchema = providedSchema
+	} else {
+		// Schema provided as different type (e.g., map) - need to remarshal
+		if err := remarshal(*sfield, &internalSchema); err != nil {
+			return zero, err
+		}
+	}
+
+	// Resolve the schema
+	resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
 	if err != nil {
 		return zero, err
 	}
-	*rfield, err = internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
-	return zero, err
+	*rfield = resolved
+
+	// Cache by schema pointer if we got a direct *jsonschema.Schema
+	if providedSchema, ok := (*sfield).(*jsonschema.Schema); ok {
+		globalSchemaCache.setBySchema(providedSchema, resolved)
+	}
+
+	return zero, nil
 }
 
 // AddTool adds a tool and typed tool handler to the server.
