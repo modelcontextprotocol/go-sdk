@@ -394,7 +394,7 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P) 
 	for _, s := range sessions {
 		req := newRequest(s, params)
 		if err := handleNotify(ctx, method, req); err != nil {
-			// TODO(jba): surface this error better
+			// TODO(#218): surface this error better
 			log.Printf("calling %s: %v", method, err)
 		}
 	}
@@ -469,14 +469,22 @@ type RequestExtra struct {
 	TokenInfo *auth.TokenInfo // bearer token info (e.g. from OAuth) if any
 	Header    http.Header     // header from HTTP request, if any
 
-	// CloseStream closes the current request stream, if the current transport
-	// supports replaying requests.
+	// If set, CloseStream explicitly closes the current request stream.
 	//
-	// If reconnectAfter is nonzero, it signals to the client to reconnect after
-	// the given duration. Otherwise, clients may determine their own
-	// reconnection policy.
+	// [SEP-1699] introduced server-side SSE stream disconnection: for
+	// long-running requests, servers may opt to close the SSE stream and
+	// ask the client to retry at a later time. CloseStream implements this
+	// feature; if reconnectAfter is set, an event is sent with a `retry:` field
+	// to configure the reconnection delay.
+	//
+	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
 	CloseStream func(reconnectAfter time.Duration)
 }
+
+// TODO(cleanup): switch to an args struct here for forwards compatibility.
+// type CloseStreamArgs struct {
+// 	After time.Duration
+// }
 
 func (*ClientRequest[P]) isRequest() {}
 func (*ServerRequest[P]) isRequest() {}

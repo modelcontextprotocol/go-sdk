@@ -55,9 +55,16 @@ type ConnectionOptions struct {
 }
 
 // Connection manages the jsonrpc2 protocol, connecting responses back to their
-// calls.
-// Connection is bidirectional; it does not have a designated server or client
-// end.
+// calls. Connection is bidirectional; it does not have a designated server or
+// client end.
+//
+// Note that the word 'Connection' is overloaded: the mcp.Connection represents
+// the bidirectional stream of messages between client an server. The
+// jsonrpc2.Connection layers RPC logic on top of that stream, dispatching RPC
+// handlers, and correlating requests with responses from the peer.
+//
+// Some of the complexity of the Connection type is grown out of its usage in
+// gopls: it could probably be simplified based on our usage in MCP.
 type Connection struct {
 	seq int64 // must only be accessed using atomic operations
 
