@@ -359,21 +359,14 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 // Pointers are treated equivalently to non-pointers when deriving the schema.
 // If an indirection occurred to derive the schema, a non-nil zero value is
 // returned to be used in place of the typed nil zero value.
-//
-// Note that if sfield already holds a schema, zero will be nil even if T is a
-// pointer: if the user provided the schema, they may have intentionally
-// derived it from the pointer type, and handling of zero values is up to them.
-//
-// TODO(rfindley): we really shouldn't ever return 'null' results. Maybe we
-// should have a jsonschema.Zero(schema) helper?
 func setSchema[T any](sfield *any, rfield **jsonschema.Resolved) (zero any, err error) {
+	rt := reflect.TypeFor[T]()
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+		zero = reflect.Zero(rt).Interface()
+	}
 	var internalSchema *jsonschema.Schema
 	if *sfield == nil {
-		rt := reflect.TypeFor[T]()
-		if rt.Kind() == reflect.Pointer {
-			rt = rt.Elem()
-			zero = reflect.Zero(rt).Interface()
-		}
 		// TODO: we should be able to pass nil opts here.
 		internalSchema, err = jsonschema.ForType(rt, &jsonschema.ForOptions{})
 		if err == nil {
