@@ -44,16 +44,12 @@ func main() {
 		Version: "1.0.0",
 	}, opts)
 
-	// Register all conformance tools
+	// Register server features.
 	registerTools(server)
-
-	// Register all conformance resources
 	registerResources(server)
-
-	// Register all conformance prompts
 	registerPrompts(server)
 
-	// Start the watched resource auto-update goroutine
+	// Start the watched resource auto-update goroutine.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go watchedResourceUpdater(ctx, server)
@@ -95,79 +91,66 @@ func watchedResourceUpdater(ctx context.Context, server *mcp.Server) {
 // =============================================================================
 
 func registerTools(server *mcp.Server) {
-	// test_simple_text - Tests simple text content response
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_simple_text",
 		Description: "Tests simple text content response",
 	}, testSimpleTextHandler)
 
-	// test_image_content - Tests image content response
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_image_content",
 		Description: "Tests image content response",
 	}, testImageContentHandler)
 
-	// test_audio_content - Tests audio content response
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_audio_content",
 		Description: "Tests audio content response",
 	}, testAudioContentHandler)
 
-	// test_embedded_resource - Tests embedded resource content response
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_embedded_resource",
 		Description: "Tests embedded resource content response",
 	}, testEmbeddedResourceHandler)
 
-	// test_multiple_content_types - Tests response with multiple content types
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_multiple_content_types",
 		Description: "Tests response with multiple content types (text, image, resource)",
 	}, testMultipleContentTypesHandler)
 
-	// test_tool_with_logging - Tests tool that emits log messages during execution
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_tool_with_logging",
 		Description: "Tests tool that emits log messages during execution",
 	}, testToolWithLoggingHandler)
 
-	// test_tool_with_progress - Tests tool that reports progress notifications
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_tool_with_progress",
 		Description: "Tests tool that reports progress notifications",
 	}, testToolWithProgressHandler)
 
-	// test_error_handling - Tests error response handling
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_error_handling",
 		Description: "Tests error response handling",
 	}, testErrorHandlingHandler)
 
-	// test_sampling - Tests server-initiated sampling
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_sampling",
 		Description: "Tests server-initiated sampling (LLM completion request)",
 	}, testSamplingHandler)
 
-	// test_elicitation - Tests server-initiated elicitation
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_elicitation",
 		Description: "Tests server-initiated elicitation (user input request)",
 	}, testElicitationHandler)
 
-	// test_elicitation_sep1034_defaults - Tests elicitation with default values per SEP-1034
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_elicitation_sep1034_defaults",
 		Description: "Tests elicitation with default values per SEP-1034",
 	}, testElicitationDefaultsHandler)
 
-	// test_elicitation_sep1330_enums - Tests elicitation with enum schema improvements per SEP-1330
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_elicitation_sep1330_enums",
 		Description: "Tests elicitation with enum schema improvements per SEP-1330",
 	}, testElicitationEnumsHandler)
 
-	// json_schema_2020_12_tool - Tool with JSON Schema 2020-12 features for conformance testing
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "json_schema_2020_12_tool",
 		Description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613)",
@@ -191,7 +174,6 @@ func registerTools(server *mcp.Server) {
 		}`),
 	}, jsonSchema202012Handler)
 
-	// test_reconnection - Tests SSE stream disconnection and client reconnection (SEP-1699)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_reconnection",
 		Description: "Tests SSE stream disconnection and client reconnection (SEP-1699). Server will close the stream mid-call and send the result after client reconnects.",
@@ -542,7 +524,6 @@ func testReconnectionHandler(ctx context.Context, req *mcp.CallToolRequest, _ an
 // =============================================================================
 
 func registerResources(server *mcp.Server) {
-	// static-text - Plain text resource
 	server.AddResource(&mcp.Resource{
 		Name:        "static-text",
 		Description: "A static text resource for testing",
@@ -550,7 +531,6 @@ func registerResources(server *mcp.Server) {
 		URI:         "test://static-text",
 	}, staticTextHandler)
 
-	// static-binary - PNG image resource
 	server.AddResource(&mcp.Resource{
 		Name:        "static-binary",
 		Description: "A static binary resource (image) for testing",
@@ -558,7 +538,6 @@ func registerResources(server *mcp.Server) {
 		URI:         "test://static-binary",
 	}, staticBinaryHandler)
 
-	// template - Parameterized resource with ID substitution
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
 		Name:        "template",
 		Description: "A resource template with parameter substitution",
@@ -566,7 +545,6 @@ func registerResources(server *mcp.Server) {
 		URITemplate: "test://template/{id}/data",
 	}, templateResourceHandler)
 
-	// watched-resource - Auto-updating resource with subscription support
 	server.AddResource(&mcp.Resource{
 		Name:        "watched-resource",
 		Description: "A resource that auto-updates every 3 seconds",
@@ -640,14 +618,12 @@ func watchedResourceHandler(ctx context.Context, req *mcp.ReadResourceRequest) (
 // =============================================================================
 
 func registerPrompts(server *mcp.Server) {
-	// test_simple_prompt - Simple Test Prompt
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "test_simple_prompt",
 		Title:       "Simple Test Prompt",
 		Description: "A simple prompt without arguments",
 	}, simplePromptHandler)
 
-	// test_prompt_with_arguments - Prompt With Arguments
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "test_prompt_with_arguments",
 		Title:       "Prompt With Arguments",
@@ -658,7 +634,6 @@ func registerPrompts(server *mcp.Server) {
 		},
 	}, promptWithArgumentsHandler)
 
-	// test_prompt_with_embedded_resource - Prompt With Embedded Resource
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "test_prompt_with_embedded_resource",
 		Title:       "Prompt With Embedded Resource",
@@ -668,7 +643,6 @@ func registerPrompts(server *mcp.Server) {
 		},
 	}, promptWithEmbeddedResourceHandler)
 
-	// test_prompt_with_image - Prompt With Image
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "test_prompt_with_image",
 		Title:       "Prompt With Image",
@@ -776,7 +750,7 @@ func unsubscribeHandler(ctx context.Context, req *mcp.UnsubscribeRequest) error 
 // Helper functions
 // =============================================================================
 
-// Base64-encoded minimal test files, copied from the conformance example
+// Base64-encoded minimal test files, copied from the typescript conformance example.
 const (
 	// Minimal 1x1 red PNG image
 	testImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
