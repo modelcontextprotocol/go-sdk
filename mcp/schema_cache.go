@@ -18,6 +18,8 @@ import (
 // This cache significantly improves performance for stateless server deployments
 // where tools are re-registered on every request. Without caching, each AddTool
 // call would trigger expensive reflection-based schema generation and resolution.
+//
+// Create a cache using [NewSchemaCache] and pass it to [ServerOptions.SchemaCache].
 type schemaCache struct {
 	// byType caches schemas generated from Go types via jsonschema.ForType.
 	// Key: reflect.Type, Value: *cachedSchema
@@ -36,9 +38,11 @@ type cachedSchema struct {
 	resolved *jsonschema.Resolved
 }
 
-// globalSchemaCache is the package-level cache used by setSchema.
-// It is unbounded since typical MCP servers have <100 tools.
-var globalSchemaCache = &schemaCache{}
+// NewSchemaCache creates a new schema cache for use with [ServerOptions.SchemaCache].
+// Safe for concurrent use, unbounded.
+func NewSchemaCache() *schemaCache {
+	return &schemaCache{}
+}
 
 // getByType retrieves a cached schema by Go type.
 // Returns the schema, resolved schema, and whether the cache hit.
@@ -67,10 +71,4 @@ func (c *schemaCache) getBySchema(schema *jsonschema.Schema) (*jsonschema.Resolv
 // setBySchema caches a resolved schema by the original schema pointer.
 func (c *schemaCache) setBySchema(schema *jsonschema.Schema, resolved *jsonschema.Resolved) {
 	c.bySchema.Store(schema, resolved)
-}
-
-// resetForTesting clears the cache. Only for use in tests.
-func (c *schemaCache) resetForTesting() {
-	c.byType.Clear()
-	c.bySchema.Clear()
 }

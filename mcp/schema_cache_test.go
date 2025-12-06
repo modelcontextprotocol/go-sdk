@@ -13,7 +13,7 @@ import (
 )
 
 func TestSchemaCache_ByType(t *testing.T) {
-	cache := &schemaCache{}
+	cache := NewSchemaCache()
 
 	type TestInput struct {
 		Name string `json:"name"`
@@ -49,7 +49,7 @@ func TestSchemaCache_ByType(t *testing.T) {
 }
 
 func TestSchemaCache_BySchema(t *testing.T) {
-	cache := &schemaCache{}
+	cache := NewSchemaCache()
 
 	schema := &jsonschema.Schema{
 		Type: "object",
@@ -89,7 +89,7 @@ func TestSchemaCache_BySchema(t *testing.T) {
 }
 
 func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
-	globalSchemaCache.resetForTesting()
+	cache := NewSchemaCache()
 
 	type TestInput struct {
 		Query string `json:"query"`
@@ -100,13 +100,13 @@ func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
 	// First call should generate and cache
 	var sfield1 any
 	var rfield1 *jsonschema.Resolved
-	_, err := setSchema[TestInput](&sfield1, &rfield1)
+	_, err := setSchema[TestInput](&sfield1, &rfield1, cache)
 	if err != nil {
 		t.Fatalf("setSchema failed: %v", err)
 	}
 
 	// Verify it's in cache
-	cachedSchema, cachedResolved, ok := globalSchemaCache.getByType(rt)
+	cachedSchema, cachedResolved, ok := cache.getByType(rt)
 	if !ok {
 		t.Fatal("schema not cached after first setSchema call")
 	}
@@ -114,7 +114,7 @@ func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
 	// Second call should hit cache
 	var sfield2 any
 	var rfield2 *jsonschema.Resolved
-	_, err = setSchema[TestInput](&sfield2, &rfield2)
+	_, err = setSchema[TestInput](&sfield2, &rfield2, cache)
 	if err != nil {
 		t.Fatalf("setSchema failed on second call: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
 }
 
 func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
-	globalSchemaCache.resetForTesting()
+	cache := NewSchemaCache()
 
 	// This simulates the github-mcp-server pattern:
 	// schema is created once and reused across requests
@@ -143,13 +143,13 @@ func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
 	// First call should resolve and cache
 	var sfield1 any = schema
 	var rfield1 *jsonschema.Resolved
-	_, err := setSchema[map[string]any](&sfield1, &rfield1)
+	_, err := setSchema[map[string]any](&sfield1, &rfield1, cache)
 	if err != nil {
 		t.Fatalf("setSchema failed: %v", err)
 	}
 
 	// Verify it's in cache
-	cachedResolved, ok := globalSchemaCache.getBySchema(schema)
+	cachedResolved, ok := cache.getBySchema(schema)
 	if !ok {
 		t.Fatal("resolved schema not cached after first setSchema call")
 	}
@@ -160,7 +160,7 @@ func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
 	// Second call with same schema pointer should hit cache
 	var sfield2 any = schema
 	var rfield2 *jsonschema.Resolved
-	_, err = setSchema[map[string]any](&sfield2, &rfield2)
+	_, err = setSchema[map[string]any](&sfield2, &rfield2, cache)
 	if err != nil {
 		t.Fatalf("setSchema failed on second call: %v", err)
 	}
@@ -170,8 +170,39 @@ func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
 	}
 }
 
+func TestSetSchema_NoCacheWhenNil(t *testing.T) {
+	type TestInput struct {
+		Query string `json:"query"`
+	}
+
+	// First call without cache
+	var sfield1 any
+	var rfield1 *jsonschema.Resolved
+	_, err := setSchema[TestInput](&sfield1, &rfield1, nil)
+	if err != nil {
+		t.Fatalf("setSchema failed: %v", err)
+	}
+
+	// Second call without cache - should still generate a new schema
+	var sfield2 any
+	var rfield2 *jsonschema.Resolved
+	_, err = setSchema[TestInput](&sfield2, &rfield2, nil)
+	if err != nil {
+		t.Fatalf("setSchema failed on second call: %v", err)
+	}
+
+	// Both calls should succeed, schemas should be equivalent but not same pointer
+	// (since no caching is happening)
+	if sfield1 == nil || sfield2 == nil {
+		t.Error("expected schemas to be generated")
+	}
+	if rfield1 == nil || rfield2 == nil {
+		t.Error("expected resolved schemas to be generated")
+	}
+}
+
 func TestAddTool_CachesBetweenCalls(t *testing.T) {
-	globalSchemaCache.resetForTesting()
+	cache := NewSchemaCache()
 
 	type GreetInput struct {
 		Name string `json:"name" jsonschema:"the name to greet"`
@@ -190,15 +221,17 @@ func TestAddTool_CachesBetweenCalls(t *testing.T) {
 		Description: "Greet someone",
 	}
 
-	// Simulate stateless server pattern: create new server each time
+	// Simulate stateless server pattern: create new server each time, but share cache
 	for i := 0; i < 3; i++ {
-		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, &ServerOptions{
+			SchemaCache: cache,
+		})
 		AddTool(s, tool, handler)
 	}
 
 	// Verify schema was cached by type
 	rt := reflect.TypeFor[GreetInput]()
-	_, _, ok := globalSchemaCache.getByType(rt)
+	_, _, ok := cache.getByType(rt)
 	if !ok {
 		t.Error("expected schema to be cached by type after multiple AddTool calls")
 	}

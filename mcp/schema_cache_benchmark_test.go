@@ -34,14 +34,16 @@ func BenchmarkAddToolTypedHandler(b *testing.B) {
 		Description: "Search for items",
 	}
 
-	// Reset cache to simulate cold start for first iteration
-	globalSchemaCache.resetForTesting()
+	// Create a shared cache for caching benefit
+	cache := NewSchemaCache()
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, &ServerOptions{
+			SchemaCache: cache,
+		})
 		AddTool(s, tool, handler)
 	}
 }
@@ -68,9 +70,6 @@ func BenchmarkAddToolPreDefinedSchema(b *testing.B) {
 		Description: "Search for items",
 		InputSchema: schema, // Pre-defined schema like github-mcp-server
 	}
-
-	// Reset cache to simulate cold start for first iteration
-	globalSchemaCache.resetForTesting()
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -108,9 +107,7 @@ func BenchmarkAddToolTypedHandlerNoCache(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		// Reset cache every iteration to simulate no caching
-		globalSchemaCache.resetForTesting()
-
+		// No cache - each iteration generates new schemas
 		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
 		AddTool(s, tool, handler)
 	}
@@ -146,14 +143,16 @@ func BenchmarkAddToolMultipleTools(b *testing.B) {
 	tool2 := &Tool{Name: "tool2", Description: "Tool 2"}
 	tool3 := &Tool{Name: "tool3", Description: "Tool 3"}
 
-	// Reset cache before benchmark
-	globalSchemaCache.resetForTesting()
+	// Create a shared cache for caching benefit
+	cache := NewSchemaCache()
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, &ServerOptions{
+			SchemaCache: cache,
+		})
 		AddTool(s, tool1, handler1)
 		AddTool(s, tool2, handler2)
 		AddTool(s, tool3, handler3)
