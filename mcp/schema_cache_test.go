@@ -12,7 +12,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-func TestSchemaCache_ByType(t *testing.T) {
+func TestSchemaCacheByType(t *testing.T) {
 	cache := NewSchemaCache()
 
 	type TestInput struct {
@@ -48,7 +48,7 @@ func TestSchemaCache_ByType(t *testing.T) {
 	}
 }
 
-func TestSchemaCache_BySchema(t *testing.T) {
+func TestSchemaCacheBySchema(t *testing.T) {
 	cache := NewSchemaCache()
 
 	schema := &jsonschema.Schema{
@@ -88,7 +88,7 @@ func TestSchemaCache_BySchema(t *testing.T) {
 	}
 }
 
-func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
+func TestSetSchemaCachesGeneratedSchemas(t *testing.T) {
 	cache := NewSchemaCache()
 
 	type TestInput struct {
@@ -128,7 +128,7 @@ func TestSetSchema_CachesGeneratedSchemas(t *testing.T) {
 	}
 }
 
-func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
+func TestSetSchemaCachesProvidedSchemas(t *testing.T) {
 	cache := NewSchemaCache()
 
 	// This simulates the github-mcp-server pattern:
@@ -170,7 +170,7 @@ func TestSetSchema_CachesProvidedSchemas(t *testing.T) {
 	}
 }
 
-func TestSetSchema_NoCacheWhenNil(t *testing.T) {
+func TestSetSchemaNoCacheWhenNil(t *testing.T) {
 	type TestInput struct {
 		Query string `json:"query"`
 	}
@@ -201,7 +201,7 @@ func TestSetSchema_NoCacheWhenNil(t *testing.T) {
 	}
 }
 
-func TestAddTool_CachesBetweenCalls(t *testing.T) {
+func TestAddToolCachesBetweenCalls(t *testing.T) {
 	cache := NewSchemaCache()
 
 	type GreetInput struct {
