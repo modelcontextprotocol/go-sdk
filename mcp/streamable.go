@@ -32,6 +32,7 @@ import (
 const (
 	protocolVersionHeader = "Mcp-Protocol-Version"
 	sessionIDHeader       = "Mcp-Session-Id"
+	lastEventIDHeader     = "Last-Event-ID"
 )
 
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
@@ -713,8 +714,8 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
 	// that by -1. This is incremented just before each event is written.
 	lastIdx := -1
-	if len(req.Header.Values("Last-Event-ID")) > 0 {
-		eid := req.Header.Get("Last-Event-ID")
+	if len(req.Header.Values(lastEventIDHeader)) > 0 {
+		eid := req.Header.Get(lastEventIDHeader)
 		var ok bool
 		streamID, lastIdx, ok = parseEventID(eid)
 		if !ok {
@@ -931,7 +932,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 //
 // It returns an HTTP status code and error message.
 func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Request) {
-	if len(req.Header.Values("Last-Event-ID")) > 0 {
+	if len(req.Header.Values(lastEventIDHeader)) > 0 {
 		http.Error(w, "can't send Last-Event-ID for POST request", http.StatusBadRequest)
 		return
 	}
@@ -1923,7 +1924,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			}
 			c.setMCPHeaders(req)
 			if lastEventID != "" {
-				req.Header.Set("Last-Event-ID", lastEventID)
+				req.Header.Set(lastEventIDHeader, lastEventID)
 			}
 			req.Header.Set("Accept", "text/event-stream")
 			resp, err := c.client.Do(req)
