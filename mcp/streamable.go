@@ -730,7 +730,15 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
 
-	stream, done := c.acquireStream(ctx, w, streamID, &lastIdx)
+	// Read the protocol version from the header. For GET requests, this should
+	// always be present since GET only happens after initialization.
+	protocolVersion := req.Header.Get(protocolVersionHeader)
+	if protocolVersion == "" {
+		protocolVersion = protocolVersion20250326
+	}
+	supportsPrimeClose := protocolVersion >= protocolVersion20251125
+
+	stream, done := c.acquireStream(ctx, w, streamID, &lastIdx, supportsPrimeClose)
 	if stream == nil {
 		return
 	}
@@ -792,7 +800,10 @@ func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectA
 // Importantly, this function must hold the stream mutex until done replaying
 // all messages, so that no delivery or storage of new messages occurs while
 // the stream is still replaying.
-func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx *int) (*stream, chan struct{}) {
+//
+// supportsPrimeClose indicates whether the client supports the prime and close
+// events (protocol version 2025-11-25 or later).
+func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx *int, supportsPrimeClose bool) (*stream, chan struct{}) {
 	// if tempStream is set, the stream is done and we're just replaying messages.
 	//
 	// We record a temporary stream to claim exclusive replay rights.
@@ -898,16 +909,18 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		}
 		return c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx)
 	}
-	s.closeLocked = func(reconnectAfter time.Duration) {
-		select {
-		case <-done:
-			return
-		default:
+	if supportsPrimeClose {
+		s.closeLocked = func(reconnectAfter time.Duration) {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if reconnectAfter > 0 {
+				c.writeCloseEvent(w, reconnectAfter)
+			}
+			close(done)
 		}
-		if reconnectAfter > 0 {
-			c.writeCloseEvent(w, reconnectAfter)
-		}
-		close(done)
 	}
 	return s, done
 }
@@ -959,6 +972,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	calls := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
+	var initializeProtocolVersion string
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -970,6 +984,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			if jreq.Method == methodInitialize {
 				isInitialize = true
+				// Extract the protocol version from InitializeParams.
+				var params InitializeParams
+				if err := json.Unmarshal(jreq.Params, &params); err == nil {
+					initializeProtocolVersion = params.ProtocolVersion
+				}
 			}
 			jreq.Extra = &RequestExtra{
 				TokenInfo: tokenInfo,
@@ -993,6 +1012,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 	}
+
+	// The prime and close events were added in protocol version 2025-11-25 (SEP-1699).
+	// Use the version from InitializeParams if this is an initialize request,
+	// otherwise use the protocol version header.
+	effectiveVersion := protocolVersion
+	if isInitialize && initializeProtocolVersion != "" {
+		effectiveVersion = initializeProtocolVersion
+	}
+	supportsPrimeClose := effectiveVersion >= protocolVersion20251125
 
 	// If we don't have any calls, we can just publish the incoming messages and return.
 	// No need to track a logical stream.
@@ -1069,7 +1097,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	} else {
 		// Write events in the order we receive them.
 		lastIndex := -1
-		if c.eventStore != nil {
+		if c.eventStore != nil && supportsPrimeClose {
 			// Write a priming event.
 			// We must also write it to the event store in order for indexes to
 			// align.
@@ -1092,16 +1120,18 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			return c.writeEvent(w, stream.id, Event{Name: "message", Data: data}, &lastIndex)
 		}
-		stream.closeLocked = func(reconnectAfter time.Duration) {
-			select {
-			case <-done:
-				return
-			default:
+		if supportsPrimeClose {
+			stream.closeLocked = func(reconnectAfter time.Duration) {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				if reconnectAfter > 0 {
+					c.writeCloseEvent(w, reconnectAfter)
+				}
+				close(done)
 			}
-			if reconnectAfter > 0 {
-				c.writeCloseEvent(w, reconnectAfter)
-			}
-			close(done)
 		}
 	}
 

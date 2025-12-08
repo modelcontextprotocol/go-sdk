@@ -584,7 +584,7 @@ func TestStreamableServerDisconnect(t *testing.T) {
 			})
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint: httpServer.URL,
-			}, nil)
+			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -752,7 +752,7 @@ func TestStreamableServerTransport(t *testing.T) {
 	// requests.
 
 	// Predefined steps, to avoid repetition below.
-	initReq := req(1, methodInitialize, &InitializeParams{})
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &ServerCapabilities{
 			Logging: &LoggingCapabilities{},
@@ -771,6 +771,30 @@ func TestStreamableServerTransport(t *testing.T) {
 	}
 	initialized := streamableRequest{
 		method:         "POST",
+		messages:       []jsonrpc.Message{initializedMsg},
+		wantStatusCode: http.StatusAccepted,
+	}
+
+	// Protocol version 2025-11-25 variants, for testing prime/close events (SEP-1699).
+	initReq20251125 := req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20251125})
+	initResp20251125 := resp(1, &InitializeResult{
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
+		},
+		ProtocolVersion: protocolVersion20251125,
+		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
+	}, nil)
+	initialize20251125 := streamableRequest{
+		method:         "POST",
+		messages:       []jsonrpc.Message{initReq20251125},
+		wantStatusCode: http.StatusOK,
+		wantMessages:   []jsonrpc.Message{initResp20251125},
+		wantSessionID:  true,
+	}
+	initialized20251125 := streamableRequest{
+		method:         "POST",
+		headers:        http.Header{protocolVersionHeader: {protocolVersion20251125}},
 		messages:       []jsonrpc.Message{initializedMsg},
 		wantStatusCode: http.StatusAccepted,
 	}
@@ -1026,23 +1050,23 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 0, // session deleted
 		},
 		{
-			name:   "priming message",
+			name:   "no priming message on old protocol",
 			replay: true,
 			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					method:             "POST",
-					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
-					wantStatusCode:     http.StatusOK,
-					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
-					wantBodyContaining: "prime",
+					method:                "POST",
+					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:        http.StatusOK,
+					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyNotContaining: "prime",
 				},
 			},
 			wantSessions: 1,
 		},
 		{
-			name:   "close message",
+			name:   "no close message on old protocol",
 			replay: true,
 			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
 				req.Extra.CloseStream(time.Millisecond)
@@ -1052,6 +1076,43 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialized,
 				{
 					method:                "POST",
+					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:        http.StatusOK,
+					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyNotContaining: "close",
+				},
+			},
+			wantSessions: 1,
+		},
+		{
+			name:   "priming message on 2025-11-25",
+			replay: true,
+			requests: []streamableRequest{
+				initialize20251125,
+				initialized20251125,
+				{
+					method:             "POST",
+					headers:            http.Header{protocolVersionHeader: {protocolVersion20251125}},
+					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode:     http.StatusOK,
+					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+					wantBodyContaining: "prime",
+				},
+			},
+			wantSessions: 1,
+		},
+		{
+			name:   "close message on 2025-11-25",
+			replay: true,
+			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
+				req.Extra.CloseStream(time.Millisecond)
+			},
+			requests: []streamableRequest{
+				initialize20251125,
+				initialized20251125,
+				{
+					method:                "POST",
+					headers:               http.Header{protocolVersionHeader: {protocolVersion20251125}},
 					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode:        http.StatusOK,
 					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},

@@ -120,7 +120,11 @@ func (e unsupportedProtocolVersionError) Error() string {
 }
 
 // ClientSessionOptions is reserved for future use.
-type ClientSessionOptions struct{}
+type ClientSessionOptions struct {
+	// protocolVersion overrides the protocol version sent in the initialize
+	// request, for testing. If empty, latestProtocolVersion is used.
+	protocolVersion string
+}
 
 func (c *Client) capabilities() *ClientCapabilities {
 	caps := &ClientCapabilities{}
@@ -151,14 +155,18 @@ func (c *Client) capabilities() *ClientCapabilities {
 // when it is no longer needed. However, if the connection is closed by the
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
-func (c *Client) Connect(ctx context.Context, t Transport, _ *ClientSessionOptions) (cs *ClientSession, err error) {
+func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOptions) (cs *ClientSession, err error) {
 	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil)
 	if err != nil {
 		return nil, err
 	}
 
+	protocolVersion := latestProtocolVersion
+	if opts != nil && opts.protocolVersion != "" {
+		protocolVersion = opts.protocolVersion
+	}
 	params := &InitializeParams{
-		ProtocolVersion: latestProtocolVersion,
+		ProtocolVersion: protocolVersion,
 		ClientInfo:      c.impl,
 		Capabilities:    c.capabilities(),
 	}
