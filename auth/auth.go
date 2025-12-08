@@ -17,6 +17,11 @@ import (
 type TokenInfo struct {
 	Scopes     []string
 	Expiration time.Time
+	// UserID is an optional identifier for the authenticated user.
+	// If set by a TokenVerifier, it can be used by transports to prevent
+	// session hijacking by ensuring that all requests for a given session
+	// come from the same user.
+	UserID string
 	// TODO: add standard JWT fields
 	Extra map[string]any
 }

@@ -51,6 +51,10 @@ type StreamableHTTPHandler struct {
 type sessionInfo struct {
 	session   *ServerSession
 	transport *StreamableServerTransport
+	// userID is the user ID from the TokenInfo when the session was created.
+	// If non-empty, subsequent requests must have the same user ID to prevent
+	// session hijacking.
+	userID string
 
 	// If timeout is set, automatically close the session after an idle period.
 	timeout time.Duration
@@ -238,6 +242,15 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
+		// Prevent session hijacking: if the session was created with a user ID,
+		// verify that subsequent requests come from the same user.
+		if sessInfo != nil && sessInfo.userID != "" {
+			tokenInfo := auth.TokenInfoFromContext(req.Context())
+			if tokenInfo == nil || tokenInfo.UserID != sessInfo.userID {
+				http.Error(w, "session user mismatch", http.StatusForbidden)
+				return
+			}
+		}
 	}
 
 	if req.Method == http.MethodDelete {
@@ -404,9 +417,16 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
+		// Capture the user ID from the token info to enable session hijacking
+		// prevention on subsequent requests.
+		var userID string
+		if tokenInfo := auth.TokenInfoFromContext(req.Context()); tokenInfo != nil {
+			userID = tokenInfo.UserID
+		}
 		sessInfo = &sessionInfo{
 			session:   session,
 			transport: transport,
+			userID:    userID,
 		}
 
 		if stateless {
