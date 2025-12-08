@@ -269,9 +269,18 @@ If you create your own with
 If you are using Go 1.24 or above,
 we recommend using [`crypto/rand.Text`](https://pkg.go.dev/crypto/rand#Text) 
 
-- _Binding session IDs to user information_. This is an application requirement, out of scope
-for the SDK. You can create your own session IDs by setting
-[`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID).
+- _Binding session IDs to user information_. The SDK supports this mitigation through
+[`TokenInfo.UserID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenInfo.UserID).
+When a [`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
+sets `UserID` on the returned `TokenInfo`, the streamable transport will:
+  1. Store the user ID when a new session is created.
+  2. Verify that subsequent requests to that session include a token with the same `UserID`.
+  3. Reject requests with a 403 Forbidden if the user ID doesn't match.
+
+  **Recommendation**: If your `TokenVerifier` can extract a user identifier from the token
+  (such as a `sub` claim in a JWT, or a user ID associated with an API key), set
+  `TokenInfo.UserID` to enable this protection. This prevents an attacker with a valid
+  token from hijacking another user's session by guessing or obtaining their session ID.
 
 ## Utilities
 
