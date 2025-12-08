@@ -1649,8 +1649,84 @@ func TestTokenInfo(t *testing.T) {
 	if !ok {
 		t.Fatal("not TextContent")
 	}
-	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC map[]}"; g != w {
+	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
 		t.Errorf("got %q, want %q", g, w)
+	}
+}
+
+func TestSessionHijackingPrevention(t *testing.T) {
+	// This test verifies that sessions bound to a user ID cannot be accessed
+	// by a different user (session hijacking prevention).
+	ctx := context.Background()
+
+	server := NewServer(testImpl, nil)
+	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+
+	// Use the bearer token directly as the user ID. This simulates how a real
+	// verifier might extract a user ID from a JWT "sub" claim or introspection.
+	verifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		return &auth.TokenInfo{
+			Scopes:     []string{"scope"},
+			UserID:     token,
+			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
+		}, nil
+	}
+	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	// Helper to send a JSON-RPC request as a given user.
+	doRequest := func(msg jsonrpc.Message, sessionID, userID string) *http.Response {
+		t.Helper()
+		data, _ := jsonrpc2.EncodeMessage(msg)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+userID)
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return resp
+	}
+
+	// Create a session as user1.
+	initReq := &jsonrpc.Request{Method: "initialize", ID: jsonrpc2.Int64ID(1)}
+	initReq.Params, _ = json.Marshal(&InitializeParams{
+		ProtocolVersion: protocolVersion20250618,
+		ClientInfo:      &Implementation{Name: "test", Version: "1.0"},
+	})
+	resp := doRequest(initReq, "", "user1")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("initialize failed with status %d: %s", resp.StatusCode, body)
+	}
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("no session ID in response")
+	}
+
+	pingReq := &jsonrpc.Request{Method: "ping", ID: jsonrpc2.Int64ID(2)}
+	pingReq.Params, _ = json.Marshal(&PingParams{})
+
+	// Try to access the session as user2 - should fail.
+	resp2 := doRequest(pingReq, sessionID, "user2")
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Errorf("expected status %d for user mismatch, got %d: %s", http.StatusForbidden, resp2.StatusCode, body)
+	}
+
+	// Access as original user1 should succeed.
+	resp3 := doRequest(pingReq, sessionID, "user1")
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp3.Body)
+		t.Errorf("expected status %d for matching user, got %d: %s", http.StatusOK, resp3.StatusCode, body)
 	}
 }
 
