@@ -39,7 +39,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Usage: listfeatures --http=\"https://example.com/server/mcp\"")
 		fmt.Fprintln(os.Stderr, "List all features for a stdio MCP server")
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Example:\n\tlistfeatures npx @modelcontextprotocol/server-everything")
+		fmt.Fprintln(os.Stderr, "Example:\n\tlistfeatures go run github.com/modelcontextprotocol/go-sdk/examples/server/hello")
 		os.Exit(2)
 	}
 
