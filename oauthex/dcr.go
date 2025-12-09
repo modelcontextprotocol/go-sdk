@@ -20,6 +20,10 @@ import (
 )
 
 // ClientRegistrationMetadata represents the client metadata fields for the DCR POST request (RFC 7591).
+//
+// Note: URL fields in this struct are validated by validateClientRegistrationURLs
+// to prevent XSS attacks. If you add a new URL field, you must also add it to
+// that function.
 type ClientRegistrationMetadata struct {
 	// RedirectURIs is a REQUIRED JSON array of redirection URI strings for use in
 	// redirect-based flows (such as the authorization code grant).
@@ -208,6 +212,10 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 		if regResponse.ClientID == "" {
 			return nil, fmt.Errorf("registration response is missing required 'client_id' field")
 		}
+		// Validate URL fields to prevent XSS attacks (see #526).
+		if err := validateClientRegistrationURLs(&regResponse.ClientRegistrationMetadata); err != nil {
+			return nil, err
+		}
 		return &regResponse, nil
 	}
 
@@ -220,4 +228,34 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 	}
 
 	return nil, fmt.Errorf("registration failed with status %s: %s", resp.Status, string(body))
+}
+
+// validateClientRegistrationURLs validates all URL fields in ClientRegistrationMetadata
+// to ensure they don't use dangerous schemes that could enable XSS attacks.
+func validateClientRegistrationURLs(meta *ClientRegistrationMetadata) error {
+	// Validate redirect URIs
+	for i, uri := range meta.RedirectURIs {
+		if err := checkURLScheme(uri); err != nil {
+			return fmt.Errorf("redirect_uris[%d]: %w", i, err)
+		}
+	}
+
+	// Validate other URL fields
+	urls := []struct {
+		name  string
+		value string
+	}{
+		{"client_uri", meta.ClientURI},
+		{"logo_uri", meta.LogoURI},
+		{"tos_uri", meta.TOSURI},
+		{"policy_uri", meta.PolicyURI},
+		{"jwks_uri", meta.JWKSURI},
+	}
+
+	for _, u := range urls {
+		if err := checkURLScheme(u.value); err != nil {
+			return fmt.Errorf("%s: %w", u.name, err)
+		}
+	}
+	return nil
 }
