@@ -177,21 +177,56 @@ func (x *CancelledParams) isParams()              {}
 func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
+// RootsCapabilities describes a client's support for roots.
+type RootsCapabilities struct {
+	// ListChanged reports whether the client supports notifications for
+	// changes to the roots list.
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
 // Capabilities a client may support. Known capabilities are defined here, in
 // this schema, but this is not a closed set: any client can define its own,
 // additional capabilities.
 type ClientCapabilities struct {
-	// Experimental, non-standard capabilities that the client supports.
+	// Experimental reports non-standard capabilities that the client supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
-	// Present if the client supports listing roots.
+	// Roots describes the client's support for roots.
+	//
+	// Deprecated: use RootsV2. As described in #607, Roots should have been a
+	// pointer to a RootsCapabilities value. Roots will be continue to be
+	// populated, but any new fields will only be added in the RootsV2 field.
 	Roots struct {
-		// Whether the client supports notifications for changes to the roots list.
+		// ListChanged reports whether the client supports notifications for
+		// changes to the roots list.
 		ListChanged bool `json:"listChanged,omitempty"`
 	} `json:"roots,omitempty"`
-	// Present if the client supports sampling from an LLM.
+	// RootsV2 is present if the client supports roots.
+	RootsV2 *RootsCapabilities `json:"-"`
+	// Sampling is present if the client supports sampling from an LLM.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
-	// Present if the client supports elicitation from the server.
+	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+func (c *ClientCapabilities) toV2() *clientCapabilitiesV2 {
+	return &clientCapabilitiesV2{
+		ClientCapabilities: *c,
+		Roots:              c.RootsV2,
+	}
+}
+
+// clientCapabilitiesV2 is a version of ClientCapabilities that fixes the bug
+// described in #607: Roots should have been a pointer to value type
+// RootsCapabilities.
+type clientCapabilitiesV2 struct {
+	ClientCapabilities
+	Roots *RootsCapabilities `json:"roots,omitempty"`
+}
+
+func (c *clientCapabilitiesV2) toV1() *ClientCapabilities {
+	caps := c.ClientCapabilities
+	caps.RootsV2 = c.Roots
+	return &caps
 }
 
 type CompleteParamsArgument struct {
@@ -373,27 +408,53 @@ type GetPromptResult struct {
 
 func (*GetPromptResult) isResult() {}
 
+// InitializeParams is sent by the client to initialize the session.
 type InitializeParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta         `json:"_meta,omitempty"`
+	Meta `json:"_meta,omitempty"`
+	// Capabilities describes the client's capabilities.
 	Capabilities *ClientCapabilities `json:"capabilities"`
-	ClientInfo   *Implementation     `json:"clientInfo"`
-	// The latest version of the Model Context Protocol that the client supports.
-	// The client may decide to support older versions as well.
+	// ClientInfo provides information about the client.
+	ClientInfo *Implementation `json:"clientInfo"`
+	// ProtocolVersion is the latest version of the Model Context Protocol that
+	// the client supports.
 	ProtocolVersion string `json:"protocolVersion"`
+}
+
+func (p *InitializeParams) toV2() *initializeParamsV2 {
+	return &initializeParamsV2{
+		InitializeParams: *p,
+		Capabilities:     p.Capabilities.toV2(),
+	}
+}
+
+// initializeParamsV2 works around the mistake in #607: Capabilities.Roots
+// should have been a pointer.
+type initializeParamsV2 struct {
+	InitializeParams
+	Capabilities *clientCapabilitiesV2 `json:"capabilities"`
+}
+
+func (p *initializeParamsV2) toV1() *InitializeParams {
+	p1 := p.InitializeParams
+	if p.Capabilities != nil {
+		p1.Capabilities = p.Capabilities.toV1()
+	}
+	return &p1
 }
 
 func (x *InitializeParams) isParams()              {}
 func (x *InitializeParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializeParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
-// After receiving an initialize request from the client, the server sends this
-// response.
+// InitializeResult is sent by the server in response to an initialize request
+// from the client.
 type InitializeResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta         `json:"_meta,omitempty"`
+	Meta `json:"_meta,omitempty"`
+	// Capabilities describes the server's capabilities.
 	Capabilities *ServerCapabilities `json:"capabilities"`
 	// Instructions describing how to use the server and its features.
 	//
@@ -411,8 +472,8 @@ type InitializeResult struct {
 func (*InitializeResult) isResult() {}
 
 type InitializedParams struct {
-	// This property is reserved by the protocol to allow clients and servers to
-	// attach additional metadata to their responses.
+	// Meta is reserved by the protocol to allow clients and servers to attach
+	// additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
 }
 
@@ -875,7 +936,10 @@ func (x *RootsListChangedParams) isParams()              {}
 func (x *RootsListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
-// SamplingCapabilities describes the capabilities for sampling.
+// TODO: to be consistent with ServerCapabilities, move the capability types
+// below directly above ClientCapabilities.
+
+// SamplingCapabilities describes the client's support for sampling.
 type SamplingCapabilities struct{}
 
 // ElicitationCapabilities describes the capabilities for elicitation.
@@ -1160,48 +1224,50 @@ type Implementation struct {
 	Icons []Icon `json:"icons,omitempty"`
 }
 
-// Present if the server supports argument autocompletion suggestions.
+// CompletionCapabilities describes the server's support for argument autocompletion.
 type CompletionCapabilities struct{}
 
-// Present if the server supports sending log messages to the client.
+// LoggingCapabilities describes the server's support for sending log messages to the client.
 type LoggingCapabilities struct{}
 
-// Present if the server offers any prompt templates.
+// PromptCapabilities describes the server's support for prompts.
 type PromptCapabilities struct {
 	// Whether this server supports notifications for changes to the prompt list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }
 
-// Present if the server offers any resources to read.
+// ResourceCapabilities describes the server's support for resources.
 type ResourceCapabilities struct {
-	// Whether this server supports notifications for changes to the resource list.
+	// ListChanged reports whether the client supports notifications for
+	// changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
-	// Whether this server supports subscribing to resource updates.
+	// Subscribe reports whether this server supports subscribing to resource
+	// updates.
 	Subscribe bool `json:"subscribe,omitempty"`
 }
 
-// Capabilities that a server may support. Known capabilities are defined here,
-// in this schema, but this is not a closed set: any server can define its own,
-// additional capabilities.
-type ServerCapabilities struct {
-	// Present if the server supports argument autocompletion suggestions.
-	Completions *CompletionCapabilities `json:"completions,omitempty"`
-	// Experimental, non-standard capabilities that the server supports.
-	Experimental map[string]any `json:"experimental,omitempty"`
-	// Present if the server supports sending log messages to the client.
-	Logging *LoggingCapabilities `json:"logging,omitempty"`
-	// Present if the server offers any prompt templates.
-	Prompts *PromptCapabilities `json:"prompts,omitempty"`
-	// Present if the server offers any resources to read.
-	Resources *ResourceCapabilities `json:"resources,omitempty"`
-	// Present if the server offers any tools to call.
-	Tools *ToolCapabilities `json:"tools,omitempty"`
+// ToolCapabilities describes the server's support for tools.
+type ToolCapabilities struct {
+	// ListChanged reports whether the client supports notifications for
+	// changes to the tool list.
+	ListChanged bool `json:"listChanged,omitempty"`
 }
 
-// Present if the server offers any tools to call.
-type ToolCapabilities struct {
-	// Whether this server supports notifications for changes to the tool list.
-	ListChanged bool `json:"listChanged,omitempty"`
+// ServerCapabilities describes capabilities that a server supports.
+type ServerCapabilities struct {
+	// Experimental reports non-standard capabilities that the server supports.
+	Experimental map[string]any `json:"experimental,omitempty"`
+	// Completions is present if the server supports argument autocompletion
+	// suggestions.
+	Completions *CompletionCapabilities `json:"completions,omitempty"`
+	// Logging is present if the server supports log messages.
+	Logging *LoggingCapabilities `json:"logging,omitempty"`
+	// Prompts is present if the server supports prompts.
+	Prompts *PromptCapabilities `json:"prompts,omitempty"`
+	// Resources is present if the server supports resourcs.
+	Resources *ResourceCapabilities `json:"resources,omitempty"`
+	// Tools is present if the supports tools.
+	Tools *ToolCapabilities `json:"tools,omitempty"`
 }
 
 const (

@@ -1138,7 +1138,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 // curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
 	methodComplete:               newServerMethodInfo(serverMethod((*Server).complete), 0),
-	methodInitialize:             newServerMethodInfo(serverSessionMethod((*ServerSession).initialize), 0),
+	methodInitialize:             initializeMethodInfo(),
 	methodPing:                   newServerMethodInfo(serverSessionMethod((*ServerSession).ping), missingParamsOK),
 	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
 	methodGetPrompt:              newServerMethodInfo(serverMethod((*Server).getPrompt), 0),
@@ -1154,6 +1154,25 @@ var serverMethodInfos = map[string]methodInfo{
 	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
 	notificationRootsListChanged: newServerMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
 	notificationProgress:         newServerMethodInfo(serverSessionMethod((*ServerSession).callProgressNotificationHandler), notification),
+}
+
+// initializeMethodInfo handles the workaround for #607: we must set
+// params.Capabilities.RootsV2.
+func initializeMethodInfo() methodInfo {
+	info := newServerMethodInfo(serverSessionMethod((*ServerSession).initialize), 0)
+	info.unmarshalParams = func(m json.RawMessage) (Params, error) {
+		var params *initializeParamsV2
+		if m != nil {
+			if err := json.Unmarshal(m, &params); err != nil {
+				return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, params, err)
+			}
+		}
+		if params == nil {
+			return nil, fmt.Errorf(`missing required "params"`)
+		}
+		return params.toV1(), nil
+	}
+	return info
 }
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }

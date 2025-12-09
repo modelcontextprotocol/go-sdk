@@ -128,7 +128,11 @@ type ClientSessionOptions struct {
 
 func (c *Client) capabilities() *ClientCapabilities {
 	caps := &ClientCapabilities{}
+	// Due to an oversight (#607), roots require special handling.
 	caps.Roots.ListChanged = true
+	caps.RootsV2 = &RootsCapabilities{
+		ListChanged: true,
+	}
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}
 	}

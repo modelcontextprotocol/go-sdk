@@ -192,6 +192,7 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 }
 
 func TestClientCapabilities(t *testing.T) {
+	canListRoots := RootsCapabilities{ListChanged: true}
 	testCases := []struct {
 		name             string
 		configureClient  func(s *Client)
@@ -202,9 +203,8 @@ func TestClientCapabilities(t *testing.T) {
 			name:            "With initial capabilities",
 			configureClient: func(s *Client) {},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   canListRoots,
+				RootsV2: &canListRoots,
 			},
 		},
 		{
@@ -216,9 +216,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:    canListRoots,
+				RootsV2:  &canListRoots,
 				Sampling: &SamplingCapabilities{},
 			},
 		},
@@ -232,9 +231,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   canListRoots,
+				RootsV2: &canListRoots,
 				Elicitation: &ElicitationCapabilities{
 					Form: &FormElicitationCapabilities{},
 				},
@@ -253,6 +251,7 @@ func TestClientCapabilities(t *testing.T) {
 				Roots: struct {
 					ListChanged bool "json:\"listChanged,omitempty\""
 				}{ListChanged: true},
+				RootsV2: &RootsCapabilities{ListChanged: true},
 				Elicitation: &ElicitationCapabilities{
 					URL: &URLElicitationCapabilities{},
 				},
@@ -271,6 +270,7 @@ func TestClientCapabilities(t *testing.T) {
 				Roots: struct {
 					ListChanged bool "json:\"listChanged,omitempty\""
 				}{ListChanged: true},
+				RootsV2: &RootsCapabilities{ListChanged: true},
 				Elicitation: &ElicitationCapabilities{
 					Form: &FormElicitationCapabilities{},
 					URL:  &URLElicitationCapabilities{},

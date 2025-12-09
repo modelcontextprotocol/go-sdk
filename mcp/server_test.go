@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
 type testItem struct {
@@ -597,6 +598,128 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 		if diff := cmp.Diff(unstructured, structured); diff != "" {
 			t.Errorf("Unstructured content does not match structured content exactly (-unstructured +structured):\n%s", diff)
 		}
+	}
+}
+
+// TestClientRootsCapabilities verifies that the server correctly observes
+// RootsV2 for various client capability configurations. This tests the fix
+// for #607.
+func TestClientRootsCapabilities(t *testing.T) {
+	testCases := []struct {
+		name         string
+		capabilities *string // JSON for the capabilities field; nil means omit the field
+		wantRootsV2  *RootsCapabilities
+	}{
+		{
+			name:         "capabilities field omitted",
+			capabilities: nil,
+			wantRootsV2:  nil,
+		},
+		{
+			name:         "empty capabilities",
+			capabilities: ptr(`{}`),
+			wantRootsV2:  nil,
+		},
+		{
+			name:         "capabilities with no roots",
+			capabilities: ptr(`{"sampling": {}}`),
+			wantRootsV2:  nil,
+		},
+		{
+			name:         "capabilities with empty roots",
+			capabilities: ptr(`{"roots": {}}`),
+			wantRootsV2:  &RootsCapabilities{ListChanged: false},
+		},
+		{
+			name:         "capabilities with roots without listChanged",
+			capabilities: ptr(`{"roots": {"listChanged": false}}`),
+			wantRootsV2:  &RootsCapabilities{ListChanged: false},
+		},
+		{
+			name:         "capabilities with roots with listChanged",
+			capabilities: ptr(`{"roots": {"listChanged": true}}`),
+			wantRootsV2:  &RootsCapabilities{ListChanged: true},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Create a minimal server.
+			impl := &Implementation{Name: "testServer", Version: "v1.0.0"}
+			s := NewServer(impl, nil)
+
+			// Connect the server.
+			cTransport, sTransport := NewInMemoryTransports()
+			ss, err := s.Connect(ctx, sTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Connect the client JSON-RPC connection (raw, no client).
+			cConn, err := cTransport.Connect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Build initialize params, optionally including capabilities.
+			var initParams json.RawMessage
+			if tc.capabilities != nil {
+				initParams = json.RawMessage(`{
+					"protocolVersion": "2025-06-18",
+					"capabilities": ` + *tc.capabilities + `,
+					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
+				}`)
+			} else {
+				initParams = json.RawMessage(`{
+					"protocolVersion": "2025-06-18",
+					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
+				}`)
+			}
+
+			initReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "initialize", initParams)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := cConn.Write(ctx, initReq); err != nil {
+				t.Fatalf("Write failed: %v", err)
+			}
+
+			// Read the initialize response.
+			msg, err := cConn.Read(ctx)
+			if err != nil {
+				t.Fatalf("Read failed: %v", err)
+			}
+			resp, ok := msg.(*jsonrpc2.Response)
+			if !ok {
+				t.Fatalf("expected Response, got %T", msg)
+			}
+			if resp.Error != nil {
+				t.Fatalf("initialize failed: %v", resp.Error)
+			}
+
+			// Verify that the server session has the correct RootsV2 value.
+			params := ss.InitializeParams()
+			if params == nil {
+				t.Fatal("InitializeParams is nil")
+			}
+
+			var gotRootsV2 *RootsCapabilities
+			if params.Capabilities != nil {
+				gotRootsV2 = params.Capabilities.RootsV2
+			}
+			if diff := cmp.Diff(tc.wantRootsV2, gotRootsV2); diff != "" {
+				t.Errorf("RootsV2 mismatch (-want +got):\n%s", diff)
+			}
+
+			// Close the client connection.
+			if err := cConn.Close(); err != nil {
+				t.Fatalf("Stream.Close failed: %v", err)
+			}
+			ss.Wait()
+		})
 	}
 }
 
