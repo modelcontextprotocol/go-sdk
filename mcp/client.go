@@ -66,6 +66,13 @@ type ClientOptions struct {
 	// Setting CreateMessageHandler to a non-nil value causes the client to
 	// advertise the sampling capability.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
+	// SamplingSupportsTools indicates that the client's CreateMessageHandler
+	// supports tool use. If true and CreateMessageHandler is set, the
+	// sampling.tools capability is advertised.
+	SamplingSupportsTools bool
+	// SamplingSupportsContext indicates that the client supports
+	// includeContext values other than "none".
+	SamplingSupportsContext bool
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
 	// Setting ElicitationHandler to a non-nil value causes the client to
@@ -134,6 +141,12 @@ func (c *Client) capabilities() *ClientCapabilities {
 	caps.Roots.ListChanged = true
 	if c.opts.CreateMessageHandler != nil {
 		caps.Sampling = &SamplingCapabilities{}
+		if c.opts.SamplingSupportsTools {
+			caps.Sampling.Tools = &SamplingToolsCapabilities{}
+		}
+		if c.opts.SamplingSupportsContext {
+			caps.Sampling.Context = &SamplingContextCapabilities{}
+		}
 	}
 	if c.opts.ElicitationHandler != nil {
 		caps.Elicitation = &ElicitationCapabilities{}

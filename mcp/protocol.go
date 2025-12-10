@@ -291,6 +291,11 @@ type CreateMessageParams struct {
 	Meta `json:"_meta,omitempty"`
 	// A request to include context from one or more MCP servers (including the
 	// caller), to be attached to the prompt. The client may ignore this request.
+	//
+	// The default behavior is Default is "none". Values "thisServer" and
+	// "allServers" are soft-deprecated. Servers SHOULD only use these values if
+	// the client declares ClientCapabilities.sampling.context. These values may
+	// be removed in future spec releases.
 	IncludeContext string `json:"includeContext,omitempty"`
 	// The maximum number of tokens to sample, as requested by the server. The
 	// client may choose to sample fewer tokens than requested.
@@ -307,6 +312,12 @@ type CreateMessageParams struct {
 	// may modify or omit this prompt.
 	SystemPrompt string  `json:"systemPrompt,omitempty"`
 	Temperature  float64 `json:"temperature,omitempty"`
+	// Tools is an optional list of tools available for the model to use.
+	// Requires the client's sampling.tools capability.
+	Tools []*Tool `json:"tools,omitempty"`
+	// ToolChoice controls how the model should use tools.
+	// Requires the client's sampling.tools capability.
+	ToolChoice *ToolChoice `json:"toolChoice,omitempty"`
 }
 
 func (x *CreateMessageParams) isParams()              {}
@@ -326,6 +337,12 @@ type CreateMessageResult struct {
 	Model string `json:"model"`
 	Role  Role   `json:"role"`
 	// The reason why sampling stopped, if known.
+	//
+	// Standard values:
+	//  - "endTurn": natural end of the assistant's turn
+	//  - "stopSequence": a stop sequence was encountered
+	//  - "maxTokens": reached the maximyum token limit
+	//  - "toolUse": the model wants to use one or more tools
 	StopReason string `json:"stopReason,omitempty"`
 }
 
@@ -339,8 +356,9 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	// Allow text, image, audio, and tool_use in results
 	var err error
-	if wire.result.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true}); err != nil {
+	if wire.result.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true, "tool_use": true}); err != nil {
 		return err
 	}
 	*r = CreateMessageResult(wire.result)
@@ -876,7 +894,27 @@ func (x *RootsListChangedParams) GetProgressToken() any  { return getProgressTok
 func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // SamplingCapabilities describes the capabilities for sampling.
-type SamplingCapabilities struct{}
+type SamplingCapabilities struct {
+	// Context indicates the client supports includeContext values other than "none".
+	Context *SamplingContextCapabilities `json:"context,omitempty"`
+	// Tools indicates the client supports tools and toolChoice in sampling requests.
+	Tools *SamplingToolsCapabilities `json:"tools,omitempty"`
+}
+
+// SamplingContextCapabilities indicates the client supports context inclusion.
+type SamplingContextCapabilities struct{}
+
+// SamplingToolsCapabilities indicates the client supports tool use in sampling.
+type SamplingToolsCapabilities struct{}
+
+// ToolChoice controls how the model uses tools during sampling.
+type ToolChoice struct {
+	// Mode controls tool invocation behavior:
+	//  - "auto": Model decides whether to use tools (default)
+	//  - "required": Model must use at least one tool
+	//  - "none": Model must not use any tools
+	Mode string `json:"mode,omitempty"`
+}
 
 // ElicitationCapabilities describes the capabilities for elicitation.
 //
@@ -895,6 +933,9 @@ type URLElicitationCapabilities struct {
 }
 
 // Describes a message issued to or received from an LLM API.
+//
+// For assistant messages, Content may be text, image, audio, or tool_use.
+// For user messages, Content may be text, image, audio, or tool_result.
 type SamplingMessage struct {
 	Content Content `json:"content"`
 	Role    Role    `json:"role"`
@@ -911,8 +952,9 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	// Allow text, image, audio, tool_use, and tool_result in sampling messages
 	var err error
-	if wire.msg.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true}); err != nil {
+	if wire.msg.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true, "tool_use": true, "tool_result": true}); err != nil {
 		return err
 	}
 	*m = SamplingMessage(wire.msg)
