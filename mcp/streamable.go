@@ -4,7 +4,7 @@
 
 // NOTE: see streamable_server.go and streamable_client.go for detailed
 // documentation of the streamable server design.
-// TODO(cleanup): move the client and server logic into those files.
+// TODO: move the client and server logic into those files.
 
 package mcp
 
@@ -838,10 +838,7 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 		}
 	}
 
-	// TODO(cleanup): why are we creating a cancellable context here?
-	// Isn't the context lifecycle already tied to the request?
-	ctx, cancel := context.WithCancel(req.Context())
-	defer cancel()
+	ctx := req.Context()
 
 	// Read the protocol version from the header. For GET requests, this should
 	// always be present since GET only happens after initialization.
@@ -1569,7 +1566,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		c.fail(err)
 		return
 	}
-	go c.handleSSE(c.ctx, summary, resp, true, nil)
+	go c.handleSSE(c.ctx, summary, resp, nil)
 }
 
 // fail handles an asynchronous error while reading.
@@ -1628,11 +1625,13 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	var requestSummary string
-	var isCall bool
+	var forCall *jsonrpc.Request
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
 		requestSummary = fmt.Sprintf("sending %q", msg.Method)
-		isCall = msg.IsCall()
+		if msg.IsCall() {
+			forCall = msg
+		}
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
 	default:
@@ -1674,22 +1673,26 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			return fmt.Errorf("mismatching session IDs %q and %q", hadSessionID, sessionID)
 		}
 	}
-	// TODO(rfindley): this logic isn't quite right.
-	// We should keep going even if the server returns 202, if we have a call.
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusAccepted {
+
+	if forCall == nil {
+		resp.Body.Close()
+
 		// [§2.1.4]: "If the input is a JSON-RPC response or notification:
 		// If the server accepts the input, the server MUST return HTTP status code 202 Accepted with no body."
 		//
 		// [§2.1.4]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
-		resp.Body.Close()
-		return nil
-	} else if !isCall && !c.strict {
-		// Some servers return 200, even with an empty json body.
-		// Ignore this response in non-strict mode.
-		if c.logger != nil {
-			c.logger.Warn(fmt.Sprintf("unexpected status code %d from non-call", resp.StatusCode))
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusAccepted {
+			errMsg := fmt.Sprintf("unexpected status code %d from non-call", resp.StatusCode)
+			// Some servers return 200, even with an empty json body.
+			//
+			// In strict mode, return an error to the caller.
+			if c.logger != nil {
+				c.logger.Warn(errMsg)
+			}
+			if c.strict {
+				return errors.New(errMsg)
+			}
 		}
-		resp.Body.Close()
 		return nil
 	}
 
@@ -1703,9 +1706,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		if jsonReq, ok := msg.(*jsonrpc.Request); ok && jsonReq.IsCall() {
 			forCall = jsonReq
 		}
-		// TODO(cleanup): decide if we should cancel this logical SSE request
-		// if/when jsonReq is canceled.
-		go c.handleSSE(ctx, requestSummary, resp, false, forCall)
+		// Handle the resulting stream. Note that ctx comes from the call, and
+		// therefore is already cancelled when the JSON-RPC request is cancelled
+		// (or rather, context cancellation is what *triggers* JSON-RPC
+		// cancellation)
+		go c.handleSSE(ctx, requestSummary, resp, forCall)
 
 	default:
 		resp.Body.Close()
@@ -1756,10 +1761,9 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 // persistent (for the main GET listener) or temporary (for a POST response).
 //
 // If forCall is set, it is the call that initiated the stream, and the
-// stream is complete when we receive its response.
-func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, standalone bool, forCall *jsonrpc2.Request) {
-	// TODO(cleanup): standalone should be completely equivalent to forCall == nil.
-	// Enforce that at the callsite, and remove the standalone flag argument.
+// stream is complete when we receive its response. Otherwise, this is the
+// standalone stream.
+func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc2.Request) {
 	for {
 		// Connection was successful. Continue the loop with the new response.
 		//
@@ -1775,9 +1779,10 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		if clientClosed {
 			return
 		}
-		// If the stream has ended, then do not reconnect if the stream is
-		// temporary (POST initiated SSE).
-		if lastEventID == "" && !standalone {
+		// If we don't have a last event ID, we can never get the call response, so
+		// there's nothing to resume. For the standalone stream, we can reconnect,
+		// but we may just miss messages.
+		if lastEventID == "" && forCall != nil {
 			return
 		}
 
