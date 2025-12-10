@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 type Client struct {
 	impl                    *Implementation
 	opts                    ClientOptions
+	logger                  *slog.Logger // TODO: file proposal to export this
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
 	sessions                []*ClientSession
@@ -46,6 +48,7 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 	}
 	c := &Client{
 		impl:                    impl,
+		logger:                  ensureLogger(nil), // ensure we have a logger
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
@@ -341,7 +344,7 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 		sessions = slices.Clone(c.sessions)
 	}
 	c.mu.Unlock()
-	notifySessions(sessions, notification, params)
+	notifySessions(sessions, notification, params, c.logger)
 }
 
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {

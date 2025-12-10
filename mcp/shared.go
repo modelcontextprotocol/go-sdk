@@ -15,7 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
@@ -381,7 +381,8 @@ const (
 
 // notifySessions calls Notify on all the sessions.
 // Should be called on a copy of the peer sessions.
-func notifySessions[S Session, P Params](sessions []S, method string, params P) {
+// The logger must be non-nil.
+func notifySessions[S Session, P Params](sessions []S, method string, params P, logger *slog.Logger) {
 	if sessions == nil {
 		return
 	}
@@ -394,8 +395,7 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P) 
 	for _, s := range sessions {
 		req := newRequest(s, params)
 		if err := handleNotify(ctx, method, req); err != nil {
-			// TODO(#218): surface this error better
-			log.Printf("calling %s: %v", method, err)
+			logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
 		}
 	}
 }
