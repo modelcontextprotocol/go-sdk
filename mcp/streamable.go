@@ -1835,7 +1835,11 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 // indicating if the connection was closed by the client. If resp is nil, it
 // returns "", false.
 func (c *streamableClientConn) processStream(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, reconnectDelay time.Duration, clientClosed bool) {
-	defer resp.Body.Close()
+	defer func() {
+		// Drain any remaining unprocessed body. This allows the connection to be re-used after closing.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	for evt, err := range scanEvents(resp.Body) {
 		if err != nil {
 			if ctx.Err() != nil {
