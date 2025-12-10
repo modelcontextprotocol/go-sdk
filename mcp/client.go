@@ -130,7 +130,7 @@ func (c *Client) capabilities() *ClientCapabilities {
 	caps := &ClientCapabilities{}
 	// Due to an oversight (#607), roots require special handling.
 	caps.Roots.ListChanged = true
-	caps.RootsV2 = &RootsCapabilities{
+	caps.RootsV2 = &RootCapabilities{
 		ListChanged: true,
 	}
 	if c.opts.CreateMessageHandler != nil {

@@ -601,14 +601,14 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	}
 }
 
-// TestClientRootsCapabilities verifies that the server correctly observes
+// TestClientRootCapabilities verifies that the server correctly observes
 // RootsV2 for various client capability configurations. This tests the fix
 // for #607.
-func TestClientRootsCapabilities(t *testing.T) {
+func TestClientRootCapabilities(t *testing.T) {
 	testCases := []struct {
 		name         string
 		capabilities *string // JSON for the capabilities field; nil means omit the field
-		wantRootsV2  *RootsCapabilities
+		wantRootsV2  *RootCapabilities
 	}{
 		{
 			name:         "capabilities field omitted",
@@ -628,17 +628,17 @@ func TestClientRootsCapabilities(t *testing.T) {
 		{
 			name:         "capabilities with empty roots",
 			capabilities: ptr(`{"roots": {}}`),
-			wantRootsV2:  &RootsCapabilities{ListChanged: false},
+			wantRootsV2:  &RootCapabilities{ListChanged: false},
 		},
 		{
 			name:         "capabilities with roots without listChanged",
 			capabilities: ptr(`{"roots": {"listChanged": false}}`),
-			wantRootsV2:  &RootsCapabilities{ListChanged: false},
+			wantRootsV2:  &RootCapabilities{ListChanged: false},
 		},
 		{
 			name:         "capabilities with roots with listChanged",
 			capabilities: ptr(`{"roots": {"listChanged": true}}`),
-			wantRootsV2:  &RootsCapabilities{ListChanged: true},
+			wantRootsV2:  &RootCapabilities{ListChanged: true},
 		},
 	}
 
@@ -706,7 +706,7 @@ func TestClientRootsCapabilities(t *testing.T) {
 				t.Fatal("InitializeParams is nil")
 			}
 
-			var gotRootsV2 *RootsCapabilities
+			var gotRootsV2 *RootCapabilities
 			if params.Capabilities != nil {
 				gotRootsV2 = params.Capabilities.RootsV2
 			}

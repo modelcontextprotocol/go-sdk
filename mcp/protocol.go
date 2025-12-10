@@ -177,8 +177,8 @@ func (x *CancelledParams) isParams()              {}
 func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
-// RootsCapabilities describes a client's support for roots.
-type RootsCapabilities struct {
+// RootCapabilities describes a client's support for roots.
+type RootCapabilities struct {
 	// ListChanged reports whether the client supports notifications for
 	// changes to the roots list.
 	ListChanged bool `json:"listChanged,omitempty"`
@@ -193,7 +193,7 @@ type ClientCapabilities struct {
 	// Roots describes the client's support for roots.
 	//
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
-	// pointer to a RootsCapabilities value. Roots will be continue to be
+	// pointer to a RootCapabilities value. Roots will be continue to be
 	// populated, but any new fields will only be added in the RootsV2 field.
 	Roots struct {
 		// ListChanged reports whether the client supports notifications for
@@ -201,7 +201,7 @@ type ClientCapabilities struct {
 		ListChanged bool `json:"listChanged,omitempty"`
 	} `json:"roots,omitempty"`
 	// RootsV2 is present if the client supports roots.
-	RootsV2 *RootsCapabilities `json:"-"`
+	RootsV2 *RootCapabilities `json:"-"`
 	// Sampling is present if the client supports sampling from an LLM.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
@@ -217,10 +217,10 @@ func (c *ClientCapabilities) toV2() *clientCapabilitiesV2 {
 
 // clientCapabilitiesV2 is a version of ClientCapabilities that fixes the bug
 // described in #607: Roots should have been a pointer to value type
-// RootsCapabilities.
+// RootCapabilities.
 type clientCapabilitiesV2 struct {
 	ClientCapabilities
-	Roots *RootsCapabilities `json:"roots,omitempty"`
+	Roots *RootCapabilities `json:"roots,omitempty"`
 }
 
 func (c *clientCapabilitiesV2) toV1() *ClientCapabilities {
