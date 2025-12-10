@@ -618,22 +618,39 @@ type stream struct {
 	// The standalone SSE stream has id "".
 	id string
 
+	// logger is used for logging errors during stream operations.
+	logger *slog.Logger
+
 	// mu guards the fields below, as well as storage of new messages in the
 	// connection's event store (if any).
 	mu sync.Mutex
 
-	// If non-nil, deliver writes data directly to the HTTP response.
+	// If pendingJSONMessages is non-nil, this is a JSON stream and messages are
+	// collected here until the stream is complete, at which point they are
+	// flushed as a single JSON response.
+	pendingJSONMessages []json.RawMessage
+
+	// w is the HTTP response writer for this stream. A non-nil w indicates
+	// that the stream is claimed by an HTTP request; it is set to nil when
+	// the request completes.
+	w http.ResponseWriter
+
+	// done is closed to release the hanging HTTP request.
 	//
-	// Only one HTTP response may receive messages at a given time. An active
-	// HTTP connection acquires ownership of the stream by setting this field.
-	deliver func(data []byte, final bool) error
+	// Invariant: a non-nil done implies w is also non-nil, though the converse
+	// is not necessarily true: done is set to nil when it is closed, to avoid
+	// duplicate closure.
+	done chan struct{}
 
-	// closeLocked sends a 'close' event to the client with a configurable retry
-	// delay, if there is a delivery channel available. The stream must be
-	// locked.
-	closeLocked func(reconnectAfter time.Duration)
+	// lastIdx is the index of the last written SSE event, for event ID generation.
+	// It starts at -1 since indices start at 0.
+	lastIdx int
 
-	// streamRequests is the set of unanswered incoming requests for the stream.
+	// supportsPrimeClose indicates whether the client supports prime and close
+	// events (protocol version 2025-11-25 or later).
+	supportsPrimeClose bool
+
+	// requests is the set of unanswered incoming requests for the stream.
 	//
 	// Requests are removed when their response has been received.
 	// In practice, there is only one request, but in the 2025-03-26 version of
@@ -642,12 +659,92 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
+// close sends a 'close' event to the client (if supportsPrimeClose is true and
+// reconnectAfter > 0) and closes the done channel.
+//
+// The done channel is set to nil after closing, so that done != nil implies
+// the stream is active and done is open. This simplifies checks elsewhere.
 func (s *stream) close(reconnectAfter time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closeLocked != nil {
-		s.closeLocked(reconnectAfter)
+	if s.done == nil {
+		return // stream not connected or already closed
 	}
+	if s.supportsPrimeClose && reconnectAfter > 0 {
+		reconnectStr := strconv.FormatInt(reconnectAfter.Milliseconds(), 10)
+		if _, err := writeEvent(s.w, Event{
+			Name:  "close",
+			Retry: reconnectStr,
+		}); err != nil {
+			s.logger.Warn(fmt.Sprintf("Writing close event: %v", err))
+		}
+	}
+	close(s.done)
+	s.done = nil
+}
+
+// release releases the stream from its HTTP request, allowing it to be
+// claimed by another request (e.g., for resumption).
+func (s *stream) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.w = nil
+	s.done = nil // may already be nil, if the stream is done or closed
+}
+
+// deliverLocked writes data to the stream (for SSE) or stores it in
+// pendingJSONMessages (for JSON mode). The eventID is used for SSE event ID;
+// pass "" to omit.
+//
+// If responseTo is valid, it is removed from the requests map. When all
+// requests have been responded to, the done channel is closed and set to nil.
+//
+// Returns true if the stream is now done (all requests have been responded to).
+// The done value is always accurate, even if an error is returned.
+//
+// s.mu must be held when calling this method.
+func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID) (done bool, err error) {
+	if responseTo.IsValid() {
+		delete(s.requests, responseTo)
+	}
+	done = len(s.requests) == 0 && s.id != ""
+	if s.done == nil {
+		return done, fmt.Errorf("stream not connected or already closed")
+	}
+	if done {
+		defer func() { close(s.done); s.done = nil }()
+	}
+	// Try to write to the response.
+	//
+	// If we get here, the request is still hanging (because s.done != nil
+	// implies s.w != nil), but may have been cancelled by the client/http layer:
+	// there's a brief race between request cancellation and releasing the
+	// stream.
+	if s.pendingJSONMessages != nil {
+		s.pendingJSONMessages = append(s.pendingJSONMessages, data)
+		if done {
+			// Flush all pending messages as JSON response.
+			var toWrite []byte
+			if len(s.pendingJSONMessages) == 1 {
+				toWrite = s.pendingJSONMessages[0]
+			} else {
+				toWrite, err = json.Marshal(s.pendingJSONMessages)
+				if err != nil {
+					return done, err
+				}
+			}
+			if _, err := s.w.Write(toWrite); err != nil {
+				return done, err
+			}
+		}
+	} else {
+		// SSE mode: write event to response writer.
+		s.lastIdx++
+		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
+			return done, err
+		}
+	}
+	return done, nil
 }
 
 // doneLocked reports whether the stream is logically complete.
@@ -670,6 +767,8 @@ func (c *streamableServerConn) newStream(ctx context.Context, requests map[jsonr
 	return &stream{
 		id:       id,
 		requests: requests,
+		lastIdx:  -1, // indices start at 0, incremented before each write
+		logger:   c.logger,
 	}, nil
 }
 
@@ -739,6 +838,8 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 		}
 	}
 
+	// TODO(cleanup): why are we creating a cancellable context here?
+	// Isn't the context lifecycle already tied to the request?
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
 
@@ -750,62 +851,33 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	}
 	supportsPrimeClose := protocolVersion >= protocolVersion20251125
 
-	stream, done := c.acquireStream(ctx, w, streamID, &lastIdx, supportsPrimeClose)
+	stream, done := c.acquireStream(ctx, w, streamID, lastIdx, supportsPrimeClose)
 	if stream == nil {
 		return
 	}
-	// Release the stream when we're done.
-	defer func() {
-		stream.mu.Lock()
-		stream.deliver = nil
-		stream.closeLocked = nil
-		stream.mu.Unlock()
-	}()
+	defer stream.release()
+	c.hangResponse(ctx, done)
+}
 
-	// TODO(cleanup): factor out, to clarify closing patterns.
+// hangResponse blocks the HTTP response until one of three conditions is met:
+//   - ctx is cancelled (the client disconnected or the request timed out)
+//   - done is closed (all responses have been sent, or the stream was explicitly closed)
+//   - the session is closed
+//
+// This keeps the HTTP connection open so that server-sent events can be
+// written to the response.
+func (c *streamableServerConn) hangResponse(ctx context.Context, done <-chan struct{}) {
 	select {
 	case <-ctx.Done():
-		// request cancelled
 	case <-done:
-		// request complete
 	case <-c.done:
-		// session closed
-	}
-}
-
-// writeEvent writes an SSE event to w corresponding to the given stream, data, and index.
-// lastIdx is incremented before writing, so that it continues to point to the index of the
-// last event written to the stream.
-func (c *streamableServerConn) writeEvent(w http.ResponseWriter, streamID string, e Event, lastIdx *int) error {
-	*lastIdx++
-	if c.eventStore != nil {
-		// TODO(rfindley): this isn't quite right: we should only set the ID if the
-		// message was actually stored successfully.
-		e.ID = formatEventID(streamID, *lastIdx)
-	}
-	if _, err := writeEvent(w, e); err != nil {
-		return err
-	}
-	return nil
-}
-
-// writeCloseEvent writes a 'close' event to the stream, signaling to the
-// caller that they should reconnect after the configured delay.
-func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectAfter time.Duration) {
-	reconnectStr := strconv.FormatInt(reconnectAfter.Milliseconds(), 10)
-	// Note: this event is not stored, since we don't want or need to replay it.
-	if _, err := writeEvent(w, Event{
-		Name:  "close", // don't make this empty, as the default event type is "message"
-		Retry: reconnectStr,
-	}); err != nil {
-		c.logger.Warn(fmt.Sprintf("Writing close event: %v", err))
 	}
 }
 
 // acquireStream replays all events since lastIdx, and acquires the ongoing
-// stream, if any, updating lastIdx accordingly. If non-nil, the resulting
-// stream will be registered for receiving new messages, and the resulting done
-// channel will be closed when all related messages have been delivered.
+// stream, if any. If non-nil, the resulting stream will be registered for
+// receiving new messages, and the stream's done channel will be closed when
+// all related messages have been delivered.
 //
 // If any errors occur, they will be written to w and the resulting stream will
 // be nil. The resulting stream may also be nil if the stream is complete.
@@ -816,7 +888,7 @@ func (c *streamableServerConn) writeCloseEvent(w http.ResponseWriter, reconnectA
 //
 // supportsPrimeClose indicates whether the client supports the prime and close
 // events (SEP-1699, added in protocol version 2025-11-25 or later).
-func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx *int, supportsPrimeClose bool) (*stream, chan struct{}) {
+func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx int, supportsPrimeClose bool) (*stream, chan struct{}) {
 	// if tempStream is set, the stream is done and we're just replaying messages.
 	//
 	// We record a temporary stream to claim exclusive replay rights. The spec
@@ -829,12 +901,12 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		// The stream is logically done, but claim exclusive rights to replay it by
 		// adding a temporary entry in the streams map.
 		//
-		// We create this entry with a non-nil deliver function, to ensure it isn't
-		// claimed by another request before we lock it below.
+		// We create this entry with a non-nil w, to ensure it isn't claimed by
+		// another request before we lock it below.
 		tempStream = true
 		s = &stream{
-			id:      streamID,
-			deliver: func([]byte, bool) error { return nil },
+			id: streamID,
+			w:  w,
 		}
 		c.streams[streamID] = s
 
@@ -851,7 +923,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	defer s.mu.Unlock()
 
 	// Check that this stream wasn't claimed by another request.
-	if !tempStream && s.deliver != nil {
+	if !tempStream && s.w != nil {
 		http.Error(w, "stream ID conflicts with ongoing stream", http.StatusConflict)
 		return nil, nil
 	}
@@ -864,7 +936,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	// messages, and registered our delivery function.
 	var toReplay [][]byte
 	if c.eventStore != nil {
-		for data, err := range c.eventStore.After(ctx, c.SessionID(), s.id, *lastIdx) {
+		for data, err := range c.eventStore.After(ctx, c.SessionID(), s.id, lastIdx) {
 			if err != nil {
 				// We can't replay events, perhaps because the underlying event store
 				// has garbage collected its storage.
@@ -897,7 +969,12 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	}
 
 	for _, data := range toReplay {
-		if err := c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx); err != nil {
+		lastIdx++
+		e := Event{Name: "message", Data: data}
+		if c.eventStore != nil {
+			e.ID = formatEventID(s.id, lastIdx)
+		}
+		if _, err := writeEvent(w, e); err != nil {
 			return nil, nil
 		}
 	}
@@ -907,40 +984,13 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		return nil, nil
 	}
 
-	// The stream is not done: register a delivery function before the stream is
+	// The stream is not done: set up delivery state before the stream is
 	// unlocked, allowing the connection to write new events.
-	var done = make(chan struct{})
-	// TODO(cleanup): consolidate deliver functions, and be consistent about
-	// checking ctx.Err().
-	s.deliver = func(data []byte, final bool) error {
-		select {
-		case <-done:
-			return fmt.Errorf("stream closed")
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if final {
-			defer close(done)
-		}
-		return c.writeEvent(w, s.id, Event{Name: "message", Data: data}, lastIdx)
-	}
-	// TODO(cleanup): consolidate closeLocked functions, and be consistent about
-	// checking ctx.Err().
-	if supportsPrimeClose {
-		s.closeLocked = func(reconnectAfter time.Duration) {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			if reconnectAfter > 0 {
-				c.writeCloseEvent(w, reconnectAfter)
-			}
-			close(done)
-		}
-	}
-	return s, done
+	s.w = w
+	s.done = make(chan struct{})
+	s.lastIdx = lastIdx
+	s.supportsPrimeClose = supportsPrimeClose
+	return s, s.done
 }
 
 // servePOST handles an incoming message, and replies with either an outgoing
@@ -1092,44 +1142,16 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		w.Header().Set(sessionIDHeader, c.sessionID)
 	}
 
-	// Message delivery has two paths, depending on whether we're responding with JSON or
-	// event stream.
-	done := make(chan struct{}) // closed after the final response is written
+	// Set up stream delivery state.
+	stream.w = w
+	done := make(chan struct{})
+	stream.done = done
+	stream.supportsPrimeClose = supportsPrimeClose
 	if c.jsonResponse {
-		var msgs []json.RawMessage
-		stream.deliver = func(data []byte, final bool) error {
-			// Collect messages until we've received the final response.
-			//
-			// In recent protocol versions, there should only be one message as
-			// batching is disabled, as checked above.
-			//
-			// Note that in [streamableClientConn.Write], any non-response message is
-			// sent to the standalone stream (if any), when the connection is
-			// configured to respond with application/json.
-			msgs = append(msgs, data)
-			if !final {
-				return nil
-			}
-			defer close(done) // final response
-
-			// Write either the JSON object corresponding to the one response, or a
-			// JSON array corresponding to the batch response.
-			var toWrite []byte
-			if len(msgs) == 1 {
-				toWrite = []byte(msgs[0])
-			} else {
-				var err error
-				toWrite, err = json.Marshal(msgs)
-				if err != nil {
-					return err
-				}
-			}
-			_, err = w.Write(toWrite)
-			return err
-		}
+		// JSON mode: collect messages in pendingJSONMessages until done.
+		stream.pendingJSONMessages = []json.RawMessage{}
 	} else {
-		// Write events in the order we receive them.
-		lastIndex := -1
+		// SSE mode: write a priming event if supported.
 		if c.eventStore != nil && supportsPrimeClose {
 			// Write a priming event, as defined by [§2.1.6] of the spec.
 			//
@@ -1140,48 +1162,17 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if err := c.eventStore.Append(req.Context(), c.sessionID, stream.id, nil); err != nil {
 				c.logger.Warn(fmt.Sprintf("Storing priming event: %v", err))
 			}
-			if err := c.writeEvent(w, stream.id, Event{Name: "prime"}, &lastIndex); err != nil {
+			stream.lastIdx++
+			e := Event{Name: "prime", ID: formatEventID(stream.id, stream.lastIdx)}
+			if _, err := writeEvent(w, e); err != nil {
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
-			}
-		}
-
-		// TODO(cleanup): consolidate per other TODO, check ctx.Err()
-		stream.deliver = func(data []byte, final bool) error {
-			select {
-			case <-done:
-				return fmt.Errorf("stream closed")
-			default:
-			}
-			if final {
-				defer close(done)
-			}
-			return c.writeEvent(w, stream.id, Event{Name: "message", Data: data}, &lastIndex)
-		}
-		// TODO(cleanup): consolidate per other TODO.
-		if supportsPrimeClose {
-			stream.closeLocked = func(reconnectAfter time.Duration) {
-				select {
-				case <-done:
-					return
-				default:
-				}
-				if reconnectAfter > 0 {
-					c.writeCloseEvent(w, reconnectAfter)
-				}
-				close(done)
 			}
 		}
 	}
 
-	// Release ownership of the stream by unsetting deliver.
-	defer func() {
-		stream.mu.Lock()
-		// TODO(rfindley): if we have no event store, we should really cancel all
-		// remaining requests here, since the client will never get the results.
-		stream.deliver = nil
-		stream.closeLocked = nil
-		stream.mu.Unlock()
-	}()
+	// TODO(rfindley): if we have no event store, we should really cancel all
+	// remaining requests here, since the client will never get the results.
+	defer stream.release()
 
 	// The stream is now set up to deliver messages.
 	//
@@ -1209,15 +1200,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// TODO(cleanup): factor this out, per other TODO.
-	select {
-	case <-req.Context().Done():
-		// request cancelled
-	case <-done:
-		// request complete
-	case <-c.done:
-		// session is closed
-	}
+	c.hangResponse(req.Context(), done)
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
@@ -1337,35 +1320,12 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.doneLocked() {
-		// It's possible that the stream was completed in between getting s above,
-		// and acquiring the stream lock. In order to avoid acquiring s.mu while
-		// holding c.mu, we check the terminal condition again.
-		return fmt.Errorf("%w: write to closed stream", jsonrpc2.ErrRejected)
-	}
-	// Perform accounting on responses.
-	if responseTo.IsValid() {
-		if _, ok := s.requests[responseTo]; !ok {
-			panic(fmt.Sprintf("internal error: stream %v: response to untracked request %v", s.id, responseTo))
-		}
-		if s.id == "" {
-			// This should be guaranteed not to happen by the stream resolution logic
-			// above, but be defensive: we don't ever want to delete the standalone
-			// stream.
-			panic("internal error: response on standalone stream")
-		}
-		delete(s.requests, responseTo)
-		if len(s.requests) == 0 {
-			c.mu.Lock()
-			delete(c.streams, s.id)
-			c.mu.Unlock()
-		}
-	}
 
-	delivered := false
-	var errs []error
+	// Store in eventStore before delivering.
 	// TODO(rfindley): we should only append if the response is SSE, not JSON, by
 	// pushing down into the delivery layer.
+	delivered := false
+	var errs []error
 	if c.eventStore != nil {
 		if err := c.eventStore.Append(ctx, c.sessionID, s.id, data); err != nil {
 			errs = append(errs, err)
@@ -1373,13 +1333,27 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			delivered = true
 		}
 	}
-	if s.deliver != nil {
-		if err := s.deliver(data, s.doneLocked()); err != nil {
-			errs = append(errs, err)
-		} else {
-			delivered = true
-		}
+
+	// Compute eventID for SSE streams with event store.
+	// Use s.lastIdx + 1 because deliverLocked increments before writing.
+	var eventID string
+	if c.eventStore != nil {
+		eventID = formatEventID(s.id, s.lastIdx+1)
 	}
+
+	done, err := s.deliverLocked(data, eventID, responseTo)
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		delivered = true
+	}
+
+	if done {
+		c.mu.Lock()
+		delete(c.streams, s.id)
+		c.mu.Unlock()
+	}
+
 	if !delivered {
 		return fmt.Errorf("%w: undelivered message: %v", jsonrpc2.ErrRejected, errors.Join(errs...))
 	}
