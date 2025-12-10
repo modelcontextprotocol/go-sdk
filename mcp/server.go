@@ -508,7 +508,7 @@ func (s *Server) changeAndNotify(notification string, params Params, change func
 		sessions = slices.Clone(s.sessions)
 	}
 	s.mu.Unlock()
-	notifySessions(sessions, notification, params)
+	notifySessions(sessions, notification, params, s.opts.Logger)
 }
 
 // Sessions returns an iterator that yields the current set of server sessions.
@@ -708,7 +708,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	subscribedSessions := s.resourceSubscriptions[params.URI]
 	sessions := slices.Collect(maps.Keys(subscribedSessions))
 	s.mu.Unlock()
-	notifySessions(sessions, notificationResourceUpdated, params)
+	notifySessions(sessions, notificationResourceUpdated, params, s.opts.Logger)
 	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
 	return nil
 }

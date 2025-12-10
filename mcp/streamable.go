@@ -1453,7 +1453,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		done:       make(chan struct{}),
 		maxRetries: maxRetries,
 		strict:     t.strict,
-		logger:     t.logger,
+		logger:     ensureLogger(t.logger), // must be non-nil for safe logging
 		ctx:        connCtx,
 		cancel:     cancel,
 		failed:     make(chan struct{}),
@@ -1555,9 +1555,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		// stream.
 		//
 		// Treat this like MethodNotAllowed in non-strict mode.
-		if c.logger != nil {
-			c.logger.Warn(fmt.Sprintf("got %d instead of 405 for standalone SSE stream", resp.StatusCode))
-		}
+		c.logger.Warn(fmt.Sprintf("got %d instead of 405 for standalone SSE stream", resp.StatusCode))
 		resp.Body.Close()
 		return
 	}
@@ -1686,9 +1684,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// Some servers return 200, even with an empty json body.
 			//
 			// In strict mode, return an error to the caller.
-			if c.logger != nil {
-				c.logger.Warn(errMsg)
-			}
+			c.logger.Warn(errMsg)
 			if c.strict {
 				return errors.New(errMsg)
 			}
