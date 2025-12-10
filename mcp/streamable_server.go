@@ -141,10 +141,17 @@ The server can respond to POST requests in two formats:
 
 # Key Implementation Details
 
-The [stream] struct manages delivery of messages to HTTP responses:
-  - [stream.deliver], if set, writes data to the current HTTP response
-  - [stream.closeLocked] sends a close event with retry delay
+The [stream] struct manages delivery of messages to HTTP responses.
+
+Fields:
+  - [stream.w] is the ResponseWriter for the current HTTP response (non-nil indicates claimed)
+  - [stream.done] is closed to release the hanging HTTP request
   - [stream.requests] tracks pending request IDs (stream completes when empty)
+
+Methods:
+  - [stream.deliverLocked] delivers a message to the stream
+  - [stream.close] sends a close event and releases the stream
+  - [stream.release] releases the stream from the HTTP request, allowing resumption
 
 [streamableServerConn] handles the [Connection] interface:
   - [streamableServerConn.Read] receives messages from the incoming channel (fed by POST handlers)
