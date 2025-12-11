@@ -503,8 +503,8 @@ func jsonSchema202012Handler(ctx context.Context, req *mcp.CallToolRequest, inpu
 
 func testReconnectionHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 	// Close the SSE stream to trigger client reconnection (SEP-1699)
-	if req.Extra != nil && req.Extra.CloseStream != nil {
-		req.Extra.CloseStream(10 * time.Millisecond)
+	if req.Extra != nil && req.Extra.CloseSSEStream != nil {
+		req.Extra.CloseSSEStream(mcp.CloseSSEStreamArgs{RetryAfter: 10 * time.Millisecond})
 	}
 
 	// Wait for client to reconnect

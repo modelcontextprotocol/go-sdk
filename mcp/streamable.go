@@ -1065,9 +1065,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			if jreq.IsCall() {
 				calls[jreq.ID] = struct{}{}
-				// See the doc for CloseStream: allow the request handler to explicitly
-				// close the ongoing stream.
-				jreq.Extra.(*RequestExtra).CloseStream = func(reconnectAfter time.Duration) {
+				// See the doc for CloseSSEStream: allow the request handler to
+				// explicitly close the ongoing stream.
+				jreq.Extra.(*RequestExtra).CloseSSEStream = func(args CloseSSEStreamArgs) {
 					c.mu.Lock()
 					streamID, ok := c.requestStreams[jreq.ID]
 					var stream *stream
@@ -1077,7 +1077,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					c.mu.Unlock()
 
 					if stream != nil {
-						stream.close(reconnectAfter)
+						stream.close(args.RetryAfter)
 					}
 				}
 			}
