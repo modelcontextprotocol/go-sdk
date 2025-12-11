@@ -528,10 +528,10 @@ func TestStreamableServerDisconnect(t *testing.T) {
 	testStream := func(ctx context.Context, session *ServerSession, extra *RequestExtra) {
 		// Close the stream before the first message. We should have sent an
 		// initial priming message already, so the client will be able to replay
-		extra.CloseStream(10 * time.Millisecond)
+		extra.CloseSSEStream(CloseSSEStreamArgs{RetryAfter: 10 * time.Millisecond})
 		session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg1"})
 		time.Sleep(20 * time.Millisecond)
-		extra.CloseStream(10 * time.Millisecond) // Closing twice should still be supported.
+		extra.CloseSSEStream(CloseSSEStreamArgs{RetryAfter: 10 * time.Millisecond}) // Closing twice should still be supported.
 		session.NotifyProgress(ctx, &ProgressNotificationParams{Message: "msg2"})
 	}
 
@@ -1069,7 +1069,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			name:   "no close message on old protocol",
 			replay: true,
 			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
-				req.Extra.CloseStream(time.Millisecond)
+				req.Extra.CloseSSEStream(CloseSSEStreamArgs{RetryAfter: time.Millisecond})
 			},
 			requests: []streamableRequest{
 				initialize,
@@ -1105,7 +1105,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			name:   "close message on 2025-11-25",
 			replay: true,
 			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
-				req.Extra.CloseStream(time.Millisecond)
+				req.Extra.CloseSSEStream(CloseSSEStreamArgs{RetryAfter: time.Millisecond})
 			},
 			requests: []streamableRequest{
 				initialize20251125,
@@ -1126,7 +1126,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			name:   "no close message",
 			replay: true,
 			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
-				req.Extra.CloseStream(0)
+				req.Extra.CloseSSEStream(CloseSSEStreamArgs{})
 			},
 			requests: []streamableRequest{
 				initialize,
