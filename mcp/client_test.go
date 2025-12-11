@@ -202,9 +202,8 @@ func TestClientCapabilities(t *testing.T) {
 			name:            "With initial capabilities",
 			configureClient: func(s *Client) {},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
 			},
 		},
 		{
@@ -216,9 +215,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:    RootCapabilities{ListChanged: true},
+				RootsV2:  &RootCapabilities{ListChanged: true},
 				Sampling: &SamplingCapabilities{},
 			},
 		},
@@ -232,9 +230,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
 				Elicitation: &ElicitationCapabilities{
 					Form: &FormElicitationCapabilities{},
 				},
@@ -250,9 +247,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
 				Elicitation: &ElicitationCapabilities{
 					URL: &URLElicitationCapabilities{},
 				},
@@ -268,9 +264,8 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 			wantCapabilities: &ClientCapabilities{
-				Roots: struct {
-					ListChanged bool "json:\"listChanged,omitempty\""
-				}{ListChanged: true},
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
 				Elicitation: &ElicitationCapabilities{
 					Form: &FormElicitationCapabilities{},
 					URL:  &URLElicitationCapabilities{},

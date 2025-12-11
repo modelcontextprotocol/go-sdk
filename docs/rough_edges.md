@@ -30,3 +30,9 @@ v2.
 
 - `AudioContent.MarshalJSON` should have had a pointer receiver, to be
   consistent with other content types.
+
+- `ClientCapabilities.Roots` should have been a distinguished struct pointer
+  ([see #607](https://github.com/modelcontextprotocol/go-sdk/issues/607)).
+
+  **Workaround**: use `ClientCapabilities.RootsV2`, which aligns with the
+  semantics of other capability fields.
