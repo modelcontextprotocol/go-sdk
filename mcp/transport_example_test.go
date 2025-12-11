@@ -46,7 +46,7 @@ func ExampleLoggingTransport() {
 
 	// Output:
 	// read: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"server","version":"v0.0.1"}}}
-	// write: {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"client","version":"v0.0.1"},"protocolVersion":"2025-06-18"}}
+	// write: {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"client","version":"v0.0.1"},"protocolVersion":"2025-06-18","capabilities":{"roots":{"listChanged":true}}}}
 	// write: {"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
 }
 

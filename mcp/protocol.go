@@ -226,6 +226,10 @@ type clientCapabilitiesV2 struct {
 func (c *clientCapabilitiesV2) toV1() *ClientCapabilities {
 	caps := c.ClientCapabilities
 	caps.RootsV2 = c.Roots
+	// Sync Roots from RootsV2 for backward compatibility (#607).
+	if caps.RootsV2 != nil {
+		caps.Roots = *caps.RootsV2
+	}
 	return &caps
 }
 
