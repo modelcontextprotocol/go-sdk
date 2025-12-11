@@ -627,12 +627,15 @@ type stream struct {
 
 	// If pendingJSONMessages is non-nil, this is a JSON stream and messages are
 	// collected here until the stream is complete, at which point they are
-	// flushed as a single JSON response.
+	// flushed as a single JSON response. Note that the non-nilness of this field
+	// is significant, as it signals the expected content type.
+	//
+	// Note: if we remove support for batching, this could just be a bool.
 	pendingJSONMessages []json.RawMessage
 
 	// w is the HTTP response writer for this stream. A non-nil w indicates
-	// that the stream is claimed by an HTTP request; it is set to nil when
-	// the request completes.
+	// that the stream is claimed by an HTTP request (the hanging POST or GET);
+	// it is set to nil when the request completes.
 	w http.ResponseWriter
 
 	// done is closed to release the hanging HTTP request.
@@ -646,9 +649,8 @@ type stream struct {
 	// It starts at -1 since indices start at 0.
 	lastIdx int
 
-	// supportsPrimeClose indicates whether the client supports prime and close
-	// events (protocol version 2025-11-25 or later).
-	supportsPrimeClose bool
+	// protocolVersion is the protocol version for this stream.
+	protocolVersion string
 
 	// requests is the set of unanswered incoming requests for the stream.
 	//
@@ -659,8 +661,8 @@ type stream struct {
 	requests map[jsonrpc.ID]struct{}
 }
 
-// close sends a 'close' event to the client (if supportsPrimeClose is true and
-// reconnectAfter > 0) and closes the done channel.
+// close sends a 'close' event to the client (if protocolVersion >= 2025-11-25
+// and reconnectAfter > 0) and closes the done channel.
 //
 // The done channel is set to nil after closing, so that done != nil implies
 // the stream is active and done is open. This simplifies checks elsewhere.
@@ -670,7 +672,7 @@ func (s *stream) close(reconnectAfter time.Duration) {
 	if s.done == nil {
 		return // stream not connected or already closed
 	}
-	if s.supportsPrimeClose && reconnectAfter > 0 {
+	if s.protocolVersion >= protocolVersion20251125 && reconnectAfter > 0 {
 		reconnectStr := strconv.FormatInt(reconnectAfter.Milliseconds(), 10)
 		if _, err := writeEvent(s.w, Event{
 			Name:  "close",
@@ -704,9 +706,13 @@ func (s *stream) release() {
 //
 // s.mu must be held when calling this method.
 func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID) (done bool, err error) {
+	// First, record the response. We must do this *before* returning an error
+	// below, as even if the stream is disconnected we want to update our
+	// accounting.
 	if responseTo.IsValid() {
 		delete(s.requests, responseTo)
 	}
+	// Now, try to deliver the message to the client.
 	done = len(s.requests) == 0 && s.id != ""
 	if s.done == nil {
 		return done, fmt.Errorf("stream not connected or already closed")
@@ -846,9 +852,8 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
-	supportsPrimeClose := protocolVersion >= protocolVersion20251125
 
-	stream, done := c.acquireStream(ctx, w, streamID, lastIdx, supportsPrimeClose)
+	stream, done := c.acquireStream(ctx, w, streamID, lastIdx, protocolVersion)
 	if stream == nil {
 		return
 	}
@@ -883,9 +888,9 @@ func (c *streamableServerConn) hangResponse(ctx context.Context, done <-chan str
 // all messages, so that no delivery or storage of new messages occurs while
 // the stream is still replaying.
 //
-// supportsPrimeClose indicates whether the client supports the prime and close
-// events (SEP-1699, added in protocol version 2025-11-25 or later).
-func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx int, supportsPrimeClose bool) (*stream, chan struct{}) {
+// protocolVersion is the protocol version for this stream, used to determine
+// feature support (e.g. prime and close events were added in 2025-11-25).
+func (c *streamableServerConn) acquireStream(ctx context.Context, w http.ResponseWriter, streamID string, lastIdx int, protocolVersion string) (*stream, chan struct{}) {
 	// if tempStream is set, the stream is done and we're just replaying messages.
 	//
 	// We record a temporary stream to claim exclusive replay rights. The spec
@@ -986,7 +991,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	s.w = w
 	s.done = make(chan struct{})
 	s.lastIdx = lastIdx
-	s.supportsPrimeClose = supportsPrimeClose
+	s.protocolVersion = protocolVersion
 	return s, s.done
 }
 
@@ -1091,7 +1096,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	if isInitialize && initializeProtocolVersion != "" {
 		effectiveVersion = initializeProtocolVersion
 	}
-	supportsPrimeClose := effectiveVersion >= protocolVersion20251125
 
 	// If we don't have any calls, we can just publish the incoming messages and return.
 	// No need to track a logical stream.
@@ -1143,13 +1147,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	stream.w = w
 	done := make(chan struct{})
 	stream.done = done
-	stream.supportsPrimeClose = supportsPrimeClose
+	stream.protocolVersion = effectiveVersion
 	if c.jsonResponse {
 		// JSON mode: collect messages in pendingJSONMessages until done.
+		// Set pendingJSONMessages to a non-nil value to signal that this is an
+		// application/json stream.
 		stream.pendingJSONMessages = []json.RawMessage{}
 	} else {
 		// SSE mode: write a priming event if supported.
-		if c.eventStore != nil && supportsPrimeClose {
+		if c.eventStore != nil && effectiveVersion >= protocolVersion20251125 {
 			// Write a priming event, as defined by [§2.1.6] of the spec.
 			//
 			// [§2.1.6]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
