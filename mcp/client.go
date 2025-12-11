@@ -63,17 +63,57 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 type ClientOptions struct {
 	// CreateMessageHandler handles incoming requests for sampling/createMessage.
 	//
-	// Setting CreateMessageHandler to a non-nil value causes the client to
-	// advertise the sampling capability.
+	// Setting CreateMessageHandler to a non-nil value automatically causes the
+	// client to advertise the sampling capability, with default value
+	// &SamplingCapabilities{}. If [ClientOptions.Capabilities] is set and has a
+	// non nil value for [ClientCapabilities.Sampling], that value overrides the
+	// inferred capability.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
-	// Setting ElicitationHandler to a non-nil value causes the client to
-	// advertise the elicitation capability.
+	// Setting ElicitationHandler to a non-nil value automatically causes the
+	// client to advertise the elicitation capability, with default value
+	// &ElicitationCapabilities{}. If [ClientOptions.Capabilities] is set and has
+	// a non nil value for [ClientCapabilities.ELicitattion], that value
+	// overrides the inferred capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
-	// ElicitationModes specifies the elicitation modes supported by the client.
-	// If ElicitationHandler is set and ElicitationModes is empty, it defaults to ["form"].
-	ElicitationModes []string
+	// Capabilities optionally configures the client's default capabilities,
+	// before any capabilities are inferred from other configuration.
+	//
+	// If Capabilities is nil, the default client capabilities are
+	// {"roots":{"listChanged":true}}, for historical reasons. Setting
+	// Capabilities to a non-nil value overrides this default. As a special case,
+	// to work around #607, Capabilities.Roots is ignored: set
+	// Capabilities.RootsV2 to configure the roots capability. This allows the
+	// "roots" capability to be disabled entirely.
+	//
+	// For example:
+	//   - To disable the "roots" capability, use &ClientCapabilities{}
+	//   - To configure "roots", but disable "listChanged" notifications, use
+	//     &ClientCapabilities{RootsV2:&RootCapabilities{}}.
+	//
+	// # Interaction with capability inference
+	//
+	// Sampling and elicitation capabilities are automatically added when their
+	// corresponding handlers are set, with the default value described at
+	// [ClientOptions.CreateMessageHandler] and
+	// [ClientOptions.ElicitationHandler]. If the Sampling or Elicitation fields
+	// are set in the Capabilities field, their values override the inferred
+	// value.
+	//
+	// For example, to to configure elicitation modes:
+	//
+	//	Capabilities: &ClientCapabilities{
+	//	    Elicitation: &ElicitationCapabilities{
+	//	        Form: &FormElicitationCapabilities{},
+	//	        URL:  &URLElicitationCapabilities{},
+	//	    },
+	//	}
+	//
+	// Conversely, if Capabilities does not set a field (for example, if the
+	// Elicitation field is nil), the inferred elicitation capability will be
+	// used.
+	Capabilities *ClientCapabilities
 	// ElicitationCompleteHandler handles incoming notifications for notifications/elicitation/complete.
 	ElicitationCompleteHandler func(context.Context, *ElicitationCompleteNotificationRequest)
 	// Handlers for notifications from the server.
@@ -129,27 +169,43 @@ type ClientSessionOptions struct {
 	protocolVersion string
 }
 
-func (c *Client) capabilities() *ClientCapabilities {
-	caps := &ClientCapabilities{}
-	// Due to an oversight (#607), roots require special handling.
-	caps.Roots.ListChanged = true
-	caps.RootsV2 = &RootCapabilities{
-		ListChanged: true,
-	}
-	if c.opts.CreateMessageHandler != nil {
-		caps.Sampling = &SamplingCapabilities{}
-	}
-	if c.opts.ElicitationHandler != nil {
-		caps.Elicitation = &ElicitationCapabilities{}
-		modes := c.opts.ElicitationModes
-		if len(modes) == 0 || slices.Contains(modes, "form") {
-			// Technically, the empty ElicitationCapabilities value is equivalent to
-			// {"form":{}} for backward compatibility, but we explicitly set the form
-			// capability.
-			caps.Elicitation.Form = &FormElicitationCapabilities{}
+func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
+	// Start with user-provided capabilities as defaults, or use SDK defaults.
+	var caps *ClientCapabilities
+	if c.opts.Capabilities != nil {
+		// Deep copy the user-provided capabilities to avoid mutation.
+		caps = c.opts.Capabilities.clone()
+	} else {
+		// SDK defaults: roots with listChanged.
+		// (this was the default behavior at v1.0.0, and so cannot be changed)
+		caps = &ClientCapabilities{
+			RootsV2: &RootCapabilities{
+				ListChanged: true,
+			},
 		}
-		if slices.Contains(modes, "url") {
-			caps.Elicitation.URL = &URLElicitationCapabilities{}
+	}
+
+	// Sync Roots from RootsV2 for backward compatibility (#607).
+	if caps.RootsV2 != nil {
+		caps.Roots = *caps.RootsV2
+	}
+
+	// Augment with sampling capability if handler is set.
+	if c.opts.CreateMessageHandler != nil {
+		if caps.Sampling == nil {
+			caps.Sampling = &SamplingCapabilities{}
+		}
+	}
+
+	// Augment with elicitation capability if handler is set.
+	if c.opts.ElicitationHandler != nil {
+		if caps.Elicitation == nil {
+			caps.Elicitation = &ElicitationCapabilities{}
+			// Form elicitation was added in 2025-11-25; for older versions,
+			// {} is treated the same as {"form":{}}.
+			if protocolVersion >= protocolVersion20251125 {
+				caps.Elicitation.Form = &FormElicitationCapabilities{}
+			}
 		}
 	}
 	return caps
@@ -175,7 +231,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	params := &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		ClientInfo:      c.impl,
-		Capabilities:    c.capabilities(),
+		Capabilities:    c.capabilities(protocolVersion),
 	}
 	req := &InitializeRequest{Session: cs, Params: params}
 	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
@@ -345,10 +401,36 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 	// Lock for the change, but not for the notification.
 	c.mu.Lock()
 	if change() {
-		sessions = slices.Clone(c.sessions)
+		// Check if listChanged is enabled for this notification type.
+		if c.shouldSendListChangedNotification(notification) {
+			sessions = slices.Clone(c.sessions)
+		}
 	}
 	c.mu.Unlock()
 	notifySessions(sessions, notification, params, c.logger)
+}
+
+// shouldSendListChangedNotification checks if the client's capabilities allow
+// sending the given list-changed notification.
+func (c *Client) shouldSendListChangedNotification(notification string) bool {
+	// Get effective capabilities (considering user-provided defaults).
+	caps := c.opts.Capabilities
+
+	switch notification {
+	case notificationRootsListChanged:
+		// If user didn't specify capabilities, default behavior sends notifications.
+		if caps == nil {
+			return true
+		}
+		// Check RootsV2 first (preferred), then fall back to Roots.
+		if caps.RootsV2 != nil {
+			return caps.RootsV2.ListChanged
+		}
+		return caps.Roots.ListChanged
+	default:
+		// Unknown notification, allow by default.
+		return true
+	}
 }
 
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {

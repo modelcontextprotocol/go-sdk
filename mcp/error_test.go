@@ -213,7 +213,13 @@ func TestURLElicitationRequired(t *testing.T) {
 
 		// Create client with elicitation handler and middleware.
 		client := NewClient(testImpl, &ClientOptions{
-			ElicitationModes: []string{"url"},
+			Capabilities: &ClientCapabilities{
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
+				Elicitation: &ElicitationCapabilities{
+					URL: &URLElicitationCapabilities{},
+				},
+			},
 			ElicitationHandler: func(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
 				elicitCalled = true
 				elicitURL = req.Params.URL

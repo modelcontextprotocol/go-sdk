@@ -245,14 +245,14 @@ func TestServerCapabilities(t *testing.T) {
 		wantCapabilities *ServerCapabilities
 	}{
 		{
-			name:            "No capabilities",
+			name:            "no capabilities",
 			configureServer: func(s *Server) {},
 			wantCapabilities: &ServerCapabilities{
 				Logging: &LoggingCapabilities{},
 			},
 		},
 		{
-			name: "With prompts",
+			name: "with prompts",
 			configureServer: func(s *Server) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 			},
@@ -262,7 +262,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "With resources",
+			name: "with resources",
 			configureServer: func(s *Server) {
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
 			},
@@ -272,7 +272,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "With resource templates",
+			name: "with resource templates",
 			configureServer: func(s *Server) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
@@ -282,7 +282,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "With resource subscriptions",
+			name: "with resource subscriptions",
 			configureServer: func(s *Server) {
 				s.AddResourceTemplate(&ResourceTemplate{URITemplate: "file:///rt"}, nil)
 			},
@@ -300,7 +300,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "With tools",
+			name: "with tools",
 			configureServer: func(s *Server) {
 				s.AddTool(tool, nil)
 			},
@@ -310,7 +310,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With completions",
+			name:            "with completions",
 			configureServer: func(s *Server) {},
 			serverOpts: ServerOptions{
 				CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
@@ -323,7 +323,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "With all capabilities",
+			name: "all capabilities",
 			configureServer: func(s *Server) {
 				s.AddPrompt(&Prompt{Name: "p"}, nil)
 				s.AddResource(&Resource{URI: "file:///r"}, nil)
@@ -350,7 +350,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With initial capabilities",
+			name:            "has features",
 			configureServer: func(s *Server) {},
 			serverOpts: ServerOptions{
 				HasPrompts:   true,
@@ -362,6 +362,83 @@ func TestServerCapabilities(t *testing.T) {
 				Prompts:   &PromptCapabilities{ListChanged: true},
 				Resources: &ResourceCapabilities{ListChanged: true},
 				Tools:     &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name:            "empty capabilities",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{},
+			},
+			wantCapabilities: &ServerCapabilities{},
+		},
+		{
+			name:            "no logging",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Tools: &ToolCapabilities{ListChanged: true},
+				},
+			},
+			wantCapabilities: &ServerCapabilities{
+				Tools: &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name:            "no list",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Tools:   &ToolCapabilities{ListChanged: false},
+					Prompts: &PromptCapabilities{ListChanged: false},
+				},
+			},
+			wantCapabilities: &ServerCapabilities{
+				Tools:   &ToolCapabilities{ListChanged: false},
+				Prompts: &PromptCapabilities{ListChanged: false},
+			},
+		},
+		{
+			name: "adding tools-list",
+			configureServer: func(s *Server) {
+				s.AddTool(tool, nil)
+			},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				},
+			},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Tools:   &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "adding tools-no list",
+			configureServer: func(s *Server) {
+				s.AddTool(tool, nil)
+			},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Tools: &ToolCapabilities{ListChanged: false},
+				},
+			},
+			wantCapabilities: &ServerCapabilities{
+				Tools: &ToolCapabilities{ListChanged: false},
+			},
+		},
+		{
+			name:            "experimental preserved",
+			configureServer: func(s *Server) {},
+			serverOpts: ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Experimental: map[string]any{"custom": "value"},
+					Logging:      &LoggingCapabilities{},
+				},
+			},
+			wantCapabilities: &ServerCapabilities{
+				Experimental: map[string]any{"custom": "value"},
+				Logging:      &LoggingCapabilities{},
 			},
 		},
 	}
@@ -775,4 +852,89 @@ func TestToolForSchemas(t *testing.T) {
 			},
 		},
 		"")
+}
+
+// TestServerCapabilitiesOverWire verifies that server capabilities are
+// correctly sent over the wire during initialization.
+func TestServerCapabilitiesOverWire(t *testing.T) {
+	tool := &Tool{Name: "test-tool", InputSchema: &jsonschema.Schema{Type: "object"}}
+
+	testCases := []struct {
+		name             string
+		serverOpts       *ServerOptions
+		configureServer  func(s *Server)
+		wantCapabilities *ServerCapabilities
+	}{
+		{
+			name:            "Default capabilities",
+			serverOpts:      nil,
+			configureServer: func(s *Server) {},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+			},
+		},
+		{
+			name: "Custom Capabilities with tools",
+			serverOpts: &ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Tools: &ToolCapabilities{ListChanged: false},
+				},
+			},
+			configureServer: func(s *Server) {},
+			wantCapabilities: &ServerCapabilities{
+				Tools: &ToolCapabilities{ListChanged: false},
+			},
+		},
+		{
+			name: "Dynamic tool capability",
+			serverOpts: &ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				},
+			},
+			configureServer: func(s *Server) {
+				s.AddTool(tool, nil)
+			},
+			wantCapabilities: &ServerCapabilities{
+				Logging: &LoggingCapabilities{},
+				Tools:   &ToolCapabilities{ListChanged: true},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Create server.
+			impl := &Implementation{Name: "testServer", Version: "v1.0.0"}
+			server := NewServer(impl, tc.serverOpts)
+			tc.configureServer(server)
+
+			// Connect client and server.
+			cTransport, sTransport := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, sTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+			cs, err := client.Connect(ctx, cTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			// Check that the client received the expected capabilities.
+			initResult := cs.InitializeResult()
+			if initResult == nil {
+				t.Fatal("InitializeResult is nil")
+			}
+
+			if diff := cmp.Diff(tc.wantCapabilities, initResult.Capabilities); diff != "" {
+				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }

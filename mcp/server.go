@@ -81,14 +81,51 @@ type ServerOptions struct {
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
 	UnsubscribeHandler func(context.Context, *UnsubscribeRequest) error
+
+	// Capabilities optionally configures the server's default capabilities,
+	// before any capabilities are inferred from other configuration or server
+	// features.
+	//
+	// If Capabilities is nil, the default server capabilities are {"logging":{}},
+	// for historical reasons. Setting Capabilities to a non-nil value overrides
+	// this default. For example, setting Capabilities to `&ServerCapabilities{}`
+	// disables the logging capability.
+	//
+	// # Interaction with capability inference
+	//
+	// "tools", "prompts", and "resources" capabilities are automatically added when
+	// tools, prompts, or resources are added to the server (for example, via
+	// [Server.AddPrompt]), with default value `{"listChanged":true}`. Similarly,
+	// if the [ClientOptions.SubscribeHandler] or
+	// [ClientOptions.CompletionHandler] are set, the inferred capabilities are
+	// adjusted accordingly.
+	//
+	// Any non-nil field in Capabilities overrides the inferred value.
+	// For example:
+	//
+	//  - To advertise the "tools" capability, even if no tools are added, set
+	//    Capabilities.Tools to &ToolCapabilities{ListChanged:true}.
+	//  - To disable tool list notifications, set Capabilities.Tools to
+	//    &ToolCapabilities{}.
+	//
+	// Conversely, if Capabilities does not set a field (for example, if the
+	// Prompts field is nil), the inferred capability will be used.
+	Capabilities *ServerCapabilities
+
 	// If true, advertises the prompts capability during initialization,
 	// even if no prompts have been registered.
+	//
+	// Deprecated: Use Capabilities instead.
 	HasPrompts bool
 	// If true, advertises the resources capability during initialization,
 	// even if no resources have been registered.
+	//
+	// Deprecated: Use Capabilities instead.
 	HasResources bool
 	// If true, advertises the tools capability during initialization,
 	// even if no tools have been registered.
+	//
+	// Deprecated: Use Capabilities instead.
 	HasTools bool
 
 	// GetSessionID provides the next session ID to use for an incoming request.
@@ -465,24 +502,49 @@ func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	caps := &ServerCapabilities{
-		Logging: &LoggingCapabilities{},
+	// Start with user-provided capabilities as defaults, or use SDK defaults.
+	var caps *ServerCapabilities
+	if s.opts.Capabilities != nil {
+		// Deep copy the user-provided capabilities to avoid mutation.
+		caps = s.opts.Capabilities.clone()
+	} else {
+		// SDK defaults: only logging capability.
+		caps = &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+		}
 	}
+
+	// Augment with tools capability if tools exist or legacy HasTools is set.
 	if s.opts.HasTools || s.tools.len() > 0 {
-		caps.Tools = &ToolCapabilities{ListChanged: true}
+		if caps.Tools == nil {
+			caps.Tools = &ToolCapabilities{ListChanged: true}
+		}
 	}
+
+	// Augment with prompts capability if prompts exist or legacy HasPrompts is set.
 	if s.opts.HasPrompts || s.prompts.len() > 0 {
-		caps.Prompts = &PromptCapabilities{ListChanged: true}
+		if caps.Prompts == nil {
+			caps.Prompts = &PromptCapabilities{ListChanged: true}
+		}
 	}
+
+	// Augment with resources capability if resources/templates exist or legacy HasResources is set.
 	if s.opts.HasResources || s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
-		caps.Resources = &ResourceCapabilities{ListChanged: true}
+		if caps.Resources == nil {
+			caps.Resources = &ResourceCapabilities{ListChanged: true}
+		}
 		if s.opts.SubscribeHandler != nil {
 			caps.Resources.Subscribe = true
 		}
 	}
+
+	// Augment with completions capability if handler is set.
 	if s.opts.CompletionHandler != nil {
-		caps.Completions = &CompletionCapabilities{}
+		if caps.Completions == nil {
+			caps.Completions = &CompletionCapabilities{}
+		}
 	}
+
 	return caps
 }
 
@@ -512,7 +574,7 @@ const notificationDelay = 10 * time.Millisecond
 func (s *Server) changeAndNotify(notification string, change func() bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if change() {
+	if change() && s.shouldSendListChangedNotification(notification) {
 		// Reset the outstanding delayed call, if any.
 		if t := s.pendingNotifications[notification]; t == nil {
 			s.pendingNotifications[notification] = time.AfterFunc(notificationDelay, func() { s.notifySessions(notification) })
@@ -530,6 +592,35 @@ func (s *Server) notifySessions(n string) {
 	s.pendingNotifications[n] = nil
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 	notifySessions(sessions, n, changeNotificationParams[n], s.opts.Logger)
+}
+
+// shouldSendListChangedNotification checks if the server's capabilities allow
+// sending the given list-changed notification.
+func (s *Server) shouldSendListChangedNotification(notification string) bool {
+	// Get effective capabilities (considering user-provided defaults).
+	caps := s.opts.Capabilities
+
+	switch notification {
+	case notificationToolListChanged:
+		// If user didn't specify capabilities, default behavior sends notifications.
+		if caps == nil || caps.Tools == nil {
+			return true
+		}
+		return caps.Tools.ListChanged
+	case notificationPromptListChanged:
+		if caps == nil || caps.Prompts == nil {
+			return true
+		}
+		return caps.Prompts.ListChanged
+	case notificationResourceListChanged:
+		if caps == nil || caps.Resources == nil {
+			return true
+		}
+		return caps.Resources.ListChanged
+	default:
+		// Unknown notification, allow by default.
+		return true
+	}
 }
 
 // Sessions returns an iterator that yields the current set of server sessions.
