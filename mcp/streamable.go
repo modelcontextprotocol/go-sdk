@@ -1376,6 +1376,10 @@ func (c *streamableServerConn) Close() error {
 // A StreamableClientTransport is a [Transport] that can communicate with an MCP
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
+//
+// If the server terminates the session (returning 404 Not Found), subsequent
+// operations on the [ClientSession] will return an error wrapping
+// [ErrSessionMissing].
 type StreamableClientTransport struct {
 	Endpoint   string
 	HTTPClient *http.Client
@@ -1493,16 +1497,17 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
-// errSessionMissing distinguishes if the session is known to not be present on
-// the server (see [streamableClientConn.fail]).
+// ErrSessionMissing is a sentinel error returned by a [ClientSession] using the
+// [StreamableClientTransport], indicating the session is not present on the
+// server. This occurs when the server returns a 404 Not Found response.
 //
-// TODO(rfindley): should we expose this error value (and its corresponding
-// API) to the user?
+// According to the MCP spec ([Session Management]), clients should reestablish
+// a session when encountering this error. Users can check for this error using
+// [errors.Is] to implement session recovery logic by creating a new
+// [ClientSession].
 //
-// The spec says that if the server returns 404, clients should reestablish
-// a session. For now, we delegate that to the user, but do they need a way to
-// differentiate a 'NotFound' error from other errors?
-var errSessionMissing = errors.New("session not found")
+// [Session Management]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management
+var ErrSessionMissing = errors.New("session not found")
 
 var _ clientConnection = (*streamableClientConn)(nil)
 
@@ -1572,7 +1577,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 // If err is non-nil, it is terminal, and subsequent (or pending) Reads will
 // fail.
 //
-// If err wraps errSessionMissing, the failure indicates that the session is no
+// If err wraps [ErrSessionMissing], the failure indicates that the session is no
 // longer present on the server, and no final DELETE will be performed when
 // closing the connection.
 func (c *streamableClientConn) fail(err error) {
@@ -1816,9 +1821,9 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
 	if resp.StatusCode == http.StatusNotFound {
-		// Return an errSessionMissing to avoid sending a redundant DELETE when the
+		// Return an ErrSessionMissing to avoid sending a redundant DELETE when the
 		// session is already gone.
-		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing)
+		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s: failed to connect: %v", requestSummary, http.StatusText(resp.StatusCode))
@@ -1970,7 +1975,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 // Close implements the [Connection] interface.
 func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
-		if errors.Is(c.failure(), errSessionMissing) {
+		if errors.Is(c.failure(), ErrSessionMissing) {
 			// If the session is missing, no need to delete it.
 		} else {
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)

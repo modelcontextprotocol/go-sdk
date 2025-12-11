@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,6 +234,9 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	_, err = session.ListTools(ctx, nil)
 	if err == nil {
 		t.Errorf("Listing tools: got nil error, want non-nil")
+	}
+	if !errors.Is(err, ErrSessionMissing) {
+		t.Errorf("Listing tools: got %v, want error wrapping ErrSessionMissing", err)
 	}
 	_ = session.Wait() // must not hang
 	if missing := fake.missingRequests(); len(missing) > 0 {

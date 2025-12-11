@@ -367,6 +367,52 @@ func TestStreamableServerShutdown(t *testing.T) {
 	}
 }
 
+// TestStreamableServerSessionClose verifies that when the server closes a
+// session, the client observes ErrSessionMissing on subsequent requests.
+func TestStreamableServerSessionClose(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+
+	handler := NewStreamableHTTPHandler(
+		func(req *http.Request) *Server { return server },
+		nil,
+	)
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	clientSession, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer clientSession.Close()
+
+	// Verify the connection works initially.
+	if _, err := clientSession.ListTools(ctx, nil); err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+
+	// Close the server session.
+	for session := range server.Sessions() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("closing server session: %v", err)
+		}
+	}
+
+	// Subsequent requests should fail with ErrSessionMissing.
+	_, err = clientSession.ListTools(ctx, nil)
+	if err == nil {
+		t.Fatalf("ListTools after server session close: got nil error, want error")
+	}
+	if !errors.Is(err, ErrSessionMissing) {
+		t.Errorf("ListTools after server session close: got %v, want error wrapping ErrSessionMissing", err)
+	}
+}
+
 // TestClientReplay verifies that the client can recover from a mid-stream
 // network failure and receive replayed messages (if replay is configured). It
 // uses a proxy that is killed and restarted to simulate a recoverable network
