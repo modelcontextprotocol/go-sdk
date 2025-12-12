@@ -1657,11 +1657,18 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s: %v", requestSummary, err)
+		// Any error from client.Do means the request didn't reach the server.
+		// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+		// and permanently break the connection.
+		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, err)
 	}
 
 	if err := c.checkResponse(requestSummary, resp); err != nil {
-		c.fail(err)
+		// Only fail the connection for non-transient errors.
+		// Transient errors (wrapped with ErrRejected) should not break the connection.
+		if !errors.Is(err, jsonrpc2.ErrRejected) {
+			c.fail(err)
+		}
 		return err
 	}
 
@@ -1826,8 +1833,13 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 		// session is already gone.
 		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing)
 	}
+	// Transient server errors (502, 503, 504, 429) should not break the connection.
+	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
+	if isTransientHTTPStatus(resp.StatusCode) {
+		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: failed to connect: %v", requestSummary, http.StatusText(resp.StatusCode))
+		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil
 }
@@ -2011,4 +2023,18 @@ func calculateReconnectDelay(attempt int) time.Duration {
 	jitter := rand.N(backoffDuration)
 
 	return backoffDuration + jitter
+}
+
+// isTransientHTTPStatus reports whether the HTTP status code indicates a
+// transient server error that should not permanently break the connection.
+func isTransientHTTPStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusInternalServerError, // 500
+		http.StatusBadGateway,         // 502
+		http.StatusServiceUnavailable, // 503
+		http.StatusGatewayTimeout,     // 504
+		http.StatusTooManyRequests:    // 429
+		return true
+	}
+	return false
 }
