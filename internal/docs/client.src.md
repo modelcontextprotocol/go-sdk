@@ -47,9 +47,68 @@ allows servers to request user inputs. It is implemented in the SDK as follows:
 **Client-side**: To add the `elicitation` capability to a client, set
 [`ClientOptions.ElicitationHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationHandler).
 The elicitation handler must return a result that matches the requested schema;
-otherwise, elicitation returns an error.
+otherwise, elicitation returns an error. If your handler supports [URL mode
+elicitation](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation#url-mode-elicitation-requests),
+you must declare that capability explicitly (see [Capabilities](#capabilities))
 
 **Server-side**: To use elicitation from the server, call
 [`ServerSession.Elicit`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Elicit).
 
 %include ../../mcp/client_example_test.go elicitation -
+
+## Capabilities
+
+Client capabilities are advertised to servers during the initialization
+handshake. [By default](rough_edges.md), the SDK advertises the `logging`
+capability. Additional capabilities are automatically added when server
+features are added (e.g. via `AddTool`), or when handlers are set in the
+`ServerOptions` struct (e.g., setting `CompletionHandler` adds the
+`completions` capability), or may be configured explicitly.
+
+### Capability inference
+
+When handlers are set on `ClientOptions` (e.g., `CreateMessageHandler` or
+`ElicitationHandler`), the corresponding capability is automatically added if
+not already present, with a default configuration.
+
+For elicitation, if the handler is set but no `Capabilities.Elicitation` is
+specified, the client defaults to form elicitation. To enable URL elicitation
+or both modes, [configure `Capabilities.Elicitation`
+explicitly](#explicit-capabilities).
+
+See the [`ClientCapabilities`
+documentation](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientCapabilities)
+for further details on inference.
+
+### Explicit capabilities
+
+To explicitly declare capabilities, or to override the [default inferred
+capability](#capability-inference), set
+[`ClientOptions.Capabilities`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.Capabilities).
+This sets the initial client capabilities, before any capabilities are added
+based on configured handlers. If a capability is already present in
+`Capabilities`, adding a handler will not change its configuration.
+
+This allows you to:
+
+- **Disable default capabilities**: Pass an empty `&ClientCapabilities{}` to
+  disable all defaults, including roots.
+- **Disable listChanged notifications**: Set `ListChanged: false` on a
+  capability to prevent the client from sending list-changed notifications
+  when roots are added or removed.
+- **Configure elicitation modes**: Specify which elicitation modes (form, URL)
+  the client supports.
+
+```go
+// Configure elicitation modes and disable roots.
+client := mcp.NewClient(impl, &mcp.ClientOptions{
+    Capabilities: &mcp.ClientCapabilities{
+        Elicitation: &mcp.ElicitationCapabilities{
+            Form: &mcp.FormElicitationCapabilities{},
+            URL:  &mcp.URLElicitationCapabilities{},
+        },
+    },
+    ElicitationHandler: handler,
+})
+```
+

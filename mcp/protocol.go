@@ -188,6 +188,10 @@ type RootCapabilities struct {
 // this schema, but this is not a closed set: any client can define its own,
 // additional capabilities.
 type ClientCapabilities struct {
+
+	// NOTE: any addition to ClientCapabilities must also be reflected in
+	// [ClientCapabilities.clone].
+
 	// Experimental reports non-standard capabilities that the client supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
 	// Roots describes the client's support for roots.
@@ -200,12 +204,35 @@ type ClientCapabilities struct {
 		// changes to the roots list.
 		ListChanged bool `json:"listChanged,omitempty"`
 	} `json:"roots,omitempty"`
-	// RootsV2 is present if the client supports roots.
+	// RootsV2 is present if the client supports roots. When capabilities are explicitly configured via [ClientOptions.Capabilities]
 	RootsV2 *RootCapabilities `json:"-"`
 	// Sampling is present if the client supports sampling from an LLM.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+// clone returns a deep copy of the ClientCapabilities.
+func (c *ClientCapabilities) clone() *ClientCapabilities {
+	cp := *c
+	cp.RootsV2 = shallowClone(c.RootsV2)
+	cp.Sampling = shallowClone(c.Sampling)
+	if c.Elicitation != nil {
+		x := *c.Elicitation
+		x.Form = shallowClone(c.Elicitation.Form)
+		x.URL = shallowClone(c.Elicitation.URL)
+		cp.Elicitation = &x
+	}
+	return &cp
+}
+
+// shallowClone returns a shallow clone of *p, or nil if p is nil.
+func shallowClone[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	x := *p
+	return &x
 }
 
 func (c *ClientCapabilities) toV2() *clientCapabilitiesV2 {
@@ -1259,6 +1286,10 @@ type ToolCapabilities struct {
 
 // ServerCapabilities describes capabilities that a server supports.
 type ServerCapabilities struct {
+
+	// NOTE: any addition to ServerCapabilities must also be reflected in
+	// [ServerCapabilities.clone].
+
 	// Experimental reports non-standard capabilities that the server supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
 	// Completions is present if the server supports argument autocompletion
@@ -1272,6 +1303,17 @@ type ServerCapabilities struct {
 	Resources *ResourceCapabilities `json:"resources,omitempty"`
 	// Tools is present if the supports tools.
 	Tools *ToolCapabilities `json:"tools,omitempty"`
+}
+
+// clone returns a deep copy of the ServerCapabilities.
+func (c *ServerCapabilities) clone() *ServerCapabilities {
+	cp := *c
+	cp.Completions = shallowClone(c.Completions)
+	cp.Logging = shallowClone(c.Logging)
+	cp.Prompts = shallowClone(c.Prompts)
+	cp.Resources = shallowClone(c.Resources)
+	cp.Tools = shallowClone(c.Tools)
+	return &cp
 }
 
 const (

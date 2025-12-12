@@ -196,10 +196,11 @@ func TestClientCapabilities(t *testing.T) {
 		name             string
 		configureClient  func(s *Client)
 		clientOpts       ClientOptions
+		protocolVersion  string // defaults to latestProtocolVersion if empty
 		wantCapabilities *ClientCapabilities
 	}{
 		{
-			name:            "With initial capabilities",
+			name:            "default",
 			configureClient: func(s *Client) {},
 			wantCapabilities: &ClientCapabilities{
 				Roots:   RootCapabilities{ListChanged: true},
@@ -207,7 +208,7 @@ func TestClientCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With sampling",
+			name:            "with sampling",
 			configureClient: func(s *Client) {},
 			clientOpts: ClientOptions{
 				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
@@ -221,14 +222,14 @@ func TestClientCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With form elicitation",
+			name:            "with elicitation",
 			configureClient: func(s *Client) {},
 			clientOpts: ClientOptions{
-				ElicitationModes: []string{"form"},
 				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
 					return nil, nil
 				},
 			},
+			protocolVersion: protocolVersion20251125,
 			wantCapabilities: &ClientCapabilities{
 				Roots:   RootCapabilities{ListChanged: true},
 				RootsV2: &RootCapabilities{ListChanged: true},
@@ -238,10 +239,31 @@ func TestClientCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With URL elicitation",
+			name:            "with elicitation (old protocol)",
 			configureClient: func(s *Client) {},
 			clientOpts: ClientOptions{
-				ElicitationModes: []string{"url"},
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return nil, nil
+				},
+			},
+			protocolVersion: protocolVersion20250618,
+			wantCapabilities: &ClientCapabilities{
+				Roots:       RootCapabilities{ListChanged: true},
+				RootsV2:     &RootCapabilities{ListChanged: true},
+				Elicitation: &ElicitationCapabilities{},
+			},
+		},
+		{
+			name:            "with URL elicitation",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					Roots:   RootCapabilities{ListChanged: true},
+					RootsV2: &RootCapabilities{ListChanged: true},
+					Elicitation: &ElicitationCapabilities{
+						URL: &URLElicitationCapabilities{},
+					},
+				},
 				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
 					return nil, nil
 				},
@@ -255,10 +277,17 @@ func TestClientCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:            "With both form and URL elicitation",
+			name:            "with form and URL elicitation",
 			configureClient: func(s *Client) {},
 			clientOpts: ClientOptions{
-				ElicitationModes: []string{"form", "url"},
+				Capabilities: &ClientCapabilities{
+					Roots:   RootCapabilities{ListChanged: true},
+					RootsV2: &RootCapabilities{ListChanged: true},
+					Elicitation: &ElicitationCapabilities{
+						Form: &FormElicitationCapabilities{},
+						URL:  &URLElicitationCapabilities{},
+					},
+				},
 				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
 					return nil, nil
 				},
@@ -272,15 +301,189 @@ func TestClientCapabilities(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:            "no capabilities",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{},
+			},
+			wantCapabilities: &ClientCapabilities{},
+		},
+		{
+			name:            "no roots",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					Sampling: &SamplingCapabilities{},
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Sampling: &SamplingCapabilities{},
+			},
+		},
+		{
+			name:            "roots-no list",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					RootsV2: &RootCapabilities{ListChanged: false},
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				RootsV2: &RootCapabilities{ListChanged: false},
+			},
+		},
+		{
+			name:            "custom capabilities with sampling",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					RootsV2: &RootCapabilities{ListChanged: true},
+				},
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots:    RootCapabilities{ListChanged: true},
+				RootsV2:  &RootCapabilities{ListChanged: true},
+				Sampling: &SamplingCapabilities{},
+			},
+		},
+		{
+			name:            "elicitation override",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					Elicitation: &ElicitationCapabilities{
+						URL: &URLElicitationCapabilities{},
+					},
+				},
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Elicitation: &ElicitationCapabilities{
+					URL: &URLElicitationCapabilities{},
+				},
+			},
+		},
+		{
+			name:            "custom capabilities with experimental",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					Experimental: map[string]any{"custom": "value"},
+					RootsV2:      &RootCapabilities{ListChanged: true},
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Experimental: map[string]any{"custom": "value"},
+				Roots:        RootCapabilities{ListChanged: true},
+				RootsV2:      &RootCapabilities{ListChanged: true},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			client := NewClient(testImpl, &tc.clientOpts)
 			tc.configureClient(client)
-			gotCapabilities := client.capabilities()
+			protocolVersion := tc.protocolVersion
+			if protocolVersion == "" {
+				protocolVersion = latestProtocolVersion
+			}
+			gotCapabilities := client.capabilities(protocolVersion)
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
 				t.Errorf("capabilities() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestClientCapabilitiesOverWire(t *testing.T) {
+	testCases := []struct {
+		name             string
+		clientOpts       *ClientOptions
+		wantCapabilities *ClientCapabilities
+	}{
+		{
+			name:       "Default capabilities",
+			clientOpts: nil,
+			wantCapabilities: &ClientCapabilities{
+				Roots:   RootCapabilities{ListChanged: true},
+				RootsV2: &RootCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "Custom Capabilities with roots listChanged false",
+			clientOpts: &ClientOptions{
+				Capabilities: &ClientCapabilities{
+					RootsV2: &RootCapabilities{ListChanged: false},
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots:   RootCapabilities{ListChanged: false},
+				RootsV2: &RootCapabilities{ListChanged: false},
+			},
+		},
+		{
+			name: "Dynamic sampling capability",
+			clientOpts: &ClientOptions{
+				Capabilities: &ClientCapabilities{
+					RootsV2: &RootCapabilities{ListChanged: true},
+				},
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return nil, nil
+				},
+			},
+			wantCapabilities: &ClientCapabilities{
+				Roots:    RootCapabilities{ListChanged: true},
+				RootsV2:  &RootCapabilities{ListChanged: true},
+				Sampling: &SamplingCapabilities{},
+			},
+		},
+		{
+			name: "Empty capabilities disables defaults",
+			clientOpts: &ClientOptions{
+				Capabilities: &ClientCapabilities{},
+			},
+			wantCapabilities: &ClientCapabilities{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Create client.
+			impl := &Implementation{Name: "testClient", Version: "v1.0.0"}
+			client := NewClient(impl, tc.clientOpts)
+
+			// Connect client and server.
+			cTransport, sTransport := NewInMemoryTransports()
+			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+			ss, err := server.Connect(ctx, sTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			cs, err := client.Connect(ctx, cTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			// Check that the server received the expected capabilities.
+			initParams := ss.InitializeParams()
+			if initParams == nil {
+				t.Fatal("InitializeParams is nil")
+			}
+
+			if diff := cmp.Diff(tc.wantCapabilities, initParams.Capabilities); diff != "" {
+				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

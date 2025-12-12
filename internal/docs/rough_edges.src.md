@@ -35,3 +35,12 @@ v2.
 
   **Workaround**: use `ClientCapabilities.RootsV2`, which aligns with the
   semantics of other capability fields.
+
+- Default capabilities should have been empty. Instead, servers default to
+  advertising `logging`, and clients default to advertising `roots` with
+  `listChanged: true`. This is confusing because a nil `Capabilities` field
+  does not mean "no capabilities".
+
+  **Workaround**: to advertise no capabilities, set
+  `ServerOptions.Capabilities` or `ClientOptions.Capabilities` to an empty
+  `&ServerCapabilities{}` or `&ClientCapabilities{}` respectively.

@@ -7,6 +7,9 @@
 1. [Utilities](#utilities)
 	1. [Completion](#completion)
 	1. [Logging](#logging)
+1. [Capabilities](#capabilities)
+	1. [Capability inference](#capability-inference)
+	1. [Explicit capabilities](#explicit-capabilities)
 	1. [Pagination](#pagination)
 
 ## Prompts
@@ -534,6 +537,53 @@ func Example_logging() {
 	// warn shows up 3
 }
 ```
+
+## Capabilities
+
+Server capabilities are advertised to clients during the initialization
+handshake. By default, the SDK advertises only the `logging` capability.
+Additional capabilities are automatically added when features are registered
+(e.g., adding a tool adds the `tools` capability).
+
+### Capability inference
+
+When features such as tools, prompts, or resources are added to the server
+(e.g., via `Server.AddTool`), their capability is automatically inferred, with
+default value `{listChanged:true}`. Similarly, if the
+`ServerOptions.SubscribeHandler` or `ServerOptions.CompletionHandler` are set,
+the corresponding capability is added.
+
+### Explicit capabilities
+
+To explicitly declare capabilities, or to override the [default inferred
+capability](#capability-inference), set
+[`ServerOptions.Capabilities`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.Capabilities).
+This sets the default server capabilities, before any capabilities are added
+based on configured handlers. If a capability is already present as a field in
+`Capabilities`, adding a feature or handler will not change its configuration.
+
+This allows you to:
+
+- **Disable default capabilities**: Pass an empty `&ServerCapabilities{}` to
+  disable all defaults, including logging.
+- **Disable listChanged notifications**: Set `ListChanged: false` on a
+  capability to prevent the server from sending list-changed notifications
+  when features are added or removed.
+- **Pre-declare capabilities**: Declare capabilities before features are
+  registered, useful for servers that load features dynamically.
+
+```go
+// Disable listChanged notifications for tools
+server := mcp.NewServer(impl, &mcp.ServerOptions{
+    Capabilities: &mcp.ServerCapabilities{
+        Logging: &mcp.LoggingCapabilities{},
+        Tools:   &mcp.ToolCapabilities{ListChanged: false},
+    },
+})
+```
+
+**Deprecated**: The `HasPrompts`, `HasResources`, and `HasTools` fields on
+`ServerOptions` are deprecated. Use `Capabilities` instead.
 
 ### Pagination
 

@@ -105,7 +105,13 @@ func TestElicitationURLMode(t *testing.T) {
 			defer ss.Close()
 
 			c := NewClient(testImpl, &ClientOptions{
-				ElicitationModes:   []string{"url"},
+				Capabilities: &ClientCapabilities{
+					Roots:   RootCapabilities{ListChanged: true},
+					RootsV2: &RootCapabilities{ListChanged: true},
+					Elicitation: &ElicitationCapabilities{
+						URL: &URLElicitationCapabilities{},
+					},
+				},
 				ElicitationHandler: tc.handler,
 			})
 			cs, err := c.Connect(ctx, ct, nil)
@@ -143,7 +149,13 @@ func TestElicitationCompleteNotification(t *testing.T) {
 	var elicitationCompleteCh = make(chan *ElicitationCompleteParams, 1)
 
 	c := NewClient(testImpl, &ClientOptions{
-		ElicitationModes: []string{"url"},
+		Capabilities: &ClientCapabilities{
+			Roots:   RootCapabilities{ListChanged: true},
+			RootsV2: &RootCapabilities{ListChanged: true},
+			Elicitation: &ElicitationCapabilities{
+				URL: &URLElicitationCapabilities{},
+			},
+		},
 		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
