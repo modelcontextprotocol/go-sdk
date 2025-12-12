@@ -161,7 +161,7 @@ The client must handle two response formats from POST requests:
 
   - DELETE: Terminate the session
     - Used by [streamableClientConn.Close]
-    - Skipped if session is already known to be gone ([errSessionMissing])
+    - Skipped if session is already known to be gone ([ErrSessionMissing])
 
 # Error Handling
 
@@ -173,7 +173,7 @@ Errors are categorized and handled differently:
    - Triggers reconnection in [streamableClientConn.handleSSE]
 
 2. Terminal (breaks the connection):
-   - 404 Not Found: Session terminated by server ([errSessionMissing])
+   - 404 Not Found: Session terminated by server ([ErrSessionMissing])
    - Message decode errors: Protocol violation
    - Context cancellation: Client closed connection
    - Mismatched session IDs: Protocol error
@@ -183,7 +183,7 @@ Terminal errors are stored via [streamableClientConn.fail] and returned by
 subsequent [streamableClientConn.Read] calls. The [streamableClientConn.failed]
 channel signals that the connection is broken.
 
-Special case: [errSessionMissing] indicates the server has terminated the session,
+Special case: [ErrSessionMissing] indicates the server has terminated the session,
 so [streamableClientConn.Close] skips the DELETE request.
 
 # Protocol Version Header
