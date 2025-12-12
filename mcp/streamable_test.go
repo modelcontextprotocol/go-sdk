@@ -758,7 +758,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			Logging: &LoggingCapabilities{},
 			Tools:   &ToolCapabilities{ListChanged: true},
 		},
-		ProtocolVersion: latestProtocolVersion,
+		ProtocolVersion: protocolVersion20250618,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 	initializedMsg := req(0, notificationInitialized, &InitializedParams{})
