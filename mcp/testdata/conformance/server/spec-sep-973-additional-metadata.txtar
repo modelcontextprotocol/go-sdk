@@ -92,15 +92,15 @@ infoWithIcon
 				"description": "return resourceLink content with Icon",
 				"inputSchema": {
 					"type": "object",
-					"required": [
-						"In"
-					],
 					"properties": {
 						"In": {
 							"type": "string",
 							"description": "the input"
 						}
 					},
+					"required": [
+						"In"
+					],
 					"additionalProperties": false
 				},
 				"name": "contentTool",
@@ -110,14 +110,14 @@ infoWithIcon
 				"description": "say hi",
 				"inputSchema": {
 					"type": "object",
-					"required": [
-						"Name"
-					],
 					"properties": {
 						"Name": {
 							"type": "string"
 						}
 					},
+					"required": [
+						"Name"
+					],
 					"additionalProperties": false
 				},
 				"name": "greetWithIcon",

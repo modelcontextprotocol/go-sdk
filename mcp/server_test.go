@@ -812,10 +812,30 @@ func TestToolForSchemas(t *testing.T) {
 
 	var (
 		falseSchema = &schema{Not: &schema{}}
-		inSchema    = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "integer"}}}
-		inSchema2   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "string"}}}
-		outSchema   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "boolean"}}}
-		outSchema2  = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "integer"}}}
+		inSchema    = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "integer"}},
+			PropertyOrder:        []string{"p"},
+		}
+		inSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "string"}},
+			PropertyOrder:        []string{"p"},
+		}
+		outSchema = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "boolean"}},
+			PropertyOrder:        []string{"b"},
+		}
+		outSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "integer"}},
+			PropertyOrder:        []string{"b"},
+		}
 	)
 
 	// Infer both schemas.
@@ -850,6 +870,7 @@ func TestToolForSchemas(t *testing.T) {
 				"AsOf":    {Type: "string"},
 				"Source":  {Type: "string"},
 			},
+			PropertyOrder: []string{"Summary", "AsOf", "Source"},
 		},
 		"")
 }
