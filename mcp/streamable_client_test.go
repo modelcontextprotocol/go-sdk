@@ -693,3 +693,121 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamableClientDisableListening(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name             string
+		disableListening bool
+		expectGETRequest bool
+	}{
+		{
+			name:             "default behavior (listening enabled)",
+			disableListening: false,
+			expectGETRequest: true,
+		},
+		{
+			name:             "listening disabled",
+			disableListening: true,
+			expectGETRequest: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			getRequestKey := streamableRequestKey{"GET", "123", "", ""}
+
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					getRequestKey: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						wantProtocolVersion: latestProtocolVersion,
+						optional:            !test.expectGETRequest,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{
+				Endpoint:         httpServer.URL,
+				DisableListening: test.disableListening,
+			}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+
+			// Give some time for the standalone SSE connection to be established (if enabled)
+			time.Sleep(100 * time.Millisecond)
+
+			// Verify the connection state
+			streamableConn, ok := session.mcpConn.(*streamableClientConn)
+			if !ok {
+				t.Fatalf("Expected *streamableClientConn, got %T", session.mcpConn)
+			}
+
+			if got, want := streamableConn.disableListening, test.disableListening; got != want {
+				t.Errorf("disableListening field: got %v, want %v", got, want)
+			}
+
+			// Clean up
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+
+			// Check if GET request was received
+			fake.calledMu.Lock()
+			getRequestReceived := false
+			if fake.called != nil {
+				getRequestReceived = fake.called[getRequestKey]
+			}
+			fake.calledMu.Unlock()
+
+			if got, want := getRequestReceived, test.expectGETRequest; got != want {
+				t.Errorf("GET request received: got %v, want %v", got, want)
+			}
+
+			// If we expected a GET request, verify it was actually received
+			if test.expectGETRequest {
+				if missing := fake.missingRequests(); len(missing) > 0 {
+					// Filter out optional requests
+					var requiredMissing []streamableRequestKey
+					for _, key := range missing {
+						if resp, ok := fake.responses[key]; ok && !resp.optional {
+							requiredMissing = append(requiredMissing, key)
+						}
+					}
+					if len(requiredMissing) > 0 {
+						t.Errorf("did not receive expected requests: %v", requiredMissing)
+					}
+				}
+			} else {
+				// If we didn't expect a GET request, verify it wasn't sent
+				if getRequestReceived {
+					t.Error("GET request was sent unexpectedly when DisableListening is true")
+				}
+			}
+		})
+	}
+}
