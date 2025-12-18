@@ -812,10 +812,34 @@ func TestToolForSchemas(t *testing.T) {
 
 	var (
 		falseSchema = &schema{Not: &schema{}}
-		inSchema    = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "integer"}}}
-		inSchema2   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "string"}}}
-		outSchema   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "boolean"}}}
-		outSchema2  = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "integer"}}}
+		inSchema    = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "integer"}},
+			PropertyOrder:        []string{"p"},
+		}
+		inSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "string"}},
+		}
+		inSchema3 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{}, // empty map is preserved
+		}
+		outSchema = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "boolean"}},
+			PropertyOrder:        []string{"b"},
+		}
+		outSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "integer"}},
+			PropertyOrder:        []string{"b"},
+		}
 	)
 
 	// Infer both schemas.
@@ -829,6 +853,8 @@ func TestToolForSchemas(t *testing.T) {
 	testToolForSchema[in, any](t, &Tool{}, `{"p":"x"}`, 0, inSchema, nil, `want "integer"`)
 	// Tool sets input schema: that is what's used.
 	testToolForSchema[in, any](t, &Tool{InputSchema: inSchema2}, `{"p":3}`, 0, inSchema2, nil, `want "string"`)
+	// Tool sets input schema, empty properties map.
+	testToolForSchema[in, any](t, &Tool{InputSchema: inSchema3}, `{}`, 0, inSchema3, nil, "")
 	// Tool sets output schema: that is what's used, and validation happens.
 	testToolForSchema[in, any](t, &Tool{OutputSchema: outSchema2}, `{"p":3}`, out{true},
 		inSchema, outSchema2, `want "integer"`)
@@ -850,6 +876,7 @@ func TestToolForSchemas(t *testing.T) {
 				"AsOf":    {Type: "string"},
 				"Source":  {Type: "string"},
 			},
+			PropertyOrder: []string{"Summary", "AsOf", "Source"},
 		},
 		"")
 }
