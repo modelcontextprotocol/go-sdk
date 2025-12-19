@@ -121,7 +121,7 @@ func TestContent(t *testing.T) {
 				Description: "This resource demonstrates all fields",
 				MIMEType:    "text/plain",
 				Meta:        mcp.Meta{"custom": "metadata"},
-				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: "light"}},
+				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: mcp.IconThemeLight}},
 			},
 			`{"type":"resource_link","mimeType":"text/plain","uri":"https://example.com/resource","name":"Example Resource","title":"A comprehensive example resource","description":"This resource demonstrates all fields","_meta":{"custom":"metadata"},"icons":[{"src":"foobar","mimeType":"image/png","sizes":["48x48"],"theme":"light"}]}`,
 		},
@@ -217,7 +217,7 @@ func TestContentUnmarshal(t *testing.T) {
 				// Meta:        mcp.Meta{"custom": "metadata"},
 				Size:        &valInt64,
 				Annotations: &mcp.Annotations{Audience: []mcp.Role{"user", "assistant"}, LastModified: "2025-01-12T15:00:58Z", Priority: 0.5},
-				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: "light"}},
+				Icons:       []mcp.Icon{{Source: "foobar", MIMEType: "image/png", Sizes: []string{"48x48"}, Theme: mcp.IconThemeLight}},
 			},
 		},
 	}
