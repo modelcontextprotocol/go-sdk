@@ -67,9 +67,7 @@ func writeEvent(w io.Writer, evt Event) (int, error) {
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
 func scanEvents(r io.Reader) iter.Seq2[Event, error] {
-	scanner := bufio.NewScanner(r)
-	const maxTokenSize = 1 * 1024 * 1024 // 1 MiB max line size
-	scanner.Buffer(nil, maxTokenSize)
+	reader := bufio.NewReader(r)
 
 	// TODO: investigate proper behavior when events are out of order, or have
 	// non-standard names.
@@ -94,30 +92,44 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			evt     Event
 			dataBuf *bytes.Buffer // if non-nil, preceding field was also data
 		)
-		flushData := func() {
+		var previousLineType []byte
+		yieldEvent := func() bool {
 			if dataBuf != nil {
 				evt.Data = dataBuf.Bytes()
 				dataBuf = nil
+				previousLineType = nil
 			}
+			if evt.Empty() {
+				return true
+			}
+			if !yield(evt, nil) {
+				return false
+			}
+			evt = Event{}
+			return true
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				yield(Event{}, fmt.Errorf("error reading event: %v", err))
+				return
+			}
+			line = bytes.TrimRight(line, "\r\n")
+			isEOF := errors.Is(err, io.EOF)
+
 			if len(line) == 0 {
-				flushData()
-				// \n\n is the record delimiter
-				if !evt.Empty() && !yield(evt, nil) {
+				if !yieldEvent() {
 					return
 				}
-				evt = Event{}
+				if isEOF {
+					return
+				}
 				continue
 			}
 			before, after, found := bytes.Cut(line, []byte{':'})
 			if !found {
 				yield(Event{}, fmt.Errorf("malformed line in SSE stream: %q", string(line)))
 				return
-			}
-			if !bytes.Equal(before, dataKey) {
-				flushData()
 			}
 			switch {
 			case bytes.Equal(before, eventKey):
@@ -128,26 +140,24 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				evt.Retry = strings.TrimSpace(string(after))
 			case bytes.Equal(before, dataKey):
 				data := bytes.TrimSpace(after)
-				if dataBuf != nil {
-					dataBuf.WriteByte('\n')
-					dataBuf.Write(data)
-				} else {
+				previousLineEmptyOrData := previousLineType == nil || bytes.Equal(previousLineType, dataKey)
+				if dataBuf == nil {
 					dataBuf = new(bytes.Buffer)
+					dataBuf.Write(data)
+				} else if !previousLineEmptyOrData {
+					yield(Event{}, fmt.Errorf("non-continuous data items in the event"))
+					return
+				} else {
+					dataBuf.WriteByte('\n')
 					dataBuf.Write(data)
 				}
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			if errors.Is(err, bufio.ErrTooLong) {
-				err = fmt.Errorf("event exceeded max line length of %d", maxTokenSize)
-			}
-			if !yield(Event{}, err) {
+			previousLineType = before
+
+			if isEOF {
+				yieldEvent()
 				return
 			}
-		}
-		flushData()
-		if !evt.Empty() {
-			yield(evt, nil)
 		}
 	}
 }
