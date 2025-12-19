@@ -15,10 +15,11 @@ import (
 
 func TestScanEvents(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    []Event
-		wantErr string
+		name        string
+		input       string
+		want        []Event
+		wantErr     string
+		maxLineSize int
 	}{
 		{
 			name:  "simple event",
@@ -54,6 +55,12 @@ func TestScanEvents(t *testing.T) {
 			input:   "invalid line\n\n",
 			wantErr: "malformed line",
 		},
+		{
+			name:        "event exceeds buffer size",
+			input:       "data: " + strings.Repeat("x", 200) + "\n\n",
+			maxLineSize: 100,
+			wantErr:     "event exceeded max line length of 100",
+		},
 	}
 
 	for _, tt := range tests {
@@ -61,7 +68,7 @@ func TestScanEvents(t *testing.T) {
 			r := strings.NewReader(tt.input)
 			var got []Event
 			var err error
-			for e, err2 := range scanEvents(r) {
+			for e, err2 := range scanEvents(r, tt.maxLineSize) {
 				if err2 != nil {
 					err = err2
 					break

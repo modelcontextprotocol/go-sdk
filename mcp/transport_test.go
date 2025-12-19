@@ -7,6 +7,8 @@ package mcp
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -121,6 +123,112 @@ func TestIOConnRead(t *testing.T) {
 			if err != nil && err.Error() != tt.want {
 				t.Errorf("ioConn.Read() = %v, want %v", err.Error(), tt.want)
 			}
+		})
+	}
+}
+
+func TestScanEventsBufferError(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name                  string
+		clientTransport       func(url string) Transport
+		serverHandler         func(server *Server) http.Handler
+		responseLength        int
+		expectedContainsError string
+	}{
+		{
+			name: "sse-large-output",
+			clientTransport: func(url string) Transport {
+				return &SSEClientTransport{
+					Endpoint:    url,
+					MaxLineSize: 1024,
+				}
+			},
+			serverHandler: func(server *Server) http.Handler {
+				return NewSSEHandler(func(req *http.Request) *Server { return server }, nil)
+			},
+			responseLength:        10000,
+			expectedContainsError: "exceeded max line length",
+		},
+		{
+			name: "streamable-large-output",
+			clientTransport: func(url string) Transport {
+				return &StreamableClientTransport{
+					Endpoint:    url,
+					MaxLineSize: 1024,
+				}
+			},
+			serverHandler: func(server *Server) http.Handler {
+				return NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+			},
+			responseLength:        10000,
+			expectedContainsError: "exceeded max line length",
+		},
+		{
+			name: "sse-small-output",
+			clientTransport: func(url string) Transport {
+				return &SSEClientTransport{
+					Endpoint:    url,
+					MaxLineSize: 1024,
+				}
+			},
+			serverHandler: func(server *Server) http.Handler {
+				return NewSSEHandler(func(req *http.Request) *Server { return server }, nil)
+			},
+			responseLength: 512,
+		},
+		{
+			name: "streamable-small-output",
+			clientTransport: func(url string) Transport {
+				return &StreamableClientTransport{
+					Endpoint:    url,
+					MaxLineSize: 1024,
+				}
+			},
+			serverHandler: func(server *Server) http.Handler {
+				return NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+			},
+			responseLength: 512,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			largeResponse := strings.Repeat("x", tt.responseLength)
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "largeTool", Description: "returns large response"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+				return &CallToolResult{Content: []Content{&TextContent{Text: largeResponse}}}, nil, nil
+			})
+
+			httpHandler := tt.serverHandler(server)
+			httpServer := httptest.NewServer(mustNotPanic(t, httpHandler))
+			defer httpServer.Close()
+
+			client := NewClient(testImpl, nil)
+			clientTransport := tt.clientTransport(httpServer.URL)
+			session, err := client.Connect(ctx, clientTransport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			defer session.Close()
+
+			_, err = session.CallTool(ctx, &CallToolParams{
+				Name:      "largeTool",
+				Arguments: map[string]any{},
+			})
+			if tt.expectedContainsError != "" {
+				if tt.expectedContainsError != "" && err == nil {
+					t.Fatal("expected error due to small buffer, got nil")
+				}
+
+				if !strings.Contains(err.Error(), "exceeded max line length") {
+					t.Fatalf("expected buffer-related error, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("client.CallTool() unexpectedly failed: %v", err)
+				}
+			}
+
 		})
 	}
 }

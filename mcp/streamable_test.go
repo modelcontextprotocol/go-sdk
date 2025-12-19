@@ -1425,7 +1425,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	var respBody []byte
 	if strings.HasPrefix(contentType, "text/event-stream") {
 		r := readerInto{resp.Body, new(bytes.Buffer)}
-		for evt, err := range scanEvents(r) {
+		for evt, err := range scanEvents(r, 0) {
 			if err != nil {
 				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
@@ -2143,7 +2143,7 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 	var events []Event
 
 	// Scan all events
-	for evt, err := range scanEvents(reader) {
+	for evt, err := range scanEvents(reader, 0) {
 		if err != nil {
 			if err != io.EOF {
 				t.Fatalf("scanEvents error: %v", err)

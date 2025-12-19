@@ -329,6 +329,9 @@ type SSEClientTransport struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
+
+	// MaxLineSize is the maximum buffer size (in bytes) used when reading SSE events. If unset, defaults to 1MiB.
+	MaxLineSize int
 }
 
 // Connect connects through the client endpoint.
@@ -353,7 +356,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
-		for evt, err = range scanEvents(resp.Body) {
+		for evt, err = range scanEvents(resp.Body, c.MaxLineSize) {
 			break
 		}
 		if err != nil {
@@ -374,7 +377,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	s := &sseClientConn{
 		client:      httpClient,
 		msgEndpoint: msgEndpoint,
-		incoming:    make(chan []byte, 100),
+		incoming:    make(chan sseMessage, 100),
 		body:        resp.Body,
 		done:        make(chan struct{}),
 	}
@@ -382,12 +385,16 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	go func() {
 		defer s.Close() // close the transport when the GET exits
 
-		for evt, err := range scanEvents(resp.Body) {
+		for evt, err := range scanEvents(resp.Body, c.MaxLineSize) {
 			if err != nil {
+				select {
+				case s.incoming <- sseMessage{err: err}:
+				case <-s.done:
+				}
 				return
 			}
 			select {
-			case s.incoming <- evt.Data:
+			case s.incoming <- sseMessage{data: evt.Data}:
 			case <-s.done:
 				return
 			}
@@ -397,15 +404,21 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	return s, nil
 }
 
+// sseMessage represents a message or error from the SSE stream.
+type sseMessage struct {
+	data []byte
+	err  error
+}
+
 // An sseClientConn is a logical jsonrpc2 connection that implements the client
 // half of the SSE protocol:
 //   - Writes are POSTS to the session endpoint.
 //   - Reads are SSE 'message' events, and pushes them onto a buffered channel.
 //   - Close terminates the GET request.
 type sseClientConn struct {
-	client      *http.Client // HTTP client to use for requests
-	msgEndpoint *url.URL     // session endpoint for POSTs
-	incoming    chan []byte  // queue of incoming messages
+	client      *http.Client    // HTTP client to use for requests
+	msgEndpoint *url.URL        // session endpoint for POSTs
+	incoming    chan sseMessage // queue of incoming messages or errors
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -430,12 +443,15 @@ func (c *sseClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	case <-c.done:
 		return nil, io.EOF
 
-	case data := <-c.incoming:
+	case m := <-c.incoming:
+		if m.err != nil {
+			return nil, m.err
+		}
 		// TODO(rfindley): do we really need to check this? We receive from c.done above.
 		if c.isDone() {
 			return nil, io.EOF
 		}
-		msg, err := jsonrpc2.DecodeMessage(data)
+		msg, err := jsonrpc2.DecodeMessage(m.data)
 		if err != nil {
 			return nil, err
 		}
