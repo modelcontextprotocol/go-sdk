@@ -750,6 +750,16 @@ type ProgressNotificationParams struct {
 
 func (*ProgressNotificationParams) isParams() {}
 
+// IconTheme specifies the theme an icon is designed for.
+type IconTheme string
+
+const (
+	// IconThemeLight indicates the icon is designed for a light background.
+	IconThemeLight IconTheme = "light"
+	// IconThemeDark indicates the icon is designed for a dark background.
+	IconThemeDark IconTheme = "dark"
+)
+
 // Icon provides visual identifiers for their resources, tools, prompts, and implementations
 // See [/specification/draft/basic/index#icons] for notes on icons
 //
@@ -763,8 +773,9 @@ type Icon struct {
 	MIMEType string `json:"mimeType,omitempty"`
 	// Optional size specification (e.g., ["48x48"], ["any"] for scalable formats like SVG, or ["48x48", "96x96"] for multiple sizes)
 	Sizes []string `json:"sizes,omitempty"`
-	// Optional Theme of the icon, e.g., "light" or "dark"
-	Theme string `json:"theme,omitempty"`
+	// Optional theme specifier. "light" indicates the icon is designed for a light
+	// background, "dark" indicates the icon is designed for a dark background.
+	Theme IconTheme `json:"theme,omitempty"`
 }
 
 // A prompt or prompt template that the server offers.
