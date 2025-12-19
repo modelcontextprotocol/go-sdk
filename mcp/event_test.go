@@ -54,6 +54,54 @@ func TestScanEvents(t *testing.T) {
 			input:   "invalid line\n\n",
 			wantErr: "malformed line",
 		},
+		{
+			name:  "message with 2 data lines and another event",
+			input: "event: message\ndata: hello\ndata: hello\ndata: hello\n\nevent:keepalive",
+			want: []Event{
+				{Name: "message", Data: []byte("hello\nhello\nhello")},
+				{Name: "keepalive"},
+			},
+		},
+		{
+			name:  "event with multiple lines",
+			input: "event: message\ndata: hello\ndata: hello\ndata: hello\nid:1",
+			want: []Event{
+				{Name: "message", ID: "1", Data: []byte("hello\nhello\nhello")},
+			},
+		},
+		{
+			name: "multiple events, out of order keys",
+			input: strings.Join([]string{
+				"event:message",
+				"data: hello0",
+				"\n",
+				"data: hello1",
+				"data: hello1",
+				"id:1",
+				"event:message",
+				"\n",
+				"event:message",
+				"data: hello3",
+				"data: hello3",
+				"id:3",
+				"\n",
+				"data: hello4",
+				"data: hello4",
+				"id:4",
+				"event:message",
+			}, "\n"),
+			want: []Event{
+				{Name: "message", Data: []byte("hello0")},
+				{Name: "message", ID: "1", Data: []byte("hello1\nhello1")},
+				{Name: "message", ID: "3", Data: []byte("hello3\nhello3")},
+				{Name: "message", ID: "4", Data: []byte("hello4\nhello4")},
+			},
+		},
+		{
+			name:    "non-continuous data items in the event",
+			input:   "event: foo\ndata: 123\nretry: 5\ndata: 456",
+			wantErr: "non-continuous data items in the event",
+		},
 	}
 
 	for _, tt := range tests {

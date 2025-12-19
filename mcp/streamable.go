@@ -1859,7 +1859,11 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			if ctx.Err() != nil {
 				return "", 0, true // don't reconnect: client cancelled
 			}
-			break
+
+			// Network errors during reading should trigger reconnection, not permanent failure.
+			// Return from processStream so handleSSE can attempt to reconnect.
+			c.logger.Debug(fmt.Sprintf("%s: stream read error (will attempt reconnect): %v", requestSummary, err))
+			return lastEventID, reconnectDelay, false
 		}
 
 		if evt.ID != "" {
