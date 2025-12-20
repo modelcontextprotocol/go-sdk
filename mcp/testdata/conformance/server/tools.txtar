@@ -69,14 +69,14 @@ inc
 				"description": "say hi",
 				"inputSchema": {
 					"type": "object",
-					"required": [
-						"Name"
-					],
 					"properties": {
 						"Name": {
 							"type": "string"
 						}
 					},
+					"required": [
+						"Name"
+					],
 					"additionalProperties": false
 				},
 				"name": "greet"
@@ -95,70 +95,70 @@ inc
 				"name": "inc",
 				"outputSchema": {
 					"type": "object",
-					"required": [
-						"y"
-					],
 					"properties": {
 						"y": {
 							"type": "integer"
 						}
 					},
+					"required": [
+						"y"
+					],
 					"additionalProperties": false
 				}
 			},
 			{
 				"inputSchema": {
 					"type": "object",
-					"required": [
-						"In"
-					],
 					"properties": {
 						"In": {
 							"type": "string",
 							"description": "the input"
 						}
 					},
+					"required": [
+						"In"
+					],
 					"additionalProperties": false
 				},
 				"name": "structured",
 				"outputSchema": {
 					"type": "object",
-					"required": [
-						"Out"
-					],
 					"properties": {
 						"Out": {
 							"type": "string",
 							"description": "the output"
 						}
 					},
+					"required": [
+						"Out"
+					],
 					"additionalProperties": false
 				}
 			},
 			{
 				"inputSchema": {
 					"type": "object",
-					"required": [
-						"Now"
-					],
 					"properties": {
 						"Now": {
 							"type": "string"
 						}
 					},
+					"required": [
+						"Now"
+					],
 					"additionalProperties": false
 				},
 				"name": "tomorrow",
 				"outputSchema": {
 					"type": "object",
-					"required": [
-						"Tomorrow"
-					],
 					"properties": {
 						"Tomorrow": {
 							"type": "string"
 						}
 					},
+					"required": [
+						"Tomorrow"
+					],
 					"additionalProperties": false
 				}
 			}
