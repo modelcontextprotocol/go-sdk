@@ -1388,6 +1388,8 @@ type StreamableClientTransport struct {
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
 	MaxRetries int
+	// MaxLineSize is the maximum buffer size (in bytes) used when reading SSE events. If unset, defaults to 1MiB.
+	MaxLineSize int
 
 	// TODO(rfindley): propose exporting these.
 	// If strict is set, the transport is in 'strict mode', where any violation
@@ -1453,16 +1455,17 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	// middleware), yet only cancel the standalone stream when the connection is closed.
 	connCtx, cancel := context.WithCancel(xcontext.Detach(ctx))
 	conn := &streamableClientConn{
-		url:        t.Endpoint,
-		client:     client,
-		incoming:   make(chan jsonrpc.Message, 10),
-		done:       make(chan struct{}),
-		maxRetries: maxRetries,
-		strict:     t.strict,
-		logger:     ensureLogger(t.logger), // must be non-nil for safe logging
-		ctx:        connCtx,
-		cancel:     cancel,
-		failed:     make(chan struct{}),
+		url:         t.Endpoint,
+		client:      client,
+		incoming:    make(chan jsonrpc.Message, 10),
+		done:        make(chan struct{}),
+		maxRetries:  maxRetries,
+		strict:      t.strict,
+		logger:      ensureLogger(t.logger), // must be non-nil for safe logging
+		ctx:         connCtx,
+		cancel:      cancel,
+		failed:      make(chan struct{}),
+		maxLineSize: t.MaxLineSize,
 	}
 	return conn, nil
 }
@@ -1497,6 +1500,7 @@ type streamableClientConn struct {
 	mu                sync.Mutex
 	initializedResult *InitializeResult
 	sessionID         string
+	maxLineSize       int
 }
 
 // errSessionMissing distinguishes if the session is known to not be present on
@@ -1854,11 +1858,14 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
-	for evt, err := range scanEvents(resp.Body) {
+	for evt, err := range scanEvents(resp.Body, c.maxLineSize) {
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", 0, true // don't reconnect: client cancelled
 			}
+
+			// EOF errors are returned as nil from bufio.Scanner, so all errors should be returned back
+			c.fail(fmt.Errorf("%s: failed to process stream: %v", requestSummary, err))
 			break
 		}
 

@@ -66,10 +66,12 @@ func writeEvent(w io.Writer, evt Event) (int, error) {
 //
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
-func scanEvents(r io.Reader) iter.Seq2[Event, error] {
+func scanEvents(r io.Reader, maxLineSize int) iter.Seq2[Event, error] {
 	scanner := bufio.NewScanner(r)
-	const maxTokenSize = 1 * 1024 * 1024 // 1 MiB max line size
-	scanner.Buffer(nil, maxTokenSize)
+	if maxLineSize == 0 {
+		maxLineSize = 1 * 1024 * 1024 // defaults to 1MiB
+	}
+	scanner.Buffer(nil, maxLineSize)
 
 	// TODO: investigate proper behavior when events are out of order, or have
 	// non-standard names.
@@ -139,7 +141,7 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 		}
 		if err := scanner.Err(); err != nil {
 			if errors.Is(err, bufio.ErrTooLong) {
-				err = fmt.Errorf("event exceeded max line length of %d", maxTokenSize)
+				err = fmt.Errorf("event exceeded max line length of %d", maxLineSize)
 			}
 			if !yield(Event{}, err) {
 				return
