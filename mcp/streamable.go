@@ -1550,7 +1550,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 	// SSE stream at this endpoint."
 	//
 	// [§2.2.3]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
-	if resp.StatusCode == http.StatusMethodNotAllowed {
+	if resp.StatusCode == http.StatusMethodNotAllowed || resp.Header.Get("Content-Type") != "text/event-stream" {
 		// The server doesn't support the standalone SSE stream.
 		resp.Body.Close()
 		return
