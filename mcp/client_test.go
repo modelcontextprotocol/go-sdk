@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -162,6 +163,23 @@ func TestClientPaginateBasic(t *testing.T) {
 				t.Fatalf("paginate() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestClientLogger(t *testing.T) {
+	// Case 1: No logger provided
+	c1 := NewClient(&Implementation{Name: "test", Version: "1.0"}, nil)
+	if c1.opts.Logger == nil {
+		t.Error("expected default logger, got nil")
+	}
+
+	// Case 2: Logger provided
+	logger := slog.Default()
+	c2 := NewClient(&Implementation{Name: "test", Version: "1.0"}, &ClientOptions{
+		Logger: logger,
+	})
+	if c2.opts.Logger != logger {
+		t.Error("expected provided logger, got different one")
 	}
 }
 
