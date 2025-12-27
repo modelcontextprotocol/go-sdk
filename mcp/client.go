@@ -44,26 +44,28 @@ type Client struct {
 // The first argument must not be nil.
 //
 // If non-nil, the provided options configure the Client.
-func NewClient(impl *Implementation, opts *ClientOptions) *Client {
+func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	if impl == nil {
 		panic("nil Implementation")
 	}
-	c := &Client{
+	var opts ClientOptions
+	if options != nil {
+		opts = *options
+	}
+	options = nil // prevent reuse
+
+	if opts.Logger == nil { // ensure we have a logger
+		opts.Logger = ensureLogger(nil)
+	}
+
+	return &Client{
 		impl:                    impl,
+		opts:                    opts,
 		logger:                  ensureLogger(nil), // ensure we have a logger
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
-	if opts != nil {
-		c.opts = *opts
-	}
-
-	if opts == nil || opts.Logger == nil {
-		c.opts.Logger = ensureLogger(nil)
-	}
-
-	return c
 }
 
 // ClientOptions configures the behavior of the client.
