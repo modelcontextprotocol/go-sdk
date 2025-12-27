@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -25,8 +26,9 @@ import (
 // A Client is an MCP client, which may be connected to an MCP server
 // using the [Client.Connect] method.
 type Client struct {
-	impl                    *Implementation
-	opts                    ClientOptions
+	impl *Implementation
+	opts ClientOptions
+	// Deprecated
 	logger                  *slog.Logger // TODO: file proposal to export this
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
@@ -56,11 +58,18 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 	if opts != nil {
 		c.opts = *opts
 	}
+
+	if opts == nil || opts.Logger == nil {
+		c.opts.Logger = ensureLogger(nil)
+	}
+
 	return c
 }
 
 // ClientOptions configures the behavior of the client.
 type ClientOptions struct {
+	// If non-nil, log client activity.
+	Logger *slog.Logger
 	// CreateMessageHandler handles incoming requests for sampling/createMessage.
 	//
 	// Setting CreateMessageHandler to a non-nil value automatically causes the
@@ -407,7 +416,7 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 		}
 	}
 	c.mu.Unlock()
-	notifySessions(sessions, notification, params, c.logger)
+	notifySessions(sessions, notification, params, c.opts.Logger)
 }
 
 // shouldSendListChangedNotification checks if the client's capabilities allow
