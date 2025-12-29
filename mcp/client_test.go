@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -487,4 +488,33 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientOptionsLogger(t *testing.T) {
+	t.Run("nil logger uses default", func(t *testing.T) {
+		c := NewClient(&Implementation{Name: "test", Version: "1.0"}, nil)
+		if c.logger == nil {
+			t.Error("expected non-nil logger when no options provided")
+		}
+	})
+
+	t.Run("provided logger is used", func(t *testing.T) {
+		// Create a custom logger
+		customLogger := slog.New(slog.NewTextHandler(nil, nil))
+		c := NewClient(&Implementation{Name: "test", Version: "1.0"}, &ClientOptions{
+			Logger: customLogger,
+		})
+		if c.logger != customLogger {
+			t.Error("expected client to use the provided logger")
+		}
+	})
+
+	t.Run("nil logger in options uses default", func(t *testing.T) {
+		c := NewClient(&Implementation{Name: "test", Version: "1.0"}, &ClientOptions{
+			Logger: nil,
+		})
+		if c.logger == nil {
+			t.Error("expected non-nil logger when Logger option is nil")
+		}
+	})
 }

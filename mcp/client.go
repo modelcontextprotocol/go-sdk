@@ -48,13 +48,16 @@ func NewClient(impl *Implementation, opts *ClientOptions) *Client {
 	}
 	c := &Client{
 		impl:                    impl,
-		logger:                  ensureLogger(nil), // ensure we have a logger
+		logger:                  ensureLogger(nil), // overwritten below if opts.Logger is set
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
 	if opts != nil {
 		c.opts = *opts
+		if opts.Logger != nil {
+			c.logger = opts.Logger
+		}
 	}
 	return c
 }
@@ -127,6 +130,8 @@ type ClientOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// If non-nil, log client activity.
+	Logger *slog.Logger
 }
 
 // bind implements the binder[*ClientSession] interface, so that Clients can
