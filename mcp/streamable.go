@@ -1773,15 +1773,14 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 // stream is complete when we receive its response. Otherwise, this is the
 // standalone stream.
 func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc2.Request) {
+	// Track the last event ID to detect progress.
+	// The retry counter is only reset when progress is made (lastEventID advances).
+	// This prevents infinite retry loops when a server repeatedly terminates
+	// connections without making progress (#679).
+	var prevLastEventID string
+	retriesWithoutProgress := 0
+
 	for {
-		// Connection was successful. Continue the loop with the new response.
-		//
-		// TODO(#679): we should set a reasonable limit on the number of times
-		// we'll try getting a response for a given request, or enforce that we
-		// actually make progress.
-		//
-		// Eventually, if we don't get the response, we should stop trying and
-		// fail the request.
 		lastEventID, reconnectDelay, clientClosed := c.processStream(ctx, requestSummary, resp, forCall)
 
 		// If the connection was closed by the client, we're done.
@@ -1793,6 +1792,23 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		// but we may just miss messages.
 		if lastEventID == "" && forCall != nil {
 			return
+		}
+
+		// Check if we made progress (lastEventID advanced).
+		// Only reset the retry counter when actual progress is made.
+		if lastEventID != "" && lastEventID != prevLastEventID {
+			// Progress was made: reset the retry counter.
+			retriesWithoutProgress = 0
+			prevLastEventID = lastEventID
+		} else {
+			// No progress: increment the retry counter.
+			retriesWithoutProgress++
+			if retriesWithoutProgress > c.maxRetries {
+				if ctx.Err() == nil {
+					c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
+				}
+				return
+			}
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
