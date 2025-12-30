@@ -363,6 +363,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 			return nil, fmt.Errorf("first event is %q, want %q", evt.Name, "endpoint")
 		}
 		raw := string(evt.Data)
+		// If the server sends an absolute path (starting with "/"), convert it
+		// to a relative path to preserve the base URL's path prefix. This is
+		// necessary when the server is behind a reverse proxy with path-based
+		// routing, where the server may not know about the proxy's path prefix.
+		if len(raw) > 0 && raw[0] == '/' {
+			raw = raw[1:]
+		}
 		return parsedURL.Parse(raw)
 	}()
 	if err != nil {
