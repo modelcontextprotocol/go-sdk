@@ -29,6 +29,15 @@ The SDK consists of several importable packages:
 The SDK endeavors to implement the full MCP spec. The [`docs/`](/docs/) directory
 contains feature documentation, mapping the MCP spec to the packages above.
 
+## Version Compatibility
+
+The following table shows which versions of the Go SDK support which versions of the MCP specification:
+
+| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                        |
+|-----------------|-------------------|------------------------------------------------|
+| v1.2.0+         | 2025-06-18        | 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 |
+| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05             |
+
 ## Getting started
 
 To get started creating an MCP server, create an `mcp.Server` instance, add
