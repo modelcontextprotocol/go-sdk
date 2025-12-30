@@ -29,7 +29,7 @@ The SDK consists of several importable packages:
 The SDK endeavors to implement the full MCP spec. The [`docs/`](/docs/) directory
 contains feature documentation, mapping the MCP spec to the packages above.
 
-cd## Version Compatibility
+## Version Compatibility
 
 The following table shows which versions of the Go SDK support which versions of the MCP specification:
 
