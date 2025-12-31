@@ -131,3 +131,58 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
+
+func TestSSEClientTransport_HTTPErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		statusCode     int
+		wantErrContain string
+	}{
+		{
+			name:           "401 Unauthorized",
+			statusCode:     http.StatusUnauthorized,
+			wantErrContain: "Unauthorized",
+		},
+		{
+			name:           "403 Forbidden",
+			statusCode:     http.StatusForbidden,
+			wantErrContain: "Forbidden",
+		},
+		{
+			name:           "404 Not Found",
+			statusCode:     http.StatusNotFound,
+			wantErrContain: "Not Found",
+		},
+		{
+			name:           "500 Internal Server Error",
+			statusCode:     http.StatusInternalServerError,
+			wantErrContain: "Internal Server Error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a test server that returns the specified status code
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, http.StatusText(tt.statusCode), tt.statusCode)
+			}))
+			defer httpServer.Close()
+
+			clientTransport := &SSEClientTransport{
+				Endpoint: httpServer.URL,
+			}
+
+			c := NewClient(testImpl, nil)
+			_, err := c.Connect(context.Background(), clientTransport, nil)
+
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			errStr := err.Error()
+			if !bytes.Contains([]byte(errStr), []byte(tt.wantErrContain)) {
+				t.Errorf("error message %q does not contain %q", errStr, tt.wantErrContain)
+			}
+		})
+	}
+}

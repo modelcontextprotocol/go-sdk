@@ -351,6 +351,14 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		return nil, err
 	}
 
+	// Check HTTP status code before attempting to parse SSE events.
+	// This ensures proper error reporting for authentication failures (401),
+	// authorization failures (403), and other HTTP errors.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("failed to connect: %s", http.StatusText(resp.StatusCode))
+	}
+
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
 		for evt, err = range scanEvents(resp.Body) {
