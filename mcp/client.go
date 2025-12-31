@@ -70,7 +70,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 
 // ClientOptions configures the behavior of the client.
 type ClientOptions struct {
-	// If non-nil, log client activity.
+	// Logger may be set to a non-nil value to enable logging of client activity.
 	Logger *slog.Logger
 	// CreateMessageHandler handles incoming requests for sampling/createMessage.
 	//
