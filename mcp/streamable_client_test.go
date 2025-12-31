@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -258,14 +259,16 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	tests := []struct {
 		status              int
 		wantErrorContaining string
+		contentType         string
 	}{
-		{http.StatusOK, ""},
-		{http.StatusMethodNotAllowed, ""},
-		// The client error status code is not treated as an error in non-strict
-		// mode.
-		{http.StatusNotFound, ""},
-		{http.StatusBadRequest, ""},
-		{http.StatusInternalServerError, "standalone SSE"},
+		{http.StatusOK, "", "text/event-stream"},
+		{http.StatusMethodNotAllowed, "", "text/event-stream"},
+		//// The client error status code is not treated as an error in non-strict
+		//// mode.
+		{http.StatusNotFound, "", "text/event-stream"},
+		{http.StatusBadRequest, "", "text/event-stream"},
+		{http.StatusInternalServerError, "standalone SSE", "text/event-stream"},
+		{http.StatusOK, "", "text/html; charset=utf-8"},
 	}
 
 	for _, test := range tests {
@@ -286,7 +289,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
-							"Content-Type": "text/event-stream",
+							"Content-Type": test.contentType,
 						},
 						status:              test.status,
 						wantProtocolVersion: latestProtocolVersion,
