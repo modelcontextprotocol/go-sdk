@@ -1555,6 +1555,14 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		resp.Body.Close()
 		return
 	}
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
+		// modelcontextprotocol/go-sdk#736: some servers return 200 OK or redirect with
+		// non-SSE content type instead of text/event-stream for the standalone
+		// SSE stream.
+		c.logger.Warn(fmt.Sprintf("got Content-Type %s instead of text/event-stream for standalone SSE stream", resp.Header.Get("Content-Type")))
+		resp.Body.Close()
+		return
+	}
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 && !c.strict {
 		// modelcontextprotocol/go-sdk#393,#610: some servers return NotFound or
 		// other status codes instead of MethodNotAllowed for the standalone SSE
