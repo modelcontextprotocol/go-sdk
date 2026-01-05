@@ -58,7 +58,7 @@ type Server struct {
 type ServerOptions struct {
 	// Optional instructions for connected clients.
 	Instructions string
-	// If non-nil, log server activity.
+	// Logger may be set to a non-nil value to enable logging of server activity.
 	Logger *slog.Logger
 	// If non-nil, called when "notifications/initialized" is received.
 	InitializedHandler func(context.Context, *InitializedRequest)
