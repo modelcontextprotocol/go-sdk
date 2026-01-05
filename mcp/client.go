@@ -26,10 +26,8 @@ import (
 // A Client is an MCP client, which may be connected to an MCP server
 // using the [Client.Connect] method.
 type Client struct {
-	impl *Implementation
-	opts ClientOptions
-	// Deprecated
-	logger                  *slog.Logger // TODO: file proposal to export this
+	impl                    *Implementation
+	opts                    ClientOptions
 	mu                      sync.Mutex
 	roots                   *featureSet[*Root]
 	sessions                []*ClientSession
@@ -61,7 +59,6 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	return &Client{
 		impl:                    impl,
 		opts:                    opts,
-		logger:                  ensureLogger(nil), // ensure we have a logger
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
