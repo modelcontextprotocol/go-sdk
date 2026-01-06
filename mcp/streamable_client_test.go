@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -694,23 +695,23 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 	}
 }
 
-func TestStreamableClientDisableListening(t *testing.T) {
+func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name             string
-		disableListening bool
-		expectGETRequest bool
+		name                 string
+		disableStandaloneSSE bool
+		expectGETRequest     bool
 	}{
 		{
-			name:             "default behavior (listening enabled)",
-			disableListening: false,
-			expectGETRequest: true,
+			name:                 "default behavior (standalone SSE enabled)",
+			disableStandaloneSSE: false,
+			expectGETRequest:     true,
 		},
 		{
-			name:             "listening disabled",
-			disableListening: true,
-			expectGETRequest: false,
+			name:                 "standalone SSE disabled",
+			disableStandaloneSSE: true,
+			expectGETRequest:     false,
 		},
 	}
 
@@ -749,8 +750,8 @@ func TestStreamableClientDisableListening(t *testing.T) {
 			defer httpServer.Close()
 
 			transport := &StreamableClientTransport{
-				Endpoint:         httpServer.URL,
-				DisableListening: test.disableListening,
+				Endpoint:             httpServer.URL,
+				DisableStandaloneSSE: test.disableStandaloneSSE,
 			}
 			client := NewClient(testImpl, nil)
 			session, err := client.Connect(ctx, transport, nil)
@@ -767,8 +768,8 @@ func TestStreamableClientDisableListening(t *testing.T) {
 				t.Fatalf("Expected *streamableClientConn, got %T", session.mcpConn)
 			}
 
-			if got, want := streamableConn.disableListening, test.disableListening; got != want {
-				t.Errorf("disableListening field: got %v, want %v", got, want)
+			if got, want := streamableConn.disableStandaloneSSE, test.disableStandaloneSSE; got != want {
+				t.Errorf("disableStandaloneSSE field: got %v, want %v", got, want)
 			}
 
 			// Clean up
@@ -805,7 +806,7 @@ func TestStreamableClientDisableListening(t *testing.T) {
 			} else {
 				// If we didn't expect a GET request, verify it wasn't sent
 				if getRequestReceived {
-					t.Error("GET request was sent unexpectedly when DisableListening is true")
+					t.Error("GET request was sent unexpectedly when DisableStandaloneSSE is true")
 				}
 			}
 		})
