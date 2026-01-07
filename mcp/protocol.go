@@ -329,7 +329,7 @@ type CompleteParams struct {
 	Meta `json:"_meta,omitempty"`
 	// The argument's information
 	Argument CompleteParamsArgument `json:"argument"`
-	Context  *CompleteContext       `json:"context,omitempty"`
+	Context  CompleteContext       `json:"context"`
 	Ref      *CompleteReference     `json:"ref"`
 }
 
