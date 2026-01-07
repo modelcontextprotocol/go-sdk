@@ -400,6 +400,23 @@ _See [mcp/tool_example_test.go](../mcp/tool_example_test.go) for the full
 example, or [examples/server/toolschemas](examples/server/toolschemas/main.go)
 for more examples of customizing tool schemas._
 
+**Stateless server deployments:** Some deployments create a new
+[`Server`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server)
+for each incoming request, re-registering tools every time. To avoid repeated
+schema generation, create a
+[`SchemaCache`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#SchemaCache)
+and share it across server instances:
+
+```go
+var schemaCache = mcp.NewSchemaCache() // create once at startup
+
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+    s := mcp.NewServer(impl, &mcp.ServerOptions{SchemaCache: schemaCache})
+    mcp.AddTool(s, myTool, myHandler)
+    // ...
+}
+```
+
 ## Utilities
 
 ### Completion
