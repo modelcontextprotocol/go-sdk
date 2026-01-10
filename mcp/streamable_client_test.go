@@ -707,7 +707,7 @@ func TestStreamableClientRetryWithoutProgress(t *testing.T) {
 
 	// Use the fakeStreamableServer pattern like other tests to avoid race conditions.
 	ctx := context.Background()
-	maxRetries := 2
+	const maxRetries = 2
 	var retryCount atomic.Int32
 
 	fake := &fakeStreamableServer{
@@ -784,7 +784,7 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 
 	// Verify that we actually retried the expected number of times.
 	// We expect maxRetries+1 attempts because we increment before checking the limit.
-	if got := retryCount.Load(); got < int32(maxRetries) {
-		t.Errorf("retry count = %d, want at least %d", got, maxRetries)
+	if got := retryCount.Load(); got != int32(maxRetries+1) {
+		t.Errorf("retry count = %d, want exactly %d", got, maxRetries+1)
 	}
 }
