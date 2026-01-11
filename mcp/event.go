@@ -66,10 +66,8 @@ func writeEvent(w io.Writer, evt Event) (int, error) {
 //
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
-func scanEvents(r io.Reader) iter.Seq2[Event, error] {
-	scanner := bufio.NewScanner(r)
-	const maxTokenSize = 1 * 1024 * 1024 // 1 MiB max line size
-	scanner.Buffer(nil, maxTokenSize)
+func scanEvents(ctx context.Context, r io.Reader) iter.Seq2[Event, error] {
+	scanner := bufio.NewReader(r)
 
 	// TODO: investigate proper behavior when events are out of order, or have
 	// non-standard names.
@@ -100,15 +98,40 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				dataBuf = nil
 			}
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				flushData()
-				// \n\n is the record delimiter
-				if !evt.Empty() && !yield(evt, nil) {
+		emitEvent := func() bool {
+			flushData()
+			if evt.Empty() {
+				return true
+			}
+			if !yield(evt, nil) {
+				return false
+			}
+			evt = Event{}
+			return true
+		}
+		for {
+			line, err := scanner.ReadBytes('\n')
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					// Handle EOF below
+				} else if ctx.Err() != nil {
+					yield(Event{}, fmt.Errorf("context done: %w", ctx.Err()))
+					return
+				} else {
+					yield(Event{}, fmt.Errorf("error reading event: %w", err))
 					return
 				}
-				evt = Event{}
+			}
+			line = bytes.TrimRight(line, "\r\n")
+			isEOF := errors.Is(err, io.EOF)
+
+			if len(line) == 0 {
+				if !emitEvent() {
+					return
+				}
+				if isEOF {
+					return
+				}
 				continue
 			}
 			before, after, found := bytes.Cut(line, []byte{':'})
@@ -136,18 +159,10 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 					dataBuf.Write(data)
 				}
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			if errors.Is(err, bufio.ErrTooLong) {
-				err = fmt.Errorf("event exceeded max line length of %d", maxTokenSize)
-			}
-			if !yield(Event{}, err) {
+			if isEOF {
+				emitEvent()
 				return
 			}
-		}
-		flushData()
-		if !evt.Empty() {
-			yield(evt, nil)
 		}
 	}
 }
