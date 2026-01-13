@@ -339,7 +339,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out]) (*Tool, ToolHan
 			}
 			// For regular errors, embed them in the tool result as per MCP spec
 			var errRes CallToolResult
-			errRes.setError(err)
+			errRes.SetError(err)
 			return &errRes, nil
 		}
 
