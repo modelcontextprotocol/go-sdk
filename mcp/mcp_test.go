@@ -2124,7 +2124,7 @@ func TestToolErrorMiddleware(t *testing.T) {
 			res, err := h(ctx, method, req)
 			if err == nil {
 				if ctr, ok := res.(*CallToolResult); ok {
-					middleErr = ctr.getError()
+					middleErr = ctr.GetError()
 				}
 			}
 			return res, err
@@ -2161,7 +2161,7 @@ func TestToolErrorMiddleware(t *testing.T) {
 		t.Fatal("want error, got none")
 	}
 	// Clients can't see the error, because it isn't marshaled.
-	if err := res.getError(); err != nil {
+	if err := res.GetError(); err != nil {
 		t.Fatalf("got %v, want nil", err)
 	}
 	if middleErr != errTestFailure {
