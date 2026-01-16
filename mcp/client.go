@@ -50,7 +50,6 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	if options != nil {
 		opts = *options
 	}
-	options = nil // prevent reuse
 
 	if opts.Logger == nil { // ensure we have a logger
 		opts.Logger = ensureLogger(nil)
@@ -129,6 +128,7 @@ type ClientOptions struct {
 	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
 	ResourceListChangedHandler  func(context.Context, *ResourceListChangedRequest)
 	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
+	TaskStatusHandler           func(context.Context, *TaskStatusNotificationRequest)
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
 	// If non-zero, defines an interval for regular "ping" requests.
@@ -807,6 +807,7 @@ var clientMethodInfos = map[string]methodInfo{
 	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
 	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK),
 	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
+	notificationTaskStatus:          newClientMethodInfo(clientMethod((*Client).callTaskStatusHandler), notification),
 	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
 	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
 	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
@@ -888,6 +889,9 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 //
 // The params.Arguments can be any value that marshals into a JSON object.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
+	if params != nil && params.Task != nil {
+		return nil, fmt.Errorf("task augmentation requested: use CallToolTask")
+	}
 	if params == nil {
 		params = new(CallToolParams)
 	}
@@ -896,6 +900,43 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		params.Arguments = map[string]any{}
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+}
+
+// CallToolTask calls a tool using task-based execution (tools/call with params.task).
+//
+// The response is a CreateTaskResult. Use GetTask to poll for task state and
+// TaskResult to retrieve the final tool result.
+func (cs *ClientSession) CallToolTask(ctx context.Context, params *CallToolParams) (*CreateTaskResult, error) {
+	if params == nil || params.Task == nil {
+		return nil, fmt.Errorf("CallToolTask requires params.Task")
+	}
+	if params.Arguments == nil {
+		// Avoid sending nil over the wire.
+		params.Arguments = map[string]any{}
+	}
+	return handleSend[*CreateTaskResult](ctx, methodCallTool, newClientRequest(cs, params))
+}
+
+// GetTask polls task status via tasks/get.
+func (cs *ClientSession) GetTask(ctx context.Context, params *GetTaskParams) (*GetTaskResult, error) {
+	return handleSend[*GetTaskResult](ctx, methodGetTask, newClientRequest(cs, orZero[Params](params)))
+}
+
+// ListTasks lists tasks via tasks/list.
+func (cs *ClientSession) ListTasks(ctx context.Context, params *ListTasksParams) (*ListTasksResult, error) {
+	return handleSend[*ListTasksResult](ctx, methodListTasks, newClientRequest(cs, orZero[Params](params)))
+}
+
+// CancelTask requests cancellation via tasks/cancel.
+func (cs *ClientSession) CancelTask(ctx context.Context, params *CancelTaskParams) (*CancelTaskResult, error) {
+	return handleSend[*CancelTaskResult](ctx, methodCancelTask, newClientRequest(cs, orZero[Params](params)))
+}
+
+// TaskResult retrieves the final result of a task via tasks/result.
+//
+// Currently, this SDK supports tasks/result only for tasks created from tools/call.
+func (cs *ClientSession) TaskResult(ctx context.Context, params *TaskResultParams) (*CallToolResult, error) {
+	return handleSend[*CallToolResult](ctx, methodTaskResult, newClientRequest(cs, orZero[Params](params)))
 }
 
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
@@ -966,6 +1007,13 @@ func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ResourceUp
 
 func (c *Client) callLoggingHandler(ctx context.Context, req *LoggingMessageRequest) (Result, error) {
 	if h := c.opts.LoggingMessageHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
+}
+
+func (c *Client) callTaskStatusHandler(ctx context.Context, req *TaskStatusNotificationRequest) (Result, error) {
+	if h := c.opts.TaskStatusHandler; h != nil {
 		h(ctx, req)
 	}
 	return nil, nil

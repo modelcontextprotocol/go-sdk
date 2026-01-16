@@ -109,6 +109,15 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
+	// Task-augmented requests may change the result schema.
+	//
+	// Currently, the only task-augmentable request supported by this SDK is
+	// tools/call.
+	if method == methodCallTool {
+		if p, ok := params.(*CallToolParams); ok && p.Task != nil {
+			res = &CreateTaskResult{}
+		}
+	}
 	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
 		return nil, err
 	}
