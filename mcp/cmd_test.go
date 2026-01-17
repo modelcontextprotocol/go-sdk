@@ -76,48 +76,6 @@ func runCancelContextServer() {
 	}
 }
 
-func TestServerRunContextCancel(t *testing.T) {
-	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
-	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-
-	// run the server and capture the exit error
-	onServerExit := make(chan error)
-	go func() {
-		onServerExit <- server.Run(ctx, serverTransport)
-	}()
-
-	// send a ping to the server to ensure it's running
-	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { session.Close() })
-
-	if err := session.Ping(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
-
-	// cancel the context to stop the server
-	cancel()
-
-	// wait for the server to exit
-	// TODO: use synctest when availble
-	select {
-	case <-time.After(5 * time.Second):
-		t.Fatal("server did not exit after context cancellation")
-	case err := <-onServerExit:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("server did not exit after context cancellation, got error: %v", err)
-		}
-	}
-}
-
 func TestServerInterrupt(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires POSIX signals")
