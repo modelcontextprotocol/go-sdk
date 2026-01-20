@@ -1877,6 +1877,80 @@ func TestStreamableGET(t *testing.T) {
 	}
 }
 
+// TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
+// 405 Method Not Allowed responses MUST include an Allow header.
+func TestStreamable405AllowHeader(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name        string
+		stateless   bool
+		method      string
+		wantAllow   string
+		wantStatus  int
+		withSession bool
+	}{
+		{
+			name:       "unsupported method (PUT) stateful",
+			stateless:  false,
+			method:     "PUT",
+			wantAllow:  "GET, POST, DELETE",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "GET without session stateful",
+			stateless:  false,
+			method:     "GET",
+			wantAllow:  "GET, POST, DELETE",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "GET in stateless mode",
+			stateless:  true,
+			method:     "GET",
+			wantAllow:  "POST",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "unsupported method (PATCH) stateless",
+			stateless:  true,
+			method:     "PATCH",
+			wantAllow:  "GET, POST, DELETE",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{Stateless: tt.stateless}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			req, err := http.NewRequest(tt.method, httpServer.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
+			}
+
+			allow := resp.Header.Get("Allow")
+			if allow != tt.wantAllow {
+				t.Errorf("Allow header: got %q, want %q", allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
 func TestStreamableClientContextPropagation(t *testing.T) {
 	type contextKey string
 	const testKey = contextKey("test-key")

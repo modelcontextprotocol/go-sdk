@@ -275,6 +275,13 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
 		if req.Method == http.MethodGet && (h.opts.Stateless || sessionID == "") {
+			// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
+			// In stateless mode, only POST is allowed (no persistent sessions for GET/DELETE).
+			if h.opts.Stateless {
+				w.Header().Set("Allow", "POST")
+			} else {
+				w.Header().Set("Allow", "GET, POST, DELETE")
+			}
 			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
 			return
 		}

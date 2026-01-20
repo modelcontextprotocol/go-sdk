@@ -186,3 +186,38 @@ func TestSSEClientTransport_HTTPErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestSSE405AllowHeader verifies RFC 9110 §15.5.6 compliance:
+// 405 Method Not Allowed responses MUST include an Allow header.
+func TestSSE405AllowHeader(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	handler := NewSSEHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	methods := []string{"PUT", "PATCH", "DELETE", "OPTIONS"}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequest(method, httpServer.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != http.StatusMethodNotAllowed {
+				t.Errorf("status code: got %d, want %d", got, http.StatusMethodNotAllowed)
+			}
+
+			allow := resp.Header.Get("Allow")
+			if allow != "GET, POST" {
+				t.Errorf("Allow header: got %q, want %q", allow, "GET, POST")
+			}
+		})
+	}
+}
