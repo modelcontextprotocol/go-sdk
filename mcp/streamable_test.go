@@ -1883,40 +1883,34 @@ func TestStreamable405AllowHeader(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	tests := []struct {
-		name        string
-		stateless   bool
-		method      string
-		wantAllow   string
-		wantStatus  int
-		withSession bool
+		name      string
+		stateless bool
+		method    string
+		wantAllow string
 	}{
 		{
-			name:       "unsupported method (PUT) stateful",
-			stateless:  false,
-			method:     "PUT",
-			wantAllow:  "GET, POST, DELETE",
-			wantStatus: http.StatusMethodNotAllowed,
+			name:      "unsupported method (PUT) stateful",
+			stateless: false,
+			method:    "PUT",
+			wantAllow: "GET, POST, DELETE",
 		},
 		{
-			name:       "GET without session stateful",
-			stateless:  false,
-			method:     "GET",
-			wantAllow:  "GET, POST, DELETE",
-			wantStatus: http.StatusMethodNotAllowed,
+			name:      "GET without session stateful",
+			stateless: false,
+			method:    "GET",
+			wantAllow: "GET, POST, DELETE",
 		},
 		{
-			name:       "GET in stateless mode",
-			stateless:  true,
-			method:     "GET",
-			wantAllow:  "POST",
-			wantStatus: http.StatusMethodNotAllowed,
+			name:      "GET in stateless mode",
+			stateless: true,
+			method:    "GET",
+			wantAllow: "POST",
 		},
 		{
-			name:       "unsupported method (PATCH) stateless",
-			stateless:  true,
-			method:     "PATCH",
-			wantAllow:  "GET, POST, DELETE",
-			wantStatus: http.StatusMethodNotAllowed,
+			name:      "unsupported method (PATCH) stateless",
+			stateless: true,
+			method:    "PATCH",
+			wantAllow: "GET, POST, DELETE",
 		},
 	}
 
@@ -1939,8 +1933,8 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			if got := resp.StatusCode; got != tt.wantStatus {
-				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
+			if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+				t.Errorf("status code: got %d, want %d", got, want)
 			}
 
 			allow := resp.Header.Get("Allow")

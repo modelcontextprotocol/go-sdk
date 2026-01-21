@@ -210,8 +210,8 @@ func TestSSE405AllowHeader(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			if got := resp.StatusCode; got != http.StatusMethodNotAllowed {
-				t.Errorf("status code: got %d, want %d", got, http.StatusMethodNotAllowed)
+			if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+				t.Errorf("status code: got %d, want %d", got, want)
 			}
 
 			allow := resp.Header.Get("Allow")
