@@ -1829,7 +1829,9 @@ func TestStreamableGET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+	// GET without session should return 400 Bad Request (not 405) because
+	// GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 		t.Errorf("initial GET: got status %d, want %d", got, want)
 	}
 	defer resp.Body.Close()
@@ -1895,9 +1897,9 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			wantAllow: "GET, POST, DELETE",
 		},
 		{
-			name:      "GET without session stateful",
+			name:      "unsupported method (PATCH) stateful",
 			stateless: false,
-			method:    "GET",
+			method:    "PATCH",
 			wantAllow: "GET, POST, DELETE",
 		},
 		{
@@ -1910,7 +1912,13 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			name:      "unsupported method (PATCH) stateless",
 			stateless: true,
 			method:    "PATCH",
-			wantAllow: "GET, POST, DELETE",
+			wantAllow: "POST",
+		},
+		{
+			name:      "unsupported method (PUT) stateless",
+			stateless: true,
+			method:    "PUT",
+			wantAllow: "POST",
 		},
 	}
 
@@ -1942,6 +1950,33 @@ func TestStreamable405AllowHeader(t *testing.T) {
 				t.Errorf("Allow header: got %q, want %q", allow, tt.wantAllow)
 			}
 		})
+	}
+}
+
+// TestStreamableGETWithoutSession verifies that GET without session ID in stateful mode
+// returns 400 Bad Request (not 405), since GET is a supported method that requires a session.
+func TestStreamableGETWithoutSession(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest("GET", httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// GET without session should return 400 Bad Request, not 405 Method Not Allowed,
+	// because GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+		t.Errorf("status code: got %d, want %d", got, want)
 	}
 }
 
