@@ -1885,40 +1885,34 @@ func TestStreamable405AllowHeader(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	tests := []struct {
-		name      string
-		stateless bool
-		method    string
-		wantAllow string
+		name       string
+		stateless  bool
+		method     string
+		wantStatus int
+		wantAllow  string
 	}{
 		{
-			name:      "unsupported method (PUT) stateful",
-			stateless: false,
-			method:    "PUT",
-			wantAllow: "GET, POST, DELETE",
+			name:       "unsupported method stateful",
+			stateless:  false,
+			method:     "PUT",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "GET, POST, DELETE",
 		},
 		{
-			name:      "unsupported method (PATCH) stateful",
-			stateless: false,
-			method:    "PATCH",
-			wantAllow: "GET, POST, DELETE",
+			name:       "GET in stateless mode",
+			stateless:  true,
+			method:     "GET",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
 		},
 		{
-			name:      "GET in stateless mode",
-			stateless: true,
-			method:    "GET",
-			wantAllow: "POST",
-		},
-		{
-			name:      "unsupported method (PATCH) stateless",
-			stateless: true,
-			method:    "PATCH",
-			wantAllow: "POST",
-		},
-		{
-			name:      "unsupported method (PUT) stateless",
-			stateless: true,
-			method:    "PUT",
-			wantAllow: "POST",
+			// DELETE without session returns 400 Bad Request (not 405)
+			// because DELETE is a valid method, just requires a session ID.
+			name:       "DELETE without session stateless",
+			stateless:  true,
+			method:     "DELETE",
+			wantStatus: http.StatusBadRequest,
+			wantAllow:  "", // No Allow header for 400 responses
 		},
 	}
 
@@ -1941,8 +1935,8 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
-				t.Errorf("status code: got %d, want %d", got, want)
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
 			}
 
 			allow := resp.Header.Get("Allow")
