@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"maps"
 	"math"
+	"net"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -160,6 +161,16 @@ type StreamableHTTPOptions struct {
 	//
 	// If SessionTimeout is the zero value, idle sessions are never closed.
 	SessionTimeout time.Duration
+
+	// DisableLocalhostProtection disables automatic DNS rebinding protection.
+	// By default, requests arriving via a localhost address (127.0.0.1, [::1])
+	// that have a non-localhost Host header are rejected with 403 Forbidden.
+	// This protects against DNS rebinding attacks regardless of whether the
+	// server is listening on localhost specifically or on 0.0.0.0.
+	//
+	// Only disable this if you understand the security implications.
+	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
+	DisableLocalhostProtection bool
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -206,7 +217,46 @@ func (h *StreamableHTTPHandler) closeAll() {
 	}
 }
 
+// isLocalhostAddr checks if a net.Addr is a localhost address.
+func isLocalhostAddr(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	// Remove brackets for IPv6
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// isLocalhostHost checks if a Host header value is a valid localhost address.
+func isLocalhostHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	hostname, _, err := net.SplitHostPort(host)
+	if err != nil {
+		hostname = host
+	}
+	// Remove brackets for IPv6
+	hostname = strings.TrimPrefix(strings.TrimSuffix(hostname, "]"), "[")
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
+}
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// DNS rebinding protection: auto-enabled for localhost servers.
+	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
+	if !h.opts.DisableLocalhostProtection {
+		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			if isLocalhostAddr(localAddr) && !isLocalhostHost(req.Host) {
+				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
+				return
+			}
+		}
+	}
+
 	// Allow multiple 'Accept' headers.
 	// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept#syntax
 	accept := strings.Split(strings.Join(req.Header.Values("Accept"), ","), ",")
