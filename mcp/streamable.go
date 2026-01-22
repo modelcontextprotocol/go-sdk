@@ -275,12 +275,27 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	switch req.Method {
 	case http.MethodPost, http.MethodGet:
 		if req.Method == http.MethodGet && (h.opts.Stateless || sessionID == "") {
-			http.Error(w, "GET requires an active session", http.StatusMethodNotAllowed)
+			if h.opts.Stateless {
+				// Per MCP spec: server MUST return 405 if it doesn't offer SSE stream.
+				// In stateless mode, GET (SSE streaming) is not supported.
+				// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			} else {
+				// In stateful mode, GET is supported but requires a session ID.
+				// This is a precondition error, similar to DELETE without session.
+				http.Error(w, "Bad Request: GET requires an Mcp-Session-Id header", http.StatusBadRequest)
+			}
 			return
 		}
 	default:
-		w.Header().Set("Allow", "GET, POST, DELETE")
-		http.Error(w, "Method Not Allowed: streamable MCP servers support GET, POST, and DELETE requests", http.StatusMethodNotAllowed)
+		// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
+		if h.opts.Stateless {
+			w.Header().Set("Allow", "POST")
+		} else {
+			w.Header().Set("Allow", "GET, POST, DELETE")
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
