@@ -5,6 +5,9 @@
 // The conformance server implements features required for MCP conformance testing.
 // It mirrors the functionality of the TypeScript conformance server at
 // https://github.com/modelcontextprotocol/conformance/blob/main/examples/servers/typescript/everything-server.ts
+
+//go:build mcp_go_client_oauth
+
 package main
 
 import (
@@ -16,19 +19,28 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/yosida95/uritemplate/v3"
 )
 
 var (
-	httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	httpAddr   = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	enableAuth = flag.Bool("enable_auth", false, "if set, enable OAuth authorization")
 )
 
-const watchedResourceURI = "test://watched-resource"
+const (
+	watchedResourceURI = "test://watched-resource"
+
+	adminScope = "admin"
+)
 
 func main() {
 	flag.Parse()
@@ -56,11 +68,29 @@ func main() {
 
 	// Serve over stdio, or streamable HTTP if -http is set.
 	if *httpAddr != "" {
-		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		mux := http.NewServeMux()
+		var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
 		}, nil)
-		log.Printf("Conformance server listening at %s", *httpAddr)
-		log.Fatal(http.ListenAndServe(*httpAddr, handler))
+
+		if *enableAuth {
+			authServerURL := os.Getenv("MCP_CONFORMANCE_AUTH_SERVER_URL")
+			if authServerURL == "" {
+				log.Fatal("MCP_CONFORMANCE_AUTH_SERVER_URL environment variable must be set when --enable-auth is true")
+			}
+
+			handlePRM(mux, authServerURL)
+
+			var err error
+			mcpHandler, err = addAuthMiddleware(mcpHandler, authServerURL)
+			if err != nil {
+				log.Fatalf("auth middleware: %v", err)
+			}
+		}
+
+		mux.Handle("/mcp", mcpHandler)
+		log.Printf("Conformance server listening at http://%s/mcp", *httpAddr)
+		log.Fatal(http.ListenAndServe(*httpAddr, mux))
 	} else {
 		t := &mcp.StdioTransport{}
 		if err := server.Run(ctx, t); err != nil {
@@ -720,6 +750,96 @@ func promptWithImageHandler(ctx context.Context, req *mcp.GetPromptRequest) (*mc
 			},
 		},
 	}, nil
+}
+
+// =============================================================================
+// Middleware
+// =============================================================================
+
+func handlePRM(mux *http.ServeMux, authServerURL string) {
+	// Host the resource metadata document.
+	resourceMetadata := &oauthex.ProtectedResourceMetadata{
+		Resource:             "http://" + *httpAddr,
+		AuthorizationServers: []string{authServerURL},
+		ScopesSupported:      []string{adminScope},
+	}
+	mux.Handle("/.well-known/oauth-protected-resource", auth.ProtectedResourceMetadataHandler(resourceMetadata))
+}
+
+func addAuthMiddleware(handler http.Handler, authServerURL string) (http.Handler, error) {
+
+	log.Printf("Fetching authorization server metadata from %s...", authServerURL)
+	metadata, err := oauthex.GetAuthServerMeta(context.Background(), authServerURL, http.DefaultClient)
+	if err != nil {
+		return nil, fmt.Errorf("fetch auth server metadata: %v", err)
+	}
+	if metadata.IntrospectionEndpoint == "" {
+		return nil, fmt.Errorf("auth server metadata does not contain introspection_endpoint")
+	}
+	log.Printf("Using introspection endpoint: %s", metadata.IntrospectionEndpoint)
+
+	tokenVerifier := createIntrospectionVerifier(metadata.IntrospectionEndpoint)
+	verifyAuth := auth.RequireBearerToken(tokenVerifier, &auth.RequireBearerTokenOptions{
+		ResourceMetadataURL: fmt.Sprintf("http://%s/.well-known/oauth-protected-resource", *httpAddr),
+	})
+
+	return verifyAuth(handler), nil
+}
+
+func createIntrospectionVerifier(introspectionEndpoint string) auth.TokenVerifier {
+	return func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		data := url.Values{}
+		data.Set("token", token)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", introspectionEndpoint, strings.NewReader(data.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("create introspection request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("introspection request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("introspection returned status %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Active     bool   `json:"active"`
+			Scope      string `json:"scope"`
+			Expiration int64  `json:"exp"`
+			ClientID   string `json:"client_id"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("decode introspection response: %v", err)
+		}
+
+		if !result.Active {
+			return nil, auth.ErrInvalidToken
+		}
+
+		expiration := time.Time{}
+		if result.Expiration != 0 {
+			expiration = time.Unix(result.Expiration, 0)
+		}
+
+		var scopes []string
+		if result.Scope != "" {
+			scopes = strings.Split(result.Scope, " ")
+		}
+
+		return &auth.TokenInfo{
+			Scopes:     scopes,
+			Expiration: expiration,
+			Extra: map[string]any{
+				"client_id": result.ClientID,
+			},
+		}, nil
+	}
 }
 
 // =============================================================================

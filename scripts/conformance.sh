@@ -68,11 +68,11 @@ else
 fi
 
 # Build the conformance server.
-go build -o "$WORKDIR/conformance-server" ./examples/server/conformance
+go build -tags mcp_go_client_oauth -o "$WORKDIR/conformance-server" ./examples/server/conformance
 
 # Start the server in the background
 echo "Starting conformance server on port $PORT..."
-"$WORKDIR/conformance-server" -http=":$PORT" &
+"$WORKDIR/conformance-server" -http="localhost:$PORT" &
 SERVER_PID=$!
 
 echo "Server pid is $SERVER_PID"
@@ -92,15 +92,31 @@ for i in {1..30}; do
 done
 
 # Run conformance tests from the work directory to avoid writing results to the repo.
-echo "Running conformance tests..."
+echo "Running 'active' conformance tests..."
 if [ -n "$CONFORMANCE_REPO" ]; then
     # Run from local checkout using npm run start.
     (cd "$WORKDIR" && \
         npm --prefix "$CONFORMANCE_REPO" run start -- \
-            server --url "http://localhost:$PORT")
+            server --url "http://localhost:$PORT/mcp") || true
 else
     (cd "$WORKDIR" && \
-        npx @modelcontextprotocol/conformance@latest server --url "http://localhost:$PORT")
+        npx @modelcontextprotocol/conformance@latest server --url "http://localhost:$PORT/mcp") || true
+fi
+
+echo ""
+if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+fi
+echo "Running 'auth' conformance tests..."
+if [ -n "$CONFORMANCE_REPO" ]; then
+    # Run from local checkout using npm run start.
+    (cd "$WORKDIR" && \
+        npm --prefix "$CONFORMANCE_REPO" run start -- \
+            server --suite auth --command "$WORKDIR/conformance-server --http=\"localhost:$PORT\" --enable_auth") || true
+else
+    (cd "$WORKDIR" && \
+        npx @modelcontextprotocol/conformance@latest server --suite auth \
+            --command "$WORKDIR/conformance-server --http=\"localhost:$PORT\" --enable_auth") || true
 fi
 
 echo ""
