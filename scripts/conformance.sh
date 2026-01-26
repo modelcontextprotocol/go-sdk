@@ -12,6 +12,7 @@ SERVER_PID=""
 RESULT_DIR=""
 WORKDIR=""
 CONFORMANCE_REPO=""
+FINAL_EXIT_CODE=0
 
 usage() {
     echo "Usage: $0 [options]"
@@ -50,11 +51,9 @@ done
 
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
+        echo "Stopping server..."
         kill "$SERVER_PID" 2>/dev/null || true
-    fi
-    # Clean up the work directory unless --result_dir was specified.
-    if [ -z "$RESULT_DIR" ] && [ -n "$WORKDIR" ]; then
-        rm -rf "$WORKDIR"
+        wait "$SERVER_PID" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -68,7 +67,7 @@ else
 fi
 
 # Build the conformance server.
-go build -o "$WORKDIR/conformance-server" ./examples/server/conformance
+go build -o "$WORKDIR/conformance-server" ./conformance/everything-server
 
 # Start the server in the background
 echo "Starting conformance server on port $PORT..."
@@ -79,17 +78,10 @@ echo "Server pid is $SERVER_PID"
 
 # Wait for server to be ready
 echo "Waiting for server to be ready..."
-for i in {1..30}; do
-    if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
-        echo "Server is ready."
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "Server failed to start within 15 seconds."
-        exit 1
-    fi
-    sleep 0.5
-done
+if ! timeout 15 bash -c "until curl -s http://localhost:$PORT > /dev/null 2>&1; do sleep 0.5; done"; then
+    echo "Server failed to start within 15 seconds."
+    exit 1
+fi
 
 # Run conformance tests from the work directory to avoid writing results to the repo.
 echo "Running conformance tests..."
@@ -97,10 +89,13 @@ if [ -n "$CONFORMANCE_REPO" ]; then
     # Run from local checkout using npm run start.
     (cd "$WORKDIR" && \
         npm --prefix "$CONFORMANCE_REPO" run start -- \
-            server --url "http://localhost:$PORT")
+            server --url "http://localhost:$PORT" \
+            ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 else
     (cd "$WORKDIR" && \
-        npx @modelcontextprotocol/conformance@latest server --url "http://localhost:$PORT")
+        npx @modelcontextprotocol/conformance@latest \
+        server --url "http://localhost:$PORT" \
+        ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 fi
 
 echo ""
@@ -109,3 +104,5 @@ if [ -n "$RESULT_DIR" ]; then
 else
     echo "Run with --result_dir to save results."
 fi
+
+exit $FINAL_EXIT_CODE
