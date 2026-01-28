@@ -98,9 +98,33 @@ func TestScanEvents(t *testing.T) {
 			},
 		},
 		{
-			name:    "non-continuous data items in the event",
-			input:   "event: foo\ndata: 123\nretry: 5\ndata: 456",
-			wantErr: "non-continuous data items in the event",
+			name:  "non-continuous data items in the event",
+			input: "event: foo\ndata: 123\nretry: 5\ndata: 456",
+			want: []Event{
+				{Name: "foo", Data: []byte("123\n456"), Retry: "5"},
+			},
+		},
+		{
+			name:  "no-data events",
+			input: "event: foo\n\nevent: bar",
+			want: []Event{
+				{Name: "foo"},
+				{Name: "bar"},
+			},
+		},
+		{
+			name:  "empty data event",
+			input: "event: foo\ndata:\n\nevent: bar",
+			want: []Event{
+				{Name: "foo"},
+				{Name: "bar"},
+			},
+		},
+		{
+
+			name:    "malformed data event",
+			input:   "someline",
+			wantErr: "malformed event",
 		},
 	}
 

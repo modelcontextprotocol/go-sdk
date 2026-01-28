@@ -1860,7 +1860,13 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				return "", 0, true // don't reconnect: client cancelled
 			}
 
-			// Network errors during reading should trigger reconnection, not permanent failure.
+			// Malformed events are hard errors that indicate corrupted data or protocol			// violations. These should fail the connection permanently.
+			if errors.Is(err, errMalformedEvent) {
+				c.fail(fmt.Errorf("%s: %v", requestSummary, err))
+				return "", 0, true
+			}
+
+			// Network/I/O errors during reading should trigger reconnection, not permanent failure.
 			// Return from processStream so handleSSE can attempt to reconnect.
 			c.logger.Debug(fmt.Sprintf("%s: stream read error (will attempt reconnect): %v", requestSummary, err))
 			return lastEventID, reconnectDelay, false
