@@ -92,12 +92,10 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			evt     Event
 			dataBuf *bytes.Buffer // if non-nil, preceding field was also data
 		)
-		var previousLineType []byte
 		yieldEvent := func() bool {
 			if dataBuf != nil {
 				evt.Data = dataBuf.Bytes()
 				dataBuf = nil
-				previousLineType = nil
 			}
 			if evt.Empty() {
 				return true
@@ -128,7 +126,7 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			}
 			before, after, found := bytes.Cut(line, []byte{':'})
 			if !found {
-				yield(Event{}, fmt.Errorf("malformed line in SSE stream: %q", string(line)))
+				yield(Event{}, fmt.Errorf("%w: malformed line in SSE stream: %q", errMalformedEvent, string(line)))
 				return
 			}
 			switch {
@@ -140,19 +138,14 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				evt.Retry = strings.TrimSpace(string(after))
 			case bytes.Equal(before, dataKey):
 				data := bytes.TrimSpace(after)
-				previousLineEmptyOrData := previousLineType == nil || bytes.Equal(previousLineType, dataKey)
 				if dataBuf == nil {
 					dataBuf = new(bytes.Buffer)
 					dataBuf.Write(data)
-				} else if !previousLineEmptyOrData {
-					yield(Event{}, fmt.Errorf("non-continuous data items in the event"))
-					return
 				} else {
 					dataBuf.WriteByte('\n')
 					dataBuf.Write(data)
 				}
 			}
-			previousLineType = before
 
 			if isEOF {
 				yieldEvent()
@@ -319,6 +312,11 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID, streamID string,
 // ErrEventsPurged is the error that [EventStore.After] should return if the event just after the
 // index is no longer available.
 var ErrEventsPurged = errors.New("data purged")
+
+// errMalformedEvent is returned when an SSE event cannot be parsed due to format violations.
+// This is a hard error indicating corrupted data or protocol violations, as opposed to
+// transient I/O errors which may be retryable.
+var errMalformedEvent = errors.New("malformed event")
 
 // After implements [EventStore.After].
 func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, index int) iter.Seq2[[]byte, error] {

@@ -450,8 +450,8 @@ func (c *sseClientConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 
 	case m := <-c.incoming:
 		if m.err != nil {
-			// TODO: bubble up this error
-			return nil, nil
+			id, _ := jsonrpc2.MakeID(nil)
+			return jsonrpc2.NewResponse(id, m.data, fmt.Errorf("failed reading the message: %w", m.err))
 		}
 		// TODO(rfindley): do we really need to check this? We receive from c.done above.
 		if c.isDone() {
