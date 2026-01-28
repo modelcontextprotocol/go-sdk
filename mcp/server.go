@@ -1218,6 +1218,10 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		return nil, err
 	}
 
+	if res.Action != ElicitActionAccept {
+		return res, nil
+	}
+
 	if params.RequestedSchema == nil {
 		return res, nil
 	}
