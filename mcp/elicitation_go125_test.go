@@ -12,7 +12,7 @@ import (
 	"testing/synctest"
 )
 
-func runTestElicitationCompleteNotification(t *testing.T) {
+func TestElicitationCompleteNotification_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 

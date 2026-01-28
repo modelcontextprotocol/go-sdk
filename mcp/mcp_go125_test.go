@@ -24,7 +24,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-func runTestEndToEnd(t *testing.T) {
+func TestEndToEnd_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		var ct, st Transport = NewInMemoryTransports()
@@ -527,7 +527,7 @@ func runTestEndToEnd(t *testing.T) {
 	})
 }
 
-func runTestBatching(t *testing.T) {
+func TestBatching_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		ct, st := NewInMemoryTransports()
@@ -567,7 +567,7 @@ func runTestBatching(t *testing.T) {
 	})
 }
 
-func runTestKeepAlive(t *testing.T) {
+func TestKeepAlive_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 
@@ -616,7 +616,7 @@ func runTestKeepAlive(t *testing.T) {
 	})
 }
 
-func runTestCancellation(t *testing.T) {
+func TestCancellation_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var (
 			start     = make(chan struct{})
@@ -648,7 +648,7 @@ func runTestCancellation(t *testing.T) {
 	})
 }
 
-func runTestKeepAliveFailure(t *testing.T) {
+func TestKeepAliveFailure_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 
@@ -696,7 +696,7 @@ func runTestKeepAliveFailure(t *testing.T) {
 	})
 }
 
-func runTestSynchronousNotifications(t *testing.T) {
+func TestSynchronousNotifications_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var toolsChanged atomic.Int32
 		clientOpts := &ClientOptions{
@@ -763,7 +763,7 @@ func runTestSynchronousNotifications(t *testing.T) {
 	})
 }
 
-func runTestNoDistributedDeadlock(t *testing.T) {
+func TestNoDistributedDeadlock_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// This test verifies that calls are asynchronous, and so it's not possible
 		// to have a distributed deadlock.
