@@ -1654,6 +1654,158 @@ func TestStreamableStateless(t *testing.T) {
 	})
 }
 
+func TestStreamableSessionStatePersistence(t *testing.T) {
+	type noopArgs struct{}
+
+	newServer := func() *Server {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "noop", Description: "no op"}, func(ctx context.Context, req *CallToolRequest, _ noopArgs) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+		return server
+	}
+
+	store := NewMemoryServerSessionStateStore()
+
+	server1 := newServer()
+	handler1 := NewStreamableHTTPHandler(func(*http.Request) *Server { return server1 }, &StreamableHTTPOptions{
+		SessionStateStore: store,
+	})
+	httpServer1 := httptest.NewServer(mustNotPanic(t, handler1))
+	defer httpServer1.Close()
+
+	call := func(serverURL, sessionID string, request streamableRequest) (string, int, []jsonrpc.Message, []byte, error) {
+		out := make(chan jsonrpc.Message, 10)
+		newSessionID, status, body, err := request.do(context.Background(), serverURL, sessionID, out)
+		var msgs []jsonrpc.Message
+		for msg := range out {
+			msgs = append(msgs, msg)
+		}
+		return newSessionID, status, msgs, body, err
+	}
+
+	initializeRequest := streamableRequest{
+		method:   http.MethodPost,
+		messages: []jsonrpc.Message{req(1, methodInitialize, &InitializeParams{})},
+	}
+
+	sessionID, status, msgs, _, err := call(httpServer1.URL, "", initializeRequest)
+	if err != nil {
+		t.Fatalf("initialize request failed: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("initialize status = %d, want %d", status, http.StatusOK)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("initialize response count = %d, want 1", len(msgs))
+	}
+	initResp, ok := msgs[0].(*jsonrpc.Response)
+	if !ok {
+		t.Fatalf("initialize response is %T, want *jsonrpc.Response", msgs[0])
+	}
+	if initResp.Error != nil {
+		t.Fatalf("initialize response returned error: %+v", initResp.Error)
+	}
+	if sessionID == "" {
+		t.Fatal("initialize response missing session id")
+	}
+
+	waitForState := func(check func(*ServerSessionState) bool) *ServerSessionState {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			st, err := store.Load(context.Background(), sessionID)
+			if err != nil {
+				t.Fatalf("Load failed: %v", err)
+			}
+			if check(st) {
+				return st
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		st, _ := store.Load(context.Background(), sessionID)
+		t.Fatalf("timed out waiting for session state, last=%+v", st)
+		return nil
+	}
+
+	waitForState(func(state *ServerSessionState) bool {
+		return state != nil && state.InitializeParams != nil
+	})
+
+	initializedRequest := streamableRequest{
+		method:   http.MethodPost,
+		messages: []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
+	}
+	_, status, _, _, err = call(httpServer1.URL, sessionID, initializedRequest)
+	if err != nil {
+		t.Fatalf("initialized notification failed: %v", err)
+	}
+	if status != http.StatusAccepted {
+		t.Fatalf("initialized status = %d, want %d", status, http.StatusAccepted)
+	}
+
+	waitForState(func(state *ServerSessionState) bool {
+		return state != nil && state.InitializedParams != nil
+	})
+
+	httpServer1.Close()
+
+	server2 := newServer()
+	handler2 := NewStreamableHTTPHandler(func(*http.Request) *Server { return server2 }, &StreamableHTTPOptions{
+		SessionStateStore: store,
+	})
+	httpServer2 := httptest.NewServer(mustNotPanic(t, handler2))
+	defer httpServer2.Close()
+
+	listRequest := streamableRequest{
+		method:   http.MethodPost,
+		messages: []jsonrpc.Message{req(2, "tools/list", &ListToolsParams{})},
+	}
+	_, status, msgs, _, err = call(httpServer2.URL, sessionID, listRequest)
+	if err != nil {
+		t.Fatalf("list request failed: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("list status = %d, want %d", status, http.StatusOK)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("list response count = %d, want 1", len(msgs))
+	}
+	listResp, ok := msgs[0].(*jsonrpc.Response)
+	if !ok {
+		t.Fatalf("list response is %T, want *jsonrpc.Response", msgs[0])
+	}
+	if listResp.Error != nil {
+		t.Fatalf("list response returned error: %+v", listResp.Error)
+	}
+	var listResult ListToolsResult
+	if err := json.Unmarshal(listResp.Result, &listResult); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if len(listResult.Tools) != 1 {
+		t.Fatalf("list result tools len = %d, want 1", len(listResult.Tools))
+	}
+	if listResult.Tools[0].Name != "noop" {
+		t.Fatalf("list result tool name = %q, want %q", listResult.Tools[0].Name, "noop")
+	}
+
+	deleteReq, err := http.NewRequest(http.MethodDelete, httpServer2.URL, nil)
+	if err != nil {
+		t.Fatalf("creating delete request: %v", err)
+	}
+	deleteReq.Header.Set(sessionIDHeader, sessionID)
+	deleteReq.Header.Set("Accept", "application/json, text/event-stream")
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("delete request failed: %v", err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want %d", deleteResp.StatusCode, http.StatusNoContent)
+	}
+
+	waitForState(func(state *ServerSessionState) bool { return state == nil })
+}
+
 func textContent(t *testing.T, res *CallToolResult) string {
 	t.Helper()
 	if len(res.Content) != 1 {
