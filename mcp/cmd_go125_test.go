@@ -15,7 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestServerRunContextCancel(t *testing.T) {
+func runTestServerRunContextCancel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
 		mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
