@@ -202,10 +202,9 @@ func TestElicitationCompleteNotification(t *testing.T) {
 	}
 }
 
-func TestElicitationValidationBug(t *testing.T) {
+func TestElicitationNoValidationWithoutAccept(t *testing.T) {
 	ctx := context.Background()
 
-	// Schema that requires a field "test"
 	schema := &jsonschema.Schema{
 		Type: "object",
 		Properties: map[string]*jsonschema.Schema{

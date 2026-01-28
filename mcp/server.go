@@ -1218,7 +1218,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		return nil, err
 	}
 
-	if res.Action != ElicitActionAccept {
+	if res.Action != "accept" {
 		return res, nil
 	}
 
