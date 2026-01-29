@@ -789,7 +789,7 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 	// We expect maxRetries+1 attempts because we increment before checking the limit.
 	if got := retryCount.Load(); got != int32(maxRetries+1) {
 		t.Errorf("retry count = %d, want exactly %d", got, maxRetries+1)
-  }
+	}
 }
 
 func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
