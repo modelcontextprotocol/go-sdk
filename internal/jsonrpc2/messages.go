@@ -5,6 +5,7 @@
 package jsonrpc2
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,9 +146,9 @@ func toWireError(err error) *WireError {
 func EncodeMessage(msg Message) ([]byte, error) {
 	wire := wireCombined{VersionTag: wireVersion}
 	msg.marshal(&wire)
-	data, err := json.Marshal(&wire)
+	data, err := jsonMarshal(&wire)
 	if err != nil {
-		return data, fmt.Errorf("marshaling jsonrpc message: %w", err)
+		return nil, fmt.Errorf("marshaling jsonrpc message: %w", err)
 	}
 	return data, nil
 }
@@ -158,6 +159,7 @@ func EncodeMessage(msg Message) ([]byte, error) {
 func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 	wire := wireCombined{VersionTag: wireVersion}
 	msg.marshal(&wire)
+	// TODO: do we need to escape HTML here?
 	data, err := json.MarshalIndent(&wire, prefix, indent)
 	if err != nil {
 		return data, fmt.Errorf("marshaling jsonrpc message: %w", err)
@@ -204,9 +206,21 @@ func marshalToRaw(obj any) (json.RawMessage, error) {
 	if obj == nil {
 		return nil, nil
 	}
-	data, err := json.Marshal(obj)
+	data, err := jsonMarshal(obj)
 	if err != nil {
 		return nil, err
 	}
 	return json.RawMessage(data), nil
+}
+
+// jsonMarshal marshals obj to JSON like json.Marshal but without HTML escaping.
+func jsonMarshal(obj any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(obj); err != nil {
+		return nil, err
+	}
+	// json.Encoder.Encode adds a trailing newline. Trim it to be consistent with json.Marshal.
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
