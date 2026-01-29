@@ -56,6 +56,7 @@ func codReviewPromptHandler(_ context.Context, req *GetPromptRequest) (*GetPromp
 	}, nil
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	var ct, st Transport = NewInMemoryTransports()
@@ -672,6 +673,7 @@ func TestServerClosing(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestBatching(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
@@ -710,6 +712,7 @@ func TestBatching(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestCancellation(t *testing.T) {
 	var (
 		start     = make(chan struct{})
@@ -903,6 +906,7 @@ func nopHandler(context.Context, *CallToolRequest) (*CallToolResult, error) {
 	return nil, nil
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestKeepAlive(t *testing.T) {
 	// TODO: try to use the new synctest package for this test once we upgrade to Go 1.24+.
 	// synctest would allow us to control time and avoid the time.Sleep calls, making the test
@@ -1715,6 +1719,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestKeepAliveFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1798,6 +1803,7 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestSynchronousNotifications(t *testing.T) {
 	var toolsChanged atomic.Int32
 	clientOpts := &ClientOptions{
@@ -1860,6 +1866,7 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestNoDistributedDeadlock(t *testing.T) {
 	// This test verifies that calls are asynchronous, and so it's not possible
 	// to have a distributed deadlock.

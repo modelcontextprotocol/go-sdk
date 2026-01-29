@@ -76,6 +76,7 @@ func runCancelContextServer() {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestServerRunContextCancel(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
@@ -107,7 +108,7 @@ func TestServerRunContextCancel(t *testing.T) {
 	cancel()
 
 	// wait for the server to exit
-	// TODO: use synctest when availble
+	// TODO: use synctest when available
 	select {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not exit after context cancellation")
