@@ -131,3 +131,93 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
+
+func TestSSEClientTransport_HTTPErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		statusCode     int
+		wantErrContain string
+	}{
+		{
+			name:           "401 Unauthorized",
+			statusCode:     http.StatusUnauthorized,
+			wantErrContain: "Unauthorized",
+		},
+		{
+			name:           "403 Forbidden",
+			statusCode:     http.StatusForbidden,
+			wantErrContain: "Forbidden",
+		},
+		{
+			name:           "404 Not Found",
+			statusCode:     http.StatusNotFound,
+			wantErrContain: "Not Found",
+		},
+		{
+			name:           "500 Internal Server Error",
+			statusCode:     http.StatusInternalServerError,
+			wantErrContain: "Internal Server Error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a test server that returns the specified status code
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, http.StatusText(tt.statusCode), tt.statusCode)
+			}))
+			defer httpServer.Close()
+
+			clientTransport := &SSEClientTransport{
+				Endpoint: httpServer.URL,
+			}
+
+			c := NewClient(testImpl, nil)
+			_, err := c.Connect(context.Background(), clientTransport, nil)
+
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			errStr := err.Error()
+			if !bytes.Contains([]byte(errStr), []byte(tt.wantErrContain)) {
+				t.Errorf("error message %q does not contain %q", errStr, tt.wantErrContain)
+			}
+		})
+	}
+}
+
+// TestSSE405AllowHeader verifies RFC 9110 §15.5.6 compliance:
+// 405 Method Not Allowed responses MUST include an Allow header.
+func TestSSE405AllowHeader(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	handler := NewSSEHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	methods := []string{"PUT", "PATCH", "DELETE", "OPTIONS"}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequest(method, httpServer.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+				t.Errorf("status code: got %d, want %d", got, want)
+			}
+
+			allow := resp.Header.Get("Allow")
+			if allow != "GET, POST" {
+				t.Errorf("Allow header: got %q, want %q", allow, "GET, POST")
+			}
+		})
+	}
+}

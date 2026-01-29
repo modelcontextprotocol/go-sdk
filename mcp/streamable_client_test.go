@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -258,14 +259,16 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	tests := []struct {
 		status              int
 		wantErrorContaining string
+		contentType         string
 	}{
-		{http.StatusOK, ""},
-		{http.StatusMethodNotAllowed, ""},
-		// The client error status code is not treated as an error in non-strict
-		// mode.
-		{http.StatusNotFound, ""},
-		{http.StatusBadRequest, ""},
-		{http.StatusInternalServerError, "standalone SSE"},
+		{http.StatusOK, "", "text/event-stream"},
+		{http.StatusMethodNotAllowed, "", "text/event-stream"},
+		//// The client error status code is not treated as an error in non-strict
+		//// mode.
+		{http.StatusNotFound, "", "text/event-stream"},
+		{http.StatusBadRequest, "", "text/event-stream"},
+		{http.StatusInternalServerError, "standalone SSE", "text/event-stream"},
+		{http.StatusOK, "", "text/html; charset=utf-8"},
 	}
 
 	for _, test := range tests {
@@ -286,7 +289,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
-							"Content-Type": "text/event-stream",
+							"Content-Type": test.contentType,
 						},
 						status:              test.status,
 						wantProtocolVersion: latestProtocolVersion,
@@ -786,5 +789,123 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 	// We expect maxRetries+1 attempts because we increment before checking the limit.
 	if got := retryCount.Load(); got != int32(maxRetries+1) {
 		t.Errorf("retry count = %d, want exactly %d", got, maxRetries+1)
+  }
+}
+
+func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name                 string
+		disableStandaloneSSE bool
+		expectGETRequest     bool
+	}{
+		{
+			name:                 "default behavior (standalone SSE enabled)",
+			disableStandaloneSSE: false,
+			expectGETRequest:     true,
+		},
+		{
+			name:                 "standalone SSE disabled",
+			disableStandaloneSSE: true,
+			expectGETRequest:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			getRequestKey := streamableRequestKey{"GET", "123", "", ""}
+
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					getRequestKey: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						wantProtocolVersion: latestProtocolVersion,
+						optional:            !test.expectGETRequest,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{
+				Endpoint:             httpServer.URL,
+				DisableStandaloneSSE: test.disableStandaloneSSE,
+			}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+
+			// Give some time for the standalone SSE connection to be established (if enabled)
+			time.Sleep(100 * time.Millisecond)
+
+			// Verify the connection state
+			streamableConn, ok := session.mcpConn.(*streamableClientConn)
+			if !ok {
+				t.Fatalf("Expected *streamableClientConn, got %T", session.mcpConn)
+			}
+
+			if got, want := streamableConn.disableStandaloneSSE, test.disableStandaloneSSE; got != want {
+				t.Errorf("disableStandaloneSSE field: got %v, want %v", got, want)
+			}
+
+			// Clean up
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+
+			// Check if GET request was received
+			fake.calledMu.Lock()
+			getRequestReceived := false
+			if fake.called != nil {
+				getRequestReceived = fake.called[getRequestKey]
+			}
+			fake.calledMu.Unlock()
+
+			if got, want := getRequestReceived, test.expectGETRequest; got != want {
+				t.Errorf("GET request received: got %v, want %v", got, want)
+			}
+
+			// If we expected a GET request, verify it was actually received
+			if test.expectGETRequest {
+				if missing := fake.missingRequests(); len(missing) > 0 {
+					// Filter out optional requests
+					var requiredMissing []streamableRequestKey
+					for _, key := range missing {
+						if resp, ok := fake.responses[key]; ok && !resp.optional {
+							requiredMissing = append(requiredMissing, key)
+						}
+					}
+					if len(requiredMissing) > 0 {
+						t.Errorf("did not receive expected requests: %v", requiredMissing)
+					}
+				}
+			} else {
+				// If we didn't expect a GET request, verify it wasn't sent
+				if getRequestReceived {
+					t.Error("GET request was sent unexpectedly when DisableStandaloneSSE is true")
+				}
+			}
+		})
 	}
 }

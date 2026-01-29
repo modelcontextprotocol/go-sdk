@@ -1829,7 +1829,9 @@ func TestStreamableGET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+	// GET without session should return 400 Bad Request (not 405) because
+	// GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 		t.Errorf("initial GET: got status %d, want %d", got, want)
 	}
 	defer resp.Body.Close()
@@ -1874,6 +1876,101 @@ func TestStreamableGET(t *testing.T) {
 	defer resp.Body.Close()
 	if got, want := resp.StatusCode, http.StatusNoContent; got != want {
 		t.Errorf("DELETE with session ID: got status %d, want %d", got, want)
+	}
+}
+
+// TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
+// 405 Method Not Allowed responses MUST include an Allow header.
+func TestStreamable405AllowHeader(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name       string
+		stateless  bool
+		method     string
+		wantStatus int
+		wantAllow  string
+	}{
+		{
+			name:       "unsupported method stateful",
+			stateless:  false,
+			method:     "PUT",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "GET, POST, DELETE",
+		},
+		{
+			name:       "GET in stateless mode",
+			stateless:  true,
+			method:     "GET",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
+		},
+		{
+			// DELETE without session returns 400 Bad Request (not 405)
+			// because DELETE is a valid method, just requires a session ID.
+			name:       "DELETE without session stateless",
+			stateless:  true,
+			method:     "DELETE",
+			wantStatus: http.StatusBadRequest,
+			wantAllow:  "", // No Allow header for 400 responses
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{Stateless: tt.stateless}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			req, err := http.NewRequest(tt.method, httpServer.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
+			}
+
+			allow := resp.Header.Get("Allow")
+			if allow != tt.wantAllow {
+				t.Errorf("Allow header: got %q, want %q", allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
+// TestStreamableGETWithoutSession verifies that GET without session ID in stateful mode
+// returns 400 Bad Request (not 405), since GET is a supported method that requires a session.
+func TestStreamableGETWithoutSession(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest("GET", httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// GET without session should return 400 Bad Request, not 405 Method Not Allowed,
+	// because GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+		t.Errorf("status code: got %d, want %d", got, want)
 	}
 }
 

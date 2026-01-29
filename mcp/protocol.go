@@ -116,17 +116,17 @@ type CallToolResult struct {
 	err error
 }
 
-// TODO(#64): consider exposing setError (and getError), by adding an error
-// field on CallToolResult.
-func (r *CallToolResult) setError(err error) {
+// SetError sets the error for the tool result and populates the Content field
+// with the error text. It also sets IsError to true.
+func (r *CallToolResult) SetError(err error) {
 	r.Content = []Content{&TextContent{Text: err.Error()}}
 	r.IsError = true
 	r.err = err
 }
 
-// getError returns the error set with setError, or nil if none.
+// GetError returns the error set with SetError, or nil if none.
 // This function always returns nil on clients.
-func (r *CallToolResult) getError() error {
+func (r *CallToolResult) GetError() error {
 	return r.err
 }
 
