@@ -17,8 +17,7 @@ import (
 
 func TestCopyrightHeaders(t *testing.T) {
 	var re = regexp.MustCompile(`Copyright \d{4} The Go MCP SDK Authors. All rights reserved.
-Use of this source code is governed by an MIT-style
-license that can be found in the LICENSE file.`)
+Use of this source code is governed by (the license\n|an MIT-style\nlicense )that can be found in the LICENSE file.`)
 
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
