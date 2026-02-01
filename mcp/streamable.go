@@ -1539,17 +1539,6 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
-// errSessionMissing distinguishes if the session is known to not be present on
-// the server (see [streamableClientConn.fail]).
-//
-// TODO(rfindley): should we expose this error value (and its corresponding
-// API) to the user?
-//
-// The spec says that if the server returns 404, clients should reestablish
-// a session. For now, we delegate that to the user, but do they need a way to
-// differentiate a 'NotFound' error from other errors?
-var errSessionMissing = errors.New("session not found")
-
 var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
@@ -1628,7 +1617,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 // If err is non-nil, it is terminal, and subsequent (or pending) Reads will
 // fail.
 //
-// If err wraps errSessionMissing, the failure indicates that the session is no
+// If err wraps ErrSessionMissing, the failure indicates that the session is no
 // longer present on the server, and no final DELETE will be performed when
 // closing the connection.
 func (c *streamableClientConn) fail(err error) {
@@ -1879,9 +1868,9 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
 	if resp.StatusCode == http.StatusNotFound {
-		// Return an errSessionMissing to avoid sending a redundant DELETE when the
+		// Return an ErrSessionMissing to avoid sending a redundant DELETE when the
 		// session is already gone.
-		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing)
+		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
 	}
 	// Transient server errors (502, 503, 504, 429) should not break the connection.
 	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
@@ -2038,7 +2027,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 // Close implements the [Connection] interface.
 func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
-		if errors.Is(c.failure(), errSessionMissing) {
+		if errors.Is(c.failure(), ErrSessionMissing) {
 			// If the session is missing, no need to delete it.
 		} else {
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
