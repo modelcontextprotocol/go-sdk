@@ -355,7 +355,7 @@ type wireContent struct {
 // unmarshalContent unmarshals JSON that is either a single content object or
 // an array of content objects. A single object is wrapped in a one-element slice.
 func unmarshalContent(raw json.RawMessage, allow map[string]bool) ([]Content, error) {
-	if len(raw) == 0 {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil, fmt.Errorf("nil content")
 	}
 	// Try array first, then fall back to single object.
@@ -375,7 +375,7 @@ func unmarshalContent(raw json.RawMessage, allow map[string]bool) ([]Content, er
 }
 
 func contentsFromWire(wires []*wireContent, allow map[string]bool) ([]Content, error) {
-	var blocks []Content
+	blocks := make([]Content, 0, len(wires))
 	for _, wire := range wires {
 		block, err := contentFromWire(wire, allow)
 		if err != nil {

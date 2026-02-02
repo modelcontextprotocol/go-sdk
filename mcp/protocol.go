@@ -188,7 +188,6 @@ type RootCapabilities struct {
 // this schema, but this is not a closed set: any client can define its own,
 // additional capabilities.
 type ClientCapabilities struct {
-
 	// NOTE: any addition to ClientCapabilities must also be reflected in
 	// [ClientCapabilities.clone].
 
@@ -416,7 +415,10 @@ func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgr
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // toBase converts to CreateMessageParams by taking the first content block
-// from each message. Tools and ToolChoice are dropped.
+// from each message. Tools, ToolChoice, and any additional content blocks
+// (e.g. parallel tool calls) are dropped. The first block may be a
+// ToolUseContent or ToolResultContent, which the basic handler should
+// tolerate since SamplingMessage accepts tool content types.
 func (p *CreateMessageWithToolsParams) toBase() *CreateMessageParams {
 	var msgs []*SamplingMessage
 	for _, m := range p.Messages {
@@ -440,11 +442,14 @@ func (p *CreateMessageWithToolsParams) toBase() *CreateMessageParams {
 }
 
 // SamplingMessageV2 describes a message issued to or received from an
-// LLM API, supporting array content for parallel tool calls.
+// LLM API, supporting array content for parallel tool calls. The "V2" refers
+// to the 2025-11-25 spec, which changed content from a single block to
+// single-or-array. In v2 of the SDK, this will replace [SamplingMessage].
 //
 // When marshaling, a single-element Content slice is marshaled as a single
-// object for backward compatibility. When unmarshaling, a single JSON content
-// object is accepted and wrapped in a one-element slice.
+// object for compatibility with pre-2025-11-25 implementations. When
+// unmarshaling, a single JSON content object is accepted and wrapped in a
+// one-element slice.
 type SamplingMessageV2 struct {
 	Content []Content `json:"content"`
 	Role    Role      `json:"role"`
@@ -524,7 +529,7 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 
 // CreateMessageWithToolsResult is the client's response to a
 // sampling/create_message request that included tools. Content is a slice to
-// support parallel tool calls (multiple tool_use or tool_result blocks).
+// support parallel tool calls (multiple tool_use blocks in one response).
 //
 // Use [ServerSession.CreateMessageWithTools] to send a sampling request with
 // tools and receive this result type.
@@ -542,16 +547,18 @@ type CreateMessageWithToolsResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
-var createMessageWithToolsAllow = map[string]bool{
+// createMessageWithToolsResultAllow lists content types valid in assistant responses.
+// tool_result is excluded: it only appears in user messages.
+var createMessageWithToolsResultAllow = map[string]bool{
 	"text": true, "image": true, "audio": true,
-	"tool_use": true, "tool_result": true,
+	"tool_use": true,
 }
 
 func (*CreateMessageWithToolsResult) isResult() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
-// marshaled as a single object for backward compatibility with clients that
-// expect a single content block.
+// marshaled as a single object for compatibility with pre-2025-11-25
+// implementations that expect a single content block.
 func (r *CreateMessageWithToolsResult) MarshalJSON() ([]byte, error) {
 	if len(r.Content) == 1 {
 		return json.Marshal(&CreateMessageResult{
@@ -576,7 +583,7 @@ func (r *CreateMessageWithToolsResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var err error
-	if wire.result.Content, err = unmarshalContent(wire.Content, createMessageWithToolsAllow); err != nil {
+	if wire.result.Content, err = unmarshalContent(wire.Content, createMessageWithToolsResultAllow); err != nil {
 		return err
 	}
 	*r = CreateMessageWithToolsResult(wire.result)
@@ -1198,12 +1205,10 @@ type ElicitationCapabilities struct {
 }
 
 // FormElicitationCapabilities describes capabilities for form elicitation.
-type FormElicitationCapabilities struct {
-}
+type FormElicitationCapabilities struct{}
 
 // URLElicitationCapabilities describes capabilities for url elicitation.
-type URLElicitationCapabilities struct {
-}
+type URLElicitationCapabilities struct{}
 
 // Describes a message issued to or received from an LLM API.
 //
@@ -1506,7 +1511,6 @@ type ToolCapabilities struct {
 
 // ServerCapabilities describes capabilities that a server supports.
 type ServerCapabilities struct {
-
 	// NOTE: any addition to ServerCapabilities must also be reflected in
 	// [ServerCapabilities.clone].
 

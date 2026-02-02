@@ -1162,6 +1162,10 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 }
 
 // CreateMessage sends a sampling request to the client.
+//
+// If the client returns multiple content blocks (e.g. parallel tool calls),
+// CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
+// for tool-enabled sampling.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err

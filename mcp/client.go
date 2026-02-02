@@ -53,7 +53,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	options = nil // prevent reuse
 
 	if opts.CreateMessageHandler != nil && opts.CreateMessageWithToolsHandler != nil {
-		panic("cannot set both CreateMessageHandler and CreateMessageWithToolsHandler")
+		panic("cannot set both CreateMessageHandler and CreateMessageWithToolsHandler; use CreateMessageWithToolsHandler for tool support, or CreateMessageHandler for basic sampling")
 	}
 	if opts.Logger == nil { // ensure we have a logger
 		opts.Logger = ensureLogger(nil)

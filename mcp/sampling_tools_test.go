@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -1010,5 +1011,243 @@ func TestCreateMessageWithToolsResult_SingleContentBackwardCompat(t *testing.T) 
 			t.Errorf("single-element Content marshaled as array, want object")
 		}
 		break
+	}
+}
+
+func TestNewClient_BothHandlersPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when both handlers set")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "CreateMessageHandler") {
+			t.Errorf("unexpected panic: %v", r)
+		}
+	}()
+	NewClient(testImpl, &ClientOptions{
+		CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+			return nil, nil
+		},
+		CreateMessageWithToolsHandler: func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+			return nil, nil
+		},
+	})
+}
+
+func TestCreateMessage_MultipleContentError(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+
+	// Client returns multiple content blocks via CreateMessageWithToolsHandler
+	client := NewClient(testImpl, &ClientOptions{
+		CreateMessageWithToolsHandler: func(_ context.Context, _ *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+			return &CreateMessageWithToolsResult{
+				Model: "test",
+				Role:  "assistant",
+				Content: []Content{
+					&TextContent{Text: "a"},
+					&TextContent{Text: "b"},
+				},
+			}, nil
+		},
+	})
+
+	server := NewServer(testImpl, nil)
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Server calls CreateMessage (singular), should get error
+	_, err = ss.CreateMessage(ctx, &CreateMessageParams{
+		MaxTokens: 100,
+		Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for multiple content blocks")
+	}
+	if !strings.Contains(err.Error(), "CreateMessageWithTools") {
+		t.Errorf("error should mention CreateMessageWithTools, got: %v", err)
+	}
+}
+
+func TestUnmarshalContent_NullJSON(t *testing.T) {
+	// JSON null should be rejected.
+	jsonData := `{"content": null, "model": "m", "role": "assistant"}`
+	var result CreateMessageWithToolsResult
+	if err := json.Unmarshal([]byte(jsonData), &result); err == nil {
+		t.Error("expected error for null content")
+	}
+}
+
+func TestUnmarshalContent_EmptyArray(t *testing.T) {
+	// Empty array should produce empty (non-nil) slice.
+	jsonData := `{"content": [], "model": "m", "role": "assistant"}`
+	var result CreateMessageWithToolsResult
+	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if result.Content == nil {
+		t.Error("Content should be non-nil empty slice, got nil")
+	}
+	if len(result.Content) != 0 {
+		t.Errorf("len(Content) = %d, want 0", len(result.Content))
+	}
+}
+
+func TestSamplingMessageV2_EmptyContent(t *testing.T) {
+	msg := &SamplingMessageV2{
+		Role:    "user",
+		Content: []Content{},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingMessageV2
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(got.Content) != 0 {
+		t.Errorf("len(Content) = %d, want 0", len(got.Content))
+	}
+}
+
+func TestSamplingMessageV2_MixedContent(t *testing.T) {
+	// Text + tool_use in the same message (valid per spec for assistant).
+	msg := &SamplingMessageV2{
+		Role: "assistant",
+		Content: []Content{
+			&TextContent{Text: "Let me check the weather."},
+			&ToolUseContent{ID: "c1", Name: "weather", Input: map[string]any{"city": "SF"}},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingMessageV2
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
+	}
+	if _, ok := got.Content[0].(*TextContent); !ok {
+		t.Errorf("Content[0] type = %T, want *TextContent", got.Content[0])
+	}
+	if _, ok := got.Content[1].(*ToolUseContent); !ok {
+		t.Errorf("Content[1] type = %T, want *ToolUseContent", got.Content[1])
+	}
+}
+
+func TestCreateMessageWithToolsResult_RejectsToolResult(t *testing.T) {
+	// tool_result should not be valid in a result (assistant role).
+	jsonData := `{
+		"content": {"type": "tool_result", "toolUseId": "t1", "content": []},
+		"model": "m",
+		"role": "assistant"
+	}`
+	var result CreateMessageWithToolsResult
+	if err := json.Unmarshal([]byte(jsonData), &result); err == nil {
+		t.Error("expected error for tool_result in CreateMessageWithToolsResult")
+	}
+}
+
+func TestToBase_Conversion(t *testing.T) {
+	params := &CreateMessageWithToolsParams{
+		MaxTokens: 1000,
+		Messages: []*SamplingMessageV2{
+			{Role: "user", Content: []Content{&TextContent{Text: "hello"}}},
+			{Role: "assistant", Content: []Content{
+				&ToolUseContent{ID: "c1", Name: "calc", Input: map[string]any{}},
+				&ToolUseContent{ID: "c2", Name: "search", Input: map[string]any{}},
+			}},
+		},
+		Tools:      []*Tool{{Name: "calc"}},
+		ToolChoice: &ToolChoice{Mode: "auto"},
+	}
+	base := params.toBase()
+
+	// Tools and ToolChoice should be gone
+	if base.MaxTokens != 1000 {
+		t.Errorf("MaxTokens = %d, want 1000", base.MaxTokens)
+	}
+	if len(base.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(base.Messages))
+	}
+	// First message: single content preserved
+	if tc, ok := base.Messages[0].Content.(*TextContent); !ok || tc.Text != "hello" {
+		t.Errorf("Messages[0].Content = %v, want TextContent{hello}", base.Messages[0].Content)
+	}
+	// Second message: only first content block kept
+	if tu, ok := base.Messages[1].Content.(*ToolUseContent); !ok || tu.ID != "c1" {
+		t.Errorf("Messages[1].Content = %v, want ToolUseContent{c1}", base.Messages[1].Content)
+	}
+}
+
+func TestToWithTools_Conversion(t *testing.T) {
+	result := &CreateMessageResult{
+		Model:      "test",
+		Role:       "assistant",
+		Content:    &TextContent{Text: "hello"},
+		StopReason: "endTurn",
+	}
+	wt := result.toWithTools()
+	if wt.Model != "test" {
+		t.Errorf("Model = %v, want test", wt.Model)
+	}
+	if len(wt.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(wt.Content))
+	}
+	if tc, ok := wt.Content[0].(*TextContent); !ok || tc.Text != "hello" {
+		t.Errorf("Content[0] = %v, want TextContent{hello}", wt.Content[0])
+	}
+}
+
+func TestToWithTools_NilContent(t *testing.T) {
+	result := &CreateMessageResult{
+		Model: "test",
+		Role:  "assistant",
+	}
+	wt := result.toWithTools()
+	if wt.Content != nil {
+		t.Errorf("Content = %v, want nil", wt.Content)
+	}
+}
+
+func TestClientCapabilities_CloneSampling(t *testing.T) {
+	caps := &ClientCapabilities{
+		Sampling: &SamplingCapabilities{
+			Tools:   &SamplingToolsCapabilities{},
+			Context: &SamplingContextCapabilities{},
+		},
+	}
+	cloned := caps.clone()
+
+	// Verify deep copy — Sampling pointer should differ.
+	// (Tools and Context are empty structs, so Go may reuse the same address;
+	// we just check they're non-nil and that mutating Sampling doesn't alias.)
+	if cloned.Sampling == caps.Sampling {
+		t.Error("Sampling pointer should differ after clone")
+	}
+	if cloned.Sampling.Tools == nil {
+		t.Error("cloned Sampling.Tools should not be nil")
+	}
+	if cloned.Sampling.Context == nil {
+		t.Error("cloned Sampling.Context should not be nil")
+	}
+	// Verify mutation doesn't affect original.
+	cloned.Sampling.Tools = nil
+	if caps.Sampling.Tools == nil {
+		t.Error("modifying cloned Sampling.Tools should not affect original")
 	}
 }
