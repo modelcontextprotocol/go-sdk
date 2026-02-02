@@ -216,7 +216,12 @@ type ClientCapabilities struct {
 func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
 	cp.RootsV2 = shallowClone(c.RootsV2)
-	cp.Sampling = shallowClone(c.Sampling)
+	if c.Sampling != nil {
+		x := *c.Sampling
+		x.Tools = shallowClone(c.Sampling.Tools)
+		x.Context = shallowClone(c.Sampling.Context)
+		cp.Sampling = &x
+	}
 	if c.Elicitation != nil {
 		x := *c.Elicitation
 		x.Form = shallowClone(c.Elicitation.Form)
@@ -357,6 +362,11 @@ type CreateMessageParams struct {
 	Meta `json:"_meta,omitempty"`
 	// A request to include context from one or more MCP servers (including the
 	// caller), to be attached to the prompt. The client may ignore this request.
+	//
+	// The default is "none". Values "thisServer" and
+	// "allServers" are soft-deprecated. Servers SHOULD only use these values if
+	// the client declares ClientCapabilities.sampling.context. These values may
+	// be removed in future spec releases.
 	IncludeContext string `json:"includeContext,omitempty"`
 	// The maximum number of tokens to sample, as requested by the server. The
 	// client may choose to sample fewer tokens than requested.
@@ -379,6 +389,99 @@ func (x *CreateMessageParams) isParams()              {}
 func (x *CreateMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
+// CreateMessageWithToolsParams is a sampling request that includes tools.
+// It extends the basic [CreateMessageParams] fields with tools, tool choice,
+// and messages that support array content (for parallel tool calls).
+//
+// Use with [ServerSession.CreateMessageWithTools].
+type CreateMessageWithToolsParams struct {
+	Meta           `json:"_meta,omitempty"`
+	IncludeContext string `json:"includeContext,omitempty"`
+	MaxTokens      int64  `json:"maxTokens"`
+	// Messages supports array content for tool_use and tool_result blocks.
+	Messages         []*SamplingMessageV2 `json:"messages"`
+	Metadata         any                  `json:"metadata,omitempty"`
+	ModelPreferences *ModelPreferences    `json:"modelPreferences,omitempty"`
+	StopSequences    []string             `json:"stopSequences,omitempty"`
+	SystemPrompt     string               `json:"systemPrompt,omitempty"`
+	Temperature      float64              `json:"temperature,omitempty"`
+	// Tools is the list of tools available for the model to use.
+	Tools []*Tool `json:"tools,omitempty"`
+	// ToolChoice controls how the model should use tools.
+	ToolChoice *ToolChoice `json:"toolChoice,omitempty"`
+}
+
+func (x *CreateMessageWithToolsParams) isParams()              {}
+func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+// toBase converts to CreateMessageParams by taking the first content block
+// from each message. Tools and ToolChoice are dropped.
+func (p *CreateMessageWithToolsParams) toBase() *CreateMessageParams {
+	var msgs []*SamplingMessage
+	for _, m := range p.Messages {
+		var content Content
+		if len(m.Content) > 0 {
+			content = m.Content[0]
+		}
+		msgs = append(msgs, &SamplingMessage{Content: content, Role: m.Role})
+	}
+	return &CreateMessageParams{
+		Meta:             p.Meta,
+		IncludeContext:   p.IncludeContext,
+		MaxTokens:        p.MaxTokens,
+		Messages:         msgs,
+		Metadata:         p.Metadata,
+		ModelPreferences: p.ModelPreferences,
+		StopSequences:    p.StopSequences,
+		SystemPrompt:     p.SystemPrompt,
+		Temperature:      p.Temperature,
+	}
+}
+
+// SamplingMessageV2 describes a message issued to or received from an
+// LLM API, supporting array content for parallel tool calls.
+//
+// When marshaling, a single-element Content slice is marshaled as a single
+// object for backward compatibility. When unmarshaling, a single JSON content
+// object is accepted and wrapped in a one-element slice.
+type SamplingMessageV2 struct {
+	Content []Content `json:"content"`
+	Role    Role      `json:"role"`
+}
+
+var samplingWithToolsAllow = map[string]bool{
+	"text": true, "image": true, "audio": true,
+	"tool_use": true, "tool_result": true,
+}
+
+// MarshalJSON marshals the message. A single-element Content slice is marshaled
+// as a single object for backward compatibility.
+func (m *SamplingMessageV2) MarshalJSON() ([]byte, error) {
+	if len(m.Content) == 1 {
+		return json.Marshal(&SamplingMessage{Content: m.Content[0], Role: m.Role})
+	}
+	type msg SamplingMessageV2 // avoid recursion
+	return json.Marshal((*msg)(m))
+}
+
+func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
+	type msg SamplingMessageV2 // avoid recursion
+	var wire struct {
+		msg
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if wire.msg.Content, err = unmarshalContent(wire.Content, samplingWithToolsAllow); err != nil {
+		return err
+	}
+	*m = SamplingMessageV2(wire.msg)
+	return nil
+}
+
 // The client's response to a sampling/create_message request from the server.
 // The client should inform the user before returning the sampled message, to
 // allow them to inspect the response (human in the loop) and decide whether to
@@ -392,6 +495,12 @@ type CreateMessageResult struct {
 	Model string `json:"model"`
 	Role  Role   `json:"role"`
 	// The reason why sampling stopped, if known.
+	//
+	// Standard values:
+	//  - "endTurn": natural end of the assistant's turn
+	//  - "stopSequence": a stop sequence was encountered
+	//  - "maxTokens": reached the maximum token limit
+	//  - "toolUse": the model wants to use one or more tools
 	StopReason string `json:"stopReason,omitempty"`
 }
 
@@ -411,6 +520,82 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	}
 	*r = CreateMessageResult(wire.result)
 	return nil
+}
+
+// CreateMessageWithToolsResult is the client's response to a
+// sampling/create_message request that included tools. Content is a slice to
+// support parallel tool calls (multiple tool_use or tool_result blocks).
+//
+// Use [ServerSession.CreateMessageWithTools] to send a sampling request with
+// tools and receive this result type.
+//
+// When unmarshaling, a single JSON content object is accepted and wrapped in a
+// one-element slice, for compatibility with clients that return a single block.
+type CreateMessageWithToolsResult struct {
+	Meta    `json:"_meta,omitempty"`
+	Content []Content `json:"content"`
+	Model   string    `json:"model"`
+	Role    Role      `json:"role"`
+	// The reason why sampling stopped.
+	//
+	// Standard values: "endTurn", "stopSequence", "maxTokens", "toolUse".
+	StopReason string `json:"stopReason,omitempty"`
+}
+
+var createMessageWithToolsAllow = map[string]bool{
+	"text": true, "image": true, "audio": true,
+	"tool_use": true, "tool_result": true,
+}
+
+func (*CreateMessageWithToolsResult) isResult() {}
+
+// MarshalJSON marshals the result. When Content has a single element, it is
+// marshaled as a single object for backward compatibility with clients that
+// expect a single content block.
+func (r *CreateMessageWithToolsResult) MarshalJSON() ([]byte, error) {
+	if len(r.Content) == 1 {
+		return json.Marshal(&CreateMessageResult{
+			Meta:       r.Meta,
+			Content:    r.Content[0],
+			Model:      r.Model,
+			Role:       r.Role,
+			StopReason: r.StopReason,
+		})
+	}
+	type result CreateMessageWithToolsResult // avoid recursion
+	return json.Marshal((*result)(r))
+}
+
+func (r *CreateMessageWithToolsResult) UnmarshalJSON(data []byte) error {
+	type result CreateMessageWithToolsResult // avoid recursion
+	var wire struct {
+		result
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if wire.result.Content, err = unmarshalContent(wire.Content, createMessageWithToolsAllow); err != nil {
+		return err
+	}
+	*r = CreateMessageWithToolsResult(wire.result)
+	return nil
+}
+
+// toWithTools converts a CreateMessageResult to CreateMessageWithToolsResult.
+func (r *CreateMessageResult) toWithTools() *CreateMessageWithToolsResult {
+	var content []Content
+	if r.Content != nil {
+		content = []Content{r.Content}
+	}
+	return &CreateMessageWithToolsResult{
+		Meta:       r.Meta,
+		Content:    content,
+		Model:      r.Model,
+		Role:       r.Role,
+		StopReason: r.StopReason,
+	}
 }
 
 type GetPromptParams struct {
@@ -982,7 +1167,27 @@ func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t
 // below directly above ClientCapabilities.
 
 // SamplingCapabilities describes the client's support for sampling.
-type SamplingCapabilities struct{}
+type SamplingCapabilities struct {
+	// Context indicates the client supports includeContext values other than "none".
+	Context *SamplingContextCapabilities `json:"context,omitempty"`
+	// Tools indicates the client supports tools and toolChoice in sampling requests.
+	Tools *SamplingToolsCapabilities `json:"tools,omitempty"`
+}
+
+// SamplingContextCapabilities indicates the client supports context inclusion.
+type SamplingContextCapabilities struct{}
+
+// SamplingToolsCapabilities indicates the client supports tool use in sampling.
+type SamplingToolsCapabilities struct{}
+
+// ToolChoice controls how the model uses tools during sampling.
+type ToolChoice struct {
+	// Mode controls tool invocation behavior:
+	//  - "auto": Model decides whether to use tools (default)
+	//  - "required": Model must use at least one tool
+	//  - "none": Model must not use any tools
+	Mode string `json:"mode,omitempty"`
+}
 
 // ElicitationCapabilities describes the capabilities for elicitation.
 //
@@ -1001,6 +1206,9 @@ type URLElicitationCapabilities struct {
 }
 
 // Describes a message issued to or received from an LLM API.
+//
+// For assistant messages, Content may be text, image, audio, or tool_use.
+// For user messages, Content may be text, image, audio, or tool_result.
 type SamplingMessage struct {
 	Content Content `json:"content"`
 	Role    Role    `json:"role"`
@@ -1017,8 +1225,9 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	// Allow text, image, audio, tool_use, and tool_result in sampling messages
 	var err error
-	if wire.msg.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true}); err != nil {
+	if wire.msg.Content, err = contentFromWire(wire.Content, map[string]bool{"text": true, "image": true, "audio": true, "tool_use": true, "tool_result": true}); err != nil {
 		return err
 	}
 	*m = SamplingMessage(wire.msg)

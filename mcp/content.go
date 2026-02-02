@@ -14,7 +14,10 @@ import (
 )
 
 // A Content is a [TextContent], [ImageContent], [AudioContent],
-// [ResourceLink], or [EmbeddedResource].
+// [ResourceLink], [EmbeddedResource], [ToolUseContent], or [ToolResultContent].
+//
+// Note: [ToolUseContent] and [ToolResultContent] are only valid in sampling
+// message contexts (CreateMessageParams/CreateMessageResult).
 type Content interface {
 	MarshalJSON() ([]byte, error)
 	fromWire(*wireContent)
@@ -183,6 +186,104 @@ func (c *EmbeddedResource) fromWire(wire *wireContent) {
 	c.Annotations = wire.Annotations
 }
 
+// ToolUseContent represents a request from the assistant to invoke a tool.
+// This content type is only valid in sampling messages.
+type ToolUseContent struct {
+	// ID is a unique identifier for this tool use, used to match with ToolResultContent.
+	ID string
+	// Name is the name of the tool to invoke.
+	Name string
+	// Input contains the tool arguments as a JSON object.
+	Input map[string]any
+	Meta  Meta
+}
+
+func (c *ToolUseContent) MarshalJSON() ([]byte, error) {
+	input := c.Input
+	if input == nil {
+		input = map[string]any{}
+	}
+	wire := struct {
+		Type  string         `json:"type"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input"`
+		Meta  Meta           `json:"_meta,omitempty"`
+	}{
+		Type:  "tool_use",
+		ID:    c.ID,
+		Name:  c.Name,
+		Input: input,
+		Meta:  c.Meta,
+	}
+	return json.Marshal(wire)
+}
+
+func (c *ToolUseContent) fromWire(wire *wireContent) {
+	c.ID = wire.ID
+	c.Name = wire.Name
+	c.Input = wire.Input
+	c.Meta = wire.Meta
+}
+
+// ToolResultContent represents the result of a tool invocation.
+// This content type is only valid in sampling messages with role "user".
+type ToolResultContent struct {
+	// ToolUseID references the ID from the corresponding ToolUseContent.
+	ToolUseID string
+	// Content holds the unstructured result of the tool call.
+	Content []Content
+	// StructuredContent holds an optional structured result as a JSON object.
+	StructuredContent any
+	// IsError indicates whether the tool call ended in an error.
+	IsError bool
+	Meta    Meta
+}
+
+func (c *ToolResultContent) MarshalJSON() ([]byte, error) {
+	// Marshal nested content
+	var contentWire []*wireContent
+	for _, content := range c.Content {
+		data, err := content.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		var w wireContent
+		if err := json.Unmarshal(data, &w); err != nil {
+			return nil, err
+		}
+		contentWire = append(contentWire, &w)
+	}
+	if contentWire == nil {
+		contentWire = []*wireContent{} // avoid JSON null
+	}
+
+	wire := struct {
+		Type              string         `json:"type"`
+		ToolUseID         string         `json:"toolUseId"`
+		Content           []*wireContent `json:"content"`
+		StructuredContent any            `json:"structuredContent,omitempty"`
+		IsError           bool           `json:"isError,omitempty"`
+		Meta              Meta           `json:"_meta,omitempty"`
+	}{
+		Type:              "tool_result",
+		ToolUseID:         c.ToolUseID,
+		Content:           contentWire,
+		StructuredContent: c.StructuredContent,
+		IsError:           c.IsError,
+		Meta:              c.Meta,
+	}
+	return json.Marshal(wire)
+}
+
+func (c *ToolResultContent) fromWire(wire *wireContent) {
+	c.ToolUseID = wire.ToolUseID
+	c.StructuredContent = wire.StructuredContent
+	c.IsError = wire.IsError
+	c.Meta = wire.Meta
+	// Content is handled separately in contentFromWire due to nested content
+}
+
 // ResourceContents contains the contents of a specific resource or
 // sub-resource.
 type ResourceContents struct {
@@ -224,10 +325,9 @@ func (r *ResourceContents) MarshalJSON() ([]byte, error) {
 
 // wireContent is the wire format for content.
 // It represents the protocol types TextContent, ImageContent, AudioContent,
-// ResourceLink, and EmbeddedResource.
+// ResourceLink, EmbeddedResource, ToolUseContent, and ToolResultContent.
 // The Type field distinguishes them. In the protocol, each type has a constant
 // value for the field.
-// At most one of Text, Data, Resource, and URI is non-zero.
 type wireContent struct {
 	Type        string            `json:"type"`
 	Text        string            `json:"text,omitempty"`
@@ -242,6 +342,36 @@ type wireContent struct {
 	Meta        Meta              `json:"_meta,omitempty"`
 	Annotations *Annotations      `json:"annotations,omitempty"`
 	Icons       []Icon            `json:"icons,omitempty"`
+	// Fields for ToolUseContent (type: "tool_use")
+	ID    string         `json:"id,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+	// Fields for ToolResultContent (type: "tool_result")
+	ToolUseID         string         `json:"toolUseId,omitempty"`
+	NestedContent     []*wireContent `json:"content,omitempty"` // nested content for tool_result
+	StructuredContent any            `json:"structuredContent,omitempty"`
+	IsError           bool           `json:"isError,omitempty"`
+}
+
+// unmarshalContent unmarshals JSON that is either a single content object or
+// an array of content objects. A single object is wrapped in a one-element slice.
+func unmarshalContent(raw json.RawMessage, allow map[string]bool) ([]Content, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("nil content")
+	}
+	// Try array first, then fall back to single object.
+	var wires []*wireContent
+	if err := json.Unmarshal(raw, &wires); err == nil {
+		return contentsFromWire(wires, allow)
+	}
+	var wire wireContent
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil, err
+	}
+	c, err := contentFromWire(&wire, allow)
+	if err != nil {
+		return nil, err
+	}
+	return []Content{c}, nil
 }
 
 func contentsFromWire(wires []*wireContent, allow map[string]bool) ([]Content, error) {
@@ -284,6 +414,27 @@ func contentFromWire(wire *wireContent, allow map[string]bool) (Content, error) 
 		v := new(EmbeddedResource)
 		v.fromWire(wire)
 		return v, nil
+	case "tool_use":
+		v := new(ToolUseContent)
+		v.fromWire(wire)
+		return v, nil
+	case "tool_result":
+		v := new(ToolResultContent)
+		v.fromWire(wire)
+		// Handle nested content - tool_result content can contain text, image, audio,
+		// resource_link, and resource (same as CallToolResult.content)
+		if wire.NestedContent != nil {
+			toolResultContentAllow := map[string]bool{
+				"text": true, "image": true, "audio": true,
+				"resource_link": true, "resource": true,
+			}
+			nestedContent, err := contentsFromWire(wire.NestedContent, toolResultContentAllow)
+			if err != nil {
+				return nil, fmt.Errorf("tool_result nested content: %w", err)
+			}
+			v.Content = nestedContent
+		}
+		return v, nil
 	}
-	return nil, fmt.Errorf("internal error: unrecognized content type %s", wire.Type)
+	return nil, fmt.Errorf("unrecognized content type %q", wire.Type)
 }
