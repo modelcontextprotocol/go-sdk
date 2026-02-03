@@ -47,8 +47,7 @@ func TestServerRunContextCancel_Synctest(t *testing.T) {
 		cancel()
 
 		// wait for the server to exit
-		// synctest will detect deadlock if server doesn't exit
-		synctest.Wait()
+
 		err = <-onServerExit
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("server did not exit after context cancellation, got error: %v", err)

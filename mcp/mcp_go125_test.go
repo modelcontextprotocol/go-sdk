@@ -40,7 +40,6 @@ func TestEndToEnd_Synctest(t *testing.T) {
 		waitForNotification := func(t *testing.T, name string) {
 			t.Helper()
 			time.Sleep(notificationDelay * 2)
-			synctest.Wait()
 			<-notificationChans[name]
 		}
 
@@ -380,16 +379,11 @@ func TestEndToEnd_Synctest(t *testing.T) {
 				var got []*LoggingMessageParams
 				// Read messages from this test until we've seen all we expect.
 				for len(got) < len(want) {
-					synctest.Wait()
-					select {
-					case p := <-loggingMessages:
-						// Ignore logging from other tests.
-						if m, ok := p.Data.(map[string]any); ok && m["logtest"] != nil {
-							delete(m, "time") // remove time because it changes
-							got = append(got, p)
-						}
-					default:
-						t.Fatal("timed out waiting for log messages")
+					p := <-loggingMessages
+					// Ignore logging from other tests.
+					if m, ok := p.Data.(map[string]any); ok && m["logtest"] != nil {
+						delete(m, "time")
+						got = append(got, p)
 					}
 				}
 				if diff := cmp.Diff(want, got); diff != "" {
@@ -446,8 +440,7 @@ func TestEndToEnd_Synctest(t *testing.T) {
 				Progress:      0.5,
 				Total:         2,
 			})
-			synctest.Wait()
-			<-notificationChans["progress_client"]
+			waitForNotification(t, "progress_client")
 
 			cs.NotifyProgress(ctx, &ProgressNotificationParams{
 				ProgressToken: "token-abc",
@@ -455,8 +448,7 @@ func TestEndToEnd_Synctest(t *testing.T) {
 				Progress:      1,
 				Total:         2,
 			})
-			synctest.Wait()
-			<-notificationChans["progress_server"]
+			waitForNotification(t, "progress_server")
 		}
 
 		// ===== resource_subscriptions =====
@@ -474,8 +466,7 @@ func TestEndToEnd_Synctest(t *testing.T) {
 			s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
 				URI: "test",
 			})
-			synctest.Wait()
-			<-notificationChans["resource_updated"]
+			waitForNotification(t, "resource_updated")
 
 			err = cs.Unsubscribe(ctx, &UnsubscribeParams{
 				URI: "test",
@@ -483,14 +474,13 @@ func TestEndToEnd_Synctest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			synctest.Wait()
-			<-notificationChans["unsubscribe"]
+			waitForNotification(t, "unsubscribe")
 
 			// Verify the client does not receive the update after unsubscribing.
 			s.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{
 				URI: "test",
 			})
-			time.Sleep(notificationDelay * 2)
+			synctest.Wait()
 			select {
 			case <-notificationChans["resource_updated"]:
 				t.Fatalf("resource updated after unsubscription")
@@ -642,8 +632,6 @@ func TestCancellation_Synctest(t *testing.T) {
 		<-start
 		cancel()
 
-		// Wait for all goroutines to be blocked (cancellation delivered).
-		synctest.Wait()
 		<-cancelled
 	})
 }

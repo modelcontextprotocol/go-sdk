@@ -62,7 +62,6 @@ func TestElicitationCompleteNotification_Synctest(t *testing.T) {
 		}
 
 		// 3. Client should receive the notification
-		synctest.Wait()
 		gotParams := <-elicitationCompleteCh
 		if gotParams.ElicitationID != elicitID {
 			t.Errorf("elicitationComplete notification ID mismatch: got %q, want %q", gotParams.ElicitationID, elicitID)
