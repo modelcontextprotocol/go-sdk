@@ -8,6 +8,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -16,16 +17,74 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// An OAuthHandler conducts an OAuth flow and returns a [oauth2.TokenSource] if the authorization
+// An OAuthHandlerLegacy conducts an OAuth flow and returns a [oauth2.TokenSource] if the authorization
 // is approved, or an error if not.
 // The handler receives the HTTP request and response that triggered the authentication flow.
 // To obtain the protected resource metadata, call [oauthex.GetProtectedResourceMetadataFromHeader].
-type OAuthHandler func(req *http.Request, res *http.Response) (oauth2.TokenSource, error)
+// Deprecated: Please use the new OAuthHandler abstraction that is built
+// into the streamable transport.
+type OAuthHandlerLegacy func(req *http.Request, res *http.Response) (oauth2.TokenSource, error)
+
+// Error that will be thrown if the call failed due to authorization.
+var ErrUnauthorized = errors.New("unauthorized")
+
+type OAuthHandler interface {
+	// TokenSource returns a token source to be used for outgoing requests.
+	TokenSource(context.Context) (oauth2.TokenSource, error)
+
+	// Authorize is called when an HTTP request results in an error that may
+	// be addressed by the authorization flow (currently 401 Unauthorized and 403 Forbidden).
+	// It is responsible for initiating the OAuth flow to obtain a token source.
+	// The arguments are the request that failed and the response that was received for it.
+	// If the returned error is nil, [TokenSource] is expected to return a non-nil token source.
+	// After a successful call to [Authorize], the HTTP request should be retried by the transport.
+	// The function is responsible for closing the response body.
+	Authorize(context.Context, *http.Request, *http.Response) error
+}
+
+// TokenStore is an interface than can be used by OAuthHandler implementations
+// to save tokens to a persistent storage.
+type TokenStore interface {
+	Save(context.Context, *oauth2.Token) error
+}
+
+type persistentTokenSource struct {
+	wrapped oauth2.TokenSource
+	store   TokenStore
+	ctx     context.Context
+}
+
+// NewPersistentTokenSource returns a [oauth2.TokenSource] that
+// persists the token to a given [TokenStore] after every successful
+// [oauth2.TokenSource.Token] call.
+// It is especially useful when wrapping a [oauth2.TokenSource]
+// that automatically refreshes the token when it expires.
+// The passed context is used for [TokenStore.Save] calls.
+func NewPersistentTokenSource(ctx context.Context, wrapped oauth2.TokenSource, store TokenStore) oauth2.TokenSource {
+	return &persistentTokenSource{
+		wrapped: wrapped,
+		store:   store,
+		ctx:     ctx,
+	}
+}
+
+func (t *persistentTokenSource) Token() (*oauth2.Token, error) {
+	token, err := t.wrapped.Token()
+	if err != nil {
+		return nil, err
+	}
+	if err := t.store.Save(t.ctx, token); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
 
 // HTTPTransport is an [http.RoundTripper] that follows the MCP
 // OAuth protocol when it encounters a 401 Unauthorized response.
+// Deprecated: Please use the new OAuthHandler abstraction that is built
+// into the streamable transport.
 type HTTPTransport struct {
-	handler OAuthHandler
+	handler OAuthHandlerLegacy
 	mu      sync.Mutex // protects opts.Base
 	opts    HTTPTransportOptions
 }
@@ -34,7 +93,9 @@ type HTTPTransport struct {
 // The handler is invoked when an HTTP request results in a 401 Unauthorized status.
 // It is called only once per transport. Once a TokenSource is obtained, it is used
 // for the lifetime of the transport; subsequent 401s are not processed.
-func NewHTTPTransport(handler OAuthHandler, opts *HTTPTransportOptions) (*HTTPTransport, error) {
+// Deprecated: Please use the new OAuthHandler abstraction that is built
+// into the streamable transport.
+func NewHTTPTransport(handler OAuthHandlerLegacy, opts *HTTPTransportOptions) (*HTTPTransport, error) {
 	if handler == nil {
 		return nil, errors.New("handler cannot be nil")
 	}
@@ -51,6 +112,8 @@ func NewHTTPTransport(handler OAuthHandler, opts *HTTPTransportOptions) (*HTTPTr
 }
 
 // HTTPTransportOptions are options to [NewHTTPTransport].
+// Deprecated: Please use the new OAuthHandler abstraction that is built
+// into the streamable transport.
 type HTTPTransportOptions struct {
 	// Base is the [http.RoundTripper] to use.
 	// If nil, [http.DefaultTransport] is used.

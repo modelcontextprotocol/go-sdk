@@ -67,7 +67,7 @@ else
 fi
 
 # Build the conformance server.
-go build -o "$WORKDIR/conformance-server" ./conformance/everything-server
+go build -tags mcp_go_client_oauth -o "$WORKDIR/conformance-server" ./conformance/everything-server
 
 # Start the server in the background
 echo "Starting conformance server on port $PORT..."
