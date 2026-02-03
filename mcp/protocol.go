@@ -988,8 +988,8 @@ type SamplingCapabilities struct{}
 //
 // If neither Form nor URL is set, the 'Form' capabilitiy is assumed.
 type ElicitationCapabilities struct {
-	Form *FormElicitationCapabilities
-	URL  *URLElicitationCapabilities
+	Form *FormElicitationCapabilities `json:"form,omitempty"`
+	URL  *URLElicitationCapabilities  `json:"url,omitempty"`
 }
 
 // FormElicitationCapabilities describes capabilities for form elicitation.
