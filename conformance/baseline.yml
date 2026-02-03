@@ -1,5 +1,5 @@
 server:
-  # All tests should pass.
+- dns-rebinding-protection
 client:
 - auth/basic-cimd
 - auth/metadata-default
