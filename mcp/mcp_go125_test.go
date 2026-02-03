@@ -24,6 +24,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// TODO(maciej-kisiel): split this test into multiple test cases that target specific functionality.
 func TestEndToEnd_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
@@ -252,6 +253,7 @@ func TestEndToEnd_Synctest(t *testing.T) {
 
 		// ===== resources =====
 		t.Log("Testing resources")
+		//TODO: fix for Windows
 		if runtime.GOOS != "windows" {
 			wantResources := []*Resource{resource2, resource1}
 			lrres, err := cs.ListResources(ctx, nil)

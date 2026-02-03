@@ -34,8 +34,7 @@ func TestElicitationCompleteNotification_Synctest(t *testing.T) {
 			},
 		})
 
-		cs, ss, cleanup := basicClientServerConnection(t, c, nil, nil)
-		_ = cs // Dummy usage to avoid "declared and not used" error.
+		_, ss, cleanup := basicClientServerConnection(t, c, nil, nil)
 		defer cleanup()
 
 		// 1. Server initiates a URL elicitation
