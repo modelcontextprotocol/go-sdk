@@ -11,6 +11,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1140,7 +1141,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// Important: don't publish the incoming messages until the stream is
 	// registered, as the server may attempt to respond to imcoming messages as
 	// soon as they're published.
-	stream, err := c.newStream(req.Context(), calls, randText())
+	stream, err := c.newStream(req.Context(), calls, crand.Text())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
 		return
