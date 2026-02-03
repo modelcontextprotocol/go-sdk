@@ -176,9 +176,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	}
 
 	if opts.GetSessionID == nil {
-		opts.GetSessionID = func() string {
-			return rand.Text()
-		}
+		opts.GetSessionID = rand.Text
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
