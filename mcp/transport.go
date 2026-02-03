@@ -26,9 +26,6 @@ var ErrConnectionClosed = errors.New("connection closed")
 
 // ErrSessionMissing is returned when the session is known to not be present on
 // the server.
-//
-// The MCP spec says that if the server returns 404, clients should reestablish
-// a session.
 var ErrSessionMissing = errors.New("session not found")
 
 // A Transport is used to create a bidirectional connection between MCP client
