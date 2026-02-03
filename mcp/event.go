@@ -140,11 +140,10 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				data := bytes.TrimSpace(after)
 				if dataBuf == nil {
 					dataBuf = new(bytes.Buffer)
-					dataBuf.Write(data)
 				} else {
 					dataBuf.WriteByte('\n')
-					dataBuf.Write(data)
 				}
+				dataBuf.Write(data)
 			}
 
 			if isEOF {

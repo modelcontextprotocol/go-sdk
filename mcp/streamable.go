@@ -1867,10 +1867,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				return "", 0, true
 			}
 
-			// Network/I/O errors during reading should trigger reconnection, not permanent failure.
-			// Return from processStream so handleSSE can attempt to reconnect.
-			c.logger.Debug(fmt.Sprintf("%s: stream read error (will attempt reconnect): %v", requestSummary, err))
-			return lastEventID, reconnectDelay, false
+			break
 		}
 
 		if evt.ID != "" {
