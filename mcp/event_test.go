@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"slices"
 	"strings"
@@ -281,7 +282,7 @@ func BenchmarkMemoryEventStore(b *testing.B) {
 			for i := range sessionIDs {
 				sessionIDs[i] = fmt.Sprint(i)
 				for j := range 3 {
-					streamIDs[i][j] = randText()
+					streamIDs[i][j] = rand.Text()
 				}
 			}
 			payload := make([]byte, test.datasize)

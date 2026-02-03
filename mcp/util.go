@@ -5,7 +5,6 @@
 package mcp
 
 import (
-	"crypto/rand"
 	"encoding/json"
 )
 
@@ -13,10 +12,6 @@ func assert(cond bool, msg string) {
 	if !cond {
 		panic(msg)
 	}
-}
-
-func randText() string {
-	return rand.Text()
 }
 
 // remarshal marshals from to JSON, and then unmarshals into to, which must be

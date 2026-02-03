@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
@@ -175,7 +176,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	}
 
 	if opts.GetSessionID == nil {
-		opts.GetSessionID = randText
+		opts.GetSessionID = func() string {
+			return rand.Text()
+		}
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
