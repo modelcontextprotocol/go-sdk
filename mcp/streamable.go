@@ -1860,7 +1860,8 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				return "", 0, true // don't reconnect: client cancelled
 			}
 
-			// Malformed events are hard errors that indicate corrupted data or protocol			// violations. These should fail the connection permanently.
+			// Malformed events are hard errors that indicate corrupted data or protocol
+			// violations. These should fail the connection permanently.
 			if errors.Is(err, errMalformedEvent) {
 				c.fail(fmt.Errorf("%s: %v", requestSummary, err))
 				return "", 0, true
