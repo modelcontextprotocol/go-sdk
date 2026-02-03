@@ -18,4 +18,5 @@ client:
 - auth/token-endpoint-auth-none  
 - auth/client-credentials-jwt
 - auth/client-credentials-basic
+- auth/pre-registration
 - sse-retry

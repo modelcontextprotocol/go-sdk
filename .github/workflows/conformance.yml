@@ -1,10 +1,9 @@
 name: Conformance Tests
 
 on:
-  # TODO: enable automatic triggering when tested.
-  # push:
-  #     branches: [main]
-  # pull_request:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
