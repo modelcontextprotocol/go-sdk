@@ -519,46 +519,6 @@ func TestEndToEnd_Synctest(t *testing.T) {
 	})
 }
 
-func TestBatching_Synctest(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx := context.Background()
-		ct, st := NewInMemoryTransports()
-
-		s := NewServer(testImpl, nil)
-		_, err := s.Connect(ctx, st, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		c := NewClient(testImpl, nil)
-		// TODO: this test is broken, because increasing the batch size here causes
-		// 'initialize' to block. Therefore, we can only test with a size of 1.
-		// Since batching is being removed, we can probably just delete this.
-		const batchSize = 1
-		cs, err := c.Connect(ctx, ct, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer cs.Close()
-
-		errs := make(chan error, batchSize)
-		for i := range batchSize {
-			go func() {
-				_, err := cs.ListTools(ctx, nil)
-				errs <- err
-			}()
-			time.Sleep(2 * time.Millisecond)
-			if i < batchSize-1 {
-				select {
-				case <-errs:
-					t.Errorf("ListTools: unexpected result for incomplete batch: %v", err)
-				default:
-				}
-			}
-		}
-	})
-}
-
 func TestKeepAlive_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
@@ -665,6 +625,7 @@ func TestKeepAliveFailure_Synctest(t *testing.T) {
 
 		// Let the connection establish properly first
 		time.Sleep(30 * time.Millisecond)
+		synctest.Wait()
 
 		// simulate ping failure
 		ss.Close()
@@ -673,6 +634,7 @@ func TestKeepAliveFailure_Synctest(t *testing.T) {
 		// Check periodically with simulated time advancement
 		for i := 0; i < 40; i++ { // 40 iterations * 25ms = 1 second total
 			time.Sleep(25 * time.Millisecond)
+			synctest.Wait()
 			_, err = cs.CallTool(ctx, &CallToolParams{
 				Name:      "greet",
 				Arguments: map[string]any{"Name": "user"},
