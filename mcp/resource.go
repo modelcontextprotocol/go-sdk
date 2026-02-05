@@ -113,6 +113,23 @@ func computeURIFilepath(rawURI, dirFilepath string, rootFilepaths []string) (str
 	return uriFilepathRel, nil
 }
 
+// withFile calls f on the file at join(dir, rel),
+// protecting against path traversal attacks.
+func withFile(dir, rel string, f func(*os.File) error) (err error) {
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	file, err := r.Open(rel)
+	if err != nil {
+		return err
+	}
+	// Record error, in case f writes.
+	defer func() { err = errors.Join(err, file.Close()) }()
+	return f(file)
+}
+
 // fileRoots transforms the Roots obtained from the client into absolute paths on
 // the local filesystem.
 // TODO(jba): expose this functionality to user ResourceHandlers,
