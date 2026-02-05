@@ -2218,6 +2218,56 @@ collectLoop:
 	}
 }
 
+// TestProcessStreamPrimingEvent verifies that the streamable client correctly ignores
+// SSE events with empty data buffers, which are used as priming events (e.g. SEP-1699).
+func TestProcessStreamPrimingEvent(t *testing.T) {
+	// We create a mock response with a priming event (empty data, with an ID),
+	// followed by a normal event.
+	sseData := `id: 123
+
+id: 124
+data: {"jsonrpc":"2.0","id":1,"result":{}}
+
+`
+
+	ctx := t.Context()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	incoming := make(chan jsonrpc.Message, 10)
+	done := make(chan struct{})
+
+	conn := &streamableClientConn{
+		ctx:      ctx,
+		done:     done,
+		incoming: incoming,
+		failed:   make(chan struct{}),
+		logger:   ensureLogger(nil),
+	}
+
+	lastID, _, clientClosed := conn.processStream(ctx, "test", resp, nil)
+
+	if clientClosed {
+		t.Fatalf("processStream was unexpectedly closed by client")
+	}
+
+	if lastID != "124" {
+		t.Errorf("lastEventID = %q, want %q", lastID, "124")
+	}
+
+	select {
+	case msg := <-incoming:
+		if res, ok := msg.(*jsonrpc.Response); !(ok && res.ID == jsonrpc2.Int64ID(1)) {
+			t.Errorf("got unexpected message: %v", msg)
+		}
+	default:
+		t.Errorf("expected a JSON-RPC message to be produced")
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
