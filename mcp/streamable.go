@@ -1935,6 +1935,15 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				reconnectDelay = time.Duration(n) * time.Millisecond
 			}
 		}
+
+		// According to SSE specification
+		// (https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation)
+		// events with an empty data buffer are allowed.
+		// In MCP these can be priming events (SEP-1699) that carry only a Last-Event-ID for stream resumption.
+		if len(evt.Data) == 0 {
+			continue
+		}
+
 		// According to SSE spec, events with no name default to "message"
 		if evt.Name != "" && evt.Name != "message" {
 			continue
