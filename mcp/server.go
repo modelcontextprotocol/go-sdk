@@ -53,6 +53,7 @@ type Server struct {
 	receivingMethodHandler_ MethodHandler
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
+	tasks                   *serverTasks
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -72,6 +73,8 @@ type ServerOptions struct {
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
+	// If non-nil, called when "notifications/tasks/status" is received.
+	TaskStatusHandler func(context.Context, *TaskStatusNotificationServerRequest)
 	// If non-nil, called when "completion/complete" is received.
 	CompletionHandler func(context.Context, *CompleteRequest) (*CompleteResult, error)
 	// If non-zero, defines an interval for regular "ping" requests.
@@ -161,7 +164,6 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	if options != nil {
 		opts = *options
 	}
-	options = nil // prevent reuse
 	if opts.PageSize < 0 {
 		panic(fmt.Errorf("invalid page size %d", opts.PageSize))
 	}
@@ -194,6 +196,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
+		tasks:                   newServerTasks(),
 	}
 }
 
@@ -1063,6 +1066,13 @@ func (s *Server) callRootsListChangedHandler(ctx context.Context, req *RootsList
 	return nil, nil
 }
 
+func (s *Server) callTaskStatusHandler(ctx context.Context, req *TaskStatusNotificationServerRequest) (Result, error) {
+	if h := s.opts.TaskStatusHandler; h != nil {
+		h(ctx, req)
+	}
+	return nil, nil
+}
+
 func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p *ProgressNotificationParams) (Result, error) {
 	if h := ss.server.opts.ProgressNotificationHandler; h != nil {
 		h(ctx, serverRequestFor(ss, p))
@@ -1310,7 +1320,11 @@ var serverMethodInfos = map[string]methodInfo{
 	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
 	methodGetPrompt:              newServerMethodInfo(serverMethod((*Server).getPrompt), 0),
 	methodListTools:              newServerMethodInfo(serverMethod((*Server).listTools), missingParamsOK),
-	methodCallTool:               newServerMethodInfo(serverMethod((*Server).callTool), 0),
+	methodCallTool:               callToolMethodInfo(),
+	methodGetTask:                newServerMethodInfo(serverMethod((*Server).getTask), 0),
+	methodListTasks:              newServerMethodInfo(serverMethod((*Server).listTasks), missingParamsOK),
+	methodCancelTask:             newServerMethodInfo(serverMethod((*Server).cancelTask), 0),
+	methodTaskResult:             newServerMethodInfo(serverMethod((*Server).taskResult), 0),
 	methodListResources:          newServerMethodInfo(serverMethod((*Server).listResources), missingParamsOK),
 	methodListResourceTemplates:  newServerMethodInfo(serverMethod((*Server).listResourceTemplates), missingParamsOK),
 	methodReadResource:           newServerMethodInfo(serverMethod((*Server).readResource), 0),
@@ -1318,6 +1332,7 @@ var serverMethodInfos = map[string]methodInfo{
 	methodSubscribe:              newServerMethodInfo(serverMethod((*Server).subscribe), 0),
 	methodUnsubscribe:            newServerMethodInfo(serverMethod((*Server).unsubscribe), 0),
 	notificationCancelled:        newServerMethodInfo(serverSessionMethod((*ServerSession).cancel), notification|missingParamsOK),
+	notificationTaskStatus:       newServerMethodInfo(serverMethod((*Server).callTaskStatusHandler), notification),
 	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
 	notificationRootsListChanged: newServerMethodInfo(serverMethod((*Server).callRootsListChangedHandler), notification|missingParamsOK),
 	notificationProgress:         newServerMethodInfo(serverSessionMethod((*ServerSession).callProgressNotificationHandler), notification),
@@ -1338,6 +1353,22 @@ func initializeMethodInfo() methodInfo {
 			return nil, fmt.Errorf(`missing required "params"`)
 		}
 		return params.toV1(), nil
+	}
+	return info
+}
+
+func callToolMethodInfo() methodInfo {
+	// Start with the standard tools/call method info so that we preserve the
+	// wire format (CallToolParamsRaw) and the normal result type.
+	info := newServerMethodInfo(serverMethod((*Server).callTool), 0)
+
+	// Override receive-side behavior to be task-aware.
+	info.handleMethod = func(ctx context.Context, _ string, req Request) (Result, error) {
+		r, ok := req.(*CallToolRequest)
+		if !ok {
+			return nil, fmt.Errorf("internal error: unexpected request type %T for tools/call", req)
+		}
+		return r.Session.server.callToolAny(ctx, r)
 	}
 	return info
 }
