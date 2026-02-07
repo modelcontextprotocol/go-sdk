@@ -52,9 +52,15 @@ type SSEHandler struct {
 }
 
 // SSEOptions specifies options for an [SSEHandler].
-// for now, it is empty, but may be extended in future.
 // https://github.com/modelcontextprotocol/go-sdk/issues/507
-type SSEOptions struct{}
+type SSEOptions struct {
+	// MaxBodyBytes limits the size of POST request bodies sent to the session
+	// endpoint.
+	//
+	// If zero, defaults to [DefaultMaxBodyBytes].
+	// If negative, no limit is enforced.
+	MaxBodyBytes int64
+}
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
 // sessions created via incoming HTTP requests.
@@ -77,6 +83,9 @@ func NewSSEHandler(getServer func(request *http.Request) *Server, opts *SSEOptio
 
 	if opts != nil {
 		s.opts = *opts
+	}
+	if s.opts.MaxBodyBytes == 0 {
+		s.opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 
 	return s
@@ -111,6 +120,13 @@ type SSEServerTransport struct {
 	// Response is the hanging response body to the incoming GET request.
 	Response http.ResponseWriter
 
+	// MaxBodyBytes limits the size of POST request bodies served by this
+	// transport.
+	//
+	// If zero, defaults to [DefaultMaxBodyBytes].
+	// If negative, no limit is enforced.
+	MaxBodyBytes int64
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -133,8 +149,20 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Read and parse the message.
+	maxBodyBytes := effectiveMaxBodyBytes(t.MaxBodyBytes)
+	if maxBodyBytes > 0 {
+		if req.ContentLength > maxBodyBytes {
+			writeRequestBodyTooLarge(w)
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxBodyBytes)
+	}
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
+		if isMaxBytesError(err) {
+			writeRequestBodyTooLarge(w)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -224,7 +252,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w}
+	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w, MaxBodyBytes: h.opts.MaxBodyBytes}
 
 	// The session is terminated when the request exits.
 	h.mu.Lock()

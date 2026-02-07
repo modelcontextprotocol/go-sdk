@@ -161,6 +161,12 @@ type StreamableHTTPOptions struct {
 	//
 	// If SessionTimeout is the zero value, idle sessions are never closed.
 	SessionTimeout time.Duration
+
+	// MaxBodyBytes limits the size of POST request bodies served by this handler.
+	//
+	// If zero, defaults to [DefaultMaxBodyBytes].
+	// If negative, no limit is enforced.
+	MaxBodyBytes int64
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -179,6 +185,9 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.Logger == nil { // ensure we have a logger
 		h.opts.Logger = ensureLogger(nil)
+	}
+	if h.opts.MaxBodyBytes == 0 {
+		h.opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 
 	return h
@@ -355,6 +364,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			SessionID:    sessionID,
 			Stateless:    h.opts.Stateless,
 			EventStore:   h.opts.EventStore,
+			MaxBodyBytes: h.opts.MaxBodyBytes,
 			jsonResponse: h.opts.JSONResponse,
 			logger:       h.opts.Logger,
 		}
@@ -372,8 +382,20 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			{
 				// TODO: verify that this allows protocol version negotiation for
 				// stateless servers.
+				maxBodyBytes := effectiveMaxBodyBytes(h.opts.MaxBodyBytes)
+				if maxBodyBytes > 0 {
+					if req.ContentLength > maxBodyBytes {
+						writeRequestBodyTooLarge(w)
+						return
+					}
+					req.Body = http.MaxBytesReader(w, req.Body, maxBodyBytes)
+				}
 				body, err := io.ReadAll(req.Body)
 				if err != nil {
+					if isMaxBytesError(err) {
+						writeRequestBodyTooLarge(w)
+						return
+					}
 					http.Error(w, "failed to read body", http.StatusInternalServerError)
 					return
 				}
@@ -529,6 +551,13 @@ type StreamableServerTransport struct {
 	// upon stream resumption.
 	EventStore EventStore
 
+	// MaxBodyBytes limits the size of POST request bodies served by this
+	// transport.
+	//
+	// If zero, defaults to [DefaultMaxBodyBytes].
+	// If negative, no limit is enforced.
+	MaxBodyBytes int64
+
 	// jsonResponse, if set, tells the server to prefer to respond to requests
 	// using application/json responses rather than text/event-stream.
 	//
@@ -562,6 +591,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		stateless:      t.Stateless,
 		eventStore:     t.EventStore,
 		jsonResponse:   t.jsonResponse,
+		maxBodyBytes:   effectiveMaxBodyBytes(t.MaxBodyBytes),
 		logger:         ensureLogger(t.logger), // see #556: must be non-nil
 		incoming:       make(chan jsonrpc.Message, 10),
 		done:           make(chan struct{}),
@@ -585,6 +615,7 @@ type streamableServerConn struct {
 	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
+	maxBodyBytes int64 // 0 means unlimited
 
 	logger *slog.Logger
 
@@ -1023,8 +1054,19 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 
 	// Read incoming messages.
+	if c.maxBodyBytes > 0 {
+		if req.ContentLength > c.maxBodyBytes {
+			writeRequestBodyTooLarge(w)
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, c.maxBodyBytes)
+	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
+		if isMaxBytesError(err) {
+			writeRequestBodyTooLarge(w)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
