@@ -602,6 +602,9 @@ func TestKeepAliveFailure_Synctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 
+		// This test doesn't pinpoint keepalive detected failures well due to the fact that in-memory transports
+		// propagate `io.EOF` synchronously, causing the transport level connection to be closed immediately.
+		// TODO: propose better transports that would allow testing this scenario precisely.
 		ct, st := NewInMemoryTransports()
 
 		// Server without keepalive (to test one-sided keepalive)
@@ -624,24 +627,20 @@ func TestKeepAliveFailure_Synctest(t *testing.T) {
 		defer cs.Close()
 
 		// Let the connection establish properly first
-		time.Sleep(30 * time.Millisecond)
 		synctest.Wait()
 
 		// simulate ping failure
 		ss.Close()
 
-		// Wait for keepalive to detect the failure and close the client
-		// Check periodically with simulated time advancement
-		for i := 0; i < 40; i++ { // 40 iterations * 25ms = 1 second total
-			time.Sleep(25 * time.Millisecond)
-			synctest.Wait()
-			_, err = cs.CallTool(ctx, &CallToolParams{
-				Name:      "greet",
-				Arguments: map[string]any{"Name": "user"},
-			})
-			if err != nil && (errors.Is(err, ErrConnectionClosed) || strings.Contains(err.Error(), "connection closed")) {
-				return // Test passed
-			}
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+
+		_, err = cs.CallTool(ctx, &CallToolParams{
+			Name:      "greet",
+			Arguments: map[string]any{"Name": "user"},
+		})
+		if err != nil && (errors.Is(err, ErrConnectionClosed) || strings.Contains(err.Error(), "connection closed")) {
+			return // Test passed
 		}
 
 		t.Errorf("expected connection to be closed by keepalive, but it wasn't. Last error: %v", err)
