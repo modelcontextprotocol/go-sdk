@@ -1,5 +1,4 @@
-server:
-- dns-rebinding-protection
+server: [] # All tests pass!
 client:
 - auth/basic-cimd
 - auth/metadata-default
