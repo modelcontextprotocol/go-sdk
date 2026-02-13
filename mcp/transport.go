@@ -24,6 +24,10 @@ import (
 // is closed or in the process of closing.
 var ErrConnectionClosed = errors.New("connection closed")
 
+// ErrSessionMissing is returned when the session is known to not be present on
+// the server.
+var ErrSessionMissing = errors.New("session not found")
+
 // A Transport is used to create a bidirectional connection between MCP client
 // and server.
 //

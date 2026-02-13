@@ -11,6 +11,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1163,7 +1164,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// Important: don't publish the incoming messages until the stream is
 	// registered, as the server may attempt to respond to imcoming messages as
 	// soon as they're published.
-	stream, err := c.newStream(req.Context(), calls, randText())
+	stream, err := c.newStream(req.Context(), calls, crand.Text())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
 		return
@@ -1562,17 +1563,6 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
-// errSessionMissing distinguishes if the session is known to not be present on
-// the server (see [streamableClientConn.fail]).
-//
-// TODO(rfindley): should we expose this error value (and its corresponding
-// API) to the user?
-//
-// The spec says that if the server returns 404, clients should reestablish
-// a session. For now, we delegate that to the user, but do they need a way to
-// differentiate a 'NotFound' error from other errors?
-var errSessionMissing = errors.New("session not found")
-
 var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
@@ -1651,7 +1641,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 // If err is non-nil, it is terminal, and subsequent (or pending) Reads will
 // fail.
 //
-// If err wraps errSessionMissing, the failure indicates that the session is no
+// If err wraps ErrSessionMissing, the failure indicates that the session is no
 // longer present on the server, and no final DELETE will be performed when
 // closing the connection.
 func (c *streamableClientConn) fail(err error) {
@@ -1846,15 +1836,14 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 // stream is complete when we receive its response. Otherwise, this is the
 // standalone stream.
 func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc2.Request) {
+	// Track the last event ID to detect progress.
+	// The retry counter is only reset when progress is made (lastEventID advances).
+	// This prevents infinite retry loops when a server repeatedly terminates
+	// connections without making progress (#679).
+	var prevLastEventID string
+	retriesWithoutProgress := 0
+
 	for {
-		// Connection was successful. Continue the loop with the new response.
-		//
-		// TODO(#679): we should set a reasonable limit on the number of times
-		// we'll try getting a response for a given request, or enforce that we
-		// actually make progress.
-		//
-		// Eventually, if we don't get the response, we should stop trying and
-		// fail the request.
 		lastEventID, reconnectDelay, clientClosed := c.processStream(ctx, requestSummary, resp, forCall)
 
 		// If the connection was closed by the client, we're done.
@@ -1866,6 +1855,23 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		// but we may just miss messages.
 		if lastEventID == "" && forCall != nil {
 			return
+		}
+
+		// Check if we made progress (lastEventID advanced).
+		// Only reset the retry counter when actual progress is made.
+		if lastEventID != "" && lastEventID != prevLastEventID {
+			// Progress was made: reset the retry counter.
+			retriesWithoutProgress = 0
+			prevLastEventID = lastEventID
+		} else {
+			// No progress: increment the retry counter.
+			retriesWithoutProgress++
+			if retriesWithoutProgress > c.maxRetries {
+				if ctx.Err() == nil {
+					c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
+				}
+				return
+			}
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
@@ -1902,9 +1908,9 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
 	if resp.StatusCode == http.StatusNotFound {
-		// Return an errSessionMissing to avoid sending a redundant DELETE when the
+		// Return an ErrSessionMissing to avoid sending a redundant DELETE when the
 		// session is already gone.
-		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, errSessionMissing)
+		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
 	}
 	// Transient server errors (502, 503, 504, 429) should not break the connection.
 	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
@@ -1932,6 +1938,14 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			if ctx.Err() != nil {
 				return "", 0, true // don't reconnect: client cancelled
 			}
+
+			// Malformed events are hard errors that indicate corrupted data or protocol
+			// violations. These should fail the connection permanently.
+			if errors.Is(err, errMalformedEvent) {
+				c.fail(fmt.Errorf("%s: %v", requestSummary, err))
+				return "", 0, true
+			}
+
 			break
 		}
 
@@ -1944,6 +1958,15 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				reconnectDelay = time.Duration(n) * time.Millisecond
 			}
 		}
+
+		// According to SSE specification
+		// (https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation)
+		// events with an empty data buffer are allowed.
+		// In MCP these can be priming events (SEP-1699) that carry only a Last-Event-ID for stream resumption.
+		if len(evt.Data) == 0 {
+			continue
+		}
+
 		// According to SSE spec, events with no name default to "message"
 		if evt.Name != "" && evt.Name != "message" {
 			continue
@@ -2061,7 +2084,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 // Close implements the [Connection] interface.
 func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
-		if errors.Is(c.failure(), errSessionMissing) {
+		if errors.Is(c.failure(), ErrSessionMissing) {
 			// If the session is missing, no need to delete it.
 		} else {
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)

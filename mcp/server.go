@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
@@ -175,7 +176,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	}
 
 	if opts.GetSessionID == nil {
-		opts.GetSessionID = randText
+		opts.GetSessionID = rand.Text
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
@@ -1216,6 +1217,10 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
 	if err != nil {
 		return nil, err
+	}
+
+	if res.Action != "accept" {
+		return res, nil
 	}
 
 	if params.RequestedSchema == nil {

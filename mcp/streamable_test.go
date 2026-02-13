@@ -2218,6 +2218,56 @@ collectLoop:
 	}
 }
 
+// TestProcessStreamPrimingEvent verifies that the streamable client correctly ignores
+// SSE events with empty data buffers, which are used as priming events (e.g. SEP-1699).
+func TestProcessStreamPrimingEvent(t *testing.T) {
+	// We create a mock response with a priming event (empty data, with an ID),
+	// followed by a normal event.
+	sseData := `id: 123
+
+id: 124
+data: {"jsonrpc":"2.0","id":1,"result":{}}
+
+`
+
+	ctx := t.Context()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	incoming := make(chan jsonrpc.Message, 10)
+	done := make(chan struct{})
+
+	conn := &streamableClientConn{
+		ctx:      ctx,
+		done:     done,
+		incoming: incoming,
+		failed:   make(chan struct{}),
+		logger:   ensureLogger(nil),
+	}
+
+	lastID, _, clientClosed := conn.processStream(ctx, "test", resp, nil)
+
+	if clientClosed {
+		t.Fatalf("processStream was unexpectedly closed by client")
+	}
+
+	if lastID != "124" {
+		t.Errorf("lastEventID = %q, want %q", lastID, "124")
+	}
+
+	select {
+	case msg := <-incoming:
+		if res, ok := msg.(*jsonrpc.Response); !(ok && res.ID == jsonrpc2.Int64ID(1)) {
+			t.Errorf("got unexpected message: %v", msg)
+		}
+	default:
+		t.Errorf("expected a JSON-RPC message to be produced")
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
@@ -2278,6 +2328,50 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 				t.Errorf("event %d: ping event unexpectedly decoded as valid JSON-RPC", i)
 			}
 		}
+	}
+}
+
+func Test_ExportErrSessionMissing(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Setup server
+	impl := &Implementation{Name: "test", Version: "1.0.0"}
+	server := NewServer(impl, nil)
+	handler := NewStreamableHTTPHandler(func(r *http.Request) *Server { return server }, nil)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// 2. Setup client
+	clientTransport := &StreamableClientTransport{
+		Endpoint: ts.URL,
+	}
+	client := NewClient(impl, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// 3. Manually invalidate session on server
+	handler.mu.Lock()
+	if len(handler.sessions) != 1 {
+		handler.mu.Unlock()
+		t.Fatalf("expected 1 session, got %d", len(handler.sessions))
+	}
+	for id := range handler.sessions {
+		delete(handler.sessions, id)
+	}
+	handler.mu.Unlock()
+
+	// 4. Try to call a tool (or any request)
+	_, err = session.ListTools(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// 5. Verify it's ErrSessionMissing
+	if !errors.Is(err, ErrSessionMissing) {
+		t.Errorf("expected error to wrap ErrSessionMissing, got: %v", err)
 	}
 }
 

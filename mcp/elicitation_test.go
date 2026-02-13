@@ -143,6 +143,7 @@ func TestElicitationURLMode(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestElicitationCompleteNotification(t *testing.T) {
 	ctx := context.Background()
 
@@ -199,5 +200,73 @@ func TestElicitationCompleteNotification(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for elicitation complete notification")
+	}
+}
+
+func TestElicitationNoValidationWithoutAccept(t *testing.T) {
+	ctx := context.Background()
+
+	schema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"test": {Type: "string"},
+		},
+		Required: []string{"test"},
+	}
+
+	testCases := []struct {
+		name       string
+		action     string
+		content    map[string]any
+		wantAction string
+	}{
+		{
+			name:       "cancel action",
+			action:     "cancel",
+			content:    nil, // Empty content should be ignored
+			wantAction: "cancel",
+		},
+		{
+			name:       "decline action",
+			action:     "decline",
+			content:    map[string]any{}, // Empty content should be ignored
+			wantAction: "decline",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			c := NewClient(testImpl, &ClientOptions{
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return &ElicitResult{Action: tc.action, Content: tc.content}, nil
+				},
+			})
+			cs, err := c.Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			res, err := ss.Elicit(ctx, &ElicitParams{
+				Message:         "Test bug",
+				RequestedSchema: schema,
+			})
+
+			if err != nil {
+				t.Fatalf("Elicit failed: %v", err)
+			}
+
+			if res.Action != tc.wantAction {
+				t.Errorf("Expected action %q, got %q", tc.wantAction, res.Action)
+			}
+		})
 	}
 }

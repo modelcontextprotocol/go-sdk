@@ -38,6 +38,9 @@ The following table shows which versions of the Go SDK support which versions of
 | v1.2.0+         | 2025-06-18        | 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 |
 | v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05             |
 
+New releases of the SDK target only supported versions of Go. See
+https://go.dev/doc/devel/release#policy for more information.
+
 ## Getting started
 
 To get started creating an MCP server, create an `mcp.Server` instance, add
@@ -150,5 +153,5 @@ is a thriving ecosystem of Go MCP clients and servers.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE)
-file for details.
+This project is licensed under Apache 2.0 for new contributions, with existing
+code under MIT - see the [LICENSE](./LICENSE) file for details.
