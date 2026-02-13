@@ -30,6 +30,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -217,40 +218,12 @@ func (h *StreamableHTTPHandler) closeAll() {
 	}
 }
 
-// isLocalhostAddr checks if a net.Addr is a localhost address.
-func isLocalhostAddr(addr net.Addr) bool {
-	if addr == nil {
-		return false
-	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		host = addr.String()
-	}
-	// Remove brackets for IPv6
-	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
-}
-
-// isLocalhostHost checks if a Host header value is a valid localhost address.
-func isLocalhostHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	hostname, _, err := net.SplitHostPort(host)
-	if err != nil {
-		hostname = host
-	}
-	// Remove brackets for IPv6
-	hostname = strings.TrimPrefix(strings.TrimSuffix(hostname, "]"), "[")
-	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
-}
-
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	if !h.opts.DisableLocalhostProtection {
-		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-			if isLocalhostAddr(localAddr) && !isLocalhostHost(req.Host) {
+		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
+			if util.IsLoopback(localAddr.String()) && !util.IsLoopback(req.Host) {
 				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
 				return
 			}

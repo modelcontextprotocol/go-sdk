@@ -2287,51 +2287,91 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 	server := NewServer(testImpl, nil)
 
 	tests := []struct {
-		name        string
-		listenAddr  string // Address to listen on
-		hostHeader  string // Host header in request
-		disableProt bool   // DisableLocalhostProtection setting
-		wantStatus  int
+		name              string
+		listenAddr        string // Address to listen on
+		hostHeader        string // Host header in request
+		disableProtection bool   // DisableLocalhostProtection setting
+		wantStatus        int
 	}{
-		// Auto-enabled for localhost listeners (127.0.0.1)
-		{"127.0.0.1 accepts 127.0.0.1", "127.0.0.1:0", "127.0.0.1:1234", false, http.StatusOK},
-		{"127.0.0.1 accepts localhost", "127.0.0.1:0", "localhost:1234", false, http.StatusOK},
-		{"127.0.0.1 rejects evil.com", "127.0.0.1:0", "evil.com", false, http.StatusForbidden},
-		{"127.0.0.1 rejects evil.com:80", "127.0.0.1:0", "evil.com:80", false, http.StatusForbidden},
-		{"127.0.0.1 rejects localhost.evil.com", "127.0.0.1:0", "localhost.evil.com", false, http.StatusForbidden},
+		// Auto-enabled for localhost listeners (127.0.0.1).
+		{
+			name:              "127.0.0.1 accepts 127.0.0.1",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "127.0.0.1:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 accepts localhost",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com:80",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com:80",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects localhost.evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost.evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
 
 		// When listening on 0.0.0.0, requests arriving via localhost are still protected
 		// because LocalAddrContextKey returns the actual connection's local address.
 		// This is actually more secure - DNS rebinding attacks target localhost regardless
 		// of the listener configuration.
-		{"0.0.0.0 via localhost rejects evil.com", "0.0.0.0:0", "evil.com", false, http.StatusForbidden},
+		{
+			name:              "0.0.0.0 via localhost rejects evil.com",
+			listenAddr:        "0.0.0.0:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
 
 		// Explicit disable
-		{"disabled accepts evil.com", "127.0.0.1:0", "evil.com", true, http.StatusOK},
+		{
+			name:              "disabled accepts evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: true,
+			wantStatus:        http.StatusOK,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := &StreamableHTTPOptions{
 				Stateless:                  true, // Simpler for testing
-				DisableLocalhostProtection: tt.disableProt,
+				DisableLocalhostProtection: tt.disableProtection,
 			}
 			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
 
-			// Create a listener on the specified address to control LocalAddrContextKey
 			listener, err := net.Listen("tcp", tt.listenAddr)
 			if err != nil {
-				t.Fatalf("failed to listen on %s: %v", tt.listenAddr, err)
+				t.Fatalf("Failed to listen on %s: %v", tt.listenAddr, err)
 			}
 			defer listener.Close()
 
-			// Start server in background
 			srv := &http.Server{Handler: handler}
 			go srv.Serve(listener)
 			defer srv.Close()
 
-			// Make request with custom Host header
-			req, err := http.NewRequest("POST", fmt.Sprintf("http://%s", listener.Addr().String()), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`))
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest("POST", fmt.Sprintf("http://%s", listener.Addr().String()), reqReader)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2346,71 +2386,7 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 			defer resp.Body.Close()
 
 			if got := resp.StatusCode; got != tt.wantStatus {
-				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
-			}
-		})
-	}
-}
-
-// TestIsLocalhostAddr tests the isLocalhostAddr helper function.
-func TestIsLocalhostAddr(t *testing.T) {
-	tests := []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:3000", true},
-		{"127.0.0.1:0", true},
-		{"localhost:3000", true},
-		{"[::1]:3000", true},
-		{"0.0.0.0:3000", false},
-		{"192.168.1.1:3000", false},
-		{"example.com:3000", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.addr, func(t *testing.T) {
-			addr, err := net.ResolveTCPAddr("tcp", tt.addr)
-			if err != nil {
-				// For hostname-based addresses, use a mock
-				if strings.HasPrefix(tt.addr, "localhost") {
-					addr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 3000}
-				} else if strings.HasPrefix(tt.addr, "example.com") {
-					addr = &net.TCPAddr{IP: net.ParseIP("93.184.216.34"), Port: 3000}
-				} else {
-					t.Fatalf("failed to resolve %s: %v", tt.addr, err)
-				}
-			}
-			if got := isLocalhostAddr(addr); got != tt.want {
-				t.Errorf("isLocalhostAddr(%q) = %v, want %v", tt.addr, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestIsLocalhostHost tests the isLocalhostHost helper function.
-func TestIsLocalhostHost(t *testing.T) {
-	tests := []struct {
-		host string
-		want bool
-	}{
-		{"localhost", true},
-		{"localhost:3000", true},
-		{"127.0.0.1", true},
-		{"127.0.0.1:3000", true},
-		{"[::1]", true},
-		{"[::1]:3000", true},
-		{"::1", true},
-		{"", false},
-		{"evil.com", false},
-		{"evil.com:80", false},
-		{"localhost.evil.com", false},
-		{"127.0.0.1.evil.com", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.host, func(t *testing.T) {
-			if got := isLocalhostHost(tt.host); got != tt.want {
-				t.Errorf("isLocalhostHost(%q) = %v, want %v", tt.host, got, tt.want)
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
 			}
 		})
 	}
