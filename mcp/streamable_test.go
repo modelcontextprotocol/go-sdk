@@ -2374,3 +2374,114 @@ func Test_ExportErrSessionMissing(t *testing.T) {
 		t.Errorf("expected error to wrap ErrSessionMissing, got: %v", err)
 	}
 }
+
+// TestStreamableLocalhostProtection verifies that DNS rebinding protection
+// is automatically enabled for localhost servers.
+func TestStreamableLocalhostProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name              string
+		listenAddr        string // Address to listen on
+		hostHeader        string // Host header in request
+		disableProtection bool   // DisableLocalhostProtection setting
+		wantStatus        int
+	}{
+		// Auto-enabled for localhost listeners (127.0.0.1).
+		{
+			name:              "127.0.0.1 accepts 127.0.0.1",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "127.0.0.1:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 accepts localhost",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com:80",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com:80",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects localhost.evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost.evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+
+		// When listening on 0.0.0.0, requests arriving via localhost are still protected
+		// because LocalAddrContextKey returns the actual connection's local address.
+		// This is actually more secure - DNS rebinding attacks target localhost regardless
+		// of the listener configuration.
+		{
+			name:              "0.0.0.0 via localhost rejects evil.com",
+			listenAddr:        "0.0.0.0:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+
+		// Explicit disable
+		{
+			name:              "disabled accepts evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: true,
+			wantStatus:        http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{
+				Stateless:                  true, // Simpler for testing
+				DisableLocalhostProtection: tt.disableProtection,
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+
+			listener, err := net.Listen("tcp", tt.listenAddr)
+			if err != nil {
+				t.Fatalf("Failed to listen on %s: %v", tt.listenAddr, err)
+			}
+			defer listener.Close()
+
+			srv := &http.Server{Handler: handler}
+			go srv.Serve(listener)
+			defer srv.Close()
+
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest("POST", fmt.Sprintf("http://%s", listener.Addr().String()), reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tt.hostHeader
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
