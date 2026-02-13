@@ -31,6 +31,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -219,10 +220,16 @@ func (h *StreamableHTTPHandler) closeAll() {
 	}
 }
 
+// disablelocalhostprotection is a compatibility parameter that allows to disable
+// DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.6.0 version of the SDK.
+var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
-	if !h.opts.DisableLocalhostProtection {
+	if !h.opts.DisableLocalhostProtection && disablelocalhostprotection != "1" {
 		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
 			if util.IsLoopback(localAddr.String()) && !util.IsLoopback(req.Host) {
 				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
