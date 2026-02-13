@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -38,6 +39,7 @@ const defaultProtectedResourceMetadataURI = "/.well-known/oauth-protected-resour
 //
 // It then retrieves the metadata at that location using the given client (or the
 // default client if nil) and validates its resource field against resourceID.
+// Deprecated: Use [GetProtectedResourceMetadata] instead.
 func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromID(%q)", resourceID)
 
@@ -47,7 +49,10 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 	}
 	// Insert well-known URI into URL.
 	u.Path = path.Join(defaultProtectedResourceMetadataURI, u.Path)
-	return getPRM(ctx, u.String(), c, resourceID)
+	return GetProtectedResourceMetadata(ctx, ProtectedResourceMetadataURL{
+		URL:      u.String(),
+		Resource: resourceID,
+	}, c)
 }
 
 // GetProtectedResourceMetadataFromHeader retrieves protected resource metadata
@@ -57,8 +62,8 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 // Per RFC 9728 section 3.3, it validates that the resource field of the resulting metadata
 // matches the serverURL (the URL that the client used to make the original request to the resource server).
 // If there is no metadata URL in the header, it returns nil, nil.
+// Deprecated: Use [GetProtectedResourceMetadata] instead.
 func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL string, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
-	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromHeader")
 	headers := header[http.CanonicalHeaderKey("WWW-Authenticate")]
 	if len(headers) == 0 {
 		return nil, nil
@@ -71,22 +76,31 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL strin
 	if metadataURL == "" {
 		return nil, nil
 	}
-	return getPRM(ctx, metadataURL, c, serverURL)
+	return GetProtectedResourceMetadata(ctx, ProtectedResourceMetadataURL{
+		URL:      metadataURL,
+		Resource: serverURL,
+	}, c)
 }
 
-// getPRM makes a GET request to the given URL, and validates the response.
-// As part of the validation, it compares the returned resource field to wantResource.
-func getPRM(ctx context.Context, purl string, c *http.Client, wantResource string) (*ProtectedResourceMetadata, error) {
-	if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
-		return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
-	}
-	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, purl, 1<<20)
+// GetProtectedResourceMetadataFromID issues a GET request to retrieve protected resource
+// metadata from a resource server.
+// The metadataURL is typically a URL with a host:port and possibly a path.
+// For example:
+//
+//	https://example.com/server
+func GetProtectedResourceMetadata(ctx context.Context, metadataURL ProtectedResourceMetadataURL, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
+	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
+	// TODO: where HTTPS requirement comes from? conformance tests use HTTP.
+	// if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
+	// 	return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
+	// }
+	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, metadataURL.URL, 1<<20)
 	if err != nil {
 		return nil, err
 	}
 	// Validate the Resource field (see RFC 9728, section 3.3).
-	if prm.Resource != wantResource {
-		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, wantResource)
+	if prm.Resource != metadataURL.Resource {
+		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, metadataURL.Resource)
 	}
 	// Validate the authorization server URLs to prevent XSS attacks (see #526).
 	for _, u := range prm.AuthorizationServers {
@@ -95,6 +109,48 @@ func getPRM(ctx context.Context, purl string, c *http.Client, wantResource strin
 		}
 	}
 	return prm, nil
+}
+
+type ProtectedResourceMetadataURL struct {
+	// URL represents a URL where Protected Resource Metadata may be retrieved.
+	URL string
+	// Resource represents the corresponding resource URL for [URL].
+	// It is required to perform validation described in RFC 9728, section 3.3.
+	Resource string
+}
+
+// ProtectedResourceMetadataURLs returns a list of URLs to try when looking for
+// protected resource metadata as mandated by the MCP specification.
+func ProtectedResourceMetadataURLs(metadataURL, resourceURL string) []ProtectedResourceMetadataURL {
+	var urls []ProtectedResourceMetadataURL
+	if metadataURL != "" {
+		urls = append(urls, ProtectedResourceMetadataURL{
+			URL:      metadataURL,
+			Resource: resourceURL,
+		})
+	}
+	// Produce fallbacks per
+	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protected-resource-metadata-discovery-requirements
+	ru, err := url.Parse(resourceURL)
+	if err != nil {
+		return urls
+	}
+	mu := *ru
+	// "At the path of the server's MCP endpoint".
+	mu.Path = "/.well-known/oauth-protected-resource/" + strings.TrimLeft(ru.Path, "/")
+	urls = append(urls, ProtectedResourceMetadataURL{
+		URL:      mu.String(),
+		Resource: resourceURL,
+	})
+	// "At the root".
+	mu.Path = "/.well-known/oauth-protected-resource"
+	ru.Path = ""
+	urls = append(urls, ProtectedResourceMetadataURL{
+		URL:      mu.String(),
+		Resource: ru.String(),
+	})
+	log.Printf("Resource metadata URLs: %v", urls)
+	return urls
 }
 
 // challenge represents a single authentication challenge from a WWW-Authenticate header.
@@ -116,6 +172,24 @@ func ResourceMetadataURL(cs []challenge) string {
 	for _, c := range cs {
 		if u := c.Params["resource_metadata"]; u != "" {
 			return u
+		}
+	}
+	return ""
+}
+
+func Scopes(cs []challenge) []string {
+	for _, c := range cs {
+		if c.Scheme == "bearer" && c.Params["scope"] != "" {
+			return strings.Fields(c.Params["scope"])
+		}
+	}
+	return nil
+}
+
+func Error(cs []challenge) string {
+	for _, c := range cs {
+		if c.Scheme == "bearer" && c.Params["error"] != "" {
+			return c.Params["error"]
 		}
 	}
 	return ""

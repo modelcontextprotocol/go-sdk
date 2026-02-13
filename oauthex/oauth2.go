@@ -36,6 +36,14 @@ func prependToPath(urlStr, pre string) (string, error) {
 	return u.String(), nil
 }
 
+type httpStatusError struct {
+	StatusCode int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("bad status %d", e.StatusCode)
+}
+
 // getJSON retrieves JSON and unmarshals JSON from the URL, as specified in both
 // RFC 9728 and RFC 8414.
 // It will not read more than limit bytes from the body.
@@ -53,11 +61,9 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 	}
 	defer res.Body.Close()
 
-	// Specs require a 200.
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status %s", res.Status)
+		return nil, &httpStatusError{StatusCode: res.StatusCode}
 	}
-	// Specs require application/json.
 	ct := res.Header.Get("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil || mediaType != "application/json" {

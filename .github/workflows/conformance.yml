@@ -25,7 +25,8 @@ jobs:
           go-version: "^1.25"
       - name: Start everything-server
         run: |
-          go run ./conformance/everything-server/main.go -http=":3001" &
+          # TODO: mcp_go_client_oauth should not be needed here, but the client OAuth abstractions have spilled into the streamable transport.
+          go run -tags mcp_go_client_oauth ./conformance/everything-server/main.go -http=":3001" &
           # Wait for the server to be ready.
           timeout 15 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
       - name: "Run conformance tests" 
@@ -49,6 +50,6 @@ jobs:
         uses: modelcontextprotocol/conformance@c2f3fdaf781dcd5a862cb0d2f6454c1c210bf0f0 # v0.1.11
         with:
           mode: client 
-          command: go run ./conformance/everything-client/main.go
+          command: go run -tags mcp_go_client_oauth ./conformance/everything-client/main.go
           suite: core
           expected-failures: ./conformance/baseline.yml
