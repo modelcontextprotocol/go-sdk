@@ -48,6 +48,11 @@ type CallToolParams struct {
 	// Arguments holds the tool arguments. It can hold any value that can be
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
+	// Task optionally requests task-based execution of this tool call.
+	//
+	// Note: when Task is present, the wire response is a CreateTaskResult rather
+	// than a CallToolResult.
+	Task *TaskParams `json:"task,omitempty"`
 }
 
 // CallToolParamsRaw is passed to tool handlers on the server. Its arguments
@@ -63,6 +68,8 @@ type CallToolParamsRaw struct {
 	// is the responsibility of the tool handler to unmarshal and validate the
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Task optionally requests task-based execution of this tool call.
+	Task *TaskParams `json:"task,omitempty"`
 }
 
 // A CallToolResult is the server's response to a tool call.
@@ -210,6 +217,8 @@ type ClientCapabilities struct {
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+	// Tasks describes support for task-based execution.
+	Tasks *TasksCapabilities `json:"tasks,omitempty"`
 }
 
 // clone returns a deep copy of the ClientCapabilities.
@@ -217,6 +226,7 @@ func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
 	cp.RootsV2 = shallowClone(c.RootsV2)
 	cp.Sampling = shallowClone(c.Sampling)
+	cp.Tasks = shallowClone(c.Tasks)
 	if c.Elicitation != nil {
 		x := *c.Elicitation
 		x.Form = shallowClone(c.Elicitation.Form)
@@ -1092,7 +1102,27 @@ type Tool struct {
 	Title string `json:"title,omitempty"`
 	// Icons for the tool, if any.
 	Icons []Icon `json:"icons,omitempty"`
+	// Execution contains optional execution-related settings.
+	Execution *ToolExecution `json:"execution,omitempty"`
 }
+
+// ToolExecution configures execution behavior for a tool.
+type ToolExecution struct {
+	// TaskSupport declares task support for this tool.
+	//
+	// Valid values are: "required", "optional", or "forbidden".
+	// See ToolTaskSupportRequired, ToolTaskSupportOptional, and ToolTaskSupportForbidden.
+	TaskSupport string `json:"taskSupport,omitempty"`
+}
+
+const (
+	// ToolTaskSupportRequired indicates the tool MUST be invoked with task augmentation.
+	ToolTaskSupportRequired = "required"
+	// ToolTaskSupportOptional indicates the tool MAY be invoked with task augmentation.
+	ToolTaskSupportOptional = "optional"
+	// ToolTaskSupportForbidden indicates the tool MUST NOT be invoked with task augmentation.
+	ToolTaskSupportForbidden = "forbidden"
+)
 
 // Additional properties describing a Tool to clients.
 //
@@ -1314,6 +1344,8 @@ type ServerCapabilities struct {
 	Resources *ResourceCapabilities `json:"resources,omitempty"`
 	// Tools is present if the supports tools.
 	Tools *ToolCapabilities `json:"tools,omitempty"`
+	// Tasks describes support for task-based execution.
+	Tasks *TasksCapabilities `json:"tasks,omitempty"`
 }
 
 // clone returns a deep copy of the ServerCapabilities.
@@ -1324,12 +1356,148 @@ func (c *ServerCapabilities) clone() *ServerCapabilities {
 	cp.Prompts = shallowClone(c.Prompts)
 	cp.Resources = shallowClone(c.Resources)
 	cp.Tools = shallowClone(c.Tools)
+	cp.Tasks = shallowClone(c.Tasks)
 	return &cp
 }
 
+// TasksCapabilities describes support for task-based execution.
+type TasksCapabilities struct {
+	List     *TasksListCapabilities     `json:"list,omitempty"`
+	Cancel   *TasksCancelCapabilities   `json:"cancel,omitempty"`
+	Requests *TasksRequestsCapabilities `json:"requests,omitempty"`
+}
+
+type TasksListCapabilities struct{}
+type TasksCancelCapabilities struct{}
+
+type TasksRequestsCapabilities struct {
+	Tools       *TasksToolsRequestCapabilities       `json:"tools,omitempty"`
+	Sampling    *TasksSamplingRequestCapabilities    `json:"sampling,omitempty"`
+	Elicitation *TasksElicitationRequestCapabilities `json:"elicitation,omitempty"`
+}
+
+type TasksToolsRequestCapabilities struct {
+	Call *TasksToolsCallCapabilities `json:"call,omitempty"`
+}
+
+type TasksToolsCallCapabilities struct{}
+
+type TasksSamplingRequestCapabilities struct {
+	CreateMessage *TasksSamplingCreateMessageCapabilities `json:"createMessage,omitempty"`
+}
+
+type TasksSamplingCreateMessageCapabilities struct{}
+
+type TasksElicitationRequestCapabilities struct {
+	Create *TasksElicitationCreateCapabilities `json:"create,omitempty"`
+}
+
+type TasksElicitationCreateCapabilities struct{}
+
+// TaskParams is included in request parameters to request task-based execution.
+type TaskParams struct {
+	TTL *int64 `json:"ttl,omitempty"`
+}
+
+type TaskStatus string
+
+const (
+	TaskStatusWorking       TaskStatus = "working"
+	TaskStatusInputRequired TaskStatus = "input_required"
+	TaskStatusCompleted     TaskStatus = "completed"
+	TaskStatusFailed        TaskStatus = "failed"
+	TaskStatusCancelled     TaskStatus = "cancelled"
+)
+
+// Task describes the state of a task.
+type Task struct {
+	Meta          `json:"_meta,omitempty"`
+	TaskID        string     `json:"taskId"`
+	Status        TaskStatus `json:"status"`
+	StatusMessage string     `json:"statusMessage,omitempty"`
+	CreatedAt     string     `json:"createdAt"`
+	LastUpdatedAt string     `json:"lastUpdatedAt"`
+	TTL           *int64     `json:"ttl"`
+	PollInterval  *int64     `json:"pollInterval,omitempty"`
+}
+
+// CreateTaskResult is returned for task-augmented requests.
+type CreateTaskResult struct {
+	Meta `json:"_meta,omitempty"`
+	Task *Task `json:"task"`
+}
+
+func (*CreateTaskResult) isResult() {}
+
+type GetTaskParams struct {
+	Meta   `json:"_meta,omitempty"`
+	TaskID string `json:"taskId"`
+}
+
+func (*GetTaskParams) isParams()                {}
+func (x *GetTaskParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *GetTaskParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+type GetTaskResult Task
+
+func (*GetTaskResult) isResult() {}
+
+type ListTasksParams struct {
+	Meta   `json:"_meta,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+func (x *ListTasksParams) isParams()              {}
+func (x *ListTasksParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *ListTasksParams) SetProgressToken(t any) { setProgressToken(x, t) }
+func (x *ListTasksParams) cursorPtr() *string     { return &x.Cursor }
+
+type ListTasksResult struct {
+	Meta       `json:"_meta,omitempty"`
+	Tasks      []*Task `json:"tasks"`
+	NextCursor string  `json:"nextCursor,omitempty"`
+}
+
+func (*ListTasksResult) isResult()                {}
+func (x *ListTasksResult) nextCursorPtr() *string { return &x.NextCursor }
+
+type CancelTaskParams struct {
+	Meta   `json:"_meta,omitempty"`
+	TaskID string `json:"taskId"`
+}
+
+func (*CancelTaskParams) isParams()                {}
+func (x *CancelTaskParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *CancelTaskParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+type CancelTaskResult Task
+
+func (*CancelTaskResult) isResult() {}
+
+type TaskResultParams struct {
+	Meta   `json:"_meta,omitempty"`
+	TaskID string `json:"taskId"`
+}
+
+func (*TaskResultParams) isParams()                {}
+func (x *TaskResultParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *TaskResultParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+// TaskStatusNotificationParams is sent as notifications/tasks/status.
+type TaskStatusNotificationParams Task
+
+func (*TaskStatusNotificationParams) isParams()                {}
+func (x *TaskStatusNotificationParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *TaskStatusNotificationParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
 const (
 	methodCallTool                  = "tools/call"
+	methodGetTask                   = "tasks/get"
+	methodListTasks                 = "tasks/list"
+	methodCancelTask                = "tasks/cancel"
+	methodTaskResult                = "tasks/result"
 	notificationCancelled           = "notifications/cancelled"
+	notificationTaskStatus          = "notifications/tasks/status"
 	methodComplete                  = "completion/complete"
 	methodCreateMessage             = "sampling/createMessage"
 	methodElicit                    = "elicitation/create"
