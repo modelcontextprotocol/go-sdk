@@ -70,8 +70,8 @@ fi
 go build -o "$WORKDIR/conformance-server" ./conformance/everything-server
 
 # Start the server in the background
-echo "Starting conformance server on port $PORT..."
-"$WORKDIR/conformance-server" -http=":$PORT" &
+echo "Starting conformance server on localhost:$PORT..."
+"$WORKDIR/conformance-server" -http="localhost:$PORT" &
 SERVER_PID=$!
 
 echo "Server pid is $SERVER_PID"

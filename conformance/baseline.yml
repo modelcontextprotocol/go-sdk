@@ -1,3 +1,2 @@
-server:
-- dns-rebinding-protection
-client: [] # All pass!
+server: [] # All tests pass!
+client: [] # All tests pass!
