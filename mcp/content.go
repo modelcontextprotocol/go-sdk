@@ -329,25 +329,25 @@ func (r *ResourceContents) MarshalJSON() ([]byte, error) {
 // The Type field distinguishes them. In the protocol, each type has a constant
 // value for the field.
 type wireContent struct {
-	Type        string            `json:"type"`
-	Text        string            `json:"text,omitempty"`            // TextContent
-	MIMEType    string            `json:"mimeType,omitempty"`        // ImageContent, AudioContent, ResourceLink
-	Data        []byte            `json:"data,omitempty"`            // ImageContent, AudioContent
-	Resource    *ResourceContents `json:"resource,omitempty"`        // EmbeddedResource
-	URI         string            `json:"uri,omitempty"`             // ResourceLink
-	Name        string            `json:"name,omitempty"`            // ResourceLink, ToolUseContent
-	Title       string            `json:"title,omitempty"`           // ResourceLink
-	Description string            `json:"description,omitempty"`     // ResourceLink
-	Size        *int64            `json:"size,omitempty"`            // ResourceLink
-	Meta        Meta              `json:"_meta,omitempty"`           // all types
-	Annotations *Annotations      `json:"annotations,omitempty"`    // all types except ToolUseContent, ToolResultContent
-	Icons       []Icon            `json:"icons,omitempty"`           // ResourceLink
-	ID          string            `json:"id,omitempty"`              // ToolUseContent
-	Input       map[string]any    `json:"input,omitempty"`           // ToolUseContent
-	ToolUseID         string         `json:"toolUseId,omitempty"`    // ToolResultContent
-	NestedContent     []*wireContent `json:"content,omitempty"`      // ToolResultContent
-	StructuredContent any            `json:"structuredContent,omitempty"` // ToolResultContent
-	IsError           bool           `json:"isError,omitempty"`      // ToolResultContent
+	Type              string            `json:"type"`
+	Text              string            `json:"text,omitempty"`              // TextContent
+	MIMEType          string            `json:"mimeType,omitempty"`          // ImageContent, AudioContent, ResourceLink
+	Data              []byte            `json:"data,omitempty"`              // ImageContent, AudioContent
+	Resource          *ResourceContents `json:"resource,omitempty"`          // EmbeddedResource
+	URI               string            `json:"uri,omitempty"`               // ResourceLink
+	Name              string            `json:"name,omitempty"`              // ResourceLink, ToolUseContent
+	Title             string            `json:"title,omitempty"`             // ResourceLink
+	Description       string            `json:"description,omitempty"`       // ResourceLink
+	Size              *int64            `json:"size,omitempty"`              // ResourceLink
+	Meta              Meta              `json:"_meta,omitempty"`             // all types
+	Annotations       *Annotations      `json:"annotations,omitempty"`       // all types except ToolUseContent, ToolResultContent
+	Icons             []Icon            `json:"icons,omitempty"`             // ResourceLink
+	ID                string            `json:"id,omitempty"`                // ToolUseContent
+	Input             map[string]any    `json:"input,omitempty"`             // ToolUseContent
+	ToolUseID         string            `json:"toolUseId,omitempty"`         // ToolResultContent
+	NestedContent     []*wireContent    `json:"content,omitempty"`           // ToolResultContent
+	StructuredContent any               `json:"structuredContent,omitempty"` // ToolResultContent
+	IsError           bool              `json:"isError,omitempty"`           // ToolResultContent
 }
 
 // unmarshalContent unmarshals JSON that is either a single content object or

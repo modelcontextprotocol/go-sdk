@@ -648,11 +648,11 @@ func TestToolResultContent_MarshalJSON(t *testing.T) {
 
 func TestToolResultContent_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		wantID   string
-		wantErr  bool
-		checkFn  func(t *testing.T, got *ToolResultContent)
+		name    string
+		json    string
+		wantID  string
+		wantErr bool
+		checkFn func(t *testing.T, got *ToolResultContent)
 	}{
 		{
 			name:   "basic tool result",
@@ -719,10 +719,10 @@ func TestToolResultContent_UnmarshalJSON(t *testing.T) {
 
 func TestSamplingMessage_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		name      string
-		json      string
-		wantRole  Role
-		wantType  string // expected Content type name
+		name     string
+		json     string
+		wantRole Role
+		wantType string // expected Content type name
 	}{
 		{
 			name:     "tool_use content",
@@ -895,10 +895,10 @@ func TestCreateMessageWithToolsResult_MarshalJSON(t *testing.T) {
 
 func TestCreateMessageWithToolsResult_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		wantLen  int
-		wantErr  bool
+		name    string
+		json    string
+		wantLen int
+		wantErr bool
 	}{
 		{
 			name:    "single tool_use content",
