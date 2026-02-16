@@ -143,6 +143,7 @@ func TestElicitationURLMode(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestElicitationCompleteNotification(t *testing.T) {
 	ctx := context.Background()
 

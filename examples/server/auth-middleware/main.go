@@ -26,7 +26,9 @@ import (
 // This example demonstrates how to integrate auth.RequireBearerToken middleware
 // with an MCP server to provide authenticated access to MCP tools and resources.
 
-var httpAddr = flag.String("http", ":8080", "HTTP address to listen on")
+// Default to loopback to avoid exposing powerful demo endpoints to the local network.
+// Set -http 0.0.0.0:8080 to intentionally expose it.
+var httpAddr = flag.String("http", "localhost:8080", "HTTP address to listen on")
 
 // JWTClaims represents the claims in our JWT tokens.
 // In a real application, you would include additional claims like issuer, audience, etc.

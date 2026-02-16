@@ -1,0 +1,20 @@
+server: [] # All tests pass!
+client:
+- auth/basic-cimd
+- auth/metadata-default
+- auth/metadata-var1
+- auth/metadata-var2
+- auth/metadata-var3
+- auth/2025-03-26-oauth-metadata-backcompat
+- auth/2025-03-26-oauth-endpoint-fallback
+- auth/scope-from-www-authenticate
+- auth/scope-from-scopes-supported
+- auth/scope-omitted-when-undefined
+- auth/scope-step-up
+- auth/scope-retry-limit
+- auth/token-endpoint-auth-basic
+- auth/token-endpoint-auth-post
+- auth/token-endpoint-auth-none  
+- auth/client-credentials-jwt
+- auth/client-credentials-basic
+- auth/pre-registration

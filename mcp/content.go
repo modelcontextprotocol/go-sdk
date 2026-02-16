@@ -9,7 +9,6 @@ package mcp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -290,37 +289,8 @@ type ResourceContents struct {
 	URI      string `json:"uri"`
 	MIMEType string `json:"mimeType,omitempty"`
 	Text     string `json:"text,omitempty"`
-	Blob     []byte `json:"blob,omitempty"`
+	Blob     []byte `json:"blob,omitzero"`
 	Meta     Meta   `json:"_meta,omitempty"`
-}
-
-func (r *ResourceContents) MarshalJSON() ([]byte, error) {
-	// If we could assume Go 1.24, we could use omitzero for Blob and avoid this method.
-	if r.URI == "" {
-		return nil, errors.New("ResourceContents missing URI")
-	}
-	if r.Blob == nil {
-		// Text. Marshal normally.
-		type wireResourceContents ResourceContents // (lacks MarshalJSON method)
-		return json.Marshal((wireResourceContents)(*r))
-	}
-	// Blob.
-	if r.Text != "" {
-		return nil, errors.New("ResourceContents has non-zero Text and Blob fields")
-	}
-	// r.Blob may be the empty slice, so marshal with an alternative definition.
-	br := struct {
-		URI      string `json:"uri,omitempty"`
-		MIMEType string `json:"mimeType,omitempty"`
-		Blob     []byte `json:"blob"`
-		Meta     Meta   `json:"_meta,omitempty"`
-	}{
-		URI:      r.URI,
-		MIMEType: r.MIMEType,
-		Blob:     r.Blob,
-		Meta:     r.Meta,
-	}
-	return json.Marshal(br)
 }
 
 // wireContent is the wire format for content.

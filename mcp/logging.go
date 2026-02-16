@@ -89,21 +89,12 @@ type LoggingHandler struct {
 	handler         slog.Handler
 }
 
-// discardHandler is a slog.Handler that drops all logs.
-// TODO: use slog.DiscardHandler when we require Go 1.24+.
-type discardHandler struct{}
-
-func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
-func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
-func (discardHandler) WithAttrs([]slog.Attr) slog.Handler        { return discardHandler{} }
-func (discardHandler) WithGroup(string) slog.Handler             { return discardHandler{} }
-
 // ensureLogger returns l if non-nil, otherwise a discard logger.
 func ensureLogger(l *slog.Logger) *slog.Logger {
 	if l != nil {
 		return l
 	}
-	return slog.New(discardHandler{})
+	return slog.New(slog.DiscardHandler)
 }
 
 // NewLoggingHandler creates a [LoggingHandler] that logs to the given [ServerSession] using a
