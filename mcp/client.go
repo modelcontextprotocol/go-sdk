@@ -226,9 +226,9 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 	if c.opts.CreateMessageHandler != nil || c.opts.CreateMessageWithToolsHandler != nil {
 		if caps.Sampling == nil {
 			caps.Sampling = &SamplingCapabilities{}
-		}
-		if c.opts.CreateMessageWithToolsHandler != nil && caps.Sampling.Tools == nil {
-			caps.Sampling.Tools = &SamplingToolsCapabilities{}
+			if c.opts.CreateMessageWithToolsHandler != nil {
+				caps.Sampling.Tools = &SamplingToolsCapabilities{}
+			}
 		}
 	}
 
