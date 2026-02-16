@@ -668,8 +668,10 @@ func validateElicitProperty(propName string, propSchema *jsonschema.Schema) erro
 		return validateElicitNumberProperty(propName, propSchema)
 	case "boolean":
 		return validateElicitBooleanProperty(propName, propSchema)
+	case "array":
+		return validateElicitArrayProperty(propName, propSchema)
 	default:
-		return fmt.Errorf("elicit schema property %q has unsupported type %q, only string, number, integer, and boolean are allowed", propName, propSchema.Type)
+		return fmt.Errorf("elicit schema property %q has unsupported type %q, only string, number, integer, boolean, and array are allowed", propName, propSchema.Type)
 	}
 }
 
@@ -682,7 +684,7 @@ func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema
 			return fmt.Errorf("elicit schema property %q has enum values but type is %q, enums are only supported for string type", propName, propSchema.Type)
 		}
 		// Enum values themselves are validated by the JSON schema library
-		// Validate enumNames if present - must match enum length
+		// Validate legacy enumNames if present - must match enum length.
 		if propSchema.Extra != nil {
 			if enumNamesRaw, exists := propSchema.Extra["enumNames"]; exists {
 				// Type check enumNames - should be a slice
@@ -693,6 +695,15 @@ func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema
 				} else {
 					return fmt.Errorf("elicit schema property %q has invalid enumNames type, must be an array", propName)
 				}
+			}
+		}
+		return nil
+	}
+	// Handle new style of titled enums.
+	if propSchema.OneOf != nil {
+		for _, entry := range propSchema.OneOf {
+			if err := validateTitledEnumEntry(entry); err != nil {
+				return fmt.Errorf("elicit schema property %q oneOf has invalid entry: %v", propName, err)
 			}
 		}
 		return nil
@@ -746,6 +757,53 @@ func validateElicitNumberProperty(propName string, propSchema *jsonschema.Schema
 		return fmt.Errorf("elicit schema property %q has default value that cannot be interpreted as an int or float", propName)
 	}
 
+	return nil
+}
+
+// validateElicitArrayProperty validates multi-select enum properties.
+func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema) error {
+	if propSchema.Items == nil {
+		return fmt.Errorf("elicit schema property %q is array but missing 'items' definition", propName)
+	}
+
+	items := propSchema.Items
+	switch items.Type {
+	case "string":
+		// Untitled enums.
+		if items.Enum == nil {
+			return fmt.Errorf("elicit schema property %q items must specify enum for untitled enums", propName)
+		}
+		return nil
+	case "":
+		// Titled enums.
+		if len(items.AnyOf) == 0 {
+			return fmt.Errorf("elicit schema property %q items must specify anyOf for titled enums", propName)
+		}
+		for _, entry := range items.AnyOf {
+			if err := validateTitledEnumEntry(entry); err != nil {
+				return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("elicit schema property %q items have unsupported type %q", propName, items.Type)
+	}
+}
+
+func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry.Const == nil {
+		return fmt.Errorf("const is required for titled enum entries")
+	}
+	constVal, ok := (*entry.Const).(string)
+	if !ok {
+		return fmt.Errorf("const must be a string for titled enum entries")
+	}
+	if constVal == "" {
+		return fmt.Errorf("const cannot be empty for titled enum entries")
+	}
+	if entry.Title == "" {
+		return fmt.Errorf("title is required for titled enum entries")
+	}
 	return nil
 }
 
