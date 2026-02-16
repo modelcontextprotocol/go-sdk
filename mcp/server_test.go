@@ -441,6 +441,25 @@ func TestServerCapabilities(t *testing.T) {
 				Logging:      &LoggingCapabilities{},
 			},
 		},
+		{
+			name: "extensions preserved",
+			configureServer: func(s *Server) {},
+			serverOpts: func() ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext1", map[string]any{"key": "value"})
+				caps.AddExtension("io.example/ext2", nil)
+				return ServerOptions{Capabilities: caps}
+			}(),
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext1": map[string]any{"key": "value"},
+					"io.example/ext2": map[string]any{},
+				},
+				Logging: &LoggingCapabilities{},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -453,6 +472,45 @@ func TestServerCapabilities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAddExtensionNilSafety(t *testing.T) {
+	t.Run("ServerCapabilities", func(t *testing.T) {
+		var caps ServerCapabilities
+		caps.AddExtension("io.example/ext", nil)
+		settings, ok := caps.Extensions["io.example/ext"]
+		if !ok {
+			t.Fatal("extension not found")
+		}
+		if settings == nil {
+			t.Fatal("nil settings should be normalized to empty map")
+		}
+		m, ok := settings.(map[string]any)
+		if !ok {
+			t.Fatalf("settings is %T, want map[string]any", settings)
+		}
+		if len(m) != 0 {
+			t.Fatalf("settings has %d entries, want 0", len(m))
+		}
+	})
+	t.Run("ClientCapabilities", func(t *testing.T) {
+		var caps ClientCapabilities
+		caps.AddExtension("io.example/ext", nil)
+		settings, ok := caps.Extensions["io.example/ext"]
+		if !ok {
+			t.Fatal("extension not found")
+		}
+		if settings == nil {
+			t.Fatal("nil settings should be normalized to empty map")
+		}
+		m, ok := settings.(map[string]any)
+		if !ok {
+			t.Fatalf("settings is %T, want map[string]any", settings)
+		}
+		if len(m) != 0 {
+			t.Fatalf("settings has %d entries, want 0", len(m))
+		}
+	})
 }
 
 func TestServerAddResourceTemplate(t *testing.T) {
@@ -925,6 +983,23 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 			wantCapabilities: &ServerCapabilities{
 				Logging: &LoggingCapabilities{},
 				Tools:   &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "Extensions over wire",
+			serverOpts: func() *ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext", map[string]any{"key": "value"})
+				return &ServerOptions{Capabilities: caps}
+			}(),
+			configureServer: func(s *Server) {},
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext": map[string]any{"key": "value"},
+				},
+				Logging: &LoggingCapabilities{},
 			},
 		},
 	}

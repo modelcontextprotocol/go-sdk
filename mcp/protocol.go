@@ -13,6 +13,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 )
 
 // Optional annotations for the client. The client can use annotations to inform
@@ -194,6 +195,11 @@ type ClientCapabilities struct {
 
 	// Experimental reports non-standard capabilities that the client supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
+	// Extensions reports extensions that the client supports.
+	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
+	// Values are per-extension settings objects; use [ClientCapabilities.AddExtension]
+	// to ensure nil settings are normalized to empty objects.
+	Extensions map[string]any `json:"extensions,omitempty"`
 	// Roots describes the client's support for roots.
 	//
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
@@ -213,8 +219,22 @@ type ClientCapabilities struct {
 }
 
 // clone returns a deep copy of the ClientCapabilities.
+// AddExtension adds an extension with the given name and settings.
+// If settings is nil, an empty map is used to ensure valid JSON serialization
+// (the spec requires an object, not null).
+func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) {
+	if c.Extensions == nil {
+		c.Extensions = make(map[string]any)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	c.Extensions[name] = settings
+}
+
 func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
+	cp.Extensions = maps.Clone(c.Extensions)
 	cp.RootsV2 = shallowClone(c.RootsV2)
 	cp.Sampling = shallowClone(c.Sampling)
 	if c.Elicitation != nil {
@@ -1303,6 +1323,11 @@ type ServerCapabilities struct {
 
 	// Experimental reports non-standard capabilities that the server supports.
 	Experimental map[string]any `json:"experimental,omitempty"`
+	// Extensions reports extensions that the server supports.
+	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
+	// Values are per-extension settings objects; use [ServerCapabilities.AddExtension]
+	// to ensure nil settings are normalized to empty objects.
+	Extensions map[string]any `json:"extensions,omitempty"`
 	// Completions is present if the server supports argument autocompletion
 	// suggestions.
 	Completions *CompletionCapabilities `json:"completions,omitempty"`
@@ -1316,9 +1341,23 @@ type ServerCapabilities struct {
 	Tools *ToolCapabilities `json:"tools,omitempty"`
 }
 
+// AddExtension adds an extension with the given name and settings.
+// If settings is nil, an empty map is used to ensure valid JSON serialization
+// (the spec requires an object, not null).
+func (c *ServerCapabilities) AddExtension(name string, settings map[string]any) {
+	if c.Extensions == nil {
+		c.Extensions = make(map[string]any)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	c.Extensions[name] = settings
+}
+
 // clone returns a deep copy of the ServerCapabilities.
 func (c *ServerCapabilities) clone() *ServerCapabilities {
 	cp := *c
+	cp.Extensions = maps.Clone(c.Extensions)
 	cp.Completions = shallowClone(c.Completions)
 	cp.Logging = shallowClone(c.Logging)
 	cp.Prompts = shallowClone(c.Prompts)
