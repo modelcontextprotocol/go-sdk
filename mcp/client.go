@@ -486,9 +486,13 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 	}
 	if c.opts.CreateMessageHandler != nil {
 		// Downconvert the request for the basic handler.
+		baseParams, err := req.Params.toBase()
+		if err != nil {
+			return nil, err
+		}
 		baseReq := &CreateMessageRequest{
 			Session: req.Session,
-			Params:  req.Params.toBase(),
+			Params:  baseParams,
 		}
 		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
 		if err != nil {

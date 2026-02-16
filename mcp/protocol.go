@@ -414,14 +414,15 @@ func (x *CreateMessageWithToolsParams) isParams()              {}
 func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
-// toBase converts to CreateMessageParams by taking the first content block
-// from each message. Tools, ToolChoice, and any additional content blocks
-// (e.g. parallel tool calls) are dropped. The first block may be a
-// ToolUseContent or ToolResultContent, which the basic handler should
-// tolerate since SamplingMessage accepts tool content types.
-func (p *CreateMessageWithToolsParams) toBase() *CreateMessageParams {
+// toBase converts to CreateMessageParams by taking the content block from each
+// message. Tools and ToolChoice are dropped. Returns an error if any message
+// has multiple content blocks, since SamplingMessage only supports one.
+func (p *CreateMessageWithToolsParams) toBase() (*CreateMessageParams, error) {
 	var msgs []*SamplingMessage
 	for _, m := range p.Messages {
+		if len(m.Content) > 1 {
+			return nil, fmt.Errorf("message has %d content blocks; use CreateMessageWithToolsHandler to support multiple content", len(m.Content))
+		}
 		var content Content
 		if len(m.Content) > 0 {
 			content = m.Content[0]
@@ -438,7 +439,7 @@ func (p *CreateMessageWithToolsParams) toBase() *CreateMessageParams {
 		StopSequences:    p.StopSequences,
 		SystemPrompt:     p.SystemPrompt,
 		Temperature:      p.Temperature,
-	}
+	}, nil
 }
 
 // SamplingMessageV2 describes a message issued to or received from an

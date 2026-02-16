@@ -991,33 +991,38 @@ func TestSamplingMessageV2_UnmarshalJSON(t *testing.T) {
 }
 
 func TestToBase_Conversion(t *testing.T) {
+	// Single-content messages convert successfully.
 	params := &CreateMessageWithToolsParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessageV2{
 			{Role: "user", Content: []Content{&TextContent{Text: "hello"}}},
+		},
+		Tools:      []*Tool{{Name: "calc"}},
+		ToolChoice: &ToolChoice{Mode: "auto"},
+	}
+	base, err := params.toBase()
+	if err != nil {
+		t.Fatalf("toBase() error = %v", err)
+	}
+	if base.MaxTokens != 1000 {
+		t.Errorf("MaxTokens = %d, want 1000", base.MaxTokens)
+	}
+	if tc, ok := base.Messages[0].Content.(*TextContent); !ok || tc.Text != "hello" {
+		t.Errorf("Messages[0].Content = %v, want TextContent{hello}", base.Messages[0].Content)
+	}
+
+	// Multi-content messages return an error.
+	params2 := &CreateMessageWithToolsParams{
+		MaxTokens: 1000,
+		Messages: []*SamplingMessageV2{
 			{Role: "assistant", Content: []Content{
 				&ToolUseContent{ID: "c1", Name: "calc", Input: map[string]any{}},
 				&ToolUseContent{ID: "c2", Name: "search", Input: map[string]any{}},
 			}},
 		},
-		Tools:      []*Tool{{Name: "calc"}},
-		ToolChoice: &ToolChoice{Mode: "auto"},
 	}
-	base := params.toBase()
-
-	if base.MaxTokens != 1000 {
-		t.Errorf("MaxTokens = %d, want 1000", base.MaxTokens)
-	}
-	if len(base.Messages) != 2 {
-		t.Fatalf("len(Messages) = %d, want 2", len(base.Messages))
-	}
-	// First message: single content preserved
-	if tc, ok := base.Messages[0].Content.(*TextContent); !ok || tc.Text != "hello" {
-		t.Errorf("Messages[0].Content = %v, want TextContent{hello}", base.Messages[0].Content)
-	}
-	// Second message: only first content block kept
-	if tu, ok := base.Messages[1].Content.(*ToolUseContent); !ok || tu.ID != "c1" {
-		t.Errorf("Messages[1].Content = %v, want ToolUseContent{c1}", base.Messages[1].Content)
+	if _, err := params2.toBase(); err == nil {
+		t.Error("toBase() should return error for multi-content message")
 	}
 }
 
