@@ -49,6 +49,6 @@ jobs:
         uses: modelcontextprotocol/conformance@c2f3fdaf781dcd5a862cb0d2f6454c1c210bf0f0 # v0.1.11
         with:
           mode: client 
-          command: go run -tags mcp_go_client_oauth ./conformance/everything-client/main.go
+          command: go run -tags mcp_go_client_oauth ./conformance/everything-client
           suite: core
           expected-failures: ./conformance/baseline.yml

@@ -166,3 +166,9 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 
 	return nil
 }
+
+func withOAuthHandler(handler auth.OAuthHandler) connectOption {
+	return func(c *connectConfig) {
+		c.oauthHandler = handler
+	}
+}

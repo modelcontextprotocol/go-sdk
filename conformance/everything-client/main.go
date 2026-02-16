@@ -238,12 +238,6 @@ func withClientOptions(opts *mcp.ClientOptions) connectOption {
 	}
 }
 
-func withOAuthHandler(handler auth.OAuthHandler) connectOption {
-	return func(c *connectConfig) {
-		c.oauthHandler = handler
-	}
-}
-
 // connectToServer connects to the MCP server and returns a client session.
 // The caller is responsible for closing the session.
 func connectToServer(ctx context.Context, serverURL string, opts ...connectOption) (*mcp.ClientSession, error) {
