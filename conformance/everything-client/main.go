@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,7 +27,7 @@ import (
 
 // scenarioHandler is the function signature for all conformance test scenarios.
 // It takes a context and the server URL to connect to.
-type scenarioHandler func(ctx context.Context, serverURL string) error
+type scenarioHandler func(ctx context.Context, serverURL string, configCtx map[string]any) error
 
 var (
 	// registry stores all registered scenario handlers.
@@ -70,14 +71,14 @@ func init() {
 		registerScenario(scenario, runAuthClient)
 	}
 
-	registerScenario("auth/pre-registration", runPreregisteredClient)
+	registerScenario("auth/pre-registration", runAuthClient)
 }
 
 // ============================================================================
 // Basic scenarios
 // ============================================================================
 
-func runBasicClient(ctx context.Context, serverURL string) error {
+func runBasicClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -92,7 +93,7 @@ func runBasicClient(ctx context.Context, serverURL string) error {
 	return nil
 }
 
-func runToolsCallClient(ctx context.Context, serverURL string) error {
+func runToolsCallClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -126,7 +127,7 @@ func runToolsCallClient(ctx context.Context, serverURL string) error {
 // Elicitation scenarios
 // ============================================================================
 
-func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
+func runElicitationDefaultsClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	elicitationHandler := func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		return &mcp.ElicitResult{
 			Action:  "accept",
@@ -170,7 +171,7 @@ func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
 // SSE retry scenario
 // ============================================================================
 
-func runSSERetryClient(ctx context.Context, serverURL string) error {
+func runSSERetryClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	// TODO: this scenario is not passing yet. It requires a fix in the client SSE handling.
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
@@ -246,7 +247,7 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (code, 
 	return code, state, nil
 }
 
-func runAuthClient(ctx context.Context, serverURL string) error {
+func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
 	authHandler := &auth.AuthorizationCodeOAuthHandler{
 		RedirectURL: "http://localhost:3000/callback",
 		// Try client ID metadata document based registration.
@@ -259,6 +260,15 @@ func runAuthClient(ctx context.Context, serverURL string) error {
 				RedirectURIs: []string{"http://localhost:3000/callback"},
 			},
 		},
+	}
+	// Try pre-registered client information if provided in the context.
+	if clientId, ok := configCtx["client_id"].(string); ok {
+		if clientSecret, ok := configCtx["client_secret"].(string); ok {
+			authHandler.PreregisteredClientConfig = &auth.PreregisteredClientConfig{
+				ClientID:     clientId,
+				ClientSecret: clientSecret,
+			}
+		}
 	}
 
 	authHandler.AuthorizationURLHandler = func(ctx context.Context, authURL string) error {
@@ -314,59 +324,6 @@ func runAuthClient(ctx context.Context, serverURL string) error {
 	return nil
 }
 
-func runPreregisteredClient(ctx context.Context, serverURL string) error {
-	authHandler := &auth.AuthorizationCodeOAuthHandler{
-		RedirectURL: "http://localhost:3000/callback",
-		// Try preregistered client information.
-		PreregisteredClientConfig: &auth.PreregisteredClientConfig{
-			ClientID:     "pre-registered-client",
-			ClientSecret: "pre-registered-secret",
-		},
-	}
-
-	authHandler.AuthorizationURLHandler = func(ctx context.Context, authURL string) error {
-		// Normally this handler would trigger user browser to be opened.
-		// Here we query the authorization URL automatically and the AS is configured
-		// to authorize and redirect immediately. We save the resulting code.
-		code, state, err := fetchAuthorizationCodeAndState(ctx, authURL)
-		if err != nil {
-			return err
-		}
-		if err := authHandler.FinalizeAuthorization(code, state); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	session, err := connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
-	if err != nil {
-		if !errors.Is(err, auth.ErrRedirected) {
-			return err
-		}
-		// Received auth.ErrRedirected. Normally we would wait for the callback triggered
-		// by the AS redirect to RedirectURL, but here we already have the authorization code
-		// so we can immediately retry.
-		session, err = connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
-		if err != nil {
-			return nil
-		}
-	}
-	defer session.Close()
-
-	if _, err := session.ListTools(ctx, nil); err != nil {
-		return fmt.Errorf("session.ListTools(): %v", err)
-	}
-
-	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "test-tool",
-		Arguments: map[string]any{},
-	}); err != nil {
-		return fmt.Errorf("session.CallTool('test-tool'): %v", err)
-	}
-
-	return nil
-}
-
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -378,6 +335,7 @@ func main() {
 
 	serverURL := os.Args[1]
 	scenarioName := os.Getenv("MCP_CONFORMANCE_SCENARIO")
+	configCtx := getConformanceContext()
 
 	if scenarioName == "" {
 		printUsageAndExit("MCP_CONFORMANCE_SCENARIO not set")
@@ -389,9 +347,19 @@ func main() {
 	}
 
 	ctx := context.Background()
-	if err := handler(ctx, serverURL); err != nil {
+	if err := handler(ctx, serverURL, configCtx); err != nil {
 		log.Fatalf("Scenario %q failed: %v", scenarioName, err)
 	}
+}
+
+func getConformanceContext() map[string]any {
+	ctxStr := os.Getenv("MCP_CONFORMANCE_CONTEXT")
+	if ctxStr == "" {
+		return nil
+	}
+	var ctx map[string]any
+	_ = json.Unmarshal([]byte(ctxStr), &ctx)
+	return ctx
 }
 
 func printUsageAndExit(format string, args ...any) {
