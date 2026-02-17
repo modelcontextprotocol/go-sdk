@@ -16,7 +16,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v5
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version: "^1.25"
       - name: Check formatting
@@ -45,7 +45,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v5
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version: ${{ matrix.go }}
       - name: Test
@@ -57,7 +57,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v5
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version: "1.24"
       - name: Test with -race
