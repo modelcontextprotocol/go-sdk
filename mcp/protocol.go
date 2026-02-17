@@ -218,7 +218,6 @@ type ClientCapabilities struct {
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
 }
 
-// clone returns a deep copy of the ClientCapabilities.
 // AddExtension adds an extension with the given name and settings.
 // If settings is nil, an empty map is used to ensure valid JSON serialization
 // (the spec requires an object, not null).
@@ -232,6 +231,7 @@ func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) 
 	c.Extensions[name] = settings
 }
 
+// clone returns a deep copy of the ClientCapabilities.
 func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
 	cp.Extensions = maps.Clone(c.Extensions)

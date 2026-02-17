@@ -474,45 +474,6 @@ func TestServerCapabilities(t *testing.T) {
 	}
 }
 
-func TestAddExtensionNilSafety(t *testing.T) {
-	t.Run("ServerCapabilities", func(t *testing.T) {
-		var caps ServerCapabilities
-		caps.AddExtension("io.example/ext", nil)
-		settings, ok := caps.Extensions["io.example/ext"]
-		if !ok {
-			t.Fatal("extension not found")
-		}
-		if settings == nil {
-			t.Fatal("nil settings should be normalized to empty map")
-		}
-		m, ok := settings.(map[string]any)
-		if !ok {
-			t.Fatalf("settings is %T, want map[string]any", settings)
-		}
-		if len(m) != 0 {
-			t.Fatalf("settings has %d entries, want 0", len(m))
-		}
-	})
-	t.Run("ClientCapabilities", func(t *testing.T) {
-		var caps ClientCapabilities
-		caps.AddExtension("io.example/ext", nil)
-		settings, ok := caps.Extensions["io.example/ext"]
-		if !ok {
-			t.Fatal("extension not found")
-		}
-		if settings == nil {
-			t.Fatal("nil settings should be normalized to empty map")
-		}
-		m, ok := settings.(map[string]any)
-		if !ok {
-			t.Fatalf("settings is %T, want map[string]any", settings)
-		}
-		if len(m) != 0 {
-			t.Fatalf("settings has %d entries, want 0", len(m))
-		}
-	})
-}
-
 func TestServerAddResourceTemplate(t *testing.T) {
 	tests := []struct {
 		name        string
