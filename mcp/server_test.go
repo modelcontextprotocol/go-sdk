@@ -442,7 +442,7 @@ func TestServerCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name: "extensions preserved",
+			name:            "extensions preserved",
 			configureServer: func(s *Server) {},
 			serverOpts: func() ServerOptions {
 				caps := &ServerCapabilities{
