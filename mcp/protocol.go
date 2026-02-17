@@ -194,11 +194,13 @@ type ClientCapabilities struct {
 	// [ClientCapabilities.clone].
 
 	// Experimental reports non-standard capabilities that the client supports.
+	// The caller should not modify the map after assigning it.
 	Experimental map[string]any `json:"experimental,omitempty"`
 	// Extensions reports extensions that the client supports.
 	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
 	// Values are per-extension settings objects; use [ClientCapabilities.AddExtension]
 	// to ensure nil settings are normalized to empty objects.
+	// The caller should not modify the map or its values after assigning it.
 	Extensions map[string]any `json:"extensions,omitempty"`
 	// Roots describes the client's support for roots.
 	//
@@ -221,6 +223,7 @@ type ClientCapabilities struct {
 // AddExtension adds an extension with the given name and settings.
 // If settings is nil, an empty map is used to ensure valid JSON serialization
 // (the spec requires an object, not null).
+// The settings map should not be modified after the call.
 func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) {
 	if c.Extensions == nil {
 		c.Extensions = make(map[string]any)
@@ -231,9 +234,11 @@ func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) 
 	c.Extensions[name] = settings
 }
 
-// clone returns a deep copy of the ClientCapabilities.
+// clone returns a copy of the ClientCapabilities.
+// Values in the Extensions and Experimental maps are shallow-copied.
 func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
+	cp.Experimental = maps.Clone(c.Experimental)
 	cp.Extensions = maps.Clone(c.Extensions)
 	cp.RootsV2 = shallowClone(c.RootsV2)
 	cp.Sampling = shallowClone(c.Sampling)
@@ -1322,11 +1327,13 @@ type ServerCapabilities struct {
 	// [ServerCapabilities.clone].
 
 	// Experimental reports non-standard capabilities that the server supports.
+	// The caller should not modify the map after assigning it.
 	Experimental map[string]any `json:"experimental,omitempty"`
 	// Extensions reports extensions that the server supports.
 	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
 	// Values are per-extension settings objects; use [ServerCapabilities.AddExtension]
 	// to ensure nil settings are normalized to empty objects.
+	// The caller should not modify the map or its values after assigning it.
 	Extensions map[string]any `json:"extensions,omitempty"`
 	// Completions is present if the server supports argument autocompletion
 	// suggestions.
@@ -1344,6 +1351,7 @@ type ServerCapabilities struct {
 // AddExtension adds an extension with the given name and settings.
 // If settings is nil, an empty map is used to ensure valid JSON serialization
 // (the spec requires an object, not null).
+// The settings map should not be modified after the call.
 func (c *ServerCapabilities) AddExtension(name string, settings map[string]any) {
 	if c.Extensions == nil {
 		c.Extensions = make(map[string]any)
@@ -1354,9 +1362,11 @@ func (c *ServerCapabilities) AddExtension(name string, settings map[string]any) 
 	c.Extensions[name] = settings
 }
 
-// clone returns a deep copy of the ServerCapabilities.
+// clone returns a copy of the ServerCapabilities.
+// Values in the Extensions and Experimental maps are shallow-copied.
 func (c *ServerCapabilities) clone() *ServerCapabilities {
 	cp := *c
+	cp.Experimental = maps.Clone(c.Experimental)
 	cp.Extensions = maps.Clone(c.Extensions)
 	cp.Completions = shallowClone(c.Completions)
 	cp.Logging = shallowClone(c.Logging)
