@@ -6,8 +6,14 @@
 
 package json
 
-import "encoding/json"
+import (
+	"bytes"
+
+	"github.com/segmentio/encoding/json"
+)
 
 func Unmarshal(data []byte, v any) error {
-	return json.Unmarshal(data, v)
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DontMatchCaseInsensitiveStructFields()
+	return dec.Decode(v)
 }
