@@ -173,8 +173,10 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireCombined{}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+	// Use strict unmarshalling to prevent message smuggling attacks
+	// This enforces case-sensitive field matching and rejects duplicate keys
+	if err := StrictUnmarshal(data, &msg); err != nil {
+		return nil, fmt.Errorf("strict unmarshal jsonrpc message: %w", err)
 	}
 	if msg.VersionTag != wireVersion {
 		return nil, fmt.Errorf("invalid message version tag %q; expected %q", msg.VersionTag, wireVersion)

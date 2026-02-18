@@ -283,8 +283,9 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 		unmarshalParams: func(m json.RawMessage) (Params, error) {
 			var p P
 			if m != nil {
-				if err := json.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+				// Use strict unmarshalling to prevent message smuggling attacks
+				if err := jsonrpc2.StrictUnmarshal(m, &p); err != nil {
+					return nil, fmt.Errorf("strict unmarshal params: %w", err)
 				}
 			}
 			// We must check missingParamsOK here, in addition to checkRequest, to

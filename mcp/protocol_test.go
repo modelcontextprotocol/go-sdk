@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 )
 
 func TestParamsMeta(t *testing.T) {
@@ -1113,3 +1115,123 @@ func TestContentUnmarshal(t *testing.T) {
 	var gotpm PromptMessage
 	roundtrip(pm, &gotpm)
 }
+
+// TestCallToolParams_AttackVector tests that CallToolParams rejects message smuggling attacks
+// when unmarshalled through the SDK's strict parsing path
+func TestCallToolParams_AttackVector(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr string
+	}{
+		{
+			name:    "smuggled Name field",
+			json:    `{"name":"greet","Name":"secretTool","arguments":{}}`,
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "smuggled NAME field",
+			json:    `{"name":"greet","NAME":"secretTool"}`,
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "case mismatch - Name instead of name",
+			json:    `{"Name":"secretTool"}`,
+			wantErr: "field name case mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var params CallToolParams
+			// Use the internal strict unmarshalling path
+			err := unmarshalParamsStrict([]byte(tt.json), &params)
+			if err == nil {
+				t.Errorf("unmarshalParamsStrict() expected error, got nil. Result: %+v", params)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("unmarshalParamsStrict() error = %v, want error containing %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestGetPromptParams_AttackVector tests that GetPromptParams rejects message smuggling attacks
+func TestGetPromptParams_AttackVector(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr string
+	}{
+		{
+			name:    "smuggled Name field",
+			json:    `{"name":"legitimate","Name":"smuggled"}`,
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "case mismatch - Name instead of name",
+			json:    `{"Name":"smuggled"}`,
+			wantErr: "field name case mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var params GetPromptParams
+			err := unmarshalParamsStrict([]byte(tt.json), &params)
+			if err == nil {
+				t.Errorf("unmarshalParamsStrict() expected error, got nil. Result: %+v", params)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("unmarshalParamsStrict() error = %v, want error containing %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestReadResourceParams_AttackVector tests that ReadResourceParams rejects message smuggling attacks
+func TestReadResourceParams_AttackVector(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr string
+	}{
+		{
+			name:    "smuggled URI field",
+			json:    `{"uri":"file:///allowed","URI":"file:///secret"}`,
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "smuggled Uri field",
+			json:    `{"uri":"file:///allowed","Uri":"file:///secret"}`,
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "case mismatch - URI instead of uri",
+			json:    `{"URI":"file:///secret"}`,
+			wantErr: "field name case mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var params ReadResourceParams
+			err := unmarshalParamsStrict([]byte(tt.json), &params)
+			if err == nil {
+				t.Errorf("unmarshalParamsStrict() expected error, got nil. Result: %+v", params)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("unmarshalParamsStrict() error = %v, want error containing %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Helper function to test strict unmarshalling of params
+func unmarshalParamsStrict(data []byte, v interface{}) error {
+	return jsonrpc2.StrictUnmarshal(data, v)
+}
+
