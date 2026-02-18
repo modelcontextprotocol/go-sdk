@@ -8,7 +8,6 @@ package auth
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -24,43 +23,6 @@ import (
 // Deprecated: Please use the new OAuthHandler abstraction that is built
 // into the streamable transport.
 type OAuthHandlerLegacy func(req *http.Request, res *http.Response) (oauth2.TokenSource, error)
-
-// TokenStore is an interface than can be used by OAuthHandler implementations
-// to save tokens to a persistent storage.
-type TokenStore interface {
-	Save(context.Context, *oauth2.Token) error
-}
-
-type persistentTokenSource struct {
-	wrapped oauth2.TokenSource
-	store   TokenStore
-	ctx     context.Context
-}
-
-// NewPersistentTokenSource returns a [oauth2.TokenSource] that
-// persists the token to a given [TokenStore] after every successful
-// [oauth2.TokenSource.Token] call.
-// It is especially useful when wrapping a [oauth2.TokenSource]
-// that automatically refreshes the token when it expires.
-// The passed context is used for [TokenStore.Save] calls.
-func NewPersistentTokenSource(ctx context.Context, wrapped oauth2.TokenSource, store TokenStore) oauth2.TokenSource {
-	return &persistentTokenSource{
-		wrapped: wrapped,
-		store:   store,
-		ctx:     ctx,
-	}
-}
-
-func (t *persistentTokenSource) Token() (*oauth2.Token, error) {
-	token, err := t.wrapped.Token()
-	if err != nil {
-		return nil, err
-	}
-	if err := t.store.Save(t.ctx, token); err != nil {
-		return nil, err
-	}
-	return token, nil
-}
 
 // HTTPTransport is an [http.RoundTripper] that follows the MCP
 // OAuth protocol when it encounters a 401 Unauthorized response.

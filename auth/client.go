@@ -16,6 +16,8 @@ import (
 var ErrUnauthorized = errors.New("unauthorized")
 
 type OAuthHandler interface {
+	isOAuthHandler()
+
 	// TokenSource returns a token source to be used for outgoing requests.
 	TokenSource(context.Context) (oauth2.TokenSource, error)
 

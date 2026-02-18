@@ -91,9 +91,6 @@ type AuthorizationCodeOAuthHandler struct {
 	// The state should be validated on the redirect callback.
 	StateProvider func() string
 
-	// TokenStore is an optional object that allows persistent storage of tokens.
-	TokenStore TokenStore
-
 	// resolvedClientConfig used during the authorization flow.
 	resolvedClientConfig *resolvedClientConfig
 	// tokenSource is the token source to use for authorization.
@@ -106,6 +103,8 @@ type AuthorizationCodeOAuthHandler struct {
 	// state is the state string used in the authorization request.
 	state string
 }
+
+func (h *AuthorizationCodeOAuthHandler) isOAuthHandler() {}
 
 func (h *AuthorizationCodeOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	return h.tokenSource, nil
@@ -205,12 +204,7 @@ func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http
 		if err != nil {
 			return fmt.Errorf("token exchange failed: %w", err)
 		}
-		ts := cfg.TokenSource(ctx, token)
-		if h.TokenStore != nil {
-			// Persist the returned tokens to the store if requested.
-			ts = NewPersistentTokenSource(ctx, ts, h.TokenStore)
-		}
-		h.tokenSource = ts
+		h.tokenSource = cfg.TokenSource(ctx, token)
 		return nil
 	}
 
@@ -233,10 +227,6 @@ func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http
 	}
 
 	return ErrRedirected
-}
-
-func (h *AuthorizationCodeOAuthHandler) SetTokenSource(ts oauth2.TokenSource) {
-	h.tokenSource = ts
 }
 
 func (h *AuthorizationCodeOAuthHandler) FinalizeAuthorization(code, state string) error {

@@ -1667,19 +1667,6 @@ func textContent(t *testing.T, res *CallToolResult) string {
 	return text.Text
 }
 
-type testOAuthHandler struct {
-	token string
-}
-
-func (h *testOAuthHandler) TokenSource(context.Context) (oauth2.TokenSource, error) {
-	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: h.token}), nil
-}
-
-func (h *testOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
-	// 401 resonse is not expected in this test. We can simply fail.
-	return errors.New("unexpected 401")
-}
-
 func TestTokenInfo(t *testing.T) {
 	ctx := context.Background()
 
@@ -1707,7 +1694,7 @@ func TestTokenInfo(t *testing.T) {
 
 	transport := &StreamableClientTransport{
 		Endpoint:     httpServer.URL,
-		OAuthHandler: &testOAuthHandler{token: "test-token"},
+		OAuthHandler: &auth.FakeOAuthHandler{Token: &oauth2.Token{AccessToken: "test-token"}},
 	}
 	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport, nil)
