@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -1105,7 +1106,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				isInitialize = true
 				// Extract the protocol version from InitializeParams.
 				var params InitializeParams
-				if err := json.Unmarshal(jreq.Params, &params); err == nil {
+				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
 					initializeProtocolVersion = params.ProtocolVersion
 				}
 			}

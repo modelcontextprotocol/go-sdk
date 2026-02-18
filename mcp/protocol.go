@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // Optional annotations for the client. The client can use annotations to inform
@@ -141,7 +143,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		res
 		Content []*wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -315,7 +317,7 @@ type CompleteReference struct {
 func (r *CompleteReference) UnmarshalJSON(data []byte) error {
 	type wireCompleteReference CompleteReference // for naive unmarshaling
 	var r2 wireCompleteReference
-	if err := json.Unmarshal(data, &r2); err != nil {
+	if err := internaljson.Unmarshal(data, &r2); err != nil {
 		return err
 	}
 	switch r2.Type {
@@ -502,7 +504,7 @@ func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
 		msg
 		Content json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -542,7 +544,7 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 		result
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -605,7 +607,7 @@ func (r *CreateMessageWithToolsResult) UnmarshalJSON(data []byte) error {
 		result
 		Content json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -1056,7 +1058,7 @@ func (m *PromptMessage) UnmarshalJSON(data []byte) error {
 		msg
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -1253,7 +1255,7 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 		msg
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	// Allow text, image, audio, tool_use, and tool_result in sampling messages

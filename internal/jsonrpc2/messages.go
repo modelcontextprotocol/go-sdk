@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
+
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
 
@@ -173,7 +175,7 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireCombined{}
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := internaljson.Unmarshal(data, &msg); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
 	if msg.VersionTag != wireVersion {

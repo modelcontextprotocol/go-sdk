@@ -10,6 +10,8 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // A Content is a [TextContent], [ImageContent], [AudioContent],
@@ -248,7 +250,7 @@ func (c *ToolResultContent) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 		var w wireContent
-		if err := json.Unmarshal(data, &w); err != nil {
+		if err := internaljson.Unmarshal(data, &w); err != nil {
 			return nil, err
 		}
 		contentWire = append(contentWire, &w)
@@ -328,11 +330,11 @@ func unmarshalContent(raw json.RawMessage, allow map[string]bool) ([]Content, er
 	}
 	// Try array first, then fall back to single object.
 	var wires []*wireContent
-	if err := json.Unmarshal(raw, &wires); err == nil {
+	if err := internaljson.Unmarshal(raw, &wires); err == nil {
 		return contentsFromWire(wires, allow)
 	}
 	var wire wireContent
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	if err := internaljson.Unmarshal(raw, &wire); err != nil {
 		return nil, err
 	}
 	c, err := contentFromWire(&wire, allow)

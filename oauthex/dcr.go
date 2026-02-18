@@ -17,6 +17,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // ClientRegistrationMetadata represents the client metadata fields for the DCR POST request (RFC 7591).
@@ -144,7 +146,7 @@ func (r *ClientRegistrationResponse) UnmarshalJSON(data []byte) error {
 	}{
 		alias: (*alias)(r),
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := internaljson.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	if aux.ClientIDIssuedAt != 0 {
@@ -206,7 +208,7 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 
 	if resp.StatusCode == http.StatusCreated {
 		var regResponse ClientRegistrationResponse
-		if err := json.Unmarshal(body, &regResponse); err != nil {
+		if err := internaljson.Unmarshal(body, &regResponse); err != nil {
 			return nil, fmt.Errorf("failed to decode successful registration response: %w (%s)", err, string(body))
 		}
 		if regResponse.ClientID == "" {
@@ -221,7 +223,7 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 
 	if resp.StatusCode == http.StatusBadRequest {
 		var regError ClientRegistrationError
-		if err := json.Unmarshal(body, &regError); err != nil {
+		if err := internaljson.Unmarshal(body, &regError); err != nil {
 			return nil, fmt.Errorf("failed to decode registration error response: %w (%s)", err, string(body))
 		}
 		return nil, &regError
