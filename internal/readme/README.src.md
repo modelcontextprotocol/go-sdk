@@ -3,6 +3,7 @@
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/modelcontextprotocol/go-sdk/badge)](https://scorecard.dev/viewer/?uri=github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an implementation of the official Go software
 development kit (SDK) for the Model Context Protocol (MCP).
