@@ -697,6 +697,101 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 	}
 }
 
+// TestStreamableClientRetryWithoutProgress verifies that the client fails after
+// exceeding the retry limit when no progress is made (Last-Event-ID does not advance).
+// This tests the fix for issue #679.
+func TestStreamableClientRetryWithoutProgress(t *testing.T) {
+	// Speed up reconnection delays for testing.
+	const tick = 10 * time.Millisecond
+	defer func(delay time.Duration) {
+		reconnectInitialDelay = delay
+	}(reconnectInitialDelay)
+	reconnectInitialDelay = tick
+
+	// Use the fakeStreamableServer pattern like other tests to avoid race conditions.
+	ctx := context.Background()
+	const maxRetries = 2
+	var retryCount atomic.Int32
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "test-session",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "test-session", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "test-session", "", ""}: {
+				// Disable standalone SSE stream to simplify the test.
+				status: http.StatusMethodNotAllowed,
+			},
+			{"POST", "test-session", methodCallTool, ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				// Return SSE stream with fixed event ID.
+				body: `id: fixed_1
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"test"}}
+
+`,
+			},
+			// Resumption attempts with the same event ID (no progress).
+			{"GET", "test-session", "", "fixed_1"}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					retryCount.Add(1)
+					// Return the same event ID - no progress.
+					return `id: fixed_1
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"retry"}}
+
+`, http.StatusOK
+				},
+			},
+			{"DELETE", "test-session", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		MaxRetries: maxRetries,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// Make a call that will trigger reconnections without progress.
+	_, err = session.CallTool(ctx, &CallToolParams{Name: "test"})
+	if err == nil {
+		t.Fatal("CallTool succeeded unexpectedly, want error due to exceeded retries")
+	}
+
+	// Check that the error mentions exceeding retries without progress.
+	wantErr := "exceeded"
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("CallTool error = %q, want containing %q", err.Error(), wantErr)
+	}
+
+	// Verify that we actually retried the expected number of times.
+	// We expect maxRetries+1 attempts because we increment before checking the limit.
+	if got := retryCount.Load(); got != int32(maxRetries+1) {
+		t.Errorf("retry count = %d, want exactly %d", got, maxRetries+1)
+	}
+}
+
 func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 	ctx := context.Background()
 

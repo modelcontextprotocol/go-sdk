@@ -6,7 +6,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -18,7 +17,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
-
+	"github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -52,6 +51,9 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	}
 	options = nil // prevent reuse
 
+	if opts.CreateMessageHandler != nil && opts.CreateMessageWithToolsHandler != nil {
+		panic("cannot set both CreateMessageHandler and CreateMessageWithToolsHandler; use CreateMessageWithToolsHandler for tool support, or CreateMessageHandler for basic sampling")
+	}
 	if opts.Logger == nil { // ensure we have a logger
 		opts.Logger = ensureLogger(nil)
 	}
@@ -77,6 +79,19 @@ type ClientOptions struct {
 	// non nil value for [ClientCapabilities.Sampling], that value overrides the
 	// inferred capability.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
+	// CreateMessageWithToolsHandler handles incoming sampling/createMessage
+	// requests that may involve tool use. It returns
+	// [CreateMessageWithToolsResult], which supports array content for parallel
+	// tool calls.
+	//
+	// Setting this handler causes the client to advertise the sampling
+	// capability with tools support (sampling.tools). As with
+	// [CreateMessageHandler], [ClientOptions.Capabilities].Sampling overrides
+	// the inferred capability.
+	//
+	// It is a panic to set both CreateMessageHandler and
+	// CreateMessageWithToolsHandler.
+	CreateMessageWithToolsHandler func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error)
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
 	// Setting ElicitationHandler to a non-nil value automatically causes the
@@ -109,7 +124,16 @@ type ClientOptions struct {
 	// are set in the Capabilities field, their values override the inferred
 	// value.
 	//
-	// For example, to to configure elicitation modes:
+	// For example, to advertise sampling with tools and context support:
+	//
+	//	Capabilities: &ClientCapabilities{
+	//	    Sampling: &SamplingCapabilities{
+	//	        Tools:   &SamplingToolsCapabilities{},
+	//	        Context: &SamplingContextCapabilities{},
+	//	    },
+	//	}
+	//
+	// Or to configure elicitation modes:
 	//
 	//	Capabilities: &ClientCapabilities{
 	//	    Elicitation: &ElicitationCapabilities{
@@ -119,8 +143,7 @@ type ClientOptions struct {
 	//	}
 	//
 	// Conversely, if Capabilities does not set a field (for example, if the
-	// Elicitation field is nil), the inferred elicitation capability will be
-	// used.
+	// Elicitation field is nil), the inferred capability will be used.
 	Capabilities *ClientCapabilities
 	// ElicitationCompleteHandler handles incoming notifications for notifications/elicitation/complete.
 	ElicitationCompleteHandler func(context.Context, *ElicitationCompleteNotificationRequest)
@@ -198,10 +221,13 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 		caps.Roots = *caps.RootsV2
 	}
 
-	// Augment with sampling capability if handler is set.
-	if c.opts.CreateMessageHandler != nil {
+	// Augment with sampling capability if a handler is set.
+	if c.opts.CreateMessageHandler != nil || c.opts.CreateMessageWithToolsHandler != nil {
 		if caps.Sampling == nil {
 			caps.Sampling = &SamplingCapabilities{}
+			if c.opts.CreateMessageWithToolsHandler != nil {
+				caps.Sampling.Tools = &SamplingToolsCapabilities{}
+			}
 		}
 	}
 
@@ -453,12 +479,27 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 	}, nil
 }
 
-func (c *Client) createMessage(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-	if c.opts.CreateMessageHandler == nil {
-		// TODO: wrap or annotate this error? Pick a standard code?
-		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
+func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+	if c.opts.CreateMessageWithToolsHandler != nil {
+		return c.opts.CreateMessageWithToolsHandler(ctx, req)
 	}
-	return c.opts.CreateMessageHandler(ctx, req)
+	if c.opts.CreateMessageHandler != nil {
+		// Downconvert the request for the basic handler.
+		baseParams, err := req.Params.toBase()
+		if err != nil {
+			return nil, err
+		}
+		baseReq := &CreateMessageRequest{
+			Session: req.Session,
+			Params:  baseParams,
+		}
+		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
+		if err != nil {
+			return nil, err
+		}
+		return res.toWithTools(), nil
+	}
+	return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
 }
 
 // urlElicitationMiddleware returns middleware that automatically handles URL elicitation
@@ -668,8 +709,10 @@ func validateElicitProperty(propName string, propSchema *jsonschema.Schema) erro
 		return validateElicitNumberProperty(propName, propSchema)
 	case "boolean":
 		return validateElicitBooleanProperty(propName, propSchema)
+	case "array":
+		return validateElicitArrayProperty(propName, propSchema)
 	default:
-		return fmt.Errorf("elicit schema property %q has unsupported type %q, only string, number, integer, and boolean are allowed", propName, propSchema.Type)
+		return fmt.Errorf("elicit schema property %q has unsupported type %q, only string, number, integer, boolean, and array are allowed", propName, propSchema.Type)
 	}
 }
 
@@ -682,7 +725,7 @@ func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema
 			return fmt.Errorf("elicit schema property %q has enum values but type is %q, enums are only supported for string type", propName, propSchema.Type)
 		}
 		// Enum values themselves are validated by the JSON schema library
-		// Validate enumNames if present - must match enum length
+		// Validate legacy enumNames if present - must match enum length.
 		if propSchema.Extra != nil {
 			if enumNamesRaw, exists := propSchema.Extra["enumNames"]; exists {
 				// Type check enumNames - should be a slice
@@ -693,6 +736,15 @@ func validateElicitStringProperty(propName string, propSchema *jsonschema.Schema
 				} else {
 					return fmt.Errorf("elicit schema property %q has invalid enumNames type, must be an array", propName)
 				}
+			}
+		}
+		return nil
+	}
+	// Handle new style of titled enums.
+	if propSchema.OneOf != nil {
+		for _, entry := range propSchema.OneOf {
+			if err := validateTitledEnumEntry(entry); err != nil {
+				return fmt.Errorf("elicit schema property %q oneOf has invalid entry: %v", propName, err)
 			}
 		}
 		return nil
@@ -746,6 +798,53 @@ func validateElicitNumberProperty(propName string, propSchema *jsonschema.Schema
 		return fmt.Errorf("elicit schema property %q has default value that cannot be interpreted as an int or float", propName)
 	}
 
+	return nil
+}
+
+// validateElicitArrayProperty validates multi-select enum properties.
+func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema) error {
+	if propSchema.Items == nil {
+		return fmt.Errorf("elicit schema property %q is array but missing 'items' definition", propName)
+	}
+
+	items := propSchema.Items
+	switch items.Type {
+	case "string":
+		// Untitled enums.
+		if items.Enum == nil {
+			return fmt.Errorf("elicit schema property %q items must specify enum for untitled enums", propName)
+		}
+		return nil
+	case "":
+		// Titled enums.
+		if len(items.AnyOf) == 0 {
+			return fmt.Errorf("elicit schema property %q items must specify anyOf for titled enums", propName)
+		}
+		for _, entry := range items.AnyOf {
+			if err := validateTitledEnumEntry(entry); err != nil {
+				return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("elicit schema property %q items have unsupported type %q", propName, items.Type)
+	}
+}
+
+func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry.Const == nil {
+		return fmt.Errorf("const is required for titled enum entries")
+	}
+	constVal, ok := (*entry.Const).(string)
+	if !ok {
+		return fmt.Errorf("const must be a string for titled enum entries")
+	}
+	if constVal == "" {
+		return fmt.Errorf("const cannot be empty for titled enum entries")
+	}
+	if entry.Title == "" {
+		return fmt.Errorf("title is required for titled enum entries")
+	}
 	return nil
 }
 

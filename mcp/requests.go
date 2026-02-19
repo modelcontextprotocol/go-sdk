@@ -24,6 +24,7 @@ type (
 
 type (
 	CreateMessageRequest                   = ClientRequest[*CreateMessageParams]
+	CreateMessageWithToolsRequest          = ClientRequest[*CreateMessageWithToolsParams]
 	ElicitRequest                          = ClientRequest[*ElicitParams]
 	initializedClientRequest               = ClientRequest[*InitializedParams]
 	InitializeRequest                      = ClientRequest[*InitializeParams]

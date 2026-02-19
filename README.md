@@ -4,6 +4,7 @@
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/modelcontextprotocol/go-sdk/badge)](https://scorecard.dev/viewer/?uri=github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an implementation of the official Go software
 development kit (SDK) for the Model Context Protocol (MCP).
@@ -37,6 +38,9 @@ The following table shows which versions of the Go SDK support which versions of
 |-----------------|-------------------|------------------------------------------------|
 | v1.2.0+         | 2025-06-18        | 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 |
 | v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05             |
+
+New releases of the SDK target only supported versions of Go. See
+https://go.dev/doc/devel/release#policy for more information.
 
 ## Getting started
 

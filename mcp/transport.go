@@ -15,6 +15,7 @@ import (
 	"os"
 	"sync"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -23,6 +24,10 @@ import (
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
 var ErrConnectionClosed = errors.New("connection closed")
+
+// ErrSessionMissing is returned when the session is known to not be present on
+// the server.
+var ErrSessionMissing = errors.New("session not found")
 
 // A Transport is used to create a bidirectional connection between MCP client
 // and server.
@@ -189,7 +194,7 @@ type canceller struct {
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)
@@ -565,7 +570,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 	// Try to read an array of messages first.
 	var rawBatch []json.RawMessage
-	if err := json.Unmarshal(data, &rawBatch); err == nil {
+	if err := internaljson.Unmarshal(data, &rawBatch); err == nil {
 		if len(rawBatch) == 0 {
 			return nil, true, fmt.Errorf("empty batch")
 		}

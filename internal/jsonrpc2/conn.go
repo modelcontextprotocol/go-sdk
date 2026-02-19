@@ -6,13 +6,14 @@ package jsonrpc2
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // Binder builds a connection configuration.

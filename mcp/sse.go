@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net/http"
@@ -216,7 +217,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	sessionID = randText()
+	sessionID = rand.Text()
 	endpoint, err := req.URL.Parse("?sessionid=" + sessionID)
 	if err != nil {
 		http.Error(w, "internal error: failed to create endpoint", http.StatusInternalServerError)

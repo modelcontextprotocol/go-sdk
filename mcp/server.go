@@ -7,6 +7,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -175,7 +177,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	}
 
 	if opts.GetSessionID == nil {
-		opts.GetSessionID = randText
+		opts.GetSessionID = rand.Text
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
@@ -326,7 +328,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		// Unmarshal and validate args.
 		var in In
 		if input != nil {
-			if err := json.Unmarshal(input, &in); err != nil {
+			if err := internaljson.Unmarshal(input, &in); err != nil {
 				return nil, fmt.Errorf("%w: %v", jsonrpc2.ErrInvalidParams, err)
 			}
 		}
@@ -1162,6 +1164,10 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 }
 
 // CreateMessage sends a sampling request to the client.
+//
+// If the client returns multiple content blocks (e.g. parallel tool calls),
+// CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
+// for tool-enabled sampling.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
@@ -1174,7 +1180,44 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 		p2.Messages = []*SamplingMessage{} // avoid JSON "null"
 		params = &p2
 	}
-	return handleSend[*CreateMessageResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
+	res, err := handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	// Downconvert to singular content.
+	if len(res.Content) > 1 {
+		return nil, fmt.Errorf("CreateMessage result has %d content blocks; use CreateMessageWithTools for multiple content", len(res.Content))
+	}
+	var content Content
+	if len(res.Content) > 0 {
+		content = res.Content[0]
+	}
+	return &CreateMessageResult{
+		Meta:       res.Meta,
+		Content:    content,
+		Model:      res.Model,
+		Role:       res.Role,
+		StopReason: res.StopReason,
+	}, nil
+}
+
+// CreateMessageWithTools sends a sampling request with tools to the client,
+// returning a [CreateMessageWithToolsResult] that supports array content
+// (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
+// when the request includes tools.
+func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
+	if err := ss.checkInitialized(methodCreateMessage); err != nil {
+		return nil, err
+	}
+	if params == nil {
+		params = &CreateMessageWithToolsParams{Messages: []*SamplingMessageV2{}}
+	}
+	if params.Messages == nil {
+		p2 := *params
+		p2.Messages = []*SamplingMessageV2{} // avoid JSON "null"
+		params = &p2
+	}
+	return handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
 }
 
 // Elicit sends an elicitation request to the client asking for user input.
@@ -1329,7 +1372,7 @@ func initializeMethodInfo() methodInfo {
 	info.unmarshalParams = func(m json.RawMessage) (Params, error) {
 		var params *initializeParamsV2
 		if m != nil {
-			if err := json.Unmarshal(m, &params); err != nil {
+			if err := internaljson.Unmarshal(m, &params); err != nil {
 				return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, params, err)
 			}
 		}

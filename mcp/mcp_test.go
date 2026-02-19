@@ -56,6 +56,7 @@ func codReviewPromptHandler(_ context.Context, req *GetPromptRequest) (*GetPromp
 	}, nil
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	var ct, st Transport = NewInMemoryTransports()
@@ -672,6 +673,7 @@ func TestServerClosing(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestBatching(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
@@ -710,6 +712,7 @@ func TestBatching(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestCancellation(t *testing.T) {
 	var (
 		start     = make(chan struct{})
@@ -903,6 +906,7 @@ func nopHandler(context.Context, *CallToolRequest) (*CallToolResult, error) {
 	return nil, nil
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestKeepAlive(t *testing.T) {
 	// TODO: try to use the new synctest package for this test once we upgrade to Go 1.24+.
 	// synctest would allow us to control time and avoid the time.Sleep calls, making the test
@@ -1091,7 +1095,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "string enum",
+			name: "single select untitled enum",
 			schema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
@@ -1107,7 +1111,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "enum with matching enumNames",
+			name: "legacy titled enum",
 			schema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
@@ -1126,7 +1130,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "enum with enum schema",
+			name: "single select titled enum",
 			schema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
@@ -1134,22 +1138,62 @@ func TestElicitationSchemaValidation(t *testing.T) {
 						Type: "string",
 						OneOf: []*jsonschema.Schema{
 							{
-								Const: anyPtr(map[string]string{
-									"const": "high",
-									"title": "High Priority",
-								}),
+								Const: anyPtr("high"),
+								Title: "High Priority",
 							},
 							{
-								Const: anyPtr(map[string]string{
-									"const": "medium",
-									"title": "Medium Priority",
-								}),
+								Const: anyPtr("medium"),
+								Title: "Medium Priority",
 							},
 							{
-								Const: anyPtr(map[string]string{
-									"const": "low",
-									"title": "Low Priority",
-								}),
+								Const: anyPtr("low"),
+								Title: "Low Priority",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multi select untitled enum",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"status": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type: "string",
+							Enum: []any{
+								"active",
+								"inactive",
+								"pending",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multi select titled enum",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							AnyOf: []*jsonschema.Schema{
+								{
+									Const: anyPtr("high"),
+									Title: "High Priority",
+								},
+								{
+									Const: anyPtr("medium"),
+									Title: "Medium Priority",
+								},
+								{
+									Const: anyPtr("low"),
+									Title: "Low Priority",
+								},
 							},
 						},
 					},
@@ -1206,17 +1250,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 					"config": {Type: "object"},
 				},
 			},
-			expectedError: "elicit schema property \"config\" has unsupported type \"object\", only string, number, integer, and boolean are allowed",
-		},
-		{
-			name: "array property",
-			schema: &jsonschema.Schema{
-				Type: "object",
-				Properties: map[string]*jsonschema.Schema{
-					"tags": {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
-				},
-			},
-			expectedError: "elicit schema property \"tags\" has unsupported type \"array\", only string, number, integer, and boolean are allowed",
+			expectedError: "elicit schema property \"config\" has unsupported type \"object\", only string, number, integer, boolean, and array are allowed",
 		},
 		{
 			name: "array without items",
@@ -1226,7 +1260,27 @@ func TestElicitationSchemaValidation(t *testing.T) {
 					"items": {Type: "array"},
 				},
 			},
-			expectedError: "elicit schema property \"items\" has unsupported type \"array\", only string, number, integer, and boolean are allowed",
+			expectedError: "elicit schema property \"items\" is array but missing 'items' definition",
+		},
+		{
+			name: "array with integer items",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"items": {Type: "array", Items: &jsonschema.Schema{Type: "integer"}},
+				},
+			},
+			expectedError: "elicit schema property \"items\" items have unsupported type \"integer\"",
+		},
+		{
+			name: "array of generic strings",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"items": {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+				},
+			},
+			expectedError: "elicit schema property \"items\" items must specify enum for untitled enums",
 		},
 		{
 			name: "unsupported string format",
@@ -1381,7 +1435,29 @@ func TestElicitationSchemaValidation(t *testing.T) {
 					},
 				},
 			},
-			expectedError: "elicit schema property \"priority\" has unsupported type \"\", only string, number, integer, and boolean are allowed",
+			expectedError: "elicit schema property \"priority\" has unsupported type \"\", only string, number, integer, boolean, and array are allowed",
+		},
+		{
+			name: "titled enum without const",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "string",
+						OneOf: []*jsonschema.Schema{
+							{
+								Const: anyPtr("high"),
+								Title: "High Priority",
+							},
+							{
+								Type:  "string",
+								Title: "Other Priority",
+							},
+						},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priority\" oneOf has invalid entry: const is required for titled enum entries",
 		},
 		{
 			name: "untyped property",
@@ -1391,7 +1467,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 					"data": {},
 				},
 			},
-			expectedError: "elicit schema property \"data\" has unsupported type \"\", only string, number, integer, and boolean are allowed",
+			expectedError: "elicit schema property \"data\" has unsupported type \"\", only string, number, integer, boolean, and array are allowed",
 		},
 	}
 
@@ -1454,10 +1530,8 @@ func TestElicitContentValidation(t *testing.T) {
 						Type: "string",
 						OneOf: []*jsonschema.Schema{
 							{
-								Const: anyPtr(map[string]string{
-									"const": "high",
-									"title": "High Priority",
-								}),
+								Const: anyPtr("high"),
+								Title: "High Priority",
 							},
 						},
 					},
@@ -1474,10 +1548,8 @@ func TestElicitContentValidation(t *testing.T) {
 						Type: "string",
 						OneOf: []*jsonschema.Schema{
 							{
-								Const: anyPtr(map[string]string{
-									"const": "potato",
-									"title": "Potato Priority",
-								}),
+								Const: anyPtr("potato"),
+								Title: "Potato Priority",
 							},
 						},
 					},
@@ -1715,6 +1787,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestKeepAliveFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1798,6 +1871,7 @@ func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	}
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestSynchronousNotifications(t *testing.T) {
 	var toolsChanged atomic.Int32
 	clientOpts := &ClientOptions{
@@ -1860,6 +1934,7 @@ func TestSynchronousNotifications(t *testing.T) {
 	})
 }
 
+// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestNoDistributedDeadlock(t *testing.T) {
 	// This test verifies that calls are asynchronous, and so it's not possible
 	// to have a distributed deadlock.
