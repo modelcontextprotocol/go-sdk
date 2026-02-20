@@ -155,13 +155,18 @@ func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http
 		}
 		log.Printf("Failed to get protected resource metadata from %q: %v", url, err)
 	}
+	// log.Printf("Protected resource metadata: %+v", prm)
 	asm, err := h.getAuthServerMetadata(ctx, prm, resourceURL)
 	if err != nil {
 		return err
 	}
+	// log.Printf("Authorization server metadata: %+v", asm)
 
-	if err := h.handleRegistration(ctx, asm); err != nil {
-		return err
+	if h.resolvedClientConfig == nil {
+		// Client configuration is not resolved yet, try to resolve it.
+		if err := h.handleRegistration(ctx, asm); err != nil {
+			return err
+		}
 	}
 
 	scopes := oauthex.Scopes(wwwChallenges)
@@ -202,6 +207,7 @@ func (h *AuthorizationCodeOAuthHandler) FinalizeAuthorization(code, state string
 	return nil
 }
 
+// TODO: validate on creation.
 func (h *AuthorizationCodeOAuthHandler) validate() error {
 	if h.ClientIDMetadataDocumentConfig == nil &&
 		h.PreregisteredClientConfig == nil &&
@@ -267,7 +273,6 @@ func (h *AuthorizationCodeOAuthHandler) getAuthServerMetadata(ctx context.Contex
 	if err != nil {
 		return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
 	}
-	log.Print("Authorization server medatada fetched")
 	if asm == nil {
 		log.Print("Authorization server metadata not found, using fallback")
 		// Fallback to 2025-03-26 spec: predefined endpoints.

@@ -106,6 +106,9 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		}
 		return nil, err.Error(), http.StatusInternalServerError
 	}
+	if tokenInfo == nil {
+		return nil, "token validation failed", http.StatusInternalServerError
+	}
 
 	// Check scopes. All must be present.
 	if opts != nil {
