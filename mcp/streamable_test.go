@@ -34,6 +34,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2"
 )
 
 func TestStreamableTransports(t *testing.T) {
@@ -1667,9 +1668,6 @@ func textContent(t *testing.T, res *CallToolResult) string {
 }
 
 func TestTokenInfo(t *testing.T) {
-	oldAuth := testAuth.Load()
-	defer testAuth.Store(oldAuth)
-	testAuth.Store(true)
 	ctx := context.Background()
 
 	// Create a server with a tool that returns TokenInfo.
@@ -1680,7 +1678,10 @@ func TestTokenInfo(t *testing.T) {
 	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
 
 	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	verifier := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test-token" {
+			return nil, auth.ErrInvalidToken
+		}
 		return &auth.TokenInfo{
 			Scopes: []string{"scope"},
 			// Expiration is far, far in the future.
@@ -1691,7 +1692,10 @@ func TestTokenInfo(t *testing.T) {
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: &auth.FakeOAuthHandler{Token: &oauth2.Token{AccessToken: "test-token"}},
+	}
 	client := NewClient(testImpl, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {

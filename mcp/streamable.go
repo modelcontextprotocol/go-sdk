@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -36,6 +35,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 const (
@@ -1456,6 +1456,9 @@ type StreamableClientTransport struct {
 	//   - You want to avoid maintaining a persistent connection
 	DisableStandaloneSSE bool
 
+	// OAuthHandler is an optional field that, if provided, will be used to authorize the requests.
+	OAuthHandler auth.OAuthHandler
+
 	// TODO(rfindley): propose exporting these.
 	// If strict is set, the transport is in 'strict mode', where any violation
 	// of the MCP spec causes a failure.
@@ -1531,6 +1534,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		cancel:               cancel,
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
+		oauthHandler:         t.OAuthHandler,
 	}
 	return conn, nil
 }
@@ -1548,6 +1552,9 @@ type streamableClientConn struct {
 	// disableStandaloneSSE controls whether to disable the standalone SSE stream
 	// for receiving server-to-client notifications when no request is in flight.
 	disableStandaloneSSE bool // from [StreamableClientTransport.DisableStandaloneSSE]
+
+	// oauthHandler is the OAuth handler for the connection.
+	oauthHandler auth.OAuthHandler // from [StreamableClientTransport.OAuthHandler]
 
 	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
@@ -1724,14 +1731,57 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	c.setMCPHeaders(req)
+	doRequest := func() (*http.Response, error) {
+		if err := c.setMCPHeaders(req); err != nil {
+			// TODO: should we fail the connection here?
+			return nil, err
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			// Any error from client.Do means the request didn't reach the server.
+			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+			// and permanently break the connection.
+			err = fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, err)
+		}
+		return resp, err
+	}
 
-	resp, err := c.client.Do(req)
+	resp, err := doRequest()
 	if err != nil {
-		// Any error from client.Do means the request didn't reach the server.
-		// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
-		// and permanently break the connection.
-		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, err)
+		return err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized && c.oauthHandler != nil {
+		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
+			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+			// and permanently break the connection.
+			// Wrap the authorization error as well for client inspection.
+			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+		}
+		// Retry the request after successful authorization.
+		resp, err = doRequest()
+		if err != nil {
+			return err
+		}
+	}
+	if resp.StatusCode == http.StatusForbidden && c.oauthHandler != nil {
+		challenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
+		if err != nil {
+			c.logger.Warn("%s: failed to parse WWW-Authenticate header: %v", requestSummary, err)
+		} else if oauthex.Error(challenges) == "insufficient_scope" {
+			// Trigger step-up authorization flow.
+			if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
+				// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+				// and permanently break the connection.
+				// Wrap the authorization error as well for client inspection.
+				return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+			}
+			// Retry the request after successful authorization.
+			resp, err = doRequest()
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := c.checkResponse(requestSummary, resp); err != nil {
@@ -1799,23 +1849,30 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-// testAuth controls whether a fake Authorization header is added to outgoing requests.
-// TODO: replace with a better mechanism when client-side auth is in place.
-var testAuth atomic.Bool
-
-func (c *streamableClientConn) setMCPHeaders(req *http.Request) {
+func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.oauthHandler != nil {
+		ts, err := c.oauthHandler.TokenSource(c.ctx)
+		if err != nil {
+			return err
+		}
+		if ts != nil {
+			token, err := ts.Token()
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		}
+	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
-	if testAuth.Load() {
-		req.Header.Set("Authorization", "Bearer foo")
-	}
+	return nil
 }
 
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
@@ -2068,7 +2125,10 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			if err != nil {
 				return nil, err
 			}
-			c.setMCPHeaders(req)
+			if err := c.setMCPHeaders(req); err != nil {
+				// TODO: should we fail the connection here?
+				return nil, err
+			}
 			if lastEventID != "" {
 				req.Header.Set(lastEventIDHeader, lastEventID)
 			}
@@ -2099,8 +2159,11 @@ func (c *streamableClientConn) Close() error {
 			if err != nil {
 				c.closeErr = err
 			} else {
-				c.setMCPHeaders(req)
-				if _, err := c.client.Do(req); err != nil {
+				if err := c.setMCPHeaders(req); err != nil {
+					// TODO: or setting headers should be best-effort and we should retry
+					// the request without them?
+					c.closeErr = err
+				} else if _, err := c.client.Do(req); err != nil {
 					c.closeErr = err
 				}
 			}

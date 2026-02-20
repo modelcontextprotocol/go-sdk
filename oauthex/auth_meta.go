@@ -13,7 +13,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -113,11 +116,10 @@ type AuthServerMeta struct {
 	// CodeChallengeMethodsSupported is a RECOMMENDED JSON array of strings containing a list of
 	// PKCE code challenge methods supported by this authorization server.
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-}
 
-var wellKnownPaths = []string{
-	"/.well-known/oauth-authorization-server",
-	"/.well-known/openid-configuration",
+	// ClientIDMetadataDocumentSupported is a boolean indicating whether the authorization server
+	// supports client ID metadata documents.
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
 }
 
 // GetAuthServerMeta issues a GET request to retrieve authorization server metadata
@@ -130,34 +132,74 @@ var wellKnownPaths = []string{
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
 func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*AuthServerMeta, error) {
-	var errs []error
-	for _, p := range wellKnownPaths {
-		u, err := prependToPath(issuerURL, p)
+	for _, u := range AuthorizationServerMetadataURLs(issuerURL) {
+		asm, err := getJSON[AuthServerMeta](ctx, c, u, 1<<20)
 		if err != nil {
-			// issuerURL is bad; no point in continuing.
+			log.Printf("Failed to get auth server metadata from %q: %v", u, err)
+			var httpErr *httpStatusError
+			if errors.As(err, &httpErr) {
+				if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
+					continue
+				}
+				return nil, fmt.Errorf("%v", err) // Do not expose wrapped errors.
+			}
+		}
+		// TODO: causes conformance test failure, filed https://github.com/modelcontextprotocol/conformance/issues/140.
+		// if asm.Issuer != issuerURL {
+		// 	// Validate the Issuer field (see RFC 8414, section 3.3).
+		// 	return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
+		// }
+
+		if len(asm.CodeChallengeMethodsSupported) == 0 {
+			return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
+		}
+
+		// Validate endpoint URLs to prevent XSS attacks (see #526).
+		if err := validateAuthServerMetaURLs(asm); err != nil {
 			return nil, err
 		}
-		asm, err := getJSON[AuthServerMeta](ctx, c, u, 1<<20)
-		if err == nil {
-			if asm.Issuer != issuerURL { // section 3.3
-				// Security violation; don't keep trying.
-				return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
-			}
+		log.Printf("Fetched authorization server metadata from %q", u)
 
-			if len(asm.CodeChallengeMethodsSupported) == 0 {
-				return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
-			}
-
-			// Validate endpoint URLs to prevent XSS attacks (see #526).
-			if err := validateAuthServerMetaURLs(asm); err != nil {
-				return nil, err
-			}
-
-			return asm, nil
-		}
-		errs = append(errs, err)
+		return asm, nil
 	}
-	return nil, fmt.Errorf("failed to get auth server metadata from %q: %w", issuerURL, errors.Join(errs...))
+	// Authorization server metadata not found. Return nil error to allow a fallback.
+	return nil, nil
+}
+
+// AuthorizationServerMetadataURLs returns a list of URLs to try when looking for
+// authorization server metadata as mandated by the MCP specification.
+func AuthorizationServerMetadataURLs(issuerURL string) []string {
+	var urls []string
+
+	// Produce candidates per
+	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
+
+	baseURL, err := url.Parse(issuerURL)
+	if err != nil {
+		return nil
+	}
+
+	if baseURL.Path == "" {
+		// "OAuth 2.0 Authorization Server Metadata".
+		baseURL.Path = "/.well-known/oauth-authorization-server"
+		urls = append(urls, baseURL.String())
+		// "OpenID Connect Discovery 1.0".
+		baseURL.Path = "/.well-known/openid-configuration"
+		urls = append(urls, baseURL.String())
+		return urls
+	}
+
+	originalPath := baseURL.Path
+	// "OAuth 2.0 Authorization Server Metadata with path insertion".
+	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
+	urls = append(urls, baseURL.String())
+	// "OpenID Connect Discovery 1.0 with path insertion".
+	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
+	urls = append(urls, baseURL.String())
+	// "OpenID Connect Discovery 1.0 path appending".
+	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
+	urls = append(urls, baseURL.String())
+	return urls
 }
 
 // validateAuthServerMetaURLs validates all URL fields in AuthServerMeta

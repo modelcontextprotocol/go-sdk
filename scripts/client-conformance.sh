@@ -10,6 +10,7 @@ set -e
 RESULT_DIR=""
 WORKDIR=""
 CONFORMANCE_REPO=""
+SUITE="core"
 FINAL_EXIT_CODE=0
 
 usage() {
@@ -21,8 +22,10 @@ usage() {
     echo "  --result_dir <dir>       Save results to the specified directory"
     echo "  --conformance_repo <dir> Run conformance tests from a local checkout"
     echo "                           instead of using the latest npm release"
+    echo "  --suite <name>           Which suite to run (default: core)"
     echo "  --help                   Show this help message"
 }
+
 
 # Parse arguments.
 while [[ $# -gt 0 ]]; do
@@ -33,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --conformance_repo)
             CONFORMANCE_REPO="$2"
+            shift 2
+            ;;
+        --suite)
+            SUITE="$2"
             shift 2
             ;;
         --help)
@@ -56,7 +63,7 @@ else
 fi
 
 # Build the conformance server.
-go build -o "$WORKDIR/conformance-client" ./conformance/everything-client
+go build -tags mcp_go_client_oauth -o "$WORKDIR/conformance-client" ./conformance/everything-client
 
 # Run conformance tests from the work directory to avoid writing results to the repo.
 echo "Running conformance tests..."
@@ -65,13 +72,13 @@ if [ -n "$CONFORMANCE_REPO" ]; then
     (cd "$WORKDIR" && \
         npm --prefix "$CONFORMANCE_REPO" run start -- \
             client --command "$WORKDIR/conformance-client" \
-            --suite core \
+            --suite "$SUITE" \
             ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 else
     (cd "$WORKDIR" && \
         npx @modelcontextprotocol/conformance@latest \
         client --command "$WORKDIR/conformance-client" \
-        --suite core \
+        --suite "$SUITE" \
         ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 fi
 

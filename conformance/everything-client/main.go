@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -16,12 +17,13 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // scenarioHandler is the function signature for all conformance test scenarios.
 // It takes a context and the server URL to connect to.
-type scenarioHandler func(ctx context.Context, serverURL string) error
+type scenarioHandler func(ctx context.Context, serverURL string, configCtx map[string]any) error
 
 var (
 	// registry stores all registered scenario handlers.
@@ -48,7 +50,7 @@ func init() {
 // Basic scenarios
 // ============================================================================
 
-func runBasicClient(ctx context.Context, serverURL string) error {
+func runBasicClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -63,7 +65,7 @@ func runBasicClient(ctx context.Context, serverURL string) error {
 	return nil
 }
 
-func runToolsCallClient(ctx context.Context, serverURL string) error {
+func runToolsCallClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -97,7 +99,7 @@ func runToolsCallClient(ctx context.Context, serverURL string) error {
 // Elicitation scenarios
 // ============================================================================
 
-func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
+func runElicitationDefaultsClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	elicitationHandler := func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		return &mcp.ElicitResult{
 			Action:  "accept",
@@ -141,7 +143,7 @@ func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
 // SSE retry scenario
 // ============================================================================
 
-func runSSERetryClient(ctx context.Context, serverURL string) error {
+func runSSERetryClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	// TODO: this scenario is not passing yet. It requires a fix in the client SSE handling.
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
@@ -185,6 +187,7 @@ func main() {
 
 	serverURL := os.Args[1]
 	scenarioName := os.Getenv("MCP_CONFORMANCE_SCENARIO")
+	configCtx := getConformanceContext()
 
 	if scenarioName == "" {
 		printUsageAndExit("MCP_CONFORMANCE_SCENARIO not set")
@@ -196,9 +199,19 @@ func main() {
 	}
 
 	ctx := context.Background()
-	if err := handler(ctx, serverURL); err != nil {
+	if err := handler(ctx, serverURL, configCtx); err != nil {
 		log.Fatalf("Scenario %q failed: %v", scenarioName, err)
 	}
+}
+
+func getConformanceContext() map[string]any {
+	ctxStr := os.Getenv("MCP_CONFORMANCE_CONTEXT")
+	if ctxStr == "" {
+		return nil
+	}
+	var ctx map[string]any
+	_ = json.Unmarshal([]byte(ctxStr), &ctx)
+	return ctx
 }
 
 func printUsageAndExit(format string, args ...any) {
@@ -214,6 +227,7 @@ func printUsageAndExit(format string, args ...any) {
 
 type connectConfig struct {
 	clientOptions *mcp.ClientOptions
+	oauthHandler  auth.OAuthHandler
 }
 
 type connectOption func(*connectConfig)
@@ -237,11 +251,14 @@ func connectToServer(ctx context.Context, serverURL string, opts ...connectOptio
 		Version: "1.0.0",
 	}, config.clientOptions)
 
-	transport := &mcp.StreamableClientTransport{Endpoint: serverURL}
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:     serverURL,
+		OAuthHandler: config.oauthHandler,
+	}
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("client.Connect(): %v", err)
+		return nil, fmt.Errorf("client.Connect(): %w", err)
 	}
 
 	return session, nil
