@@ -208,7 +208,10 @@ func TestExchangeToken(t *testing.T) {
 
 // writeErrorResponse writes an OAuth 2.0 error response per RFC 6749 Section 5.2.
 func writeErrorResponse(w http.ResponseWriter, errorCode, errorDescription string) {
-	errResp := TokenExchangeError{
+	errResp := struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description,omitempty"`
+	}{
 		ErrorCode:        errorCode,
 		ErrorDescription: errorDescription,
 	}

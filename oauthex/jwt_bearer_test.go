@@ -64,7 +64,13 @@ func TestExchangeJWTBearer(t *testing.T) {
 			return
 		}
 		// Return successful OAuth token response
-		resp := JWTBearerResponse{
+		resp := struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in,omitempty"`
+			Scope        string `json:"scope,omitempty"`
+			RefreshToken string `json:"refresh_token,omitempty"`
+		}{
 			AccessToken:  "mcp-access-token-123",
 			TokenType:    "Bearer",
 			ExpiresIn:    3600,
@@ -143,7 +149,10 @@ func TestExchangeJWTBearer(t *testing.T) {
 
 // writeJWTBearerErrorResponse writes an OAuth 2.0 error response per RFC 6749 Section 5.2.
 func writeJWTBearerErrorResponse(w http.ResponseWriter, errorCode, errorDescription string) {
-	errResp := JWTBearerError{
+	errResp := struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_description,omitempty"`
+	}{
 		ErrorCode:        errorCode,
 		ErrorDescription: errorDescription,
 	}

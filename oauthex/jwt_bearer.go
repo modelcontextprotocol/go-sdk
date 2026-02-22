@@ -26,42 +26,6 @@ import (
 // This is used in SEP-990 to exchange an ID-JAG for an access token at the MCP Server.
 const GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
-// JWTBearerResponse represents the response from a JWT Bearer grant request
-// per RFC 7523. This uses the standard OAuth 2.0 token response format.
-type JWTBearerResponse struct {
-	// AccessToken is the OAuth access token issued by the MCP Server's
-	// authorization server.
-	AccessToken string `json:"access_token"`
-	// TokenType is the type of token issued. This is typically "Bearer".
-	TokenType string `json:"token_type"`
-	// ExpiresIn is the lifetime in seconds of the access token.
-	ExpiresIn int `json:"expires_in,omitempty"`
-	// RefreshToken is the refresh token, which can be used to obtain new
-	// access tokens using the same authorization grant.
-	RefreshToken string `json:"refresh_token,omitempty"`
-	// Scope is the scope of the access token as described by RFC 6749 Section 3.3.
-	Scope string `json:"scope,omitempty"`
-}
-
-// JWTBearerError represents an error response from a JWT Bearer grant request.
-type JWTBearerError struct {
-	// ErrorCode is the error code as defined in RFC 6749 Section 5.2.
-	// The JSON field name is "error" per the RFC specification.
-	ErrorCode string `json:"error"`
-	// ErrorDescription is a human-readable description of the error.
-	ErrorDescription string `json:"error_description,omitempty"`
-	// ErrorURI is a URI identifying a human-readable web page with information
-	// about the error.
-	ErrorURI string `json:"error_uri,omitempty"`
-}
-
-func (e *JWTBearerError) Error() string {
-	if e.ErrorDescription != "" {
-		return fmt.Sprintf("JWT bearer grant failed: %s (%s)", e.ErrorCode, e.ErrorDescription)
-	}
-	return fmt.Sprintf("JWT bearer grant failed: %s", e.ErrorCode)
-}
-
 // ExchangeJWTBearer exchanges an Identity Assertion JWT Authorization Grant (ID-JAG)
 // for an access token using JWT Bearer Grant per RFC 7523. This is the second step
 // in Enterprise Managed Authorization (SEP-990) after obtaining the ID-JAG from the
@@ -151,7 +115,13 @@ func ExchangeJWTBearer(
 	}
 	// Handle success response (200 OK per OAuth 2.0)
 	if httpResp.StatusCode == http.StatusOK {
-		var resp JWTBearerResponse
+		var resp struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in,omitempty`
+			RefreshToken string `json:"refresh_token,omitempty"`
+			Scope        string `json:"scope,omitempty"`
+		}
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("failed to parse JWT bearer grant response: %w (body: %s)", err, string(body))
 		}
@@ -182,12 +152,25 @@ func ExchangeJWTBearer(
 	}
 	// Handle error response (400 Bad Request per RFC 6749)
 	if httpResp.StatusCode == http.StatusBadRequest {
-		var errResp JWTBearerError
+		var errResp struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description,omitempty"`
+			ErrorURI         string `json:"error_uri,omitempty"`
+		}
 		if err := json.Unmarshal(body, &errResp); err != nil {
 			return nil, fmt.Errorf("failed to parse error response: %w (body: %s)", err, string(body))
 		}
-		return nil, &errResp
+		return nil, &oauth2.RetrieveError{
+			Response:         httpResp,
+			Body:             body,
+			ErrorCode:        errResp.Error,
+			ErrorDescription: errResp.ErrorDescription,
+			ErrorURI:         errResp.ErrorURI,
+		}
 	}
 	// Handle unexpected status codes
-	return nil, fmt.Errorf("unexpected status code %d: %s", httpResp.StatusCode, string(body))
+	return nil, &oauth2.RetrieveError{
+		Response: httpResp,
+		Body:     body,
+	}
 }

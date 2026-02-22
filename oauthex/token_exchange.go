@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/oauth2"
 )
 
 // Token type identifiers defined by RFC 8693 and SEP-990.
@@ -90,26 +92,6 @@ type TokenExchangeResponse struct {
 
 	// ExpiresIn is the lifetime in seconds of the issued token.
 	ExpiresIn int `json:"expires_in,omitempty"`
-}
-
-// TokenExchangeError represents an error response from a token exchange request.
-type TokenExchangeError struct {
-	// Error is the error code as defined in RFC 6749 Section 5.2.
-	ErrorCode string `json:"error"`
-
-	// ErrorDescription is a human-readable description of the error.
-	ErrorDescription string `json:"error_description,omitempty"`
-
-	// ErrorURI is a URI identifying a human-readable web page with information
-	// about the error.
-	ErrorURI string `json:"error_uri,omitempty"`
-}
-
-func (e *TokenExchangeError) Error() string {
-	if e.ErrorDescription != "" {
-		return fmt.Sprintf("token exchange failed: %s (%s)", e.ErrorCode, e.ErrorDescription)
-	}
-	return fmt.Sprintf("token exchange failed: %s", e.ErrorCode)
 }
 
 // ExchangeToken performs a token exchange request per RFC 8693 for Enterprise
@@ -255,13 +237,26 @@ func ExchangeToken(
 
 	// Handle error response (400 Bad Request per RFC 6749)
 	if httpResp.StatusCode == http.StatusBadRequest {
-		var errResp TokenExchangeError
+		var errResp struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description,omitempty"`
+			ErrorURI         string `json:"error_uri,omitempty"`
+		}
 		if err := json.Unmarshal(body, &errResp); err != nil {
 			return nil, fmt.Errorf("failed to parse error response: %w (body: %s)", err, string(body))
 		}
-		return nil, &errResp
+		return nil, &oauth2.RetrieveError{
+			Response:         httpResp,
+			Body:             body,
+			ErrorCode:        errResp.Error,
+			ErrorDescription: errResp.ErrorDescription,
+			ErrorURI:         errResp.ErrorURI,
+		}
 	}
 
 	// Handle unexpected status codes
-	return nil, fmt.Errorf("unexpected status code %d: %s", httpResp.StatusCode, string(body))
+	return nil, &oauth2.RetrieveError{
+		Response: httpResp,
+		Body:     body,
+	}
 }
