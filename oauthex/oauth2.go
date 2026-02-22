@@ -58,10 +58,9 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 		return nil, fmt.Errorf("bad status %s", res.Status)
 	}
 	// Specs require application/json.
-	ct := res.Header.Get("Content-Type")
-	mediaType, _, err := mime.ParseMediaType(ct)
-	if err != nil || mediaType != "application/json" {
-		return nil, fmt.Errorf("bad content type %q", ct)
+	ct := strings.TrimSpace(strings.SplitN(res.Header.Get("Content-Type"), ";", 2)[0])
+	if ct != "application/json" {
+		return nil, fmt.Errorf("bad content type %q", res.Header.Get("Content-Type"))
 	}
 
 	var t T
@@ -88,4 +87,10 @@ func checkURLScheme(u string) error {
 		return fmt.Errorf("URL has disallowed scheme %q", scheme)
 	}
 	return nil
+}
+
+// CheckURLScheme validates a URL scheme for security.
+// This is exported for use by the auth package.
+func CheckURLScheme(u string) error {
+	return checkURLScheme(u)
 }
