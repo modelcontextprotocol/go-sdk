@@ -405,7 +405,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				// stateless servers.
 				body, err := io.ReadAll(req.Body)
 				if err != nil {
-					http.Error(w, "failed to read body", http.StatusInternalServerError)
+					http.Error(w, "failed to read body", http.StatusBadRequest)
 					return
 				}
 				req.Body.Close()
