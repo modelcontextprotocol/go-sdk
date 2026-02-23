@@ -348,8 +348,8 @@ client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, 
 session, err := client.Connect(ctx, transport, nil)
 ```
 
-The handler automatically manages token exchange, token refreshing, and step-up
-authentication (when the server returns `insufficient_scope` error).
+The `auth.AuthorizationCodeOAuthHandler` automatically manages token refreshing
+and step-up authentication (when the server returns `insufficient_scope` error).
 
 ## Security
 
