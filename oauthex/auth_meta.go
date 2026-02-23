@@ -144,11 +144,10 @@ func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*
 				return nil, fmt.Errorf("%v", err) // Do not expose wrapped errors.
 			}
 		}
-		// TODO: causes conformance test failure, filed https://github.com/modelcontextprotocol/conformance/issues/140.
-		// if asm.Issuer != issuerURL {
-		// 	// Validate the Issuer field (see RFC 8414, section 3.3).
-		// 	return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
-		// }
+		if asm.Issuer != issuerURL {
+			// Validate the Issuer field (see RFC 8414, section 3.3).
+			return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
+		}
 
 		if len(asm.CodeChallengeMethodsSupported) == 0 {
 			return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
