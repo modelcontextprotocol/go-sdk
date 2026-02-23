@@ -20,9 +20,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// ErrRedirected is returned when the user was redirected to the authorization server.
-var ErrRedirected = errors.New("redirected")
-
 // ClientIDMetadataDocumentConfig is used to configure the Client ID Metadata Document
 // based client registration per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents.
@@ -52,24 +49,17 @@ type DynamicClientRegistrationConfig struct {
 	Metadata *oauthex.ClientRegistrationMetadata
 }
 
-type registrationType int
-
-const (
-	registrationTypeClientIDMetadataDocument registrationType = iota
-	registrationTypePreregistered
-	registrationTypeDynamic
-)
-
-type resolvedClientConfig struct {
-	registrationType registrationType
-	clientID         string
-	clientSecret     string
-	authStyle        oauth2.AuthStyle
+// AuthorizationResult is the result of an authorization flow.
+// It is returned by [AuthorizationCodeOAuthHandler.AuthorizationURLHandler] implementations.
+type AuthorizationResult struct {
+	// AuthorizationCode is the authorization code obtained from the authorization server.
+	AuthorizationCode string
+	// State is the state string returned by the authorization server.
+	State string
 }
 
 // AuthorizationCodeOAuthHandler is an implementation of [OAuthHandler] that uses
 // the authorization code flow to obtain access tokens.
-// The handler is stateful and can only handle one authorization flow at a time.
 type AuthorizationCodeOAuthHandler struct {
 	// Client registration configuration.
 	// It is attempted in the following order:
@@ -91,29 +81,17 @@ type AuthorizationCodeOAuthHandler struct {
 
 	// AuthorizationURLHandler is a required function called to handle the authorization URL.
 	// It is responsible for opening the URL in a browser for the user to start the authorization.
-	// It should return once the proccess has been initiated and the URL was
-	// presented to the user successfully. Once the Authorizatin Server redirects back
-	// to the [AuthorizationCodeOAuthHandler.RedirectURL], the caller should set
-	// the authorization code by calling [AuthorizationCodeOAuthHandler.SetAuthorizationCode]
-	// before retrying the request.
-	AuthorizationURLHandler func(ctx context.Context, authorizationURL string) error
+	// It should return the authorization code and state once the Authorization Server
+	// redirects back to the [AuthorizationCodeOAuthHandler.RedirectURL].
+	AuthorizationURLHandler func(ctx context.Context, authorizationURL string) (*AuthorizationResult, error)
 
 	// StateProvider is an optional function to generate a state string for authorization
 	// requests. If not provided, a random string will be generated.
-	// The state should be validated on the redirect callback.
+	// The state will be validated on the redirect callback.
 	StateProvider func() string
 
-	// resolvedClientConfig used during the authorization flow.
-	resolvedClientConfig *resolvedClientConfig
 	// tokenSource is the token source to use for authorization.
-	// It can be prepopulated by calling [AuthorizationCodeOAuthHandler.SetTokenSource].
 	tokenSource oauth2.TokenSource
-	// codeVerifier is the PKCE code verifier.
-	codeVerifier string
-	// authorizationCode is the authorization code obtained from the authorization server.
-	authorizationCode string
-	// state is the state string used in the authorization request.
-	state string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeOAuthHandler)(nil)
@@ -125,12 +103,8 @@ func (h *AuthorizationCodeOAuthHandler) TokenSource(ctx context.Context) (oauth2
 }
 
 // Authorize performs the authorization flow.
-// It is designed to be reentrant and called in two phases.
-//  1. It initiates the Authorization Grant flow by calling [AuthorizationCodeOAuthHandler.AuthorizationURLHandler].
-//     It will return [ErrRedirected] if the authorization flow was initiated successfully.
-//  2. It exchanges the authorization code for an access token.
-//     It will return a `nil` error if the authorization flow was completed successfully.
-//     From this point on, [AuthorizationCodeOAuthHandler.TokenSource] will return a token source with the fetched token.
+// It is designed to perform the whole Authorization Code Grant flow.
+// On success, [AuthorizationCodeOAuthHandler.TokenSource] will return a token source with the fetched token.
 func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	defer resp.Body.Close()
 	log.Printf("Authorize: %s %s", req.Method, req.URL)
@@ -162,11 +136,9 @@ func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http
 	}
 	// log.Printf("Authorization server metadata: %+v", asm)
 
-	if h.resolvedClientConfig == nil {
-		// Client configuration is not resolved yet, try to resolve it.
-		if err := h.handleRegistration(ctx, asm); err != nil {
-			return err
-		}
+	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
+	if err != nil {
+		return err
 	}
 
 	scopes := oauthex.Scopes(wwwChallenges)
@@ -175,36 +147,25 @@ func (h *AuthorizationCodeOAuthHandler) Authorize(ctx context.Context, req *http
 	}
 
 	cfg := &oauth2.Config{
-		ClientID:     h.resolvedClientConfig.clientID,
-		ClientSecret: h.resolvedClientConfig.clientSecret,
+		ClientID:     resolvedClientConfig.clientID,
+		ClientSecret: resolvedClientConfig.clientSecret,
 
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  asm.AuthorizationEndpoint,
 			TokenURL: asm.TokenEndpoint,
 			// TODO: validate if the auth style is supported by the AS.
-			AuthStyle: h.resolvedClientConfig.authStyle,
+			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.RedirectURL,
 		Scopes:      scopes,
 	}
 
-	if h.authorizationCode != "" {
-		return h.exchangeAuthorizationCode(ctx, cfg, resourceURL)
+	authRes, err := h.getAuthorizationCode(ctx, cfg, req.URL.String())
+	if err != nil {
+		return err
 	}
 
-	return h.startAuthFlow(ctx, cfg, req.URL.String())
-}
-
-func (h *AuthorizationCodeOAuthHandler) FinalizeAuthorization(code, state string) error {
-	defer func() {
-		// State has been used for validation, clear it.
-		h.state = ""
-	}()
-	if state != h.state {
-		return fmt.Errorf("state mismatch: expected %q, got %q", h.state, state)
-	}
-	h.authorizationCode = code
-	return nil
+	return h.exchangeAuthorizationCode(ctx, cfg, authRes, resourceURL)
 }
 
 // TODO: validate on creation.
@@ -235,9 +196,6 @@ func (h *AuthorizationCodeOAuthHandler) validate() error {
 		if !slices.Contains(h.DynamicClientRegistrationConfig.Metadata.RedirectURIs, h.RedirectURL) {
 			return fmt.Errorf("redirect URI %q is not in the list of allowed redirect URIs for dynamic client registration", h.RedirectURL)
 		}
-	}
-	if h.resolvedClientConfig == nil && h.authorizationCode != "" {
-		return fmt.Errorf("exchanging authorization code with unregistered client is not allowed")
 	}
 	return nil
 }
@@ -287,95 +245,125 @@ func (h *AuthorizationCodeOAuthHandler) getAuthServerMetadata(ctx context.Contex
 	return asm, nil
 }
 
+type registrationType int
+
+const (
+	registrationTypeClientIDMetadataDocument registrationType = iota
+	registrationTypePreregistered
+	registrationTypeDynamic
+)
+
+type resolvedClientConfig struct {
+	registrationType registrationType
+	clientID         string
+	clientSecret     string
+	authStyle        oauth2.AuthStyle
+}
+
 // handleRegistration handles client registration.
 // The provided authorization server metadata must be non-nil.
-// It must also have RegistrationEndpoint set if dynamic client registration is supported.
-func (h *AuthorizationCodeOAuthHandler) handleRegistration(ctx context.Context, asm *oauthex.AuthServerMeta) error {
+// Support for different registration methods is defined as follows:
+//   - Client ID Metadata Document: metadata must have
+//     `ClientIDMetadataDocumentSupported` set to true.
+//   - Pre-registered client: assumed to be supported.
+//   - Dynamic client registration: metadata must have
+//     `RegistrationEndpoint` set to a non-empty value.
+func (h *AuthorizationCodeOAuthHandler) handleRegistration(ctx context.Context, asm *oauthex.AuthServerMeta) (*resolvedClientConfig, error) {
 	// 1. Attempt to use Client ID Metadata Document (SEP-991).
 	cimdCfg := h.ClientIDMetadataDocumentConfig
 	if cimdCfg != nil && asm.ClientIDMetadataDocumentSupported {
-		h.resolvedClientConfig = &resolvedClientConfig{
+		return &resolvedClientConfig{
 			registrationType: registrationTypeClientIDMetadataDocument,
 			clientID:         cimdCfg.URL,
-		}
-		return nil
+		}, nil
 	}
 	// 2. Attempt to use pre-registered client configuration.
 	pCfg := h.PreregisteredClientConfig
 	if pCfg != nil {
-		h.resolvedClientConfig = &resolvedClientConfig{
+		return &resolvedClientConfig{
 			registrationType: registrationTypePreregistered,
 			clientID:         pCfg.ClientID,
 			clientSecret:     pCfg.ClientSecret,
 			authStyle:        pCfg.AuthStyle,
-		}
-		return nil
+		}, nil
 	}
 	// 3. Attempt to use dynamic client registration.
 	dcrCfg := h.DynamicClientRegistrationConfig
 	if dcrCfg != nil && asm.RegistrationEndpoint != "" {
 		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, http.DefaultClient)
 		if err != nil {
-			return fmt.Errorf("failed to register client: %w", err)
+			return nil, fmt.Errorf("failed to register client: %w", err)
 		}
-		h.resolvedClientConfig = &resolvedClientConfig{
+		cfg := &resolvedClientConfig{
 			registrationType: registrationTypeDynamic,
 			clientID:         regResp.ClientID,
 			clientSecret:     regResp.ClientSecret,
 		}
 		switch regResp.TokenEndpointAuthMethod {
 		case "client_secret_post":
-			h.resolvedClientConfig.authStyle = oauth2.AuthStyleInParams
+			cfg.authStyle = oauth2.AuthStyleInParams
 		case "client_secret_basic":
-			h.resolvedClientConfig.authStyle = oauth2.AuthStyleInHeader
+			cfg.authStyle = oauth2.AuthStyleInHeader
 		case "none":
 			// "none" is equivalent to "client_secret_post" but without sending client secret.
-			h.resolvedClientConfig.authStyle = oauth2.AuthStyleInParams
-			h.resolvedClientConfig.clientSecret = ""
+			cfg.authStyle = oauth2.AuthStyleInParams
+			cfg.clientSecret = ""
 		default:
 			// We leave the AuthStyle set to zero value, which is auto-detection.
 		}
 		log.Printf("Client registered with client ID: %s", regResp.ClientID)
-		return nil
+		return cfg, nil
 	}
-	return fmt.Errorf("no configured client registration methods are supported by the authorization server")
+	return nil, fmt.Errorf("no configured client registration methods are supported by the authorization server")
 }
 
-// exchangeAuthorizationCode exchanges the authorization code for a token and stores it in a token source.
-func (h *AuthorizationCodeOAuthHandler) exchangeAuthorizationCode(ctx context.Context, cfg *oauth2.Config, resourceURL string) error {
-	log.Print("Authorization code is available, exchanging for token")
+type authResult struct {
+	*AuthorizationResult
+	// usedCodeVerifier is the PKCE code verifier used to obtain the authorization code.
+	// It is preserved for the token exchange step.
+	usedCodeVerifier string
+}
+
+// getAuthorizationCode uses the [AuthorizationCodeOAuthHandler.AuthorizationURLHandler]
+// to obtain an authorization code.
+func (h *AuthorizationCodeOAuthHandler) getAuthorizationCode(ctx context.Context, cfg *oauth2.Config, resourceURL string) (*authResult, error) {
+	codeVerifier := oauth2.GenerateVerifier()
+	state := rand.Text()
+	if h.StateProvider != nil {
+		state = h.StateProvider()
+	}
+
+	authURL := cfg.AuthCodeURL(state,
+		oauth2.S256ChallengeOption(codeVerifier),
+		oauth2.SetAuthURLParam("resource", resourceURL),
+	)
+
+	log.Printf("Calling AuthorizationURLHandler: %q", authURL)
+	authRes, err := h.AuthorizationURLHandler(ctx, authURL)
+	if err != nil {
+		return nil, err
+	}
+	if authRes.State != state {
+		return nil, fmt.Errorf("state mismatch")
+	}
+	return &authResult{
+		AuthorizationResult: authRes,
+		usedCodeVerifier:    codeVerifier,
+	}, nil
+}
+
+// exchangeAuthorizationCode exchanges the authorization code for a token
+// and stores it in a token source.
+func (h *AuthorizationCodeOAuthHandler) exchangeAuthorizationCode(ctx context.Context, cfg *oauth2.Config, authResult *authResult, resourceURL string) error {
+	log.Printf("Exchanging authorization code for token")
 	opts := []oauth2.AuthCodeOption{
-		oauth2.VerifierOption(h.codeVerifier),
+		oauth2.VerifierOption(authResult.usedCodeVerifier),
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	}
-	defer func() {
-		// Authorization code has been consumed, clear it.
-		h.authorizationCode = ""
-	}()
-	token, err := cfg.Exchange(ctx, h.authorizationCode, opts...)
+	token, err := cfg.Exchange(ctx, authResult.AuthorizationCode, opts...)
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(ctx, token)
 	return nil
-}
-
-// startAuthFlow generates the authorization URL and redirects the user to the authorization server.
-func (h *AuthorizationCodeOAuthHandler) startAuthFlow(ctx context.Context, cfg *oauth2.Config, resourceURL string) error {
-	h.codeVerifier = oauth2.GenerateVerifier()
-	h.state = rand.Text()
-	if h.StateProvider != nil {
-		h.state = h.StateProvider()
-	}
-
-	authURL := cfg.AuthCodeURL(h.state,
-		oauth2.S256ChallengeOption(h.codeVerifier),
-		oauth2.SetAuthURLParam("resource", resourceURL),
-	)
-
-	log.Print("No authorization code available, opening authorization URL")
-	if err := h.AuthorizationURLHandler(ctx, authURL); err != nil {
-		return fmt.Errorf("authorization URL handler failed: %w", err)
-	}
-	return ErrRedirected
 }

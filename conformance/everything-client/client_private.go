@@ -12,7 +12,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -51,7 +50,7 @@ func init() {
 // Auth scenarios
 // ============================================================================
 
-func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (code, state string, err error) {
+func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.AuthorizationResult, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -59,35 +58,38 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (code, 
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", authURL, nil)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	location := resp.Header.Get("Location")
 	if location == "" {
-		return "", "", fmt.Errorf("no Location header in redirect")
+		return nil, fmt.Errorf("no Location header in redirect")
 	}
 
 	locURL, err := url.Parse(location)
 	if err != nil {
-		return "", "", fmt.Errorf("parse location: %v", err)
+		return nil, fmt.Errorf("parse location: %v", err)
 	}
 
-	code = locURL.Query().Get("code")
+	code := locURL.Query().Get("code")
 	if code == "" {
-		return "", "", fmt.Errorf("no code parameter in redirect URL")
+		return nil, fmt.Errorf("no code parameter in redirect URL")
 	}
-	state = locURL.Query().Get("state")
+	state := locURL.Query().Get("state")
 	if state == "" {
-		return "", "", fmt.Errorf("no state parameter in redirect URL")
+		return nil, fmt.Errorf("no state parameter in redirect URL")
 	}
 
-	return code, state, nil
+	return &auth.AuthorizationResult{
+		AuthorizationCode: code,
+		State:             state,
+	}, nil
 }
 
 func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
@@ -114,47 +116,16 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 		}
 	}
 
-	authHandler.AuthorizationURLHandler = func(ctx context.Context, authURL string) error {
-		// Normally this handler would trigger user browser to be opened.
-		// Here we query the authorization URL automatically and the AS is configured
-		// to authorize and redirect immediately. We save the resulting code.
-		code, state, err := fetchAuthorizationCodeAndState(ctx, authURL)
-		if err != nil {
-			return err
-		}
-		if err := authHandler.FinalizeAuthorization(code, state); err != nil {
-			return err
-		}
-		return nil
-	}
+	authHandler.AuthorizationURLHandler = fetchAuthorizationCodeAndState
 
 	session, err := connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
 	if err != nil {
-		if !errors.Is(err, auth.ErrRedirected) {
-			return err
-		}
-		// Received auth.ErrRedirected. Normally we would wait for the callback triggered
-		// by the AS redirect to RedirectURL, but here we already have the authorization code
-		// so we can immediately retry.
-		session, err = connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
-		if err != nil {
-			return nil
-		}
+		return err
 	}
 	defer session.Close()
 
 	if _, err := session.ListTools(ctx, nil); err != nil {
-		// Retry for the scope step-up scenario.
-		if !errors.Is(err, auth.ErrRedirected) {
-			return fmt.Errorf("session.ListTools(): %v", err)
-		}
-		// Received auth.ErrRedirected. Normally we would wait for the callback triggered
-		// by the AS redirect to RedirectURL, but here we already have the authorization code
-		// so we can immediately retry.
-		_, err = session.ListTools(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("session.ListTools(): %v", err)
-		}
+		return fmt.Errorf("session.ListTools(): %v", err)
 	}
 
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{

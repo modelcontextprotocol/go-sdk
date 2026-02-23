@@ -12,29 +12,28 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Flags.
 var (
-	serverURL = flag.String("server_url", "http://localhost:8000/mcp", "Server URL")
+	// URL of the MCP server.
+	serverURL = flag.String("server_url", "http://localhost:8000/mcp", "URL of the MCP server.")
+	// Port for the local HTTP server that will receive the authorization code.
+	callbackPort = flag.Int("callback_port", 3142, "Port for the local HTTP server that will receive the authorization code.")
 )
 
-type authResult struct {
-	code  string
-	state string
-	err   error
-}
-
 type codeReceiver struct {
-	authChan chan authResult
+	authChan chan *auth.AuthorizationResult
+	errChan  chan error
+	listener net.Listener
 	server   *http.Server
 }
 
-func (r *codeReceiver) startAuthorizationFlow(ctx context.Context, authorizationURL string) error {
+func (r *codeReceiver) serveRedirectHandler(listener net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		code := req.URL.Query().Get("code")
@@ -44,27 +43,38 @@ func (r *codeReceiver) startAuthorizationFlow(ctx context.Context, authorization
 			return
 		}
 
-		r.authChan <- authResult{
-			code:  code,
-			state: state,
+		r.authChan <- &auth.AuthorizationResult{
+			AuthorizationCode: code,
+			State:             state,
 		}
 		fmt.Fprint(w, "Authentication successful. You can close this window.")
 	})
 
 	r.server = &http.Server{
-		Addr:    "localhost:3142",
+		Addr:    fmt.Sprintf("localhost:%d", *callbackPort),
 		Handler: mux,
 	}
-
-	go func() {
-		// We ignore ErrServerClosed as it is returned on Shutdown.
-		if err := r.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			r.authChan <- authResult{err: fmt.Errorf("server error: %w", err)}
-		}
-	}()
-
-	fmt.Printf("Please authorize by visiting: %s\n", authorizationURL)
+	if err := r.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		r.errChan <- err
+	}
 	return nil
+}
+
+func (r *codeReceiver) getAuthorizationCode(ctx context.Context, authorizationURL string) (*auth.AuthorizationResult, error) {
+	select {
+	case authRes := <-r.authChan:
+		return authRes, nil
+	case err := <-r.errChan:
+		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (r *codeReceiver) close() {
+	if r.server != nil {
+		r.server.Close()
+	}
 }
 
 func main() {
@@ -75,11 +85,18 @@ func main() {
 	}, nil)
 
 	receiver := &codeReceiver{
-		authChan: make(chan authResult),
+		authChan: make(chan *auth.AuthorizationResult),
+		errChan:  make(chan error),
 	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *callbackPort))
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	go receiver.serveRedirectHandler(listener)
+	defer receiver.close()
 
 	authHandler := &auth.AuthorizationCodeOAuthHandler{
-		RedirectURL: "http://localhost:3142",
+		RedirectURL: fmt.Sprintf("http://localhost:%d", *callbackPort),
 		// Uncomment the client configuration you want to use.
 		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
 		// 	ClientID:     "",
@@ -88,11 +105,11 @@ func main() {
 		// DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
 		// 	Metadata: &oauthex.ClientRegistrationMetadata{
 		// 		ClientName: "Dynamically registered MCP client",
-		// 		RedirectURIs: []string{"http://localhost:3142"},
+		// 		RedirectURIs: []string{fmt.Sprintf("http://localhost:%d", *callbackPort)},
 		// 		Scope: "read",
 		// 	},
 		// },
-		AuthorizationURLHandler: receiver.startAuthorizationFlow,
+		AuthorizationURLHandler: receiver.getAuthorizationCode,
 	}
 
 	transport := &mcp.StreamableClientTransport{
@@ -101,33 +118,9 @@ func main() {
 	}
 
 	ctx := context.Background()
-	var session *mcp.ClientSession
-	var err error
 
-	for {
-		session, err = client.Connect(ctx, transport, nil)
-		if err == nil {
-			break
-		}
-		// If the error is ErrRedirected, it means the authorization flow has started
-		// and we need to wait for the code.
-		if errors.Is(err, auth.ErrRedirected) {
-			fmt.Println("Authorization flow started. Waiting for authorization code...")
-			res := <-receiver.authChan
-			if res.err != nil {
-				log.Fatalf("Authorization failed: %v", res.err)
-			}
-
-			// Shutdown the temporary server
-			if err := receiver.server.Shutdown(ctx); err != nil {
-				log.Printf("Failed to shutdown server: %v", err)
-			}
-
-			if err := authHandler.FinalizeAuthorization(res.code, res.state); err != nil {
-				log.Fatalf("Failed to finalize authorization: %v", err)
-			}
-			continue
-		}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
 		log.Fatalf("client.Connect(): %v", err)
 	}
 	defer session.Close()
