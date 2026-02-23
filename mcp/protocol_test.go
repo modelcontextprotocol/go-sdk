@@ -7,6 +7,7 @@ package mcp
 import (
 	"encoding/json"
 	"maps"
+	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -483,6 +484,587 @@ func TestCompleteResult(t *testing.T) {
 			}
 			if diff := cmp.Diff(test.want, got); diff != "" {
 				t.Errorf("CompleteResult unmarshal mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestToolUseContent_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *ToolUseContent
+		want    *ToolUseContent
+	}{
+		{
+			name: "basic tool use",
+			content: &ToolUseContent{
+				ID:   "tool_123",
+				Name: "calculator",
+				Input: map[string]any{
+					"operation": "add",
+					"x":         1.0,
+					"y":         2.0,
+				},
+			},
+			want: &ToolUseContent{
+				ID:   "tool_123",
+				Name: "calculator",
+				Input: map[string]any{
+					"operation": "add",
+					"x":         1.0,
+					"y":         2.0,
+				},
+			},
+		},
+		{
+			name: "nil input marshals as empty object",
+			content: &ToolUseContent{
+				ID:    "tool_456",
+				Name:  "no_args_tool",
+				Input: nil,
+			},
+			want: &ToolUseContent{
+				ID:    "tool_456",
+				Name:  "no_args_tool",
+				Input: map[string]any{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.content.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON() error = %v", err)
+			}
+			wire := &wireContent{}
+			if err := json.Unmarshal(data, wire); err != nil {
+				t.Fatalf("Unmarshal wire error = %v", err)
+			}
+			got, err := contentFromWire(wire, map[string]bool{"tool_use": true})
+			if err != nil {
+				t.Fatalf("contentFromWire() error = %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestToolUseContent_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want *ToolUseContent
+	}{
+		{
+			name: "basic tool use",
+			json: `{"type":"tool_use","id":"tool_123","name":"calculator","input":{"x":1,"y":2}}`,
+			want: &ToolUseContent{
+				ID:   "tool_123",
+				Name: "calculator",
+				Input: map[string]any{
+					"x": 1.0,
+					"y": 2.0,
+				},
+			},
+		},
+		{
+			name: "with meta",
+			json: `{"type":"tool_use","id":"t1","name":"calc","input":{"x":1},"_meta":{"requestId":"req-123"}}`,
+			want: &ToolUseContent{
+				ID:    "t1",
+				Name:  "calc",
+				Input: map[string]any{"x": 1.0},
+				Meta:  Meta{"requestId": "req-123"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := &wireContent{}
+			if err := json.Unmarshal([]byte(tt.json), wire); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			got, err := contentFromWire(wire, map[string]bool{"tool_use": true})
+			if err != nil {
+				t.Fatalf("contentFromWire() error = %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestToolResultContent_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *ToolResultContent
+		want    string
+	}{
+		{
+			name: "basic tool result",
+			content: &ToolResultContent{
+				ToolUseID: "tool_123",
+				Content:   []Content{&TextContent{Text: "42"}},
+			},
+			want: `{"type":"tool_result","toolUseId":"tool_123","content":[{"type":"text","text":"42"}]}`,
+		},
+		{
+			name: "tool result with error",
+			content: &ToolResultContent{
+				ToolUseID: "tool_456",
+				Content:   []Content{&TextContent{Text: "division by zero"}},
+				IsError:   true,
+			},
+			want: `{"type":"tool_result","toolUseId":"tool_456","content":[{"type":"text","text":"division by zero"}],"isError":true}`,
+		},
+		{
+			name: "tool result with structured content",
+			content: &ToolResultContent{
+				ToolUseID:         "tool_789",
+				Content:           []Content{&TextContent{Text: `{"result": 42}`}},
+				StructuredContent: map[string]any{"result": 42.0},
+			},
+			want: `{"type":"tool_result","toolUseId":"tool_789","content":[{"type":"text","text":"{\"result\": 42}"}],"structuredContent":{"result":42}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := tt.content.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON() error = %v", err)
+			}
+			if diff := cmp.Diff(tt.want, string(data)); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestToolResultContent_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantID  string
+		wantErr bool
+		checkFn func(t *testing.T, got *ToolResultContent)
+	}{
+		{
+			name:   "basic tool result",
+			json:   `{"type":"tool_result","toolUseId":"tool_123","content":[{"type":"text","text":"42"}],"isError":false}`,
+			wantID: "tool_123",
+			checkFn: func(t *testing.T, got *ToolResultContent) {
+				if len(got.Content) != 1 {
+					t.Fatalf("len(Content) = %d, want 1", len(got.Content))
+				}
+				tc, ok := got.Content[0].(*TextContent)
+				if !ok {
+					t.Fatalf("Content[0] type = %T, want *TextContent", got.Content[0])
+				}
+				if tc.Text != "42" {
+					t.Errorf("Text = %v, want 42", tc.Text)
+				}
+			},
+		},
+		{
+			name:   "image nested content",
+			json:   `{"type":"tool_result","toolUseId":"t1","content":[{"type":"image","mimeType":"image/png","data":"YWJj"}]}`,
+			wantID: "t1",
+			checkFn: func(t *testing.T, got *ToolResultContent) {
+				if len(got.Content) != 1 {
+					t.Fatalf("len(Content) = %d, want 1", len(got.Content))
+				}
+				img, ok := got.Content[0].(*ImageContent)
+				if !ok {
+					t.Fatalf("Content[0] type = %T, want *ImageContent", got.Content[0])
+				}
+				if img.MIMEType != "image/png" {
+					t.Errorf("MIMEType = %v, want image/png", img.MIMEType)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := &wireContent{}
+			if err := json.Unmarshal([]byte(tt.json), wire); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			got, err := contentFromWire(wire, map[string]bool{"tool_result": true})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("contentFromWire() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			result, ok := got.(*ToolResultContent)
+			if !ok {
+				t.Fatalf("type = %T, want *ToolResultContent", got)
+			}
+			if result.ToolUseID != tt.wantID {
+				t.Errorf("ToolUseID = %v, want %v", result.ToolUseID, tt.wantID)
+			}
+			if tt.checkFn != nil {
+				tt.checkFn(t, result)
+			}
+		})
+	}
+}
+
+func TestSamplingMessage_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		wantRole Role
+		wantType string // expected Content type name
+	}{
+		{
+			name:     "tool_use content",
+			json:     `{"content":{"type":"tool_use","id":"tool_1","name":"calc","input":{}},"role":"assistant"}`,
+			wantRole: "assistant",
+			wantType: "*mcp.ToolUseContent",
+		},
+		{
+			name:     "tool_result content",
+			json:     `{"content":{"type":"tool_result","toolUseId":"tool_1","content":[{"type":"text","text":"42"}]},"role":"user"}`,
+			wantRole: "user",
+			wantType: "*mcp.ToolResultContent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg SamplingMessage
+			if err := json.Unmarshal([]byte(tt.json), &msg); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if msg.Role != tt.wantRole {
+				t.Errorf("Role = %v, want %v", msg.Role, tt.wantRole)
+			}
+			gotType := reflect.TypeOf(msg.Content).String()
+			if gotType != tt.wantType {
+				t.Errorf("Content type = %v, want %v", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestSamplingCapabilities_MarshalJSON(t *testing.T) {
+	caps := &SamplingCapabilities{
+		Tools:   &SamplingToolsCapabilities{},
+		Context: &SamplingContextCapabilities{},
+	}
+	data, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingCapabilities
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Tools == nil {
+		t.Error("Tools capability should not be nil")
+	}
+	if got.Context == nil {
+		t.Error("Context capability should not be nil")
+	}
+}
+
+func TestSamplingCapabilities_UnmarshalJSON(t *testing.T) {
+	// Empty struct should marshal/unmarshal correctly (backward compatibility).
+	caps := &SamplingCapabilities{}
+	data, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingCapabilities
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Tools != nil {
+		t.Error("Tools capability should be nil for empty capabilities")
+	}
+	if got.Context != nil {
+		t.Error("Context capability should be nil for empty capabilities")
+	}
+}
+
+func TestCreateMessageWithToolsParams_MarshalUnmarshalJSON(t *testing.T) {
+	params := &CreateMessageWithToolsParams{
+		MaxTokens: 1000,
+		Messages: []*SamplingMessageV2{
+			{
+				Role:    "user",
+				Content: []Content{&TextContent{Text: "Calculate 1+1"}},
+			},
+		},
+		Tools: []*Tool{
+			{
+				Name:        "calculator",
+				Description: "A calculator tool",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"x": map[string]any{"type": "number"},
+						"y": map[string]any{"type": "number"},
+					},
+				},
+			},
+		},
+		ToolChoice: &ToolChoice{Mode: "auto"},
+	}
+
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got CreateMessageWithToolsParams
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if len(got.Tools) != 1 {
+		t.Fatalf("len(Tools) = %v, want 1", len(got.Tools))
+	}
+	if got.Tools[0].Name != "calculator" {
+		t.Errorf("Tools[0].Name = %v, want calculator", got.Tools[0].Name)
+	}
+	if got.ToolChoice == nil || got.ToolChoice.Mode != "auto" {
+		t.Errorf("ToolChoice = %v, want {Mode: auto}", got.ToolChoice)
+	}
+}
+
+func TestToolChoice_MarshalUnmarshalJSON(t *testing.T) {
+	choices := []*ToolChoice{
+		{Mode: "auto"},
+		{Mode: "required"},
+		{Mode: "none"},
+	}
+
+	for _, tc := range choices {
+		data, err := json.Marshal(tc)
+		if err != nil {
+			t.Fatalf("Marshal(%v) error = %v", tc.Mode, err)
+		}
+		var got ToolChoice
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		if diff := cmp.Diff(*tc, got); diff != "" {
+			t.Errorf("mismatch (-want +got):\n%s", diff)
+		}
+	}
+}
+
+func TestCreateMessageWithToolsResult_MarshalJSON(t *testing.T) {
+	// Single-element Content marshals as object (not array) for backward compat.
+	result := &CreateMessageWithToolsResult{
+		Model:   "test",
+		Role:    "assistant",
+		Content: []Content{&TextContent{Text: "hello"}},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal raw error = %v", err)
+	}
+
+	content := raw["content"]
+	for _, b := range content {
+		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		if b == '[' {
+			t.Errorf("single-element Content marshaled as array, want object")
+		}
+		break
+	}
+}
+
+func TestCreateMessageWithToolsResult_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantLen int
+		wantErr bool
+	}{
+		{
+			name:    "single tool_use content",
+			json:    `{"content":{"type":"tool_use","id":"tool_1","name":"calculator","input":{"x":1}},"model":"test-model","role":"assistant","stopReason":"toolUse"}`,
+			wantLen: 1,
+		},
+		{
+			name:    "array of tool_use content",
+			json:    `{"content":[{"type":"tool_use","id":"t1","name":"calc","input":{"x":1}},{"type":"tool_use","id":"t2","name":"search","input":{"q":"hi"}}],"model":"test","role":"assistant","stopReason":"toolUse"}`,
+			wantLen: 2,
+		},
+		{
+			name:    "empty array",
+			json:    `{"content":[],"model":"m","role":"assistant"}`,
+			wantLen: 0,
+		},
+		{
+			name:    "null content",
+			json:    `{"content":null,"model":"m","role":"assistant"}`,
+			wantErr: true,
+		},
+		{
+			name:    "rejects tool_result",
+			json:    `{"content":{"type":"tool_result","toolUseId":"t1","content":[]},"model":"m","role":"assistant"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got CreateMessageWithToolsResult
+			err := json.Unmarshal([]byte(tt.json), &got)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got.Content) != tt.wantLen {
+				t.Errorf("len(Content) = %d, want %d", len(got.Content), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestSamplingMessageV2_MarshalJSON(t *testing.T) {
+	msg := &SamplingMessageV2{
+		Role:    "user",
+		Content: []Content{},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingMessageV2
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(got.Content) != 0 {
+		t.Errorf("len(Content) = %d, want 0", len(got.Content))
+	}
+}
+
+func TestSamplingMessageV2_UnmarshalJSON(t *testing.T) {
+	// Text + tool_use in the same message (valid per spec for assistant).
+	msg := &SamplingMessageV2{
+		Role: "assistant",
+		Content: []Content{
+			&TextContent{Text: "Let me check the weather."},
+			&ToolUseContent{ID: "c1", Name: "weather", Input: map[string]any{"city": "SF"}},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got SamplingMessageV2
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2", len(got.Content))
+	}
+	if _, ok := got.Content[0].(*TextContent); !ok {
+		t.Errorf("Content[0] type = %T, want *TextContent", got.Content[0])
+	}
+	if _, ok := got.Content[1].(*ToolUseContent); !ok {
+		t.Errorf("Content[1] type = %T, want *ToolUseContent", got.Content[1])
+	}
+}
+
+func TestToBase_Conversion(t *testing.T) {
+	// Single-content messages convert successfully.
+	params := &CreateMessageWithToolsParams{
+		MaxTokens: 1000,
+		Messages: []*SamplingMessageV2{
+			{Role: "user", Content: []Content{&TextContent{Text: "hello"}}},
+		},
+		Tools:      []*Tool{{Name: "calc"}},
+		ToolChoice: &ToolChoice{Mode: "auto"},
+	}
+	base, err := params.toBase()
+	if err != nil {
+		t.Fatalf("toBase() error = %v", err)
+	}
+	if base.MaxTokens != 1000 {
+		t.Errorf("MaxTokens = %d, want 1000", base.MaxTokens)
+	}
+	if tc, ok := base.Messages[0].Content.(*TextContent); !ok || tc.Text != "hello" {
+		t.Errorf("Messages[0].Content = %v, want TextContent{hello}", base.Messages[0].Content)
+	}
+
+	// Multi-content messages return an error.
+	params2 := &CreateMessageWithToolsParams{
+		MaxTokens: 1000,
+		Messages: []*SamplingMessageV2{
+			{Role: "assistant", Content: []Content{
+				&ToolUseContent{ID: "c1", Name: "calc", Input: map[string]any{}},
+				&ToolUseContent{ID: "c2", Name: "search", Input: map[string]any{}},
+			}},
+		},
+	}
+	if _, err := params2.toBase(); err == nil {
+		t.Error("toBase() should return error for multi-content message")
+	}
+}
+
+func TestToWithTools_Conversion(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  *CreateMessageResult
+		wantLen int
+	}{
+		{
+			name: "with content",
+			result: &CreateMessageResult{
+				Model:      "test",
+				Role:       "assistant",
+				Content:    &TextContent{Text: "hello"},
+				StopReason: "endTurn",
+			},
+			wantLen: 1,
+		},
+		{
+			name: "nil content",
+			result: &CreateMessageResult{
+				Model: "test",
+				Role:  "assistant",
+			},
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wt := tt.result.toWithTools()
+			if wt.Model != tt.result.Model {
+				t.Errorf("Model = %v, want %v", wt.Model, tt.result.Model)
+			}
+			if len(wt.Content) != tt.wantLen {
+				t.Fatalf("len(Content) = %d, want %d", len(wt.Content), tt.wantLen)
+			}
+			if tt.wantLen > 0 {
+				if tc, ok := wt.Content[0].(*TextContent); !ok || tc.Text != "hello" {
+					t.Errorf("Content[0] = %v, want TextContent{hello}", wt.Content[0])
+				}
 			}
 		})
 	}
