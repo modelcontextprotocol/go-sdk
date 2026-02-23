@@ -95,8 +95,9 @@ func main() {
 	go receiver.serveRedirectHandler(listener)
 	defer receiver.close()
 
-	authHandler := &auth.AuthorizationCodeOAuthHandler{
-		RedirectURL: fmt.Sprintf("http://localhost:%d", *callbackPort),
+	authHandler, err := auth.NewAuthorizationCodeOAuthHandler(&auth.AuthorizationCodeHandlerConfig{
+		RedirectURL:             fmt.Sprintf("http://localhost:%d", *callbackPort),
+		AuthorizationURLHandler: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
 		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
 		// 	ClientID:     "",
@@ -109,7 +110,9 @@ func main() {
 		// 		Scope: "read",
 		// 	},
 		// },
-		AuthorizationURLHandler: receiver.getAuthorizationCode,
+	})
+	if err != nil {
+		log.Fatalf("failed to create auth handler: %v", err)
 	}
 
 	transport := &mcp.StreamableClientTransport{

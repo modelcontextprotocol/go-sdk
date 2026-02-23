@@ -93,8 +93,9 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.
 }
 
 func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
-	authHandler := &auth.AuthorizationCodeOAuthHandler{
-		RedirectURL: "http://localhost:3000/callback",
+	authConfig := &auth.AuthorizationCodeHandlerConfig{
+		RedirectURL:             "http://localhost:3000/callback",
+		AuthorizationURLHandler: fetchAuthorizationCodeAndState,
 		// Try client ID metadata document based registration.
 		ClientIDMetadataDocumentConfig: &auth.ClientIDMetadataDocumentConfig{
 			URL: "https://conformance-test.local/client-metadata.json",
@@ -109,14 +110,17 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 	// Try pre-registered client information if provided in the context.
 	if clientId, ok := configCtx["client_id"].(string); ok {
 		if clientSecret, ok := configCtx["client_secret"].(string); ok {
-			authHandler.PreregisteredClientConfig = &auth.PreregisteredClientConfig{
+			authConfig.PreregisteredClientConfig = &auth.PreregisteredClientConfig{
 				ClientID:     clientId,
 				ClientSecret: clientSecret,
 			}
 		}
 	}
 
-	authHandler.AuthorizationURLHandler = fetchAuthorizationCodeAndState
+	authHandler, err := auth.NewAuthorizationCodeOAuthHandler(authConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create auth handler: %w", err)
+	}
 
 	session, err := connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
 	if err != nil {
