@@ -1733,15 +1733,17 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	doRequest := func() (*http.Response, error) {
 		if err := c.setMCPHeaders(req); err != nil {
-			// TODO: should we fail the connection here?
-			return nil, err
+			// Failure to set headers means that the request was not sent.
+			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+			// and permanently break the connection.
+			return nil, fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
 		}
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
-			err = fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, err)
+			err = fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
 		}
 		return resp, err
 	}
@@ -1774,7 +1776,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 				// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 				// and permanently break the connection.
 				// Wrap the authorization error as well for client inspection.
-				return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
 			}
 			// Retry the request after successful authorization.
 			resp, err = doRequest()
@@ -1863,7 +1865,9 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+			if token != nil {
+				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+			}
 		}
 	}
 	if c.initializedResult != nil {
@@ -2126,7 +2130,6 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 				return nil, err
 			}
 			if err := c.setMCPHeaders(req); err != nil {
-				// TODO: should we fail the connection here?
 				return nil, err
 			}
 			if lastEventID != "" {
@@ -2160,8 +2163,6 @@ func (c *streamableClientConn) Close() error {
 				c.closeErr = err
 			} else {
 				if err := c.setMCPHeaders(req); err != nil {
-					// TODO: or setting headers should be best-effort and we should retry
-					// the request without them?
 					c.closeErr = err
 				} else if _, err := c.client.Do(req); err != nil {
 					c.closeErr = err
