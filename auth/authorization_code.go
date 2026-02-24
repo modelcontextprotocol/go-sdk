@@ -20,6 +20,46 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// ClientSecretAuthMethod defines "client_secret_*" authentication methods per
+// https://www.iana.org/assignments/oauth-parameters/oauth-parameters.xhtml#token-endpoint-auth-method.
+// "client_secret_jwt" is not currently supported.
+type ClientSecretAuthMethod int
+
+const (
+	// ClientSecretAuthMethodBasic uses the "client_secret_basic" authentication method.
+	ClientSecretAuthMethodBasic ClientSecretAuthMethod = iota
+	// ClientSecretAuthMethodPost uses the "client_secret_post" authentication method.
+	ClientSecretAuthMethodPost
+)
+
+func (m ClientSecretAuthMethod) String() string {
+	switch m {
+	case ClientSecretAuthMethodBasic:
+		return "client_secret_basic"
+	case ClientSecretAuthMethodPost:
+		return "client_secret_post"
+	default:
+		return "<incorrect>"
+	}
+}
+
+// ClientSecretAuthConfig is used to configure client authentication using client_secret.
+type ClientSecretAuthConfig struct {
+	// ClientID is the client ID to be used for client authentication.
+	ClientID string
+	// ClientSecret is the client secret to be used for client authentication.
+	ClientSecret string
+	// PreferredClientSecretAuthMethod to be used for client authentication.
+	// If not specified or unsupported by the authorization server, the method
+	// will be selected based on the authorization server's supported methods,
+	// according to the following preference order:
+	//
+	//   1. "client_secret_post"
+	//   2. "client_secret_basic"
+	//
+	PreferredClientSecretAuthMethod ClientSecretAuthMethod
+}
+
 // ClientIDMetadataDocumentConfig is used to configure the Client ID Metadata Document
 // based client registration per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents.
@@ -32,13 +72,10 @@ type ClientIDMetadataDocumentConfig struct {
 
 // PreregisteredClientConfig is used to configure a pre-registered client per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration.
+// Currently only "client_secret_basic" and "client_secret_post" authentication methods are supported.
 type PreregisteredClientConfig struct {
-	// ClientID and ClientSecret to be used for client authentication.
-	ClientID     string
-	ClientSecret string
-	// AuthStyle is an optional client authentication method.
-	// See [oauth2.AuthStyleAutoDetect] for the documentation of the zero value.
-	AuthStyle oauth2.AuthStyle
+	// ClientSecretAuthConfig is the client_secret based configuration to be used for client authentication.
+	ClientSecretAuthConfig *ClientSecretAuthConfig
 }
 
 // DynamicClientRegistrationConfig is used to configure dynamic client registration per
@@ -123,8 +160,12 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
 		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
 	}
-	if config.PreregisteredClientConfig != nil {
-		if config.PreregisteredClientConfig.ClientID == "" || config.PreregisteredClientConfig.ClientSecret == "" {
+	preCfg := config.PreregisteredClientConfig
+	if preCfg != nil {
+		if preCfg.ClientSecretAuthConfig == nil {
+			return nil, errors.New("field ClientSecretAuthConfig is required for pre-registered client")
+		}
+		if preCfg.ClientSecretAuthConfig.ClientID == "" || preCfg.ClientSecretAuthConfig.ClientSecret == "" {
 			return nil, fmt.Errorf("pre-registered client ID or secret is empty")
 		}
 	}
@@ -188,9 +229,8 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		ClientSecret: resolvedClientConfig.clientSecret,
 
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  asm.AuthorizationEndpoint,
-			TokenURL: asm.TokenEndpoint,
-			// TODO: validate if the auth style is supported by the AS.
+			AuthURL:   asm.AuthorizationEndpoint,
+			TokenURL:  asm.TokenEndpoint,
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
@@ -199,6 +239,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, req.URL.String())
 	if err != nil {
+		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return err
 	}
 
@@ -280,6 +321,38 @@ type resolvedClientConfig struct {
 	authStyle        oauth2.AuthStyle
 }
 
+func selectTokenAuthMethod(supported []string, preferred ClientSecretAuthMethod) oauth2.AuthStyle {
+	if slices.Contains(supported, preferred.String()) {
+		return authMethodToStyle(preferred.String())
+	}
+	prefOrder := []string{
+		// Preferred in OAuth 2.1 draft: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-14.html#name-client-secret.
+		"client_secret_post",
+		"client_secret_basic",
+	}
+	for _, method := range prefOrder {
+		if slices.Contains(supported, method) {
+			return authMethodToStyle(method)
+		}
+	}
+	return oauth2.AuthStyleAutoDetect
+}
+
+func authMethodToStyle(method string) oauth2.AuthStyle {
+	switch method {
+	case "client_secret_post":
+		return oauth2.AuthStyleInParams
+	case "client_secret_basic":
+		return oauth2.AuthStyleInHeader
+	case "none":
+		// "none" is equivalent to "client_secret_post" but without sending client secret.
+		return oauth2.AuthStyleInParams
+	default:
+		// "client_secret_basic" is the default per https://datatracker.ietf.org/doc/html/rfc7591#section-2.
+		return oauth2.AuthStyleInHeader
+	}
+}
+
 // handleRegistration handles client registration.
 // The provided authorization server metadata must be non-nil.
 // Support for different registration methods is defined as follows:
@@ -300,11 +373,12 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 2. Attempt to use pre-registered client configuration.
 	pCfg := h.config.PreregisteredClientConfig
 	if pCfg != nil {
+		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported, pCfg.ClientSecretAuthConfig.PreferredClientSecretAuthMethod)
 		return &resolvedClientConfig{
 			registrationType: registrationTypePreregistered,
-			clientID:         pCfg.ClientID,
-			clientSecret:     pCfg.ClientSecret,
-			authStyle:        pCfg.AuthStyle,
+			clientID:         pCfg.ClientSecretAuthConfig.ClientID,
+			clientSecret:     pCfg.ClientSecretAuthConfig.ClientSecret,
+			authStyle:        authStyle,
 		}, nil
 	}
 	// 3. Attempt to use dynamic client registration.
@@ -318,18 +392,7 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 			registrationType: registrationTypeDynamic,
 			clientID:         regResp.ClientID,
 			clientSecret:     regResp.ClientSecret,
-		}
-		switch regResp.TokenEndpointAuthMethod {
-		case "client_secret_post":
-			cfg.authStyle = oauth2.AuthStyleInParams
-		case "client_secret_basic":
-			cfg.authStyle = oauth2.AuthStyleInHeader
-		case "none":
-			// "none" is equivalent to "client_secret_post" but without sending client secret.
-			cfg.authStyle = oauth2.AuthStyleInParams
-			cfg.clientSecret = ""
-		default:
-			// We leave the AuthStyle set to zero value, which is auto-detection.
+			authStyle:        authMethodToStyle(regResp.TokenEndpointAuthMethod),
 		}
 		log.Printf("Client registered with client ID: %s", regResp.ClientID)
 		return cfg, nil
@@ -358,6 +421,7 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 	log.Printf("Calling AuthorizationURLHandler: %q", authURL)
 	authRes, err := h.config.AuthorizationURLHandler(ctx, authURL)
 	if err != nil {
+		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return nil, err
 	}
 	if authRes.State != state {
