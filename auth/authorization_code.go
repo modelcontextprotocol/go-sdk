@@ -54,7 +54,7 @@ type DynamicClientRegistrationConfig struct {
 type AuthorizationResult struct {
 	// AuthorizationCode is the authorization code obtained from the authorization server.
 	AuthorizationCode string
-	// State is the state string returned by the authorization server.
+	// State string returned by the authorization server.
 	State string
 }
 
@@ -78,8 +78,8 @@ type AuthorizationCodeHandlerConfig struct {
 	// with [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
 	RedirectURL string
 
-	// AuthorizationURLHandler is a required function called to handle the authorization URL.
-	// It is responsible for opening the URL in a browser for the user to start the authorization.
+	// AuthorizationURLHandler is a required function called to handle the authorization request.
+	// It is responsible for opening the URL in a browser for the user to start the authorization process.
 	// It should return the authorization code and state once the Authorization Server
 	// redirects back to the [AuthorizationCodeHandler.RedirectURL].
 	AuthorizationURLHandler func(ctx context.Context, authorizationURL string) (*AuthorizationResult, error)
@@ -139,6 +139,14 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	return &AuthorizationCodeHandler{config: config}, nil
 }
 
+func isNonRootHTTPSURL(u string) bool {
+	pu, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	return pu.Scheme == "https" && pu.Path != ""
+}
+
 // Authorize performs the authorization flow.
 // It is designed to perform the whole Authorization Code Grant flow.
 // On success, [AuthorizationCodeHandler.TokenSource] will return a token source with the fetched token.
@@ -151,19 +159,14 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	if err != nil {
 		return fmt.Errorf("failed to parse WWW-Authenticate header: %v", err)
 	}
-
 	log.Printf("WWW-Authenticate header: %v", wwwChallenges)
-	var prm *oauthex.ProtectedResourceMetadata
-	for _, url := range oauthex.ProtectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), resourceURL) {
-		var err error
-		log.Printf("Getting protected resource metadata from %q", url)
-		prm, err = oauthex.GetProtectedResourceMetadata(ctx, url, http.DefaultClient)
-		if err == nil {
-			break
-		}
-		log.Printf("Failed to get protected resource metadata from %q: %v", url, err)
+
+	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, resourceURL)
+	if err != nil {
+		return err
 	}
 	// log.Printf("Protected resource metadata: %+v", prm)
+
 	asm, err := h.getAuthServerMetadata(ctx, prm, resourceURL)
 	if err != nil {
 		return err
@@ -202,16 +205,27 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	return h.exchangeAuthorizationCode(ctx, cfg, authRes, resourceURL)
 }
 
-func isNonRootHTTPSURL(u string) bool {
-	pu, err := url.Parse(u)
-	if err != nil {
-		return false
+// getProtectedResourceMetadata returns the protected resource metadata.
+// If no metadata was found or the fetched metadata fails security checks,
+// it returns an error.
+func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, resourceURL string) (*oauthex.ProtectedResourceMetadata, error) {
+	var errs []error
+	for _, url := range oauthex.ProtectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), resourceURL) {
+		log.Printf("Getting protected resource metadata from %q", url)
+		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url, http.DefaultClient)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		return prm, nil
 	}
-	return pu.Scheme == "https" && pu.Path != ""
+	return nil, fmt.Errorf("failed to get protected resource metadata: %v", errors.Join(errs...))
 }
 
 // getAuthServerMetadata returns the authorization server metadata.
-// If no metadata is available, it returns a minimal set of endpoints
+// It returns an error if the metadata request fails with non-4xx HTTP status code
+// or the fetched metadata fails security checks.
+// If no metadata was found, it returns a minimal set of endpoints
 // as a fallback to 2025-03-26 spec.
 func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata, resourceURL string) (*oauthex.AuthServerMeta, error) {
 	var authServerURL string
@@ -229,20 +243,24 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 	}
 	log.Printf("Authorization server URL: %s", authServerURL)
 
-	asm, err := oauthex.GetAuthServerMeta(ctx, authServerURL, http.DefaultClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
-	}
-	if asm == nil {
-		log.Print("Authorization server metadata not found, using fallback")
-		// Fallback to 2025-03-26 spec: predefined endpoints.
-		// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
-		asm = &oauthex.AuthServerMeta{
-			Issuer:                authServerURL,
-			AuthorizationEndpoint: authServerURL + "/authorize",
-			TokenEndpoint:         authServerURL + "/token",
-			RegistrationEndpoint:  authServerURL + "/register",
+	for _, u := range oauthex.AuthorizationServerMetadataURLs(authServerURL) {
+		asm, err := oauthex.GetAuthServerMeta(ctx, u, http.DefaultClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
 		}
+		if asm != nil {
+			return asm, nil
+		}
+	}
+
+	log.Print("Authorization server metadata not found, using fallback")
+	// Fallback to 2025-03-26 spec: predefined endpoints.
+	// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
+	asm := &oauthex.AuthServerMeta{
+		Issuer:                authServerURL,
+		AuthorizationEndpoint: authServerURL + "/authorize",
+		TokenEndpoint:         authServerURL + "/token",
+		RegistrationEndpoint:  authServerURL + "/register",
 	}
 	return asm, nil
 }

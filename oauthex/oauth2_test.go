@@ -82,13 +82,13 @@ func TestParseSingleChallenge(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		want    challenge
+		want    Challenge
 		wantErr bool
 	}{
 		{
 			name:  "scheme only",
 			input: "Basic",
-			want: challenge{
+			want: Challenge{
 				Scheme: "basic",
 			},
 			wantErr: false,
@@ -96,7 +96,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "scheme with one quoted param",
 			input: `Bearer realm="example.com"`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": "example.com"},
 			},
@@ -105,7 +105,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "scheme with one unquoted param",
 			input: `Bearer realm=example.com`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": "example.com"},
 			},
@@ -114,7 +114,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "scheme with multiple params",
 			input: `Bearer realm="example", error="invalid_token", error_description="The token expired"`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{
 					"realm":             "example",
@@ -127,7 +127,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "scheme with multiple unquoted params",
 			input: `Bearer realm=example, error=invalid_token, error_description=The token expired`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{
 					"realm":             "example",
@@ -140,7 +140,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "case-insensitive scheme and keys",
 			input: `BEARER ReAlM="example"`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": "example"},
 			},
@@ -149,7 +149,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "param with escaped quote",
 			input: `Bearer realm="example \"foo\" bar"`,
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": `example "foo" bar`},
 			},
@@ -158,7 +158,7 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:  "param without quotes (token)",
 			input: "Bearer realm=example.com",
-			want: challenge{
+			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": "example.com"},
 			},

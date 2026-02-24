@@ -85,7 +85,10 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 
 			// The fake server sets issuer to https://localhost:<port>, so compute that issuer.
 			u, _ := url.Parse(ts.URL)
-			issuer := "https://localhost:" + u.Port()
+			metadataURL := AuthorizationServerMetadataURL{
+				URL:    "https://localhost:" + u.Port() + "/.well-known/oauth-authorization-server",
+				Issuer: "https://localhost:" + u.Port(),
+			}
 
 			// The fake server presents a cert for example.com; set ServerName accordingly.
 			httpClient := ts.Client()
@@ -95,7 +98,7 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 				httpClient.Transport = clone
 			}
 
-			meta, err := GetAuthServerMeta(ctx, issuer, httpClient)
+			meta, err := GetAuthServerMeta(ctx, metadataURL, httpClient)
 			if tt.wantError != "" {
 				if err == nil {
 					t.Fatal("wanted error but got none")

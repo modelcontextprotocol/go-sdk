@@ -319,7 +319,7 @@ The SDK implements the Authorization Code flow in
 This handler supports:
 
 - [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents)
-- Pre-registered clients
+- [Pre-registered clients](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration)
 - [Dynamic Client Registration](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration)
 
 To use it, configure the handler and assign it to the transport:

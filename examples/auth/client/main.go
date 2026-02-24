@@ -36,16 +36,9 @@ type codeReceiver struct {
 func (r *codeReceiver) serveRedirectHandler(listener net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		code := req.URL.Query().Get("code")
-		state := req.URL.Query().Get("state")
-		if code == "" {
-			http.Error(w, "authorization code not found", http.StatusBadRequest)
-			return
-		}
-
 		r.authChan <- &auth.AuthorizationResult{
-			AuthorizationCode: code,
-			State:             state,
+			AuthorizationCode: req.URL.Query().Get("code"),
+			State:             req.URL.Query().Get("state"),
 		}
 		fmt.Fprint(w, "Authentication successful. You can close this window.")
 	})
@@ -79,11 +72,6 @@ func (r *codeReceiver) close() {
 
 func main() {
 	flag.Parse()
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "test-client",
-		Version: "1.0.0",
-	}, nil)
-
 	receiver := &codeReceiver{
 		authChan: make(chan *auth.AuthorizationResult),
 		errChan:  make(chan error),
@@ -121,6 +109,10 @@ func main() {
 	}
 
 	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "test-client",
+		Version: "1.0.0",
+	}, nil)
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {

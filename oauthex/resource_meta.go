@@ -153,7 +153,7 @@ func ProtectedResourceMetadataURLs(metadataURL, resourceURL string) []ProtectedR
 
 // ResourceMetadataURL returns a resource metadata URL from the given challenges,
 // or the empty string if there is none.
-func ResourceMetadataURL(cs []challenge) string {
+func ResourceMetadataURL(cs []Challenge) string {
 	for _, c := range cs {
 		if u := c.Params["resource_metadata"]; u != "" {
 			return u
@@ -162,7 +162,7 @@ func ResourceMetadataURL(cs []challenge) string {
 	return ""
 }
 
-func Scopes(cs []challenge) []string {
+func Scopes(cs []Challenge) []string {
 	for _, c := range cs {
 		if c.Scheme == "bearer" && c.Params["scope"] != "" {
 			return strings.Fields(c.Params["scope"])

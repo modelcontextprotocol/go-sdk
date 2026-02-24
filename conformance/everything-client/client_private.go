@@ -69,28 +69,14 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.
 
 	// In conformance tests the authorization server immediately redirects
 	// to the callback URL with the authorization code and state.
-	location := resp.Header.Get("Location")
-	if location == "" {
-		return nil, fmt.Errorf("no Location header in redirect")
-	}
-
-	locURL, err := url.Parse(location)
+	locURL, err := url.Parse(resp.Header.Get("Location"))
 	if err != nil {
 		return nil, fmt.Errorf("parse location: %v", err)
 	}
 
-	code := locURL.Query().Get("code")
-	if code == "" {
-		return nil, fmt.Errorf("no code parameter in redirect URL")
-	}
-	state := locURL.Query().Get("state")
-	if state == "" {
-		return nil, fmt.Errorf("no state parameter in redirect URL")
-	}
-
 	return &auth.AuthorizationResult{
-		AuthorizationCode: code,
-		State:             state,
+		AuthorizationCode: locURL.Query().Get("code"),
+		State:             locURL.Query().Get("state"),
 	}, nil
 }
 

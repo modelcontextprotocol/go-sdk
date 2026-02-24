@@ -226,7 +226,11 @@ func TestGetAuthServerMetaRejectsDangerousURLs(t *testing.T) {
 			defer server.Close()
 
 			ctx := context.Background()
-			_, err := GetAuthServerMeta(ctx, server.URL, server.Client())
+			metadataURL := AuthorizationServerMetadataURL{
+				URL:    server.URL,
+				Issuer: server.URL,
+			}
+			_, err := GetAuthServerMeta(ctx, metadataURL, server.Client())
 			if err == nil {
 				t.Fatal("GetAuthServerMeta(): got nil error, want error")
 			}

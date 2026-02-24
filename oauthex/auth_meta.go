@@ -123,55 +123,60 @@ type AuthServerMeta struct {
 }
 
 // GetAuthServerMeta issues a GET request to retrieve authorization server metadata
-// from an OAuth authorization server with the given issuerURL.
+// from an OAuth authorization server with the given metadataURL.
 //
 // It follows [RFC 8414]:
-//   - The well-known paths specified there are inserted into the URL's path, one at time.
-//     The first to succeed is used.
-//   - The Issuer field is checked against issuerURL.
+//   - The Issuer field is checked against metadataURL.Issuer.
+//
+// It also verifies that the authorization server supports PKCE and that the URLs
+// in the metadata don't use dangerous schemes.
+//
+// It returns an error if the request fails with a non-4xx status code or the fetched
+// metadata doesn't pass security validations.
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
-func GetAuthServerMeta(ctx context.Context, issuerURL string, c *http.Client) (*AuthServerMeta, error) {
-	for _, u := range AuthorizationServerMetadataURLs(issuerURL) {
-		asm, err := getJSON[AuthServerMeta](ctx, c, u, 1<<20)
-		if err != nil {
-			log.Printf("Failed to get auth server metadata from %q: %v", u, err)
-			var httpErr *httpStatusError
-			if errors.As(err, &httpErr) {
-				if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
-					continue
-				}
-				return nil, fmt.Errorf("%v", err) // Do not expose wrapped errors.
+func GetAuthServerMeta(ctx context.Context, metadataURL AuthorizationServerMetadataURL, c *http.Client) (*AuthServerMeta, error) {
+	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL.URL, 1<<20)
+	if err != nil {
+		log.Printf("Failed to get auth server metadata from %q: %v", metadataURL.URL, err)
+		var httpErr *httpStatusError
+		if errors.As(err, &httpErr) {
+			if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
+				return nil, nil
 			}
+			return nil, fmt.Errorf("%v", err) // Do not expose error types.
 		}
-		if asm.Issuer != issuerURL {
-			// Validate the Issuer field (see RFC 8414, section 3.3).
-			return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuerURL)
-		}
-
-		if len(asm.CodeChallengeMethodsSupported) == 0 {
-			return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuerURL)
-		}
-
-		// Validate endpoint URLs to prevent XSS attacks (see #526).
-		if err := validateAuthServerMetaURLs(asm); err != nil {
-			return nil, err
-		}
-		log.Printf("Fetched authorization server metadata from %q", u)
-
-		return asm, nil
 	}
-	// Authorization server metadata not found. Return nil error to allow a fallback.
-	return nil, nil
+	if asm.Issuer != metadataURL.Issuer {
+		// Validate the Issuer field (see RFC 8414, section 3.3).
+		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, metadataURL.Issuer)
+	}
+
+	if len(asm.CodeChallengeMethodsSupported) == 0 {
+		return nil, fmt.Errorf("authorization server at %s does not implement PKCE", metadataURL.Issuer)
+	}
+
+	// Validate endpoint URLs to prevent XSS attacks (see #526).
+	if err := validateAuthServerMetaURLs(asm); err != nil {
+		return nil, err
+	}
+	log.Printf("Fetched authorization server metadata from %q", metadataURL.URL)
+
+	return asm, nil
+}
+
+type AuthorizationServerMetadataURL struct {
+	// URL where the Authorization Server Metadata may be retrieved.
+	URL string
+	// Issuer that was used to construct the [URL].
+	Issuer string
 }
 
 // AuthorizationServerMetadataURLs returns a list of URLs to try when looking for
-// authorization server metadata as mandated by the MCP specification.
-func AuthorizationServerMetadataURLs(issuerURL string) []string {
-	var urls []string
-
-	// Produce candidates per
-	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
+// authorization server metadata as mandated by the MCP specification:
+// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
+func AuthorizationServerMetadataURLs(issuerURL string) []AuthorizationServerMetadataURL {
+	var urls []AuthorizationServerMetadataURL
 
 	baseURL, err := url.Parse(issuerURL)
 	if err != nil {
@@ -181,23 +186,38 @@ func AuthorizationServerMetadataURLs(issuerURL string) []string {
 	if baseURL.Path == "" {
 		// "OAuth 2.0 Authorization Server Metadata".
 		baseURL.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, baseURL.String())
+		urls = append(urls, AuthorizationServerMetadataURL{
+			URL:    baseURL.String(),
+			Issuer: issuerURL,
+		})
 		// "OpenID Connect Discovery 1.0".
 		baseURL.Path = "/.well-known/openid-configuration"
-		urls = append(urls, baseURL.String())
+		urls = append(urls, AuthorizationServerMetadataURL{
+			URL:    baseURL.String(),
+			Issuer: issuerURL,
+		})
 		return urls
 	}
 
 	originalPath := baseURL.Path
 	// "OAuth 2.0 Authorization Server Metadata with path insertion".
 	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
+	urls = append(urls, AuthorizationServerMetadataURL{
+		URL:    baseURL.String(),
+		Issuer: issuerURL,
+	})
 	// "OpenID Connect Discovery 1.0 with path insertion".
 	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 path appending".
+	urls = append(urls, AuthorizationServerMetadataURL{
+		URL:    baseURL.String(),
+		Issuer: issuerURL,
+	})
+	// "OpenID Connect Discovery 1.0 with path appending".
 	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
-	urls = append(urls, baseURL.String())
+	urls = append(urls, AuthorizationServerMetadataURL{
+		URL:    baseURL.String(),
+		Issuer: issuerURL,
+	})
 	return urls
 }
 
