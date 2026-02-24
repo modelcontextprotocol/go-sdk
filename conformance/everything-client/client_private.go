@@ -67,6 +67,8 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.
 	}
 	defer resp.Body.Close()
 
+	// In conformance tests the authorization server immediately redirects
+	// to the callback URL with the authorization code and state.
 	location := resp.Header.Get("Location")
 	if location == "" {
 		return nil, fmt.Errorf("no Location header in redirect")
@@ -117,7 +119,7 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 		}
 	}
 
-	authHandler, err := auth.NewAuthorizationCodeOAuthHandler(authConfig)
+	authHandler, err := auth.NewAuthorizationCodeHandler(authConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create auth handler: %w", err)
 	}

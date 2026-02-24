@@ -315,7 +315,7 @@ will also call the handler's `Authorize` method if the server returns
 or facilitate scope step-up authorization.
 
 The SDK implements the Authorization Code flow in
-[`auth.AuthorizationCodeOAuthHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#AuthorizationCodeOAuthHandler).
+[`auth.AuthorizationCodeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#AuthorizationCodeHandler).
 This handler supports:
 
 - [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents)
@@ -325,7 +325,7 @@ This handler supports:
 To use it, configure the handler and assign it to the transport:
 
 ```go
-authHandler := &auth.AuthorizationCodeOAuthHandler{
+authHandler, _ := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
 	RedirectURL: "https://myapp.com/oauth2-callback",
 	// Configure one of the following:
 	// ClientIDMetadataDocumentConfig: ...
@@ -336,9 +336,9 @@ authHandler := &auth.AuthorizationCodeOAuthHandler{
 		// See full example in examples/auth/client/main.go.
 		code := ...
 		state := ...
-		return &auth.AuthorizationResult{Code: code, State: state}, nil
+		return &auth.AuthorizationResult{AuthorizationCode: code, State: state}, nil
 	},
-}
+})
 
 transport := &mcp.StreamableClientTransport{
 	Endpoint:     "https://example.com/mcp",
@@ -348,7 +348,7 @@ client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, 
 session, err := client.Connect(ctx, transport, nil)
 ```
 
-The `auth.AuthorizationCodeOAuthHandler` automatically manages token refreshing
+The `auth.AuthorizationCodeHandler` automatically manages token refreshing
 and step-up authentication (when the server returns `insufficient_scope` error).
 
 ## Security

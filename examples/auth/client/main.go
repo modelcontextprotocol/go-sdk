@@ -95,7 +95,7 @@ func main() {
 	go receiver.serveRedirectHandler(listener)
 	defer receiver.close()
 
-	authHandler, err := auth.NewAuthorizationCodeOAuthHandler(&auth.AuthorizationCodeHandlerConfig{
+	authHandler, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
 		RedirectURL:             fmt.Sprintf("http://localhost:%d", *callbackPort),
 		AuthorizationURLHandler: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
