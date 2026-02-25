@@ -1725,18 +1725,18 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return fmt.Errorf("%s: %v", requestSummary, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	doRequest := func() (*http.Response, error) {
+	doRequest := func() (*http.Request, *http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
 		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
-			return nil, fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
+			return nil, nil, fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
 		}
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -1745,10 +1745,10 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// and permanently break the connection.
 			err = fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
 		}
-		return resp, err
+		return req, resp, err
 	}
 
-	resp, err := doRequest()
+	req, resp, err := doRequest()
 	if err != nil {
 		return err
 	}
@@ -1761,7 +1761,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
 		// Retry the request after successful authorization.
-		resp, err = doRequest()
+		req, resp, err = doRequest()
 		if err != nil {
 			return err
 		}
@@ -1776,10 +1776,10 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 				// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 				// and permanently break the connection.
 				// Wrap the authorization error as well for client inspection.
-				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrRejected, err)
+				return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 			}
 			// Retry the request after successful authorization.
-			resp, err = doRequest()
+			req, resp, err = doRequest()
 			if err != nil {
 				return err
 			}
