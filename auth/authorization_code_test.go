@@ -51,14 +51,14 @@ func TestAuthorize(t *testing.T) {
 				ClientSecret: "test_client_secret",
 			},
 		},
-		AuthorizationURLHandler: func(ctx context.Context, authURL string) (*AuthorizationResult, error) {
+		AuthorizationCodeFetcher: func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
 			// The fake authorization server will redirect to an URL with code and state.
 			client := &http.Client{
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					return http.ErrUseLastResponse
 				},
 			}
-			resp, err := client.Get(authURL)
+			resp, err := client.Get(input.URL)
 			if err != nil {
 				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
 			}
@@ -112,12 +112,98 @@ func TestAuthorize(t *testing.T) {
 	}
 }
 
-func TestNewAuthorizationCodeHandler(t *testing.T) {
+func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set(
+		"WWW-Authenticate",
+		"Bearer error=invalid_token",
+	)
+	handler := &AuthorizationCodeHandler{} // No config needed for this test.
+	err := handler.Authorize(t.Context(), req, resp)
+	if err != nil {
+		t.Fatalf("Authorize() failed: %v", err)
+	}
+}
+
+func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
+	simpleHandler := func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
+		return nil, nil
+	}
+	tests := []struct {
+		name   string
+		config *AuthorizationCodeHandlerConfig
+	}{
+		{
+			name: "ClientIDMetadataDocumentConfig",
+			config: &AuthorizationCodeHandlerConfig{
+				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://example.com/client"},
+				RedirectURL:                    "https://example.com/callback",
+				AuthorizationCodeFetcher:       simpleHandler,
+			},
+		},
+		{
+			name: "PreregisteredClientConfig",
+			config: &AuthorizationCodeHandlerConfig{
+				PreregisteredClientConfig: &PreregisteredClientConfig{
+					ClientSecretAuthConfig: &ClientSecretAuthConfig{
+						ClientID:     "test_client_id",
+						ClientSecret: "test_client_secret",
+					},
+				},
+				RedirectURL:              "https://example.com/callback",
+				AuthorizationCodeFetcher: simpleHandler,
+			},
+		},
+		{
+			name: "DynamicClientRegistrationConfig_NoRedirectURL",
+			config: &AuthorizationCodeHandlerConfig{
+				DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+					Metadata: &oauthex.ClientRegistrationMetadata{
+						RedirectURIs: []string{
+							"https://example.com/callback",
+						},
+					},
+				},
+				AuthorizationCodeFetcher: simpleHandler,
+			},
+		},
+		{
+			name: "DynamicClientRegistrationConfig_WithRedirectURL",
+			config: &AuthorizationCodeHandlerConfig{
+				DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+					Metadata: &oauthex.ClientRegistrationMetadata{
+						RedirectURIs: []string{
+							"https://example.com/callback",
+						},
+					},
+				},
+				RedirectURL:              "https://example.com/callback",
+				AuthorizationCodeFetcher: simpleHandler,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewAuthorizationCodeHandler(tt.config); err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 	validConfig := func() *AuthorizationCodeHandlerConfig {
 		return &AuthorizationCodeHandlerConfig{
 			ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://example.com/client"},
 			RedirectURL:                    "https://example.com/callback",
-			AuthorizationURLHandler: func(ctx context.Context, authURL string) (*AuthorizationResult, error) {
+			AuthorizationCodeFetcher: func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
 				return nil, nil
 			},
 		}
@@ -159,7 +245,7 @@ func TestNewAuthorizationCodeHandler(t *testing.T) {
 			name: "MissingAuthorizationURLHandler",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.AuthorizationURLHandler = nil
+				cfg.AuthorizationCodeFetcher = nil
 				return cfg
 			},
 		},
@@ -417,44 +503,28 @@ func TestSelectTokenAuthMethod(t *testing.T) {
 	tests := []struct {
 		name      string
 		supported []string
-		preferred ClientSecretAuthMethod
 		want      oauth2.AuthStyle
 	}{
 		{
-			name:      "PreferredBasic_Supported",
+			name:      "PostPreferredOverBasic",
 			supported: []string{"client_secret_basic", "client_secret_post"},
-			preferred: ClientSecretAuthMethodBasic,
-			want:      oauth2.AuthStyleInHeader,
-		},
-		{
-			name:      "PreferredPost_Supported",
-			supported: []string{"client_secret_basic", "client_secret_post"},
-			preferred: ClientSecretAuthMethodPost,
 			want:      oauth2.AuthStyleInParams,
 		},
 		{
-			name:      "PreferredBasic_NotSupported",
-			supported: []string{"client_secret_post"},
-			preferred: ClientSecretAuthMethodBasic,
-			want:      oauth2.AuthStyleInParams,
-		},
-		{
-			name:      "PreferredPost_NotSupported",
-			supported: []string{"client_secret_basic"},
-			preferred: ClientSecretAuthMethodPost,
+			name:      "BasicChosenIfPostNotSupported",
+			supported: []string{"private_key_jwt", "client_secret_basic"},
 			want:      oauth2.AuthStyleInHeader,
 		},
 		{
 			name:      "NoneSupported",
 			supported: []string{"private_key_jwt"},
-			preferred: ClientSecretAuthMethodBasic,
 			want:      oauth2.AuthStyleAutoDetect,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := selectTokenAuthMethod(tt.supported, tt.preferred)
+			got := selectTokenAuthMethod(tt.supported)
 			if got != tt.want {
 				t.Errorf("selectTokenAuthMethod() = %v, want %v", got, tt.want)
 			}
@@ -496,9 +566,8 @@ func TestHandleRegistration(t *testing.T) {
 			handlerConfig: &AuthorizationCodeHandlerConfig{
 				PreregisteredClientConfig: &PreregisteredClientConfig{
 					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:                        "pre_client_id",
-						ClientSecret:                    "pre_client_secret",
-						PreferredClientSecretAuthMethod: ClientSecretAuthMethodBasic,
+						ClientID:     "pre_client_id",
+						ClientSecret: "pre_client_secret",
 					},
 				},
 			},
@@ -506,7 +575,7 @@ func TestHandleRegistration(t *testing.T) {
 				registrationType: registrationTypePreregistered,
 				clientID:         "pre_client_id",
 				clientSecret:     "pre_client_secret",
-				authStyle:        oauth2.AuthStyleInHeader,
+				authStyle:        oauth2.AuthStyleInParams,
 			},
 		},
 		{

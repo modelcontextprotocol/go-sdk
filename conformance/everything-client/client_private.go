@@ -50,13 +50,13 @@ func init() {
 // Auth scenarios
 // ============================================================================
 
-func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.AuthorizationResult, error) {
+func fetchAuthorizationCodeAndState(ctx context.Context, input *auth.AuthorizationInput) (*auth.AuthorizationResult, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", authURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +82,8 @@ func fetchAuthorizationCodeAndState(ctx context.Context, authURL string) (*auth.
 
 func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
 	authConfig := &auth.AuthorizationCodeHandlerConfig{
-		RedirectURL:             "http://localhost:3000/callback",
-		AuthorizationURLHandler: fetchAuthorizationCodeAndState,
+		RedirectURL:              "http://localhost:3000/callback",
+		AuthorizationCodeFetcher: fetchAuthorizationCodeAndState,
 		// Try client ID metadata document based registration.
 		ClientIDMetadataDocumentConfig: &auth.ClientIDMetadataDocumentConfig{
 			URL: "https://conformance-test.local/client-metadata.json",

@@ -53,7 +53,7 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) error {
 	return nil
 }
 
-func (r *codeReceiver) getAuthorizationCode(ctx context.Context, authorizationURL string) (*auth.AuthorizationResult, error) {
+func (r *codeReceiver) getAuthorizationCode(ctx context.Context, input *auth.AuthorizationInput) (*auth.AuthorizationResult, error) {
 	select {
 	case authRes := <-r.authChan:
 		return authRes, nil
@@ -84,8 +84,8 @@ func main() {
 	defer receiver.close()
 
 	authHandler, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
-		RedirectURL:             fmt.Sprintf("http://localhost:%d", *callbackPort),
-		AuthorizationURLHandler: receiver.getAuthorizationCode,
+		RedirectURL:              fmt.Sprintf("http://localhost:%d", *callbackPort),
+		AuthorizationCodeFetcher: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
 		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
 		// 	ClientID:     "",

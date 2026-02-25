@@ -20,44 +20,17 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// ClientSecretAuthMethod defines "client_secret_*" authentication methods per
-// https://www.iana.org/assignments/oauth-parameters/oauth-parameters.xhtml#token-endpoint-auth-method.
-// "client_secret_jwt" is not currently supported.
-type ClientSecretAuthMethod int
-
-const (
-	// ClientSecretAuthMethodBasic uses the "client_secret_basic" authentication method.
-	ClientSecretAuthMethodBasic ClientSecretAuthMethod = iota
-	// ClientSecretAuthMethodPost uses the "client_secret_post" authentication method.
-	ClientSecretAuthMethodPost
-)
-
-func (m ClientSecretAuthMethod) String() string {
-	switch m {
-	case ClientSecretAuthMethodBasic:
-		return "client_secret_basic"
-	case ClientSecretAuthMethodPost:
-		return "client_secret_post"
-	default:
-		return "<incorrect>"
-	}
-}
-
 // ClientSecretAuthConfig is used to configure client authentication using client_secret.
+// Authentication method will be selected based on the authorization server's supported methods,
+// according to the following preference order:
+//
+//  1. "client_secret_post"
+//  2. "client_secret_basic"
 type ClientSecretAuthConfig struct {
 	// ClientID is the client ID to be used for client authentication.
 	ClientID string
 	// ClientSecret is the client secret to be used for client authentication.
 	ClientSecret string
-	// PreferredClientSecretAuthMethod to be used for client authentication.
-	// If not specified or unsupported by the authorization server, the method
-	// will be selected based on the authorization server's supported methods,
-	// according to the following preference order:
-	//
-	//   1. "client_secret_post"
-	//   2. "client_secret_basic"
-	//
-	PreferredClientSecretAuthMethod ClientSecretAuthMethod
 }
 
 // ClientIDMetadataDocumentConfig is used to configure the Client ID Metadata Document
@@ -95,6 +68,12 @@ type AuthorizationResult struct {
 	State string
 }
 
+// AuthorizationInput is the input to [AuthorizationCodeHandlerConfig.AuthorizationCodeFetcher].
+type AuthorizationInput struct {
+	// Authorization URL to be opened in a browser for the user to start the authorization process.
+	URL string
+}
+
 // AuthorizationCodeHandlerConfig is the configuration for [AuthorizationCodeHandler].
 type AuthorizationCodeHandlerConfig struct {
 	// Client registration configuration.
@@ -111,15 +90,20 @@ type AuthorizationCodeHandlerConfig struct {
 
 	// RedirectURL is a required URL to redirect to after authorization.
 	// The caller is responsible for handling the redirect out of band.
-	// If Dynamic Client Registration is used, the RedirectURL must be consistent
-	// with [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
+	//
+	// If Dynamic Client Registration is used:
+	// - this field is permitted to be empty, in which case it will be set
+	//   to the first redirect URI from
+	//   [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
+	// - if the field is not empty, it must be one of the redirect URIs in
+	//   [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
 	RedirectURL string
 
-	// AuthorizationURLHandler is a required function called to handle the authorization request.
+	// AuthorizationCodeFetcher is a required function called to initiate the authorization flow.
 	// It is responsible for opening the URL in a browser for the user to start the authorization process.
 	// It should return the authorization code and state once the Authorization Server
-	// redirects back to the [AuthorizationCodeHandler.RedirectURL].
-	AuthorizationURLHandler func(ctx context.Context, authorizationURL string) (*AuthorizationResult, error)
+	// redirects back to the [AuthorizationCodeHandlerConfig.RedirectURL].
+	AuthorizationCodeFetcher func(ctx context.Context, authorizationInput *AuthorizationInput) (*AuthorizationResult, error)
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -151,11 +135,8 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		config.DynamicClientRegistrationConfig == nil {
 		return nil, errors.New("at least one client registration configuration must be provided")
 	}
-	if config.RedirectURL == "" {
-		return nil, errors.New("field RedirectURL is required")
-	}
-	if config.AuthorizationURLHandler == nil {
-		return nil, errors.New("field AuthorizationURLHandler is required")
+	if config.AuthorizationCodeFetcher == nil {
+		return nil, errors.New("AuthorizationURLHandler is required")
 	}
 	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
 		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
@@ -163,19 +144,30 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	preCfg := config.PreregisteredClientConfig
 	if preCfg != nil {
 		if preCfg.ClientSecretAuthConfig == nil {
-			return nil, errors.New("field ClientSecretAuthConfig is required for pre-registered client")
+			return nil, errors.New("ClientSecretAuthConfig is required for pre-registered client")
 		}
 		if preCfg.ClientSecretAuthConfig.ClientID == "" || preCfg.ClientSecretAuthConfig.ClientSecret == "" {
 			return nil, fmt.Errorf("pre-registered client ID or secret is empty")
 		}
 	}
-	if config.DynamicClientRegistrationConfig != nil {
-		if config.DynamicClientRegistrationConfig.Metadata == nil {
-			return nil, errors.New("field Metadata is required for dynamic client registration")
+	dCfg := config.DynamicClientRegistrationConfig
+	if dCfg != nil {
+		if dCfg.Metadata == nil {
+			return nil, errors.New("Metadata is required for dynamic client registration")
 		}
-		if !slices.Contains(config.DynamicClientRegistrationConfig.Metadata.RedirectURIs, config.RedirectURL) {
-			return nil, fmt.Errorf("redirect URI %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
+		if len(dCfg.Metadata.RedirectURIs) == 0 {
+			return nil, errors.New("Metadata.RedirectURIs is required for dynamic client registration")
 		}
+		if config.RedirectURL == "" {
+			config.RedirectURL = dCfg.Metadata.RedirectURIs[0]
+		} else if !slices.Contains(dCfg.Metadata.RedirectURIs, config.RedirectURL) {
+			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
+		}
+	}
+	if config.RedirectURL == "" {
+		// If the RedirectURL was supposed to be set by the dynamic client registration,
+		// it should have been set by now. Otherwise, it is required.
+		return nil, errors.New("RedirectURL is required")
 	}
 	return &AuthorizationCodeHandler{config: config}, nil
 }
@@ -200,6 +192,15 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return fmt.Errorf("failed to parse WWW-Authenticate header: %v", err)
 	}
 	log.Printf("WWW-Authenticate header: %v", wwwChallenges)
+
+	if resp.StatusCode == http.StatusForbidden && oauthex.Error(wwwChallenges) != "insufficient_scope" {
+		// We only want to perform step-up authorization for insufficient_scope errors.
+		// Returning nil, so that the call is retried immediately and the response
+		// is handled appropriately by the connection.
+		// Step-up authorization is defined at
+		// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#step-up-authorization-flow
+		return nil
+	}
 
 	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, req.URL.String())
 	if err != nil {
@@ -291,7 +292,7 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 	log.Printf("Authorization server URL: %s", authServerURL)
 
 	for _, u := range oauthex.AuthorizationServerMetadataURLs(authServerURL) {
-		asm, err := oauthex.GetAuthServerMeta(ctx, u, http.DefaultClient)
+		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, http.DefaultClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
 		}
@@ -327,10 +328,7 @@ type resolvedClientConfig struct {
 	authStyle        oauth2.AuthStyle
 }
 
-func selectTokenAuthMethod(supported []string, preferred ClientSecretAuthMethod) oauth2.AuthStyle {
-	if slices.Contains(supported, preferred.String()) {
-		return authMethodToStyle(preferred.String())
-	}
+func selectTokenAuthMethod(supported []string) oauth2.AuthStyle {
 	prefOrder := []string{
 		// Preferred in OAuth 2.1 draft: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-14.html#name-client-secret.
 		"client_secret_post",
@@ -379,7 +377,7 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 2. Attempt to use pre-registered client configuration.
 	pCfg := h.config.PreregisteredClientConfig
 	if pCfg != nil {
-		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported, pCfg.ClientSecretAuthConfig.PreferredClientSecretAuthMethod)
+		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported)
 		return &resolvedClientConfig{
 			registrationType: registrationTypePreregistered,
 			clientID:         pCfg.ClientSecretAuthConfig.ClientID,
@@ -425,7 +423,7 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 	)
 
 	log.Printf("Calling AuthorizationURLHandler: %q", authURL)
-	authRes, err := h.config.AuthorizationURLHandler(ctx, authURL)
+	authRes, err := h.config.AuthorizationCodeFetcher(ctx, &AuthorizationInput{URL: authURL})
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return nil, err

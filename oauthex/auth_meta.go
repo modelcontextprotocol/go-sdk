@@ -136,10 +136,10 @@ type AuthServerMeta struct {
 // It returns nil if the request fails with a 4xx status code.
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
-func GetAuthServerMeta(ctx context.Context, metadataURL AuthorizationServerMetadataURL, c *http.Client) (*AuthServerMeta, error) {
-	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL.URL, 1<<20)
+func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.Client) (*AuthServerMeta, error) {
+	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL, 1<<20)
 	if err != nil {
-		log.Printf("Failed to get auth server metadata from %q: %v", metadataURL.URL, err)
+		log.Printf("Failed to get auth server metadata from %q: %v", metadataURL, err)
 		var httpErr *httpStatusError
 		if errors.As(err, &httpErr) {
 			if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
@@ -148,36 +148,29 @@ func GetAuthServerMeta(ctx context.Context, metadataURL AuthorizationServerMetad
 		}
 		return nil, fmt.Errorf("%v", err) // Do not expose error types.
 	}
-	if asm.Issuer != metadataURL.Issuer {
+	if asm.Issuer != issuer {
 		// Validate the Issuer field (see RFC 8414, section 3.3).
-		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, metadataURL.Issuer)
+		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuer)
 	}
 
 	if len(asm.CodeChallengeMethodsSupported) == 0 {
-		return nil, fmt.Errorf("authorization server at %s does not implement PKCE", metadataURL.Issuer)
+		return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuer)
 	}
 
 	// Validate endpoint URLs to prevent XSS attacks (see #526).
 	if err := validateAuthServerMetaURLs(asm); err != nil {
 		return nil, err
 	}
-	log.Printf("Fetched authorization server metadata from %q", metadataURL.URL)
+	log.Printf("Fetched authorization server metadata from %q", metadataURL)
 
 	return asm, nil
-}
-
-type AuthorizationServerMetadataURL struct {
-	// URL where the Authorization Server Metadata may be retrieved.
-	URL string
-	// Issuer that was used to construct the [URL].
-	Issuer string
 }
 
 // AuthorizationServerMetadataURLs returns a list of URLs to try when looking for
 // authorization server metadata as mandated by the MCP specification:
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
-func AuthorizationServerMetadataURLs(issuerURL string) []AuthorizationServerMetadataURL {
-	var urls []AuthorizationServerMetadataURL
+func AuthorizationServerMetadataURLs(issuerURL string) []string {
+	var urls []string
 
 	baseURL, err := url.Parse(issuerURL)
 	if err != nil {
@@ -187,38 +180,23 @@ func AuthorizationServerMetadataURLs(issuerURL string) []AuthorizationServerMeta
 	if baseURL.Path == "" {
 		// "OAuth 2.0 Authorization Server Metadata".
 		baseURL.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, AuthorizationServerMetadataURL{
-			URL:    baseURL.String(),
-			Issuer: issuerURL,
-		})
+		urls = append(urls, baseURL.String())
 		// "OpenID Connect Discovery 1.0".
 		baseURL.Path = "/.well-known/openid-configuration"
-		urls = append(urls, AuthorizationServerMetadataURL{
-			URL:    baseURL.String(),
-			Issuer: issuerURL,
-		})
+		urls = append(urls, baseURL.String())
 		return urls
 	}
 
 	originalPath := baseURL.Path
 	// "OAuth 2.0 Authorization Server Metadata with path insertion".
 	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, AuthorizationServerMetadataURL{
-		URL:    baseURL.String(),
-		Issuer: issuerURL,
-	})
+	urls = append(urls, baseURL.String())
 	// "OpenID Connect Discovery 1.0 with path insertion".
 	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, AuthorizationServerMetadataURL{
-		URL:    baseURL.String(),
-		Issuer: issuerURL,
-	})
+	urls = append(urls, baseURL.String())
 	// "OpenID Connect Discovery 1.0 with path appending".
 	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
-	urls = append(urls, AuthorizationServerMetadataURL{
-		URL:    baseURL.String(),
-		Issuer: issuerURL,
-	})
+	urls = append(urls, baseURL.String())
 	return urls
 }
 

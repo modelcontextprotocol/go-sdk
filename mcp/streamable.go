@@ -35,7 +35,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 const (
@@ -1753,7 +1752,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized && c.oauthHandler != nil {
+	if slices.Contains([]int{http.StatusUnauthorized, http.StatusForbidden}, resp.StatusCode) && c.oauthHandler != nil {
 		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
@@ -1761,28 +1760,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
 		// Retry the request after successful authorization.
-		req, resp, err = doRequest()
+		_, resp, err = doRequest()
 		if err != nil {
 			return err
-		}
-	}
-	if resp.StatusCode == http.StatusForbidden && c.oauthHandler != nil {
-		challenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
-		if err != nil {
-			c.logger.Warn("%s: failed to parse WWW-Authenticate header: %v", requestSummary, err)
-		} else if oauthex.Error(challenges) == "insufficient_scope" {
-			// Trigger step-up authorization flow.
-			if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
-				// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
-				// and permanently break the connection.
-				// Wrap the authorization error as well for client inspection.
-				return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
-			}
-			// Retry the request after successful authorization.
-			req, resp, err = doRequest()
-			if err != nil {
-				return err
-			}
 		}
 	}
 
