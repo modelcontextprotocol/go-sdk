@@ -195,20 +195,19 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	defer resp.Body.Close()
 	log.Printf("Authorize: %s %s", req.Method, req.URL)
 
-	resourceURL := req.URL.String()
 	wwwChallenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
 	if err != nil {
 		return fmt.Errorf("failed to parse WWW-Authenticate header: %v", err)
 	}
 	log.Printf("WWW-Authenticate header: %v", wwwChallenges)
 
-	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, resourceURL)
+	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, req.URL.String())
 	if err != nil {
 		return err
 	}
 	// log.Printf("Protected resource metadata: %+v", prm)
 
-	asm, err := h.getAuthServerMetadata(ctx, prm, resourceURL)
+	asm, err := h.getAuthServerMetadata(ctx, prm)
 	if err != nil {
 		return err
 	}
@@ -243,19 +242,25 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	return h.exchangeAuthorizationCode(ctx, cfg, authRes, resourceURL)
+	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
 }
 
 // getProtectedResourceMetadata returns the protected resource metadata.
 // If no metadata was found or the fetched metadata fails security checks,
 // it returns an error.
-func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, resourceURL string) (*oauthex.ProtectedResourceMetadata, error) {
+func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, mcpServerURL string) (*oauthex.ProtectedResourceMetadata, error) {
 	var errs []error
-	for _, url := range oauthex.ProtectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), resourceURL) {
+	// Use MCP server URL as the resource URI per
+	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
+	for _, url := range oauthex.ProtectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), mcpServerURL) {
 		log.Printf("Getting protected resource metadata from %q", url)
 		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url, http.DefaultClient)
 		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if prm == nil {
+			errs = append(errs, fmt.Errorf("protected resource metadata is nil"))
 			continue
 		}
 		return prm, nil
@@ -264,18 +269,19 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 }
 
 // getAuthServerMetadata returns the authorization server metadata.
+// The provided Protected Resource Metadata must not be nil.
 // It returns an error if the metadata request fails with non-4xx HTTP status code
 // or the fetched metadata fails security checks.
 // If no metadata was found, it returns a minimal set of endpoints
 // as a fallback to 2025-03-26 spec.
-func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata, resourceURL string) (*oauthex.AuthServerMeta, error) {
+func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata) (*oauthex.AuthServerMeta, error) {
 	var authServerURL string
-	if prm != nil && len(prm.AuthorizationServers) > 0 {
+	if len(prm.AuthorizationServers) > 0 {
 		// Use the first authorization server, similarly to other SDKs.
 		authServerURL = prm.AuthorizationServers[0]
 	} else {
 		// Fallback to 2025-03-26 spec: MCP server base URL acts as Authorization Server.
-		authURL, err := url.Parse(resourceURL)
+		authURL, err := url.Parse(prm.Resource)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse resource URL: %v", err)
 		}

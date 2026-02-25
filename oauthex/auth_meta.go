@@ -133,6 +133,7 @@ type AuthServerMeta struct {
 //
 // It returns an error if the request fails with a non-4xx status code or the fetched
 // metadata doesn't pass security validations.
+// It returns nil if the request fails with a 4xx status code.
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
 func GetAuthServerMeta(ctx context.Context, metadataURL AuthorizationServerMetadataURL, c *http.Client) (*AuthServerMeta, error) {
@@ -144,8 +145,8 @@ func GetAuthServerMeta(ctx context.Context, metadataURL AuthorizationServerMetad
 			if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("%v", err) // Do not expose error types.
 		}
+		return nil, fmt.Errorf("%v", err) // Do not expose error types.
 	}
 	if asm.Issuer != metadataURL.Issuer {
 		// Validate the Issuer field (see RFC 8414, section 3.3).
