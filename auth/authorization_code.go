@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -186,13 +185,11 @@ func isNonRootHTTPSURL(u string) bool {
 // On success, [AuthorizationCodeHandler.TokenSource] will return a token source with the fetched token.
 func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	defer resp.Body.Close()
-	log.Printf("Authorize: %s %s", req.Method, req.URL)
 
 	wwwChallenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
 	if err != nil {
 		return fmt.Errorf("failed to parse WWW-Authenticate header: %v", err)
 	}
-	log.Printf("WWW-Authenticate header: %v", wwwChallenges)
 
 	if resp.StatusCode == http.StatusForbidden && oauthex.Error(wwwChallenges) != "insufficient_scope" {
 		// We only want to perform step-up authorization for insufficient_scope errors.
@@ -207,13 +204,11 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	if err != nil {
 		return err
 	}
-	// log.Printf("Protected resource metadata: %+v", prm)
 
 	asm, err := h.getAuthServerMetadata(ctx, prm)
 	if err != nil {
 		return err
 	}
-	// log.Printf("Authorization server metadata: %+v", asm)
 
 	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
 	if err != nil {
@@ -255,7 +250,6 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
 	for _, url := range protectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), mcpServerURL) {
-		log.Printf("Getting protected resource metadata from %q", url)
 		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, http.DefaultClient)
 		if err != nil {
 			errs = append(errs, err)
@@ -307,7 +301,6 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 		URL:      mu.String(),
 		Resource: ru.String(),
 	})
-	log.Printf("Resource metadata URLs: %v", urls)
 	return urls
 }
 
@@ -331,7 +324,6 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 		authURL.Path = ""
 		authServerURL = authURL.String()
 	}
-	log.Printf("Authorization server URL: %s", authServerURL)
 
 	for _, u := range authorizationServerMetadataURLs(authServerURL) {
 		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, http.DefaultClient)
@@ -343,7 +335,6 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 		}
 	}
 
-	log.Print("Authorization server metadata not found, using fallback")
 	// Fallback to 2025-03-26 spec: predefined endpoints.
 	// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
 	asm := &oauthex.AuthServerMeta{
@@ -474,7 +465,6 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 			clientSecret:     regResp.ClientSecret,
 			authStyle:        authMethodToStyle(regResp.TokenEndpointAuthMethod),
 		}
-		log.Printf("Client registered with client ID: %s", regResp.ClientID)
 		return cfg, nil
 	}
 	return nil, fmt.Errorf("no configured client registration methods are supported by the authorization server")
@@ -498,7 +488,6 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	)
 
-	log.Printf("Calling AuthorizationURLHandler: %q", authURL)
 	authRes, err := h.config.AuthorizationCodeFetcher(ctx, &AuthorizationInput{URL: authURL})
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
@@ -516,7 +505,6 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 // exchangeAuthorizationCode exchanges the authorization code for a token
 // and stores it in a token source.
 func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context, cfg *oauth2.Config, authResult *authResult, resourceURL string) error {
-	log.Printf("Exchanging authorization code for token")
 	opts := []oauth2.AuthCodeOption{
 		oauth2.VerifierOption(authResult.usedCodeVerifier),
 		oauth2.SetAuthURLParam("resource", resourceURL),

@@ -144,7 +144,6 @@ func runElicitationDefaultsClient(ctx context.Context, serverURL string, _ map[s
 // ============================================================================
 
 func runSSERetryClient(ctx context.Context, serverURL string, _ map[string]any) error {
-	// TODO: this scenario is not passing yet. It requires a fix in the client SSE handling.
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err

@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 
@@ -149,7 +148,6 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 	}
 	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL, 1<<20)
 	if err != nil {
-		log.Printf("Failed to get auth server metadata from %q: %v", metadataURL, err)
 		var httpErr *httpStatusError
 		if errors.As(err, &httpErr) {
 			if 400 <= httpErr.StatusCode && httpErr.StatusCode < 500 {
@@ -171,7 +169,6 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 	if err := validateAuthServerMetaURLs(asm); err != nil {
 		return nil, err
 	}
-	log.Printf("Fetched authorization server metadata from %q", metadataURL)
 
 	return asm, nil
 }
