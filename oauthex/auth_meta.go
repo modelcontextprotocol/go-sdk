@@ -16,7 +16,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -126,6 +127,7 @@ type AuthServerMeta struct {
 // from an OAuth authorization server with the given metadataURL.
 //
 // It follows [RFC 8414]:
+//   - The metadataURL must use HTTPS or be a local address.
 //   - The Issuer field is checked against metadataURL.Issuer.
 //
 // It also verifies that the authorization server supports PKCE and that the URLs
@@ -137,6 +139,14 @@ type AuthServerMeta struct {
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
 func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.Client) (*AuthServerMeta, error) {
+	u, err := url.Parse(metadataURL)
+	if err != nil {
+		return nil, err
+	}
+	// Only allow HTTP for local addresses (testing or development purposes).
+	if !util.IsLoopback(u.Host) && u.Scheme != "https" {
+		return nil, fmt.Errorf("metadataURL %q does not use HTTPS", metadataURL)
+	}
 	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL, 1<<20)
 	if err != nil {
 		log.Printf("Failed to get auth server metadata from %q: %v", metadataURL, err)
@@ -164,40 +174,6 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 	log.Printf("Fetched authorization server metadata from %q", metadataURL)
 
 	return asm, nil
-}
-
-// AuthorizationServerMetadataURLs returns a list of URLs to try when looking for
-// authorization server metadata as mandated by the MCP specification:
-// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
-func AuthorizationServerMetadataURLs(issuerURL string) []string {
-	var urls []string
-
-	baseURL, err := url.Parse(issuerURL)
-	if err != nil {
-		return nil
-	}
-
-	if baseURL.Path == "" {
-		// "OAuth 2.0 Authorization Server Metadata".
-		baseURL.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, baseURL.String())
-		// "OpenID Connect Discovery 1.0".
-		baseURL.Path = "/.well-known/openid-configuration"
-		urls = append(urls, baseURL.String())
-		return urls
-	}
-
-	originalPath := baseURL.Path
-	// "OAuth 2.0 Authorization Server Metadata with path insertion".
-	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path insertion".
-	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path appending".
-	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
-	urls = append(urls, baseURL.String())
-	return urls
 }
 
 // validateAuthServerMetaURLs validates all URL fields in AuthServerMeta

@@ -12,7 +12,6 @@ package oauthex
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -47,10 +46,7 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 	}
 	// Insert well-known URI into URL.
 	u.Path = path.Join(defaultProtectedResourceMetadataURI, u.Path)
-	return GetProtectedResourceMetadata(ctx, ProtectedResourceMetadataURL{
-		URL:      u.String(),
-		Resource: resourceID,
-	}, c)
+	return GetProtectedResourceMetadata(ctx, u.String(), resourceID, c)
 }
 
 // GetProtectedResourceMetadataFromHeader retrieves protected resource metadata
@@ -74,31 +70,34 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL strin
 	if metadataURL == "" {
 		return nil, nil
 	}
-	return GetProtectedResourceMetadata(ctx, ProtectedResourceMetadataURL{
-		URL:      metadataURL,
-		Resource: serverURL,
-	}, c)
+	return GetProtectedResourceMetadata(ctx, metadataURL, serverURL, c)
 }
 
 // GetProtectedResourceMetadataFromID issues a GET request to retrieve protected resource
 // metadata from a resource server.
 // The metadataURL is typically a URL with a host:port and possibly a path.
-// For example:
-//
-//	https://example.com/server
-func GetProtectedResourceMetadata(ctx context.Context, metadataURL ProtectedResourceMetadataURL, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
+// The resourceURL is the resource URI that the metadataURL is for.
+// The following checks are performed:
+// - The metadataURL must use HTTPS or be a local address.
+// - The resource field of the resulting metadata must match the resourceURL.
+// - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
+func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
-	// TODO: where HTTPS requirement comes from? conformance tests use HTTP.
-	// if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
-	// 	return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
-	// }
-	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, metadataURL.URL, 1<<20)
+	u, err := url.Parse(metadataURL)
+	if err != nil {
+		return nil, err
+	}
+	// Only allow HTTP for local addresses (testing or development purposes).
+	if !util.IsLoopback(u.Host) && u.Scheme != "https" {
+		return nil, fmt.Errorf("metadataURL %q does not use HTTPS", metadataURL)
+	}
+	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, metadataURL, 1<<20)
 	if err != nil {
 		return nil, err
 	}
 	// Validate the Resource field (see RFC 9728, section 3.3).
-	if prm.Resource != metadataURL.Resource {
-		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, metadataURL.Resource)
+	if prm.Resource != resourceURL {
+		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, resourceURL)
 	}
 	// Validate the authorization server URLs to prevent XSS attacks (see #526).
 	for _, u := range prm.AuthorizationServers {
@@ -107,48 +106,6 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL ProtectedReso
 		}
 	}
 	return prm, nil
-}
-
-type ProtectedResourceMetadataURL struct {
-	// URL represents a URL where Protected Resource Metadata may be retrieved.
-	URL string
-	// Resource represents the corresponding resource URL for [URL].
-	// It is required to perform validation described in RFC 9728, section 3.3.
-	Resource string
-}
-
-// ProtectedResourceMetadataURLs returns a list of URLs to try when looking for
-// protected resource metadata as mandated by the MCP specification.
-func ProtectedResourceMetadataURLs(metadataURL, resourceURL string) []ProtectedResourceMetadataURL {
-	var urls []ProtectedResourceMetadataURL
-	if metadataURL != "" {
-		urls = append(urls, ProtectedResourceMetadataURL{
-			URL:      metadataURL,
-			Resource: resourceURL,
-		})
-	}
-	// Produce fallbacks per
-	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protected-resource-metadata-discovery-requirements
-	ru, err := url.Parse(resourceURL)
-	if err != nil {
-		return urls
-	}
-	mu := *ru
-	// "At the path of the server's MCP endpoint".
-	mu.Path = "/.well-known/oauth-protected-resource/" + strings.TrimLeft(ru.Path, "/")
-	urls = append(urls, ProtectedResourceMetadataURL{
-		URL:      mu.String(),
-		Resource: resourceURL,
-	})
-	// "At the root".
-	mu.Path = "/.well-known/oauth-protected-resource"
-	ru.Path = ""
-	urls = append(urls, ProtectedResourceMetadataURL{
-		URL:      mu.String(),
-		Resource: ru.String(),
-	})
-	log.Printf("Resource metadata URLs: %v", urls)
-	return urls
 }
 
 // ResourceMetadataURL returns a resource metadata URL from the given challenges,

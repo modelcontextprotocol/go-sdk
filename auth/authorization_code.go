@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -253,9 +254,9 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 	var errs []error
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
-	for _, url := range oauthex.ProtectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), mcpServerURL) {
+	for _, url := range protectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), mcpServerURL) {
 		log.Printf("Getting protected resource metadata from %q", url)
-		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url, http.DefaultClient)
+		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, http.DefaultClient)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -267,6 +268,47 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 		return prm, nil
 	}
 	return nil, fmt.Errorf("failed to get protected resource metadata: %v", errors.Join(errs...))
+}
+
+type prmURL struct {
+	// URL represents a URL where Protected Resource Metadata may be retrieved.
+	URL string
+	// Resource represents the corresponding resource URL for [URL].
+	// It is required to perform validation described in RFC 9728, section 3.3.
+	Resource string
+}
+
+// protectedResourceMetadataURLs returns a list of URLs to try when looking for
+// protected resource metadata as mandated by the MCP specification:
+// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protected-resource-metadata-discovery-requirements
+func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
+	var urls []prmURL
+	if metadataURL != "" {
+		urls = append(urls, prmURL{
+			URL:      metadataURL,
+			Resource: resourceURL,
+		})
+	}
+	ru, err := url.Parse(resourceURL)
+	if err != nil {
+		return urls
+	}
+	mu := *ru
+	// "At the path of the server's MCP endpoint".
+	mu.Path = "/.well-known/oauth-protected-resource/" + strings.TrimLeft(ru.Path, "/")
+	urls = append(urls, prmURL{
+		URL:      mu.String(),
+		Resource: resourceURL,
+	})
+	// "At the root".
+	mu.Path = "/.well-known/oauth-protected-resource"
+	ru.Path = ""
+	urls = append(urls, prmURL{
+		URL:      mu.String(),
+		Resource: ru.String(),
+	})
+	log.Printf("Resource metadata URLs: %v", urls)
+	return urls
 }
 
 // getAuthServerMetadata returns the authorization server metadata.
@@ -291,7 +333,7 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 	}
 	log.Printf("Authorization server URL: %s", authServerURL)
 
-	for _, u := range oauthex.AuthorizationServerMetadataURLs(authServerURL) {
+	for _, u := range authorizationServerMetadataURLs(authServerURL) {
 		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, http.DefaultClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
@@ -311,6 +353,40 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 		RegistrationEndpoint:  authServerURL + "/register",
 	}
 	return asm, nil
+}
+
+// authorizationServerMetadataURLs returns a list of URLs to try when looking for
+// authorization server metadata as mandated by the MCP specification:
+// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
+func authorizationServerMetadataURLs(issuerURL string) []string {
+	var urls []string
+
+	baseURL, err := url.Parse(issuerURL)
+	if err != nil {
+		return nil
+	}
+
+	if baseURL.Path == "" {
+		// "OAuth 2.0 Authorization Server Metadata".
+		baseURL.Path = "/.well-known/oauth-authorization-server"
+		urls = append(urls, baseURL.String())
+		// "OpenID Connect Discovery 1.0".
+		baseURL.Path = "/.well-known/openid-configuration"
+		urls = append(urls, baseURL.String())
+		return urls
+	}
+
+	originalPath := baseURL.Path
+	// "OAuth 2.0 Authorization Server Metadata with path insertion".
+	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
+	urls = append(urls, baseURL.String())
+	// "OpenID Connect Discovery 1.0 with path insertion".
+	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
+	urls = append(urls, baseURL.String())
+	// "OpenID Connect Discovery 1.0 with path appending".
+	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
+	urls = append(urls, baseURL.String())
+	return urls
 }
 
 type registrationType int
