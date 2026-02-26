@@ -1752,7 +1752,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if slices.Contains([]int{http.StatusUnauthorized, http.StatusForbidden}, resp.StatusCode) && c.oauthHandler != nil {
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil {
 		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.

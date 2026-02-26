@@ -33,7 +33,7 @@ type codeReceiver struct {
 	server   *http.Server
 }
 
-func (r *codeReceiver) serveRedirectHandler(listener net.Listener) error {
+func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		r.authChan <- &auth.AuthorizationResult{
@@ -50,7 +50,6 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) error {
 	if err := r.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		r.errChan <- err
 	}
-	return nil
 }
 
 func (r *codeReceiver) getAuthorizationCode(ctx context.Context, input *auth.AuthorizationInput) (*auth.AuthorizationResult, error) {

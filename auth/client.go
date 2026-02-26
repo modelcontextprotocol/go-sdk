@@ -23,10 +23,10 @@ type OAuthHandler interface {
 	// be addressed by the authorization flow (currently 401 Unauthorized and 403 Forbidden).
 	// It is responsible for performing the OAuth flow to obtain an access token.
 	// The arguments are the request that failed and the response that was received for it.
-	// Currently the body of the passed request is consumed by the transport
-	// before [Authorize] is called. Please file an issue if you need the body to be available.
+	// The headers of the request are available, but the body will have already been consumed
+	// when Authorize is called.
 	// If the returned error is nil, [TokenSource] is expected to return a non-nil token source.
-	// After a successful call to [Authorize], the HTTP request should be retried by the transport.
+	// After a successful call to [Authorize], the HTTP request will be retried by the transport.
 	// The function is responsible for closing the response body.
 	Authorize(context.Context, *http.Request, *http.Response) error
 }
