@@ -45,3 +45,17 @@ v2.
   **Workaround**: to advertise no capabilities, set
   `ServerOptions.Capabilities` or `ClientOptions.Capabilities` to an empty
   `&ServerCapabilities{}` or `&ClientCapabilities{}` respectively.
+
+- `CreateMessageResult.Content` is singular `Content`, but the 2025-11-25 spec
+  allows `content` to be a single block or an array (for parallel tool calls).
+  We added `CreateMessageResultWithTools` (with `Content []Content`) as a
+  workaround, matching the TypeScript SDK's approach. In v2,
+  `CreateMessageResult` should use `[]Content` directly. Similarly,
+  `SamplingMessage.Content` should become `[]Content` to support sending
+  multiple tool_result blocks in a single user message.
+
+- We didn't actually need CallToolParams and CallToolParamsRaw, since even when
+  we're unmarshalling into a custom Go type (for the mcp.AddTool convenience
+  wrapper) we need to first unmarshal into a `map[string]any` in order to do
+  server-side validation of required fields. CallToolParams could have just had
+  a map[string]any.
