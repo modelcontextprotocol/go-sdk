@@ -53,6 +53,7 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 }
 
 func (r *codeReceiver) getAuthorizationCode(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+	fmt.Printf("Please open the following URL in your browser: %s\n", args.URL)
 	select {
 	case authRes := <-r.authChan:
 		return authRes, nil
@@ -87,8 +88,10 @@ func main() {
 		AuthorizationCodeFetcher: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
 		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
-		// 	ClientID:     "",
-		// 	ClientSecret: "",
+		// 	ClientSecretAuthConfig: &auth.ClientSecretAuthConfig{
+		// 		ClientID:     "",
+		// 		ClientSecret: "",
+		// 	},
 		// },
 		// DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
 		// 	Metadata: &oauthex.ClientRegistrationMetadata{
