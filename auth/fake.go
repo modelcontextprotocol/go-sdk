@@ -12,11 +12,11 @@ import (
 )
 
 type FakeOAuthHandler struct {
-	// Token to be returned via [TokenSource]. If nil, [TokenSource] returns nil.
+	// Token to be returned from TokenSource. If nil, TokenSource also returns nil.
 	Token *oauth2.Token
-	// AuthorizeErr is an error to be returned from [Authorize].
+	// AuthorizeErr is an error to be returned from Authorize.
 	AuthorizeErr error
-	// AuthorizeCalled is true if [Authorize] was called.
+	// AuthorizeCalled is true if Authorize was called.
 	AuthorizeCalled bool
 }
 

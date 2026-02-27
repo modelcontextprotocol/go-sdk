@@ -242,7 +242,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			},
 		},
 		{
-			name: "MissingAuthorizationURLHandler",
+			name: "MissingAuthorizationCodeFetcher",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
 				cfg.AuthorizationCodeFetcher = nil

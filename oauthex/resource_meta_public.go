@@ -115,6 +115,8 @@ type Challenge struct {
 	Params map[string]string
 }
 
+// Error returns the error from the given "WWW-Authenticate" header challenges.
+// It only looks at challenges with the "Bearer" scheme.
 func Error(cs []Challenge) string {
 	for _, c := range cs {
 		if c.Scheme == "bearer" && c.Params["error"] != "" {

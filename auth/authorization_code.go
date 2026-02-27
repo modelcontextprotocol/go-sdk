@@ -23,9 +23,8 @@ import (
 // ClientSecretAuthConfig is used to configure client authentication using client_secret.
 // Authentication method will be selected based on the authorization server's supported methods,
 // according to the following preference order:
-//
-//  1. "client_secret_post"
-//  2. "client_secret_basic"
+//  1. client_secret_post
+//  2. client_secret_basic
 type ClientSecretAuthConfig struct {
 	// ClientID is the client ID to be used for client authentication.
 	ClientID string
@@ -60,7 +59,7 @@ type DynamicClientRegistrationConfig struct {
 }
 
 // AuthorizationResult is the result of an authorization flow.
-// It is returned by [AuthorizationCodeHandler.AuthorizationURLHandler] implementations.
+// It is returned by [AuthorizationCodeHandler].AuthorizationCodeFetcher implementations.
 type AuthorizationResult struct {
 	// AuthorizationCode is the authorization code obtained from the authorization server.
 	AuthorizationCode string
@@ -68,7 +67,7 @@ type AuthorizationResult struct {
 	State string
 }
 
-// AuthorizationInput is the input to [AuthorizationCodeHandlerConfig.AuthorizationCodeFetcher].
+// AuthorizationInput is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
 type AuthorizationInput struct {
 	// Authorization URL to be opened in a browser for the user to start the authorization process.
 	URL string
@@ -78,11 +77,9 @@ type AuthorizationInput struct {
 type AuthorizationCodeHandlerConfig struct {
 	// Client registration configuration.
 	// It is attempted in the following order:
-	//
-	//   1. Client ID Metadata Document
-	//   2. Preregistration
-	//   3. Dynamic Client Registration
-	//
+	//  1. Client ID Metadata Document
+	//  2. Preregistration
+	//  3. Dynamic Client Registration
 	// At least one method must be configured.
 	ClientIDMetadataDocumentConfig  *ClientIDMetadataDocumentConfig
 	PreregisteredClientConfig       *PreregisteredClientConfig
@@ -92,17 +89,17 @@ type AuthorizationCodeHandlerConfig struct {
 	// The caller is responsible for handling the redirect out of band.
 	//
 	// If Dynamic Client Registration is used:
-	// - this field is permitted to be empty, in which case it will be set
-	//   to the first redirect URI from
-	//   [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
-	// - if the field is not empty, it must be one of the redirect URIs in
-	//   [DynamicClientRegistrationConfig.Metadata.RedirectURIs].
+	//  - this field is permitted to be empty, in which case it will be set
+	//    to the first redirect URI from
+	//    DynamicClientRegistrationConfig.Metadata.RedirectURIs.
+	//  - if the field is not empty, it must be one of the redirect URIs in
+	//    DynamicClientRegistrationConfig.Metadata.RedirectURIs.
 	RedirectURL string
 
 	// AuthorizationCodeFetcher is a required function called to initiate the authorization flow.
 	// It is responsible for opening the URL in a browser for the user to start the authorization process.
 	// It should return the authorization code and state once the Authorization Server
-	// redirects back to the [AuthorizationCodeHandlerConfig.RedirectURL].
+	// redirects back to the RedirectURL.
 	AuthorizationCodeFetcher func(ctx context.Context, authorizationInput *AuthorizationInput) (*AuthorizationResult, error)
 }
 
@@ -136,7 +133,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		return nil, errors.New("at least one client registration configuration must be provided")
 	}
 	if config.AuthorizationCodeFetcher == nil {
-		return nil, errors.New("AuthorizationURLHandler is required")
+		return nil, errors.New("AuthorizationCodeFetcher is required")
 	}
 	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
 		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
@@ -477,7 +474,7 @@ type authResult struct {
 	usedCodeVerifier string
 }
 
-// getAuthorizationCode uses the [AuthorizationCodeHandler.AuthorizationURLHandler]
+// getAuthorizationCode uses the [AuthorizationCodeHandler.AuthorizationCodeFetcher]
 // to obtain an authorization code.
 func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg *oauth2.Config, resourceURL string) (*authResult, error) {
 	codeVerifier := oauth2.GenerateVerifier()

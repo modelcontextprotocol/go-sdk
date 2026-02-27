@@ -36,7 +36,8 @@ const defaultProtectedResourceMetadataURI = "/.well-known/oauth-protected-resour
 //
 // It then retrieves the metadata at that location using the given client (or the
 // default client if nil) and validates its resource field against resourceID.
-// Deprecated: Use [GetProtectedResourceMetadata] instead.
+//
+// Deprecated: Use [GetProtectedResourceMetadata] instead. This function will be removed in v1.5.0.
 func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromID(%q)", resourceID)
 
@@ -56,7 +57,8 @@ func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, 
 // Per RFC 9728 section 3.3, it validates that the resource field of the resulting metadata
 // matches the serverURL (the URL that the client used to make the original request to the resource server).
 // If there is no metadata URL in the header, it returns nil, nil.
-// Deprecated: Use [GetProtectedResourceMetadata] instead.
+//
+// Deprecated: Use [GetProtectedResourceMetadata] instead. This function will be removed in v1.5.0.
 func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL string, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	headers := header[http.CanonicalHeaderKey("WWW-Authenticate")]
 	if len(headers) == 0 {
@@ -76,11 +78,11 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL strin
 // GetProtectedResourceMetadataFromID issues a GET request to retrieve protected resource
 // metadata from a resource server.
 // The metadataURL is typically a URL with a host:port and possibly a path.
-// The resourceURL is the resource URI that the metadataURL is for.
+// The resourceURL is the resource URI the metadataURL is for.
 // The following checks are performed:
-// - The metadataURL must use HTTPS or be a local address.
-// - The resource field of the resulting metadata must match the resourceURL.
-// - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
+//   - The metadataURL must use HTTPS or be a local address.
+//   - The resource field of the resulting metadata must match the resourceURL.
+//   - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
 func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
 	u, err := url.Parse(metadataURL)
@@ -108,7 +110,7 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL 
 	return prm, nil
 }
 
-// ResourceMetadataURL returns a resource metadata URL from the given challenges,
+// ResourceMetadataURL returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
 // or the empty string if there is none.
 func ResourceMetadataURL(cs []Challenge) string {
 	for _, c := range cs {
@@ -119,6 +121,8 @@ func ResourceMetadataURL(cs []Challenge) string {
 	return ""
 }
 
+// Scopes returns the scopes from the given "WWW-Authenticate" header challenges.
+// It only looks at challenges with the "Bearer" scheme.
 func Scopes(cs []Challenge) []string {
 	for _, c := range cs {
 		if c.Scheme == "bearer" && c.Params["scope"] != "" {

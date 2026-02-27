@@ -20,14 +20,16 @@ import (
 // is approved, or an error if not.
 // The handler receives the HTTP request and response that triggered the authentication flow.
 // To obtain the protected resource metadata, call [oauthex.GetProtectedResourceMetadataFromHeader].
-// Deprecated: Please use the new OAuthHandler abstraction that is built
-// into the streamable transport.
+//
+// Deprecated: Please use the new [OAuthHandler] abstraction that is built
+// into the streamable transport. This struct will be removed in v1.5.0.
 type OAuthHandlerLegacy func(req *http.Request, res *http.Response) (oauth2.TokenSource, error)
 
 // HTTPTransport is an [http.RoundTripper] that follows the MCP
 // OAuth protocol when it encounters a 401 Unauthorized response.
-// Deprecated: Please use the new OAuthHandler abstraction that is built
-// into the streamable transport.
+//
+// Deprecated: Please use the new [OAuthHandler] abstraction that is built
+// into the streamable transport. This struct will be removed in v1.5.0.
 type HTTPTransport struct {
 	handler OAuthHandlerLegacy
 	mu      sync.Mutex // protects opts.Base
@@ -38,8 +40,9 @@ type HTTPTransport struct {
 // The handler is invoked when an HTTP request results in a 401 Unauthorized status.
 // It is called only once per transport. Once a TokenSource is obtained, it is used
 // for the lifetime of the transport; subsequent 401s are not processed.
-// Deprecated: Please use the new OAuthHandler abstraction that is built
-// into the streamable transport.
+//
+// Deprecated: Please use the new [OAuthHandler] abstraction that is built
+// into the streamable transport. This struct will be removed in v1.5.0.
 func NewHTTPTransport(handler OAuthHandlerLegacy, opts *HTTPTransportOptions) (*HTTPTransport, error) {
 	if handler == nil {
 		return nil, errors.New("handler cannot be nil")
@@ -57,8 +60,9 @@ func NewHTTPTransport(handler OAuthHandlerLegacy, opts *HTTPTransportOptions) (*
 }
 
 // HTTPTransportOptions are options to [NewHTTPTransport].
-// Deprecated: Please use the new OAuthHandler abstraction that is built
-// into the streamable transport.
+//
+// Deprecated: Please use the new [OAuthHandler] abstraction that is built
+// into the streamable transport. This struct will be removed in v1.5.0.
 type HTTPTransportOptions struct {
 	// Base is the [http.RoundTripper] to use.
 	// If nil, [http.DefaultTransport] is used.

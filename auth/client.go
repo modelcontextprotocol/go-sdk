@@ -11,6 +11,16 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// OAuthHandler is an interface for handling OAuth flows.
+//
+// If a transport wishes to support OAuth 2 authorization, it should support
+// being configured with an OAuthHandler. It should call the handler's
+// TokenSource method whenever it sends an HTTP request to set the
+// Authorization header. If a request fails with a 401 or 403, it should call
+// Authorize, and if that returns nil, it should retry the request. It should
+// not call Authorize after the second failure. See
+// [github.com/modelcontextprotocol/go-sdk/mcp.StreamableClientTransport]
+// for an example.
 type OAuthHandler interface {
 	isOAuthHandler()
 
@@ -25,8 +35,8 @@ type OAuthHandler interface {
 	// The arguments are the request that failed and the response that was received for it.
 	// The headers of the request are available, but the body will have already been consumed
 	// when Authorize is called.
-	// If the returned error is nil, [TokenSource] is expected to return a non-nil token source.
-	// After a successful call to [Authorize], the HTTP request will be retried by the transport.
+	// If the returned error is nil, TokenSource is expected to return a non-nil token source.
+	// After a successful call to Authorize, the HTTP request will be retried by the transport.
 	// The function is responsible for closing the response body.
 	Authorize(context.Context, *http.Request, *http.Response) error
 }
