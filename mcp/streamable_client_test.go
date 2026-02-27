@@ -17,10 +17,8 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"golang.org/x/oauth2"
 )
 
 type streamableRequestKey struct {
@@ -908,91 +906,5 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
-	ctx := context.Background()
-	token := &oauth2.Token{AccessToken: "test-token"}
-	oauthHandler := &auth.FakeOAuthHandler{Token: token}
-
-	fake := &fakeStreamableServer{
-		t: t,
-		responses: fakeResponses{
-			{"POST", "", methodInitialize, ""}: {
-				header: header{
-					"Content-Type":  "application/json",
-					sessionIDHeader: "123",
-				},
-				body: jsonBody(t, initResp),
-			},
-			{"POST", "123", notificationInitialized, ""}: {
-				status:              http.StatusAccepted,
-				wantProtocolVersion: latestProtocolVersion,
-			},
-			{"GET", "123", "", ""}: {
-				header: header{
-					"Content-Type": "text/event-stream",
-				},
-			},
-			{"DELETE", "123", "", ""}: {},
-		},
-	}
-	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
-		if token != "test-token" {
-			return nil, auth.ErrInvalidToken
-		}
-		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
-	}
-	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
-	t.Cleanup(httpServer.Close)
-
-	transport := &StreamableClientTransport{
-		Endpoint:     httpServer.URL,
-		OAuthHandler: oauthHandler,
-	}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	session.Close()
-}
-
-func TestStreamableClientOAuth_401(t *testing.T) {
-	ctx := context.Background()
-	oauthHandler := &auth.FakeOAuthHandler{Token: nil}
-
-	fake := &fakeStreamableServer{
-		t: t,
-		responses: fakeResponses{
-			{"POST", "", methodInitialize, ""}: {
-				header: header{
-					"Content-Type":  "application/json",
-					sessionIDHeader: "123",
-				},
-				body: jsonBody(t, initResp),
-			},
-		},
-	}
-	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
-		// Accept any token.
-		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
-	}
-	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
-	t.Cleanup(httpServer.Close)
-
-	transport := &StreamableClientTransport{
-		Endpoint:     httpServer.URL,
-		OAuthHandler: oauthHandler,
-	}
-	client := NewClient(testImpl, nil)
-	_, err := client.Connect(ctx, transport, nil)
-	if err == nil || !strings.Contains(err.Error(), "Unauthorized") {
-		t.Fatalf("client.Connect() error does not contain 'Unauthorized': %v", err)
-	}
-
-	if !oauthHandler.AuthorizeCalled {
-		t.Errorf("expected Authorize to be called")
 	}
 }

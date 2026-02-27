@@ -19,23 +19,6 @@ import (
 	"strings"
 )
 
-// prependToPath prepends pre to the path of urlStr.
-// When pre is the well-known path, this is the algorithm specified in both RFC 9728
-// section 3.1 and RFC 8414 section 3.1.
-func prependToPath(urlStr, pre string) (string, error) {
-	u, err := url.Parse(urlStr)
-	if err != nil {
-		return "", err
-	}
-	p := "/" + strings.Trim(pre, "/")
-	if u.Path != "" {
-		p += "/"
-	}
-
-	u.Path = p + strings.TrimLeft(u.Path, "/")
-	return u.String(), nil
-}
-
 type httpStatusError struct {
 	StatusCode int
 }

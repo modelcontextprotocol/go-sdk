@@ -37,8 +37,8 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		r.authChan <- &auth.AuthorizationResult{
-			AuthorizationCode: req.URL.Query().Get("code"),
-			State:             req.URL.Query().Get("state"),
+			Code:  req.URL.Query().Get("code"),
+			State: req.URL.Query().Get("state"),
 		}
 		fmt.Fprint(w, "Authentication successful. You can close this window.")
 	})
@@ -52,7 +52,7 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 	}
 }
 
-func (r *codeReceiver) getAuthorizationCode(ctx context.Context, input *auth.AuthorizationInput) (*auth.AuthorizationResult, error) {
+func (r *codeReceiver) getAuthorizationCode(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 	select {
 	case authRes := <-r.authChan:
 		return authRes, nil

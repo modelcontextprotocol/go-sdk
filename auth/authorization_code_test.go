@@ -51,14 +51,14 @@ func TestAuthorize(t *testing.T) {
 				ClientSecret: "test_client_secret",
 			},
 		},
-		AuthorizationCodeFetcher: func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 			// The fake authorization server will redirect to an URL with code and state.
 			client := &http.Client{
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					return http.ErrUseLastResponse
 				},
 			}
-			resp, err := client.Get(input.URL)
+			resp, err := client.Get(args.URL)
 			if err != nil {
 				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
 			}
@@ -74,8 +74,8 @@ func TestAuthorize(t *testing.T) {
 				return nil, fmt.Errorf("failed to get location header: %v", err)
 			}
 			return &AuthorizationResult{
-				AuthorizationCode: location.Query().Get("code"),
-				State:             location.Query().Get("state"),
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
 			}, nil
 		},
 	})
@@ -132,7 +132,7 @@ func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
 }
 
 func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
-	simpleHandler := func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
+	simpleHandler := func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 		return nil, nil
 	}
 	tests := []struct {
@@ -203,7 +203,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 		return &AuthorizationCodeHandlerConfig{
 			ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://example.com/client"},
 			RedirectURL:                    "https://example.com/callback",
-			AuthorizationCodeFetcher: func(ctx context.Context, input *AuthorizationInput) (*AuthorizationResult, error) {
+			AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 				return nil, nil
 			},
 		}

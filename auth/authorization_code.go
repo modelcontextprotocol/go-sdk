@@ -61,14 +61,14 @@ type DynamicClientRegistrationConfig struct {
 // AuthorizationResult is the result of an authorization flow.
 // It is returned by [AuthorizationCodeHandler].AuthorizationCodeFetcher implementations.
 type AuthorizationResult struct {
-	// AuthorizationCode is the authorization code obtained from the authorization server.
-	AuthorizationCode string
+	// Code is the authorization code obtained from the authorization server.
+	Code string
 	// State string returned by the authorization server.
 	State string
 }
 
-// AuthorizationInput is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
-type AuthorizationInput struct {
+// AuthorizationArgs is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
+type AuthorizationArgs struct {
 	// Authorization URL to be opened in a browser for the user to start the authorization process.
 	URL string
 }
@@ -100,7 +100,7 @@ type AuthorizationCodeHandlerConfig struct {
 	// It is responsible for opening the URL in a browser for the user to start the authorization process.
 	// It should return the authorization code and state once the Authorization Server
 	// redirects back to the RedirectURL.
-	AuthorizationCodeFetcher func(ctx context.Context, authorizationInput *AuthorizationInput) (*AuthorizationResult, error)
+	AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -188,7 +188,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return fmt.Errorf("failed to parse WWW-Authenticate header: %v", err)
 	}
 
-	if resp.StatusCode == http.StatusForbidden && oauthex.Error(wwwChallenges) != "insufficient_scope" {
+	if resp.StatusCode == http.StatusForbidden && errorFromChallenges(wwwChallenges) != "insufficient_scope" {
 		// We only want to perform step-up authorization for insufficient_scope errors.
 		// Returning nil, so that the call is retried immediately and the response
 		// is handled appropriately by the connection.
@@ -212,9 +212,9 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	scopes := oauthex.Scopes(wwwChallenges)
-	if len(scopes) == 0 && prm != nil && len(prm.ScopesSupported) > 0 {
-		scopes = prm.ScopesSupported
+	scps := scopesFromChallenges(wwwChallenges)
+	if len(scps) == 0 && len(prm.ScopesSupported) > 0 {
+		scps = prm.ScopesSupported
 	}
 
 	cfg := &oauth2.Config{
@@ -227,7 +227,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
-		Scopes:      scopes,
+		Scopes:      scps,
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, req.URL.String())
@@ -239,6 +239,39 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
 }
 
+// resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
+// or the empty string if there is none.
+func resourceMetadataURLFromChallenges(cs []oauthex.Challenge) string {
+	for _, c := range cs {
+		if u := c.Params["resource_metadata"]; u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+// scopesFromChallenges returns the scopes from the given "WWW-Authenticate" header challenges.
+// It only looks at challenges with the "Bearer" scheme.
+func scopesFromChallenges(cs []oauthex.Challenge) []string {
+	for _, c := range cs {
+		if c.Scheme == "bearer" && c.Params["scope"] != "" {
+			return strings.Fields(c.Params["scope"])
+		}
+	}
+	return nil
+}
+
+// errorFromChallenges returns the error from the given "WWW-Authenticate" header challenges.
+// It only looks at challenges with the "Bearer" scheme.
+func errorFromChallenges(cs []oauthex.Challenge) string {
+	for _, c := range cs {
+		if c.Scheme == "bearer" && c.Params["error"] != "" {
+			return c.Params["error"]
+		}
+	}
+	return ""
+}
+
 // getProtectedResourceMetadata returns the protected resource metadata.
 // If no metadata was found or the fetched metadata fails security checks,
 // it returns an error.
@@ -246,7 +279,7 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 	var errs []error
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
-	for _, url := range protectedResourceMetadataURLs(oauthex.ResourceMetadataURL(wwwChallenges), mcpServerURL) {
+	for _, url := range protectedResourceMetadataURLs(resourceMetadataURLFromChallenges(wwwChallenges), mcpServerURL) {
 		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, http.DefaultClient)
 		if err != nil {
 			errs = append(errs, err)
@@ -485,7 +518,7 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	)
 
-	authRes, err := h.config.AuthorizationCodeFetcher(ctx, &AuthorizationInput{URL: authURL})
+	authRes, err := h.config.AuthorizationCodeFetcher(ctx, &AuthorizationArgs{URL: authURL})
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return nil, err
@@ -506,7 +539,7 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		oauth2.VerifierOption(authResult.usedCodeVerifier),
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	}
-	token, err := cfg.Exchange(ctx, authResult.AuthorizationCode, opts...)
+	token, err := cfg.Exchange(ctx, authResult.Code, opts...)
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}

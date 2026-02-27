@@ -11,11 +11,13 @@ package oauthex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
@@ -68,11 +70,22 @@ func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL strin
 	if err != nil {
 		return nil, err
 	}
-	metadataURL := ResourceMetadataURL(cs)
+	metadataURL := resourceMetadataURL(cs)
 	if metadataURL == "" {
 		return nil, nil
 	}
 	return GetProtectedResourceMetadata(ctx, metadataURL, serverURL, c)
+}
+
+// resourceMetadataURL returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
+// or the empty string if there is none.
+func resourceMetadataURL(cs []Challenge) string {
+	for _, c := range cs {
+		if u := c.Params["resource_metadata"]; u != "" {
+			return u
+		}
+	}
+	return ""
 }
 
 // GetProtectedResourceMetadataFromID issues a GET request to retrieve protected resource
@@ -110,24 +123,158 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL 
 	return prm, nil
 }
 
-// ResourceMetadataURL returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
-// or the empty string if there is none.
-func ResourceMetadataURL(cs []Challenge) string {
-	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; u != "" {
-			return u
+// ParseWWWAuthenticate parses a WWW-Authenticate header string.
+// The header format is defined in RFC 9110, Section 11.6.1, and can contain
+// one or more challenges, separated by commas.
+// It returns a slice of challenges or an error if one of the headers is malformed.
+func ParseWWWAuthenticate(headers []string) ([]Challenge, error) {
+	var challenges []Challenge
+	for _, h := range headers {
+		challengeStrings, err := splitChallenges(h)
+		if err != nil {
+			return nil, err
+		}
+		for _, cs := range challengeStrings {
+			if strings.TrimSpace(cs) == "" {
+				continue
+			}
+			challenge, err := parseSingleChallenge(cs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse challenge %q: %w", cs, err)
+			}
+			challenges = append(challenges, challenge)
 		}
 	}
-	return ""
+	return challenges, nil
 }
 
-// Scopes returns the scopes from the given "WWW-Authenticate" header challenges.
-// It only looks at challenges with the "Bearer" scheme.
-func Scopes(cs []Challenge) []string {
-	for _, c := range cs {
-		if c.Scheme == "bearer" && c.Params["scope"] != "" {
-			return strings.Fields(c.Params["scope"])
+// splitChallenges splits a header value containing one or more challenges.
+// It correctly handles commas within quoted strings and distinguishes between
+// commas separating auth-params and commas separating challenges.
+func splitChallenges(header string) ([]string, error) {
+	var challenges []string
+	inQuotes := false
+	start := 0
+	for i, r := range header {
+		if r == '"' {
+			if i > 0 && header[i-1] != '\\' {
+				inQuotes = !inQuotes
+			} else if i == 0 {
+				// A challenge begins with an auth-scheme, which is a token, which cannot contain
+				// a quote.
+				return nil, errors.New(`challenge begins with '"'`)
+			}
+		} else if r == ',' && !inQuotes {
+			// This is a potential challenge separator.
+			// A new challenge does not start with `key=value`.
+			// We check if the part after the comma looks like a parameter.
+			lookahead := strings.TrimSpace(header[i+1:])
+			eqPos := strings.Index(lookahead, "=")
+
+			isParam := false
+			if eqPos > 0 {
+				// Check if the part before '=' is a single token (no spaces).
+				token := lookahead[:eqPos]
+				if strings.IndexFunc(token, unicode.IsSpace) == -1 {
+					isParam = true
+				}
+			}
+
+			if !isParam {
+				// The part after the comma does not look like a parameter,
+				// so this comma separates challenges.
+				challenges = append(challenges, header[start:i])
+				start = i + 1
+			}
 		}
 	}
-	return nil
+	// Add the last (or only) challenge to the list.
+	challenges = append(challenges, header[start:])
+	return challenges, nil
+}
+
+// parseSingleChallenge parses a string containing exactly one challenge.
+// challenge   = auth-scheme [ 1*SP ( token68 / #auth-param ) ]
+func parseSingleChallenge(s string) (Challenge, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return Challenge{}, errors.New("empty challenge string")
+	}
+
+	scheme, paramsStr, found := strings.Cut(s, " ")
+	c := Challenge{Scheme: strings.ToLower(scheme)}
+	if !found {
+		return c, nil
+	}
+
+	params := make(map[string]string)
+
+	// Parse the key-value parameters.
+	for paramsStr != "" {
+		// Find the end of the parameter key.
+		keyEnd := strings.Index(paramsStr, "=")
+		if keyEnd <= 0 {
+			return Challenge{}, fmt.Errorf("malformed auth parameter: expected key=value, but got %q", paramsStr)
+		}
+		key := strings.TrimSpace(paramsStr[:keyEnd])
+
+		// Move the string past the key and the '='.
+		paramsStr = strings.TrimSpace(paramsStr[keyEnd+1:])
+
+		var value string
+		if strings.HasPrefix(paramsStr, "\"") {
+			// The value is a quoted string.
+			paramsStr = paramsStr[1:] // Consume the opening quote.
+			var valBuilder strings.Builder
+			i := 0
+			for ; i < len(paramsStr); i++ {
+				// Handle escaped characters.
+				if paramsStr[i] == '\\' && i+1 < len(paramsStr) {
+					valBuilder.WriteByte(paramsStr[i+1])
+					i++ // We've consumed two characters.
+				} else if paramsStr[i] == '"' {
+					// End of the quoted string.
+					break
+				} else {
+					valBuilder.WriteByte(paramsStr[i])
+				}
+			}
+
+			// A quoted string must be terminated.
+			if i == len(paramsStr) {
+				return Challenge{}, fmt.Errorf("unterminated quoted string in auth parameter")
+			}
+
+			value = valBuilder.String()
+			// Move the string past the value and the closing quote.
+			paramsStr = strings.TrimSpace(paramsStr[i+1:])
+		} else {
+			// The value is a token. It ends at the next comma or the end of the string.
+			commaPos := strings.Index(paramsStr, ",")
+			if commaPos == -1 {
+				value = paramsStr
+				paramsStr = ""
+			} else {
+				value = strings.TrimSpace(paramsStr[:commaPos])
+				paramsStr = strings.TrimSpace(paramsStr[commaPos:]) // Keep comma for next check
+			}
+		}
+		if value == "" {
+			return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+		}
+
+		// Per RFC 9110, parameter keys are case-insensitive.
+		params[strings.ToLower(key)] = value
+
+		// If there is a comma, consume it and continue to the next parameter.
+		if strings.HasPrefix(paramsStr, ",") {
+			paramsStr = strings.TrimSpace(paramsStr[1:])
+		} else if paramsStr != "" {
+			// If there's content but it's not a new parameter, the format is wrong.
+			return Challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
+		}
+	}
+
+	// Per RFC 9110, the scheme is case-insensitive.
+	return Challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
 }

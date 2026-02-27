@@ -50,13 +50,13 @@ func init() {
 // Auth scenarios
 // ============================================================================
 
-func fetchAuthorizationCodeAndState(ctx context.Context, input *auth.AuthorizationInput) (*auth.AuthorizationResult, error) {
+func fetchAuthorizationCodeAndState(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", input.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", args.URL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -75,8 +75,8 @@ func fetchAuthorizationCodeAndState(ctx context.Context, input *auth.Authorizati
 	}
 
 	return &auth.AuthorizationResult{
-		AuthorizationCode: locURL.Query().Get("code"),
-		State:             locURL.Query().Get("state"),
+		Code:  locURL.Query().Get("code"),
+		State: locURL.Query().Get("state"),
 	}, nil
 }
 
