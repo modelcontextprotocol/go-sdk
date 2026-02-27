@@ -306,6 +306,11 @@ The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/
 
 ### Client
 
+> [!IMPORTANT]
+> Client-side OAuth support is currently experimental and requires the `mcp_go_client_oauth` build tag to compile.
+> API changes may still be made, based on developer feedback. The build tag will be removed in `v1.5.0`, which
+> is planned to be released by the end of March 2026.
+
 Client-side authorization is supported via the
 [`StreamableClientTransport.OAuthHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableClientTransport.OAuthHandler)
 field. If the handler is provided, the transport will automatically use it to
