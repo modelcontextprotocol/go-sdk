@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -322,43 +323,40 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 	}
 }
 
-func TestGetProtectedResourceMetadata(t *testing.T) {
+func TestGetProtectedResourceMetadata_Success(t *testing.T) {
 	handler := &AuthorizationCodeHandler{} // No config needed for this method
 	pathForChallenge := "/protected-resource"
 
 	tests := []struct {
 		name               string
 		challengesProvided bool
-		prmPath            string
-		resourcePath       string
-		wantError          bool
+		// Path of the PRM endpoint.
+		prmPath string
+		// Path of the MCP server that is accessed.
+		mcpServerPath string
+		// Path for the Resource expected in the returned PRM.
+		resourcePath string
 	}{
 		{
 			name:               "FromChallenges",
 			challengesProvided: true,
 			prmPath:            pathForChallenge,
+			mcpServerPath:      "/resource",
 			resourcePath:       "/resource",
-			wantError:          false,
 		},
 		{
 			name:               "FallbackToEndpoint",
 			challengesProvided: false,
 			prmPath:            "/.well-known/oauth-protected-resource/resource",
+			mcpServerPath:      "/resource",
 			resourcePath:       "/resource",
-			wantError:          false,
 		},
 		{
 			name:               "FallbackToRoot",
 			challengesProvided: false,
 			prmPath:            "/.well-known/oauth-protected-resource",
+			mcpServerPath:      "/resource",
 			resourcePath:       "",
-			wantError:          false,
-		},
-		{
-			name:               "NoMetadata",
-			challengesProvided: false,
-			prmPath:            "/incorrect",
-			wantError:          true,
 		},
 	}
 
@@ -367,10 +365,10 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 			mux := http.NewServeMux()
 			server := httptest.NewServer(mux)
 			t.Cleanup(server.Close)
-			resourceURL := server.URL + tt.resourcePath
 			metadata := &oauthex.ProtectedResourceMetadata{
-				Resource:        resourceURL,
-				ScopesSupported: []string{"read", "write"},
+				Resource:             server.URL + tt.resourcePath,
+				AuthorizationServers: []string{"https://oauth.example.com"},
+				ScopesSupported:      []string{"read", "write"},
 			}
 			mux.Handle(tt.prmPath, ProtectedResourceMetadataHandler(metadata))
 			var challenges []oauthex.Challenge
@@ -385,12 +383,9 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 				}
 			}
 
-			got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, resourceURL)
+			got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, server.URL+tt.mcpServerPath)
 			if err != nil {
-				if !tt.wantError {
-					t.Fatalf("getProtectedResourceMetadata() error = %v, want nil", err)
-				}
-				return
+				t.Fatalf("getProtectedResourceMetadata() error = %v", err)
 			}
 			if got == nil {
 				t.Fatal("getProtectedResourceMetadata() got nil, want metadata")
@@ -402,58 +397,85 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestGetProtectedResourceMetadata_Backcompat(t *testing.T) {
+	var challenges []oauthex.Challenge
+	handler := &AuthorizationCodeHandler{} // No config needed for this method
+	got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, "http://localhost:1234/resource")
+	if err != nil {
+		t.Fatalf("getProtectedResourceMetadata() error = %v", err)
+	}
+	wantPRM := &oauthex.ProtectedResourceMetadata{
+		Resource:             "http://localhost:1234/resource",
+		AuthorizationServers: []string{"http://localhost:1234"},
+	}
+	if diff := cmp.Diff(wantPRM, got); diff != "" {
+		t.Errorf("getProtectedResourceMetadata() metadata mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestGetProtectedResourceMetadata_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	metadata := &oauthex.ProtectedResourceMetadata{
+		Resource:             server.URL + "/resource",
+		AuthorizationServers: nil, // Empty list is invalid
+		ScopesSupported:      []string{"read", "write"},
+	}
+	mux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(metadata))
+	var challenges []oauthex.Challenge
+	handler := &AuthorizationCodeHandler{} // No config needed for this method
+	got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, server.URL+"/resource")
+	if err == nil || !strings.Contains(err.Error(), "authorization servers") {
+		t.Errorf("getProtectedResourceMetadata() = %v, want error containing \"authorization servers\"", err)
+	}
+	if got != nil {
+		t.Errorf("getProtectedResourceMetadata() = %+v, want nil", got)
+	}
+}
+
 func TestGetAuthServerMetadata(t *testing.T) {
 	handler := &AuthorizationCodeHandler{} // No config needed for this method
 
 	tests := []struct {
-		name                     string
-		authorizationAtMCPServer bool
-		issuerPath               string
-		endpointConfig           *oauthtest.MetadataEndpointConfig
+		name           string
+		issuerPath     string
+		endpointConfig *oauthtest.MetadataEndpointConfig
 	}{
 		{
-			name:                     "OAuthEndpoint_Root",
-			authorizationAtMCPServer: false,
-			issuerPath:               "",
+			name:       "OAuthEndpoint_Root",
+			issuerPath: "",
 			endpointConfig: &oauthtest.MetadataEndpointConfig{
 				ServeOAuthInsertedEndpoint: true,
 			},
 		},
 		{
-			name:                     "OpenIDEndpoint_Root",
-			authorizationAtMCPServer: false,
-			issuerPath:               "",
+			name:       "OpenIDEndpoint_Root",
+			issuerPath: "",
 			endpointConfig: &oauthtest.MetadataEndpointConfig{
 				ServeOpenIDInsertedEndpoint: true,
 			},
 		},
 		{
-			name:                     "OAuthEndpoint_Path",
-			authorizationAtMCPServer: false,
-			issuerPath:               "/oauth",
+			name:       "OAuthEndpoint_Path",
+			issuerPath: "/oauth",
 			endpointConfig: &oauthtest.MetadataEndpointConfig{
 				ServeOAuthInsertedEndpoint: true,
 			},
 		},
 		{
-			name:                     "OpenIDEndpoint_Path",
-			authorizationAtMCPServer: false,
-			issuerPath:               "/openid",
+			name:       "OpenIDEndpoint_Path",
+			issuerPath: "/openid",
 			endpointConfig: &oauthtest.MetadataEndpointConfig{
 				ServeOpenIDInsertedEndpoint: true,
 			},
 		},
 		{
-			name:                     "OpenIDAppendedEndpoint_Path",
-			authorizationAtMCPServer: false,
-			issuerPath:               "/openid",
+			name:       "OpenIDAppendedEndpoint_Path",
+			issuerPath: "/openid",
 			endpointConfig: &oauthtest.MetadataEndpointConfig{
 				ServeOpenIDAppendedEndpoint: true,
 			},
-		},
-		{
-			name:                     "FallbackToMCPServer",
-			authorizationAtMCPServer: true,
 		},
 		{
 			name:       "NoMetadata",
@@ -474,15 +496,9 @@ func TestGetAuthServerMetadata(t *testing.T) {
 			})
 			s.Start(t)
 			issuerURL := s.URL() + tt.issuerPath
-			resourceURL := "https://example.com/resource"
-			authServers := []string{issuerURL}
-			if tt.authorizationAtMCPServer {
-				resourceURL = issuerURL
-				authServers = nil
-			}
 			prm := &oauthex.ProtectedResourceMetadata{
-				Resource:             resourceURL,
-				AuthorizationServers: authServers,
+				Resource:             "https://example.com/resource",
+				AuthorizationServers: []string{issuerURL},
 			}
 
 			got, err := handler.getAuthServerMetadata(t.Context(), prm)

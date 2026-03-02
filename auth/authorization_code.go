@@ -230,7 +230,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		Scopes:      scps,
 	}
 
-	authRes, err := h.getAuthorizationCode(ctx, cfg, req.URL.String())
+	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return err
@@ -289,9 +289,24 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 			errs = append(errs, fmt.Errorf("protected resource metadata is nil"))
 			continue
 		}
+		if len(prm.AuthorizationServers) == 0 {
+			// If we found PRM, we enforce the 2025-11-25 spec and not search further.
+			return nil, fmt.Errorf("protected resource metadata has no authorization servers specified")
+		}
 		return prm, nil
 	}
-	return nil, fmt.Errorf("failed to get protected resource metadata: %v", errors.Join(errs...))
+	// Fallback to 2025-03-26 spec MCP server root is the Authorization Server:
+	// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#server-metadata-discovery
+	u, err := url.Parse(mcpServerURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse MCP server URL: %v", err)
+	}
+	u.Path = ""
+	prm := &oauthex.ProtectedResourceMetadata{
+		AuthorizationServers: []string{u.String()},
+		Resource:             mcpServerURL,
+	}
+	return prm, nil
 }
 
 type prmURL struct {
@@ -335,26 +350,14 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 }
 
 // getAuthServerMetadata returns the authorization server metadata.
-// The provided Protected Resource Metadata must not be nil.
+// The provided Protected Resource Metadata must not be nil and must contain
+// at least one authorization server.
 // It returns an error if the metadata request fails with non-4xx HTTP status code
 // or the fetched metadata fails security checks.
 // If no metadata was found, it returns a minimal set of endpoints
 // as a fallback to 2025-03-26 spec.
 func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata) (*oauthex.AuthServerMeta, error) {
-	var authServerURL string
-	if len(prm.AuthorizationServers) > 0 {
-		// Use the first authorization server, similarly to other SDKs.
-		authServerURL = prm.AuthorizationServers[0]
-	} else {
-		// Fallback to 2025-03-26 spec: MCP server base URL acts as Authorization Server.
-		authURL, err := url.Parse(prm.Resource)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse resource URL: %v", err)
-		}
-		authURL.Path = ""
-		authServerURL = authURL.String()
-	}
-
+	authServerURL := prm.AuthorizationServers[0]
 	for _, u := range authorizationServerMetadataURLs(authServerURL) {
 		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, http.DefaultClient)
 		if err != nil {
