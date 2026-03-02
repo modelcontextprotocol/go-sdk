@@ -25,8 +25,7 @@ type TokenInfo struct {
 	// session hijacking by ensuring that all requests for a given session
 	// come from the same user.
 	UserID string
-	// TODO: add standard JWT fields
-	Extra map[string]any
+	Extra  map[string]any
 }
 
 // The error that a TokenVerifier should return if the token cannot be verified.
@@ -105,6 +104,9 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 			return nil, err.Error(), http.StatusBadRequest
 		}
 		return nil, err.Error(), http.StatusInternalServerError
+	}
+	if tokenInfo == nil {
+		return nil, "token validation failed", http.StatusInternalServerError
 	}
 
 	// Check scopes. All must be present.

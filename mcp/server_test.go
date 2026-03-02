@@ -441,6 +441,25 @@ func TestServerCapabilities(t *testing.T) {
 				Logging:      &LoggingCapabilities{},
 			},
 		},
+		{
+			name:            "extensions preserved",
+			configureServer: func(s *Server) {},
+			serverOpts: func() ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext1", map[string]any{"key": "value"})
+				caps.AddExtension("io.example/ext2", nil)
+				return ServerOptions{Capabilities: caps}
+			}(),
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext1": map[string]any{"key": "value"},
+					"io.example/ext2": map[string]any{},
+				},
+				Logging: &LoggingCapabilities{},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -925,6 +944,23 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 			wantCapabilities: &ServerCapabilities{
 				Logging: &LoggingCapabilities{},
 				Tools:   &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "Extensions over wire",
+			serverOpts: func() *ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext", map[string]any{"key": "value"})
+				return &ServerOptions{Capabilities: caps}
+			}(),
+			configureServer: func(s *Server) {},
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext": map[string]any{"key": "value"},
+				},
+				Logging: &LoggingCapabilities{},
 			},
 		},
 	}

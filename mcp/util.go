@@ -6,6 +6,8 @@ package mcp
 
 import (
 	"encoding/json"
+
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 func assert(cond bool, msg string) {
@@ -21,7 +23,7 @@ func remarshal(from, to any) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(data, to); err != nil {
+	if err := internaljson.Unmarshal(data, to); err != nil {
 		return err
 	}
 	return nil

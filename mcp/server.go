@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -327,7 +328,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		// Unmarshal and validate args.
 		var in In
 		if input != nil {
-			if err := json.Unmarshal(input, &in); err != nil {
+			if err := internaljson.Unmarshal(input, &in); err != nil {
 				return nil, fmt.Errorf("%w: %v", jsonrpc2.ErrInvalidParams, err)
 			}
 		}
@@ -1371,7 +1372,7 @@ func initializeMethodInfo() methodInfo {
 	info.unmarshalParams = func(m json.RawMessage) (Params, error) {
 		var params *initializeParamsV2
 		if m != nil {
-			if err := json.Unmarshal(m, &params); err != nil {
+			if err := internaljson.Unmarshal(m, &params); err != nil {
 				return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, params, err)
 			}
 		}

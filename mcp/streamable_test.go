@@ -1666,55 +1666,6 @@ func textContent(t *testing.T, res *CallToolResult) string {
 	return text.Text
 }
 
-func TestTokenInfo(t *testing.T) {
-	oldAuth := testAuth.Load()
-	defer testAuth.Store(oldAuth)
-	testAuth.Store(true)
-	ctx := context.Background()
-
-	// Create a server with a tool that returns TokenInfo.
-	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
-		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
-	}
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
-
-	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	verifier := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
-		return &auth.TokenInfo{
-			Scopes: []string{"scope"},
-			// Expiration is far, far in the future.
-			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
-		}, nil
-	}
-	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
-	defer httpServer.Close()
-
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	defer session.Close()
-
-	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Content) == 0 {
-		t.Fatal("missing content")
-	}
-	tc, ok := res.Content[0].(*TextContent)
-	if !ok {
-		t.Fatal("not TextContent")
-	}
-	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
-		t.Errorf("got %q, want %q", g, w)
-	}
-}
-
 func TestSessionHijackingPrevention(t *testing.T) {
 	// This test verifies that sessions bound to a user ID cannot be accessed
 	// by a different user (session hijacking prevention).

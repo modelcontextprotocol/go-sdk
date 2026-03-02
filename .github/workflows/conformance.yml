@@ -18,37 +18,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "^1.25"
       - name: Start everything-server
         run: |
           go run ./conformance/everything-server/main.go -http=":3001" &
           # Wait for the server to be ready.
-          timeout 15 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
+          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
       - name: "Run conformance tests" 
-        uses: modelcontextprotocol/conformance@c2f3fdaf781dcd5a862cb0d2f6454c1c210bf0f0 # v0.1.11
+        uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
         with:
           mode: server
           url: http://localhost:3001/mcp
           suite: active
           expected-failures: ./conformance/baseline.yml
+          node-version: 22
 
   client-conformance:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "^1.25"
       - name: "Run conformance tests" 
-        uses: modelcontextprotocol/conformance@c2f3fdaf781dcd5a862cb0d2f6454c1c210bf0f0 # v0.1.11
+        uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
         with:
           mode: client 
-          command: go run ./conformance/everything-client/main.go
+          command: go run -tags mcp_go_client_oauth ./conformance/everything-client
           suite: core
           expected-failures: ./conformance/baseline.yml
+          node-version: 22

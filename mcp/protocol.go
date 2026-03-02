@@ -13,6 +13,9 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // Optional annotations for the client. The client can use annotations to inform
@@ -140,7 +143,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		res
 		Content []*wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -192,7 +195,14 @@ type ClientCapabilities struct {
 	// [ClientCapabilities.clone].
 
 	// Experimental reports non-standard capabilities that the client supports.
+	// The caller should not modify the map after assigning it.
 	Experimental map[string]any `json:"experimental,omitempty"`
+	// Extensions reports extensions that the client supports.
+	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
+	// Values are per-extension settings objects; use [ClientCapabilities.AddExtension]
+	// to ensure nil settings are normalized to empty objects.
+	// The caller should not modify the map or its values after assigning it.
+	Extensions map[string]any `json:"extensions,omitempty"`
 	// Roots describes the client's support for roots.
 	//
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
@@ -211,9 +221,26 @@ type ClientCapabilities struct {
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
 }
 
-// clone returns a deep copy of the ClientCapabilities.
+// AddExtension adds an extension with the given name and settings.
+// If settings is nil, an empty map is used to ensure valid JSON serialization
+// (the spec requires an object, not null).
+// The settings map should not be modified after the call.
+func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) {
+	if c.Extensions == nil {
+		c.Extensions = make(map[string]any)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	c.Extensions[name] = settings
+}
+
+// clone returns a copy of the ClientCapabilities.
+// Values in the Extensions and Experimental maps are shallow-copied.
 func (c *ClientCapabilities) clone() *ClientCapabilities {
 	cp := *c
+	cp.Experimental = maps.Clone(c.Experimental)
+	cp.Extensions = maps.Clone(c.Extensions)
 	cp.RootsV2 = shallowClone(c.RootsV2)
 	if c.Sampling != nil {
 		x := *c.Sampling
@@ -290,7 +317,7 @@ type CompleteReference struct {
 func (r *CompleteReference) UnmarshalJSON(data []byte) error {
 	type wireCompleteReference CompleteReference // for naive unmarshaling
 	var r2 wireCompleteReference
-	if err := json.Unmarshal(data, &r2); err != nil {
+	if err := internaljson.Unmarshal(data, &r2); err != nil {
 		return err
 	}
 	switch r2.Type {
@@ -477,7 +504,7 @@ func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
 		msg
 		Content json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -517,7 +544,7 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 		result
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -580,7 +607,7 @@ func (r *CreateMessageWithToolsResult) UnmarshalJSON(data []byte) error {
 		result
 		Content json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -1031,7 +1058,7 @@ func (m *PromptMessage) UnmarshalJSON(data []byte) error {
 		msg
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	var err error
@@ -1228,7 +1255,7 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 		msg
 		Content *wireContent `json:"content"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
 	}
 	// Allow text, image, audio, tool_use, and tool_result in sampling messages
@@ -1516,7 +1543,14 @@ type ServerCapabilities struct {
 	// [ServerCapabilities.clone].
 
 	// Experimental reports non-standard capabilities that the server supports.
+	// The caller should not modify the map after assigning it.
 	Experimental map[string]any `json:"experimental,omitempty"`
+	// Extensions reports extensions that the server supports.
+	// Keys are extension identifiers in "{vendor-prefix}/{extension-name}" format.
+	// Values are per-extension settings objects; use [ServerCapabilities.AddExtension]
+	// to ensure nil settings are normalized to empty objects.
+	// The caller should not modify the map or its values after assigning it.
+	Extensions map[string]any `json:"extensions,omitempty"`
 	// Completions is present if the server supports argument autocompletion
 	// suggestions.
 	Completions *CompletionCapabilities `json:"completions,omitempty"`
@@ -1530,9 +1564,26 @@ type ServerCapabilities struct {
 	Tools *ToolCapabilities `json:"tools,omitempty"`
 }
 
-// clone returns a deep copy of the ServerCapabilities.
+// AddExtension adds an extension with the given name and settings.
+// If settings is nil, an empty map is used to ensure valid JSON serialization
+// (the spec requires an object, not null).
+// The settings map should not be modified after the call.
+func (c *ServerCapabilities) AddExtension(name string, settings map[string]any) {
+	if c.Extensions == nil {
+		c.Extensions = make(map[string]any)
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	c.Extensions[name] = settings
+}
+
+// clone returns a copy of the ServerCapabilities.
+// Values in the Extensions and Experimental maps are shallow-copied.
 func (c *ServerCapabilities) clone() *ServerCapabilities {
 	cp := *c
+	cp.Experimental = maps.Clone(c.Experimental)
+	cp.Extensions = maps.Clone(c.Extensions)
 	cp.Completions = shallowClone(c.Completions)
 	cp.Logging = shallowClone(c.Logging)
 	cp.Prompts = shallowClone(c.Prompts)
