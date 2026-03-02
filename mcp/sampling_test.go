@@ -10,30 +10,34 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
-func TestSamplingWithTools_Integration(t *testing.T) {
+func TestSamplingWithTools_ToolUse(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
 	// Track what the client received
-	var receivedParams *CreateMessageWithToolsParams
+	var gotParams *CreateMessageWithToolsParams
+	result := &CreateMessageWithToolsResult{
+		Model: "test-model",
+		Role:  "assistant",
+		Content: []Content{
+			&ToolUseContent{
+				ID:    "tool_call_1",
+				Name:  "calculator",
+				Input: map[string]any{"x": 1.0, "y": 2.0},
+			},
+		},
+		StopReason: "toolUse",
+	}
 
 	// Client with tools capability, using CreateMessageWithToolsHandler
 	client := NewClient(testImpl, &ClientOptions{
 		CreateMessageWithToolsHandler: func(_ context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
-			receivedParams = req.Params
-			// Return a tool use response
-			return &CreateMessageWithToolsResult{
-				Model: "test-model",
-				Role:  "assistant",
-				Content: []Content{&ToolUseContent{
-					ID:    "tool_call_1",
-					Name:  "calculator",
-					Input: map[string]any{"x": 1.0, "y": 2.0},
-				}},
-				StopReason: "toolUse",
-			}, nil
+			gotParams = req.Params
+			return result, nil
 		},
 		Capabilities: &ClientCapabilities{
 			Sampling: &SamplingCapabilities{Tools: &SamplingToolsCapabilities{}},
@@ -54,7 +58,7 @@ func TestSamplingWithTools_Integration(t *testing.T) {
 	defer cs.Close()
 
 	// Server sends CreateMessageWithTools
-	result, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{
+	params := &CreateMessageWithToolsParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessageV2{
 			{Role: "user", Content: []Content{&TextContent{Text: "Calculate 1+2"}}},
@@ -73,54 +77,33 @@ func TestSamplingWithTools_Integration(t *testing.T) {
 			},
 		},
 		ToolChoice: &ToolChoice{Mode: "auto"},
-	})
+	}
+	gotResult, err := ss.CreateMessageWithTools(ctx, params)
 	if err != nil {
 		t.Fatalf("CreateMessageWithTools() error = %v", err)
 	}
 
-	// Verify client received the tools
-	if receivedParams == nil {
-		t.Fatal("client did not receive params")
-	}
-	if len(receivedParams.Tools) != 1 {
-		t.Errorf("client received %d tools, want 1", len(receivedParams.Tools))
-	}
-	if receivedParams.Tools[0].Name != "calculator" {
-		t.Errorf("tool name = %v, want calculator", receivedParams.Tools[0].Name)
-	}
-	if receivedParams.ToolChoice == nil || receivedParams.ToolChoice.Mode != "auto" {
-		t.Errorf("tool choice mode = %v, want auto", receivedParams.ToolChoice)
+	// Verify client received the params
+	if diff := cmp.Diff(params, gotParams); diff != "" {
+		t.Errorf("CreateMessageWithToolsParams mismatch (-want +got):\n%s", diff)
 	}
 
 	// Verify server received the tool use response
-	if result.StopReason != "toolUse" {
-		t.Errorf("StopReason = %v, want toolUse", result.StopReason)
-	}
-	if len(result.Content) != 1 {
-		t.Fatalf("len(Content) = %d, want 1", len(result.Content))
-	}
-	toolUse, ok := result.Content[0].(*ToolUseContent)
-	if !ok {
-		t.Fatalf("Content[0] type = %T, want *ToolUseContent", result.Content[0])
-	}
-	if toolUse.ID != "tool_call_1" {
-		t.Errorf("ToolUse.ID = %v, want tool_call_1", toolUse.ID)
-	}
-	if toolUse.Name != "calculator" {
-		t.Errorf("ToolUse.Name = %v, want calculator", toolUse.Name)
+	if diff := cmp.Diff(result, gotResult); diff != "" {
+		t.Errorf("CreateMessageWithToolsResult mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestSamplingWithToolResult_Integration(t *testing.T) {
+func TestSamplingWithTools_ToolResult(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
 	// Track messages received by client
-	var receivedMessages []*SamplingMessage
+	var gotParams *CreateMessageParams
 
 	client := NewClient(testImpl, &ClientOptions{
 		CreateMessageHandler: func(_ context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			receivedMessages = req.Params.Messages
+			gotParams = req.Params
 			return &CreateMessageResult{
 				Model:   "test-model",
 				Role:    "assistant",
@@ -145,8 +128,7 @@ func TestSamplingWithToolResult_Integration(t *testing.T) {
 	}
 	defer cs.Close()
 
-	// Server sends CreateMessage with tool result in messages
-	_, err = ss.CreateMessage(ctx, &CreateMessageParams{
+	params := &CreateMessageParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessage{
 			{Role: "user", Content: &TextContent{Text: "Calculate 1+2"}},
@@ -160,43 +142,14 @@ func TestSamplingWithToolResult_Integration(t *testing.T) {
 				Content:   []Content{&TextContent{Text: "3"}},
 			}},
 		},
-	})
+	}
+	_, err = ss.CreateMessage(ctx, params)
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
 
-	// Verify client received all messages including tool content
-	if len(receivedMessages) != 3 {
-		t.Fatalf("received %d messages, want 3", len(receivedMessages))
-	}
-
-	// Check first message is text
-	if _, ok := receivedMessages[0].Content.(*TextContent); !ok {
-		t.Errorf("message[0] content type = %T, want *TextContent", receivedMessages[0].Content)
-	}
-
-	// Check second message is tool use
-	toolUse, ok := receivedMessages[1].Content.(*ToolUseContent)
-	if !ok {
-		t.Fatalf("message[1] content type = %T, want *ToolUseContent", receivedMessages[1].Content)
-	}
-	if toolUse.ID != "tool_1" {
-		t.Errorf("toolUse.ID = %v, want tool_1", toolUse.ID)
-	}
-
-	// Check third message is tool result
-	toolResult, ok := receivedMessages[2].Content.(*ToolResultContent)
-	if !ok {
-		t.Fatalf("message[2] content type = %T, want *ToolResultContent", receivedMessages[2].Content)
-	}
-	if toolResult.ToolUseID != "tool_1" {
-		t.Errorf("toolResult.ToolUseID = %v, want tool_1", toolResult.ToolUseID)
-	}
-	if len(toolResult.Content) != 1 {
-		t.Fatalf("toolResult.Content len = %d, want 1", len(toolResult.Content))
-	}
-	if tc, ok := toolResult.Content[0].(*TextContent); !ok || tc.Text != "3" {
-		t.Errorf("toolResult.Content[0] = %v, want TextContent with '3'", toolResult.Content[0])
+	if diff := cmp.Diff(params, gotParams); diff != "" {
+		t.Errorf("CreateMessageParams mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -233,14 +186,12 @@ func TestSamplingToolsCapabilities(t *testing.T) {
 
 		// Check server sees client capabilities
 		caps := ss.InitializeParams().Capabilities
-		if caps.Sampling == nil {
-			t.Fatal("client should advertise sampling capability")
+		want := &SamplingCapabilities{
+			Tools:   &SamplingToolsCapabilities{},
+			Context: &SamplingContextCapabilities{},
 		}
-		if caps.Sampling.Tools == nil {
-			t.Error("client should advertise sampling.tools capability")
-		}
-		if caps.Sampling.Context == nil {
-			t.Error("client should advertise sampling.context capability")
+		if diff := cmp.Diff(want, caps.Sampling); diff != "" {
+			t.Errorf("SamplingCapabilities mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -269,14 +220,9 @@ func TestSamplingToolsCapabilities(t *testing.T) {
 
 		// Check server sees client capabilities
 		caps := ss.InitializeParams().Capabilities
-		if caps.Sampling == nil {
-			t.Fatal("client should advertise sampling capability")
-		}
-		if caps.Sampling.Tools != nil {
-			t.Error("client should NOT advertise sampling.tools capability")
-		}
-		if caps.Sampling.Context != nil {
-			t.Error("client should NOT advertise sampling.context capability")
+		want := &SamplingCapabilities{}
+		if diff := cmp.Diff(want, caps.Sampling); diff != "" {
+			t.Errorf("SamplingCapabilities mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -304,24 +250,24 @@ func TestSamplingToolsCapabilities(t *testing.T) {
 		defer cs.Close()
 
 		caps := ss.InitializeParams().Capabilities
-		if caps.Sampling == nil {
-			t.Fatal("client should advertise sampling capability")
+		want := &SamplingCapabilities{
+			Tools: &SamplingToolsCapabilities{},
 		}
-		if caps.Sampling.Tools == nil {
-			t.Error("client should infer sampling.tools capability from CreateMessageWithToolsHandler")
+		if diff := cmp.Diff(want, caps.Sampling); diff != "" {
+			t.Errorf("SamplingCapabilities mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
 
-func TestSamplingToolResultWithError_Integration(t *testing.T) {
+func TestSamplingWithTools_ToolResultWithError(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
-	var receivedMessages []*SamplingMessage
+	var gotParams *CreateMessageParams
 
 	client := NewClient(testImpl, &ClientOptions{
 		CreateMessageHandler: func(_ context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
-			receivedMessages = req.Params.Messages
+			gotParams = req.Params
 			return &CreateMessageResult{
 				Model:   "test-model",
 				Role:    "assistant",
@@ -346,9 +292,7 @@ func TestSamplingToolResultWithError_Integration(t *testing.T) {
 	}
 	defer cs.Close()
 
-	// Server sends CreateMessage with error tool result, preceded by
-	// the original request and tool use for a more realistic scenario.
-	_, err = ss.CreateMessage(ctx, &CreateMessageParams{
+	params := &CreateMessageParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessage{
 			{Role: "user", Content: &TextContent{Text: "Divide 1 by 0"}},
@@ -363,43 +307,34 @@ func TestSamplingToolResultWithError_Integration(t *testing.T) {
 				IsError:   true,
 			}},
 		},
-	})
+	}
+	_, err = ss.CreateMessage(ctx, params)
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
 
-	if len(receivedMessages) != 3 {
-		t.Fatalf("received %d messages, want 3", len(receivedMessages))
-	}
-
-	toolResult, ok := receivedMessages[2].Content.(*ToolResultContent)
-	if !ok {
-		t.Fatalf("content type = %T, want *ToolResultContent", receivedMessages[2].Content)
-	}
-	if !toolResult.IsError {
-		t.Error("IsError should be true")
-	}
-	if toolResult.ToolUseID != "tool_1" {
-		t.Errorf("ToolUseID = %v, want tool_1", toolResult.ToolUseID)
+	if diff := cmp.Diff(params, gotParams); diff != "" {
+		t.Errorf("CreateMessageParams mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestParallelToolCalls_Integration(t *testing.T) {
+func TestSamplingWithTools_ParallelToolCalls(t *testing.T) {
 	ctx := context.Background()
 	ct, st := NewInMemoryTransports()
 
+	result := &CreateMessageWithToolsResult{
+		Model: "test-model",
+		Role:  "assistant",
+		Content: []Content{
+			&ToolUseContent{ID: "call_1", Name: "weather", Input: map[string]any{"city": "SF"}},
+			&ToolUseContent{ID: "call_2", Name: "weather", Input: map[string]any{"city": "NY"}},
+		},
+		StopReason: "toolUse",
+	}
 	// Client returns parallel tool use results
 	client := NewClient(testImpl, &ClientOptions{
 		CreateMessageWithToolsHandler: func(_ context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
-			return &CreateMessageWithToolsResult{
-				Model: "test-model",
-				Role:  "assistant",
-				Content: []Content{
-					&ToolUseContent{ID: "call_1", Name: "weather", Input: map[string]any{"city": "SF"}},
-					&ToolUseContent{ID: "call_2", Name: "weather", Input: map[string]any{"city": "NY"}},
-				},
-				StopReason: "toolUse",
-			}, nil
+			return result, nil
 		},
 		Capabilities: &ClientCapabilities{
 			Sampling: &SamplingCapabilities{Tools: &SamplingToolsCapabilities{}},
@@ -419,7 +354,7 @@ func TestParallelToolCalls_Integration(t *testing.T) {
 	}
 	defer cs.Close()
 
-	result, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{
+	gotResult, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessageV2{
 			{Role: "user", Content: []Content{&TextContent{Text: "Weather in SF and NY"}}},
@@ -432,23 +367,8 @@ func TestParallelToolCalls_Integration(t *testing.T) {
 		t.Fatalf("CreateMessageWithTools() error = %v", err)
 	}
 
-	if len(result.Content) != 2 {
-		t.Fatalf("len(Content) = %d, want 2", len(result.Content))
-	}
-	for i, c := range result.Content {
-		tu, ok := c.(*ToolUseContent)
-		if !ok {
-			t.Fatalf("Content[%d] type = %T, want *ToolUseContent", i, c)
-		}
-		if tu.Name != "weather" {
-			t.Errorf("Content[%d].Name = %v, want weather", i, tu.Name)
-		}
-	}
-	if result.Content[0].(*ToolUseContent).ID != "call_1" {
-		t.Errorf("Content[0].ID = %v, want call_1", result.Content[0].(*ToolUseContent).ID)
-	}
-	if result.Content[1].(*ToolUseContent).ID != "call_2" {
-		t.Errorf("Content[1].ID = %v, want call_2", result.Content[1].(*ToolUseContent).ID)
+	if diff := cmp.Diff(result, gotResult); diff != "" {
+		t.Errorf("CreateMessageWithToolsResult mismatch (-want +got):\n%s", diff)
 	}
 }
 
