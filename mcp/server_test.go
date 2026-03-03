@@ -763,13 +763,13 @@ func TestClientRootCapabilities(t *testing.T) {
 			var initParams json.RawMessage
 			if tc.capabilities != nil {
 				initParams = json.RawMessage(`{
-					"protocolVersion": "2025-06-18",
+					"protocolVersion": "2025-11-25",
 					"capabilities": ` + *tc.capabilities + `,
 					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
 				}`)
 			} else {
 				initParams = json.RawMessage(`{
-					"protocolVersion": "2025-06-18",
+					"protocolVersion": "2025-11-25",
 					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
 				}`)
 			}
