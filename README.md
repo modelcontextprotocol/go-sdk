@@ -4,6 +4,7 @@
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/modelcontextprotocol/go-sdk)
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/modelcontextprotocol/go-sdk)](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/modelcontextprotocol/go-sdk/badge)](https://scorecard.dev/viewer/?uri=github.com/modelcontextprotocol/go-sdk)
 
 This repository contains an implementation of the official Go software
 development kit (SDK) for the Model Context Protocol (MCP).
@@ -28,6 +29,23 @@ The SDK consists of several importable packages:
 
 The SDK endeavors to implement the full MCP spec. The [`docs/`](/docs/) directory
 contains feature documentation, mapping the MCP spec to the packages above.
+
+## Version Compatibility
+
+The following table shows which versions of the Go SDK support which versions of the MCP specification:
+
+| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                            |
+|-----------------|-------------------|----------------------------------------------------|
+| v1.4.0+         | 2025-11-25\*      | 2025-11-25\*, 2025-06-18, 2025-03-26, 2024-11-05   |
+| v1.2.0 - v1.3.1 | 2025-11-25\*\*    | 2025-11-25\*\*, 2025-06-18, 2025-03-26, 2024-11-05 |
+| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05                 |
+
+\* Client side OAuth has experimental support.
+
+\*\* Partial support for 2025-11-25 (client side OAuth and Sampling with tools not available).
+
+New releases of the SDK target only supported versions of Go. See
+https://go.dev/doc/devel/release#policy for more information.
 
 ## Getting started
 
@@ -141,5 +159,5 @@ is a thriving ecosystem of Go MCP clients and servers.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE)
-file for details.
+This project is licensed under Apache 2.0 for new contributions, with existing
+code under MIT - see the [LICENSE](./LICENSE) file for details.

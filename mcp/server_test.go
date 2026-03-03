@@ -441,6 +441,25 @@ func TestServerCapabilities(t *testing.T) {
 				Logging:      &LoggingCapabilities{},
 			},
 		},
+		{
+			name:            "extensions preserved",
+			configureServer: func(s *Server) {},
+			serverOpts: func() ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext1", map[string]any{"key": "value"})
+				caps.AddExtension("io.example/ext2", nil)
+				return ServerOptions{Capabilities: caps}
+			}(),
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext1": map[string]any{"key": "value"},
+					"io.example/ext2": map[string]any{},
+				},
+				Logging: &LoggingCapabilities{},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -640,7 +659,7 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
 		return nil, out, nil
 	}
-	gott, goth, err := toolForErr(tool, th)
+	gott, goth, err := toolForErr(tool, th, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,10 +831,34 @@ func TestToolForSchemas(t *testing.T) {
 
 	var (
 		falseSchema = &schema{Not: &schema{}}
-		inSchema    = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "integer"}}}
-		inSchema2   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"p": {Type: "string"}}}
-		outSchema   = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "boolean"}}}
-		outSchema2  = &schema{Type: "object", AdditionalProperties: falseSchema, Properties: map[string]*schema{"b": {Type: "integer"}}}
+		inSchema    = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "integer"}},
+			PropertyOrder:        []string{"p"},
+		}
+		inSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"p": {Type: "string"}},
+		}
+		inSchema3 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{}, // empty map is preserved
+		}
+		outSchema = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "boolean"}},
+			PropertyOrder:        []string{"b"},
+		}
+		outSchema2 = &schema{
+			Type:                 "object",
+			AdditionalProperties: falseSchema,
+			Properties:           map[string]*schema{"b": {Type: "integer"}},
+			PropertyOrder:        []string{"b"},
+		}
 	)
 
 	// Infer both schemas.
@@ -829,6 +872,8 @@ func TestToolForSchemas(t *testing.T) {
 	testToolForSchema[in, any](t, &Tool{}, `{"p":"x"}`, 0, inSchema, nil, `want "integer"`)
 	// Tool sets input schema: that is what's used.
 	testToolForSchema[in, any](t, &Tool{InputSchema: inSchema2}, `{"p":3}`, 0, inSchema2, nil, `want "string"`)
+	// Tool sets input schema, empty properties map.
+	testToolForSchema[in, any](t, &Tool{InputSchema: inSchema3}, `{}`, 0, inSchema3, nil, "")
 	// Tool sets output schema: that is what's used, and validation happens.
 	testToolForSchema[in, any](t, &Tool{OutputSchema: outSchema2}, `{"p":3}`, out{true},
 		inSchema, outSchema2, `want "integer"`)
@@ -850,6 +895,7 @@ func TestToolForSchemas(t *testing.T) {
 				"AsOf":    {Type: "string"},
 				"Source":  {Type: "string"},
 			},
+			PropertyOrder: []string{"Summary", "AsOf", "Source"},
 		},
 		"")
 }
@@ -898,6 +944,23 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 			wantCapabilities: &ServerCapabilities{
 				Logging: &LoggingCapabilities{},
 				Tools:   &ToolCapabilities{ListChanged: true},
+			},
+		},
+		{
+			name: "Extensions over wire",
+			serverOpts: func() *ServerOptions {
+				caps := &ServerCapabilities{
+					Logging: &LoggingCapabilities{},
+				}
+				caps.AddExtension("io.example/ext", map[string]any{"key": "value"})
+				return &ServerOptions{Capabilities: caps}
+			}(),
+			configureServer: func(s *Server) {},
+			wantCapabilities: &ServerCapabilities{
+				Extensions: map[string]any{
+					"io.example/ext": map[string]any{"key": "value"},
+				},
+				Logging: &LoggingCapabilities{},
 			},
 		},
 	}

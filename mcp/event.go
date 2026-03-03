@@ -67,9 +67,7 @@ func writeEvent(w io.Writer, evt Event) (int, error) {
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
 func scanEvents(r io.Reader) iter.Seq2[Event, error] {
-	scanner := bufio.NewScanner(r)
-	const maxTokenSize = 1 * 1024 * 1024 // 1 MiB max line size
-	scanner.Buffer(nil, maxTokenSize)
+	reader := bufio.NewReader(r)
 
 	// TODO: investigate proper behavior when events are out of order, or have
 	// non-standard names.
@@ -94,30 +92,42 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			evt     Event
 			dataBuf *bytes.Buffer // if non-nil, preceding field was also data
 		)
-		flushData := func() {
+		yieldEvent := func() bool {
 			if dataBuf != nil {
 				evt.Data = dataBuf.Bytes()
 				dataBuf = nil
 			}
+			if evt.Empty() {
+				return true
+			}
+			if !yield(evt, nil) {
+				return false
+			}
+			evt = Event{}
+			return true
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				yield(Event{}, fmt.Errorf("error reading event: %v", err))
+				return
+			}
+			line = bytes.TrimRight(line, "\r\n")
+			isEOF := errors.Is(err, io.EOF)
+
 			if len(line) == 0 {
-				flushData()
-				// \n\n is the record delimiter
-				if !evt.Empty() && !yield(evt, nil) {
+				if !yieldEvent() {
 					return
 				}
-				evt = Event{}
+				if isEOF {
+					return
+				}
 				continue
 			}
 			before, after, found := bytes.Cut(line, []byte{':'})
 			if !found {
-				yield(Event{}, fmt.Errorf("malformed line in SSE stream: %q", string(line)))
+				yield(Event{}, fmt.Errorf("%w: malformed line in SSE stream: %q", errMalformedEvent, string(line)))
 				return
-			}
-			if !bytes.Equal(before, dataKey) {
-				flushData()
 			}
 			switch {
 			case bytes.Equal(before, eventKey):
@@ -128,26 +138,18 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				evt.Retry = strings.TrimSpace(string(after))
 			case bytes.Equal(before, dataKey):
 				data := bytes.TrimSpace(after)
-				if dataBuf != nil {
-					dataBuf.WriteByte('\n')
-					dataBuf.Write(data)
-				} else {
+				if dataBuf == nil {
 					dataBuf = new(bytes.Buffer)
-					dataBuf.Write(data)
+				} else {
+					dataBuf.WriteByte('\n')
 				}
+				dataBuf.Write(data)
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			if errors.Is(err, bufio.ErrTooLong) {
-				err = fmt.Errorf("event exceeded max line length of %d", maxTokenSize)
-			}
-			if !yield(Event{}, err) {
+
+			if isEOF {
+				yieldEvent()
 				return
 			}
-		}
-		flushData()
-		if !evt.Empty() {
-			yield(evt, nil)
 		}
 	}
 }
@@ -309,6 +311,11 @@ func (s *MemoryEventStore) Append(_ context.Context, sessionID, streamID string,
 // ErrEventsPurged is the error that [EventStore.After] should return if the event just after the
 // index is no longer available.
 var ErrEventsPurged = errors.New("data purged")
+
+// errMalformedEvent is returned when an SSE event cannot be parsed due to format violations.
+// This is a hard error indicating corrupted data or protocol violations, as opposed to
+// transient I/O errors which may be retryable.
+var errMalformedEvent = errors.New("malformed event")
 
 // After implements [EventStore.After].
 func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, index int) iter.Seq2[[]byte, error] {

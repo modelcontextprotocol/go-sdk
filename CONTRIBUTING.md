@@ -123,14 +123,14 @@ Changes should be high quality and well tested, and should generally follow the
 messages should follow the [format used by the Go
 project](https://go.dev/wiki/CommitMessage).
 
-Unless otherwise noted, the Go source files are distributed under the MIT-style
-license found in the LICENSE file. All Go files in the SDK should have a
-copyright header following the format below:
+Unless otherwise noted, the Go source files are distributed under the license
+found in the LICENSE file. New contributions are licensed under Apache 2.0. All
+Go files in the SDK should have a copyright header following the format below:
 
 ```go
 // Copyright 2025 The Go MCP SDK Authors. All rights reserved.
-// Use of this source code is governed by an MIT-style
-// license that can be found in the LICENSE file.
+// Use of this source code is governed by the license
+// that can be found in the LICENSE file.
 ```
 
 ### Adding and updating dependencies

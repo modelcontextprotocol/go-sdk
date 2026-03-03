@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -283,7 +284,7 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 		unmarshalParams: func(m json.RawMessage) (Params, error) {
 			var p P
 			if m != nil {
-				if err := json.Unmarshal(m, &p); err != nil {
+				if err := internaljson.Unmarshal(m, &p); err != nil {
 					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
 				}
 			}

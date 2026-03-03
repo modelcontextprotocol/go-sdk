@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
 
 // A ToolHandler handles a call to tools/call.
@@ -83,7 +84,7 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved) (json.RawM
 	if resolved != nil {
 		v := make(map[string]any)
 		if len(data) > 0 {
-			if err := json.Unmarshal(data, &v); err != nil {
+			if err := internaljson.Unmarshal(data, &v); err != nil {
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
 		}

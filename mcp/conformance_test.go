@@ -152,7 +152,7 @@ var iconObj = Icon{
 	Source:   "foobar",
 	MIMEType: "image/png",
 	Sizes:    []string{"48x48", "96x96"},
-	Theme:    "light",
+	Theme:    IconThemeLight,
 }
 
 // runServerTest runs the server conformance test.

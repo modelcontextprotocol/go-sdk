@@ -291,6 +291,6 @@ func mcpIcons() []mcp.Icon {
 		Source:   "data:image/png;base64," + base64.StdEncoding.EncodeToString(mcpIconData),
 		MIMEType: "image/png",
 		Sizes:    []string{"48x48"},
-		Theme:    "light", // or "dark" or empty
+		Theme:    mcp.IconThemeLight,
 	}}
 }

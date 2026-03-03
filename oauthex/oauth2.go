@@ -19,21 +19,12 @@ import (
 	"strings"
 )
 
-// prependToPath prepends pre to the path of urlStr.
-// When pre is the well-known path, this is the algorithm specified in both RFC 9728
-// section 3.1 and RFC 8414 section 3.1.
-func prependToPath(urlStr, pre string) (string, error) {
-	u, err := url.Parse(urlStr)
-	if err != nil {
-		return "", err
-	}
-	p := "/" + strings.Trim(pre, "/")
-	if u.Path != "" {
-		p += "/"
-	}
+type httpStatusError struct {
+	StatusCode int
+}
 
-	u.Path = p + strings.TrimLeft(u.Path, "/")
-	return u.String(), nil
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("bad status %d", e.StatusCode)
 }
 
 // getJSON retrieves JSON and unmarshals JSON from the URL, as specified in both
@@ -53,11 +44,9 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 	}
 	defer res.Body.Close()
 
-	// Specs require a 200.
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status %s", res.Status)
+		return nil, &httpStatusError{StatusCode: res.StatusCode}
 	}
-	// Specs require application/json.
 	ct := res.Header.Get("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil || mediaType != "application/json" {

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,13 +30,15 @@ type streamableRequestKey struct {
 
 type header map[string]string
 
+// TODO: replace body and status fields with responseFunc; add helpers to reduce duplication.
 type streamableResponse struct {
-	header              header        // response headers
-	status              int           // or http.StatusOK
-	body                string        // or ""
-	optional            bool          // if set, request need not be sent
-	wantProtocolVersion string        // if "", unchecked
-	done                chan struct{} // if set, receive from this channel before terminating the request
+	header              header                                 // response headers
+	status              int                                    // or http.StatusOK; ignored if responseFunc is set
+	body                string                                 // or ""; ignored if responseFunc is set
+	responseFunc        func(r *jsonrpc.Request) (string, int) // if set, overrides body and status
+	optional            bool                                   // if set, request need not be sent
+	wantProtocolVersion string                                 // if "", unchecked
+	done                chan struct{}                          // if set, receive from this channel before terminating the request
 }
 
 type fakeResponses map[streamableRequestKey]*streamableResponse
@@ -44,17 +47,17 @@ type fakeStreamableServer struct {
 	t         *testing.T
 	responses fakeResponses
 
-	callMu sync.Mutex
-	calls  map[streamableRequestKey]int
+	calledMu sync.Mutex
+	called   map[streamableRequestKey]bool
 }
 
 func (s *fakeStreamableServer) missingRequests() []streamableRequestKey {
-	s.callMu.Lock()
-	defer s.callMu.Unlock()
+	s.calledMu.Lock()
+	defer s.calledMu.Unlock()
 
 	var unused []streamableRequestKey
 	for k, resp := range s.responses {
-		if s.calls[k] == 0 && !resp.optional {
+		if !s.called[k] && !resp.optional {
 			unused = append(unused, k)
 		}
 	}
@@ -67,6 +70,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		sessionID:   req.Header.Get(sessionIDHeader),
 		lastEventID: req.Header.Get("Last-Event-ID"), // TODO: extract this to a constant, like sessionIDHeader
 	}
+	var jsonrpcReq *jsonrpc.Request
 	if req.Method == http.MethodPost {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -82,15 +86,16 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		}
 		if r, ok := msg.(*jsonrpc.Request); ok {
 			key.jsonrpcMethod = r.Method
+			jsonrpcReq = r
 		}
 	}
 
-	s.callMu.Lock()
-	if s.calls == nil {
-		s.calls = make(map[streamableRequestKey]int)
+	s.calledMu.Lock()
+	if s.called == nil {
+		s.called = make(map[streamableRequestKey]bool)
 	}
-	s.calls[key]++
-	s.callMu.Unlock()
+	s.called[key] = true
+	s.calledMu.Unlock()
 
 	resp, ok := s.responses[key]
 	if !ok {
@@ -98,12 +103,19 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return
 	}
-	for k, v := range resp.header {
-		w.Header().Set(k, v)
-	}
+
+	// Determine body and status, potentially using responseFunc for dynamic responses.
+	body := resp.body
 	status := resp.status
+	if resp.responseFunc != nil {
+		body, status = resp.responseFunc(jsonrpcReq)
+	}
 	if status == 0 {
 		status = http.StatusOK
+	}
+
+	for k, v := range resp.header {
+		w.Header().Set(k, v)
 	}
 	w.WriteHeader(status)
 	w.(http.Flusher).Flush() // flush response headers
@@ -111,7 +123,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
-	w.Write([]byte(resp.body))
+	w.Write([]byte(body))
 	w.(http.Flusher).Flush() // flush response
 
 	if resp.done != nil {
@@ -246,14 +258,16 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	tests := []struct {
 		status              int
 		wantErrorContaining string
+		contentType         string
 	}{
-		{http.StatusOK, ""},
-		{http.StatusMethodNotAllowed, ""},
-		// The client error status code is not treated as an error in non-strict
-		// mode.
-		{http.StatusNotFound, ""},
-		{http.StatusBadRequest, ""},
-		{http.StatusInternalServerError, "standalone SSE"},
+		{http.StatusOK, "", "text/event-stream"},
+		{http.StatusMethodNotAllowed, "", "text/event-stream"},
+		//// The client error status code is not treated as an error in non-strict
+		//// mode.
+		{http.StatusNotFound, "", "text/event-stream"},
+		{http.StatusBadRequest, "", "text/event-stream"},
+		{http.StatusInternalServerError, "standalone SSE", "text/event-stream"},
+		{http.StatusOK, "", "text/html; charset=utf-8"},
 	}
 
 	for _, test := range tests {
@@ -274,7 +288,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
-							"Content-Type": "text/event-stream",
+							"Content-Type": test.contentType,
 						},
 						status:              test.status,
 						wantProtocolVersion: latestProtocolVersion,
@@ -551,6 +565,345 @@ data: { "jsonrpc": "2.0", "method": "notifications/message", "params": { "level"
 			// Check that an arbitrary request succeeds.
 			if _, err := cs.ListTools(ctx, nil); err != nil {
 				t.Errorf("ListTools failed after cancellation")
+			}
+		})
+	}
+}
+
+// TestStreamableClientTransientErrors verifies that transient errors (timeouts,
+// 5xx HTTP status codes) do not permanently break the client connection.
+// This tests the fix for issue #683.
+func TestStreamableClientTransientErrors(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		transientStatus   int    // HTTP status to return for the transient call
+		wantCallError     bool   // whether the transient call should error
+		wantSessionBroken bool   // whether the session should be broken after
+		wantErrorContains string // substring expected in error message
+	}{
+		{
+			transientStatus:   http.StatusServiceUnavailable,
+			wantCallError:     true,
+			wantSessionBroken: false,
+			wantErrorContains: "Service Unavailable",
+		},
+		{
+			transientStatus:   http.StatusBadGateway,
+			wantCallError:     true,
+			wantSessionBroken: false,
+			wantErrorContains: "Bad Gateway",
+		},
+		{
+			transientStatus:   http.StatusGatewayTimeout,
+			wantCallError:     true,
+			wantSessionBroken: false,
+			wantErrorContains: "Gateway Timeout",
+		},
+		{
+			transientStatus:   http.StatusTooManyRequests,
+			wantCallError:     true,
+			wantSessionBroken: false,
+			wantErrorContains: "Too Many Requests",
+		},
+		{
+			transientStatus:   http.StatusUnauthorized,
+			wantCallError:     true,
+			wantSessionBroken: true,
+			wantErrorContains: "Unauthorized",
+		},
+		{
+			transientStatus:   http.StatusNotFound,
+			wantCallError:     true,
+			wantSessionBroken: true,
+			wantErrorContains: "not found", // NotFound has special handling
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(http.StatusText(test.transientStatus), func(t *testing.T) {
+			var returnedError atomic.Bool
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					{"GET", "123", "", ""}: {
+						status: http.StatusMethodNotAllowed,
+					},
+					{"POST", "123", methodListTools, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							// First call returns transient error, subsequent calls succeed.
+							if !returnedError.Swap(true) && test.transientStatus != 0 {
+								return "", test.transientStatus
+							}
+							return jsonBody(t, resp(r.ID.Raw().(int64), &ListToolsResult{Tools: []*Tool{}}, nil)), 0
+						},
+						optional: true,
+					},
+					{"DELETE", "123", "", ""}: {optional: true},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("Connect failed: %v", err)
+			}
+			defer session.Close()
+
+			// First call: should trigger transient error.
+			_, err = session.ListTools(ctx, nil)
+			if test.wantCallError {
+				if err == nil {
+					t.Error("ListTools succeeded unexpectedly, want error")
+				} else if test.wantErrorContains != "" && !strings.Contains(err.Error(), test.wantErrorContains) {
+					t.Errorf("ListTools error = %q, want containing %q", err.Error(), test.wantErrorContains)
+				}
+			} else if err != nil {
+				t.Errorf("ListTools failed unexpectedly: %v", err)
+			}
+
+			// Second call: verifies whether the session is still usable.
+			_, err = session.ListTools(ctx, nil)
+			if test.wantSessionBroken {
+				if err == nil {
+					t.Error("second ListTools succeeded unexpectedly, want session broken")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("second ListTools failed unexpectedly: %v (session should survive transient errors)", err)
+				}
+			}
+		})
+	}
+}
+
+// TestStreamableClientRetryWithoutProgress verifies that the client fails after
+// exceeding the retry limit when no progress is made (Last-Event-ID does not advance).
+// This tests the fix for issue #679.
+func TestStreamableClientRetryWithoutProgress(t *testing.T) {
+	// Speed up reconnection delays for testing.
+	const tick = 10 * time.Millisecond
+	defer func(delay time.Duration) {
+		reconnectInitialDelay = delay
+	}(reconnectInitialDelay)
+	reconnectInitialDelay = tick
+
+	// Use the fakeStreamableServer pattern like other tests to avoid race conditions.
+	ctx := context.Background()
+	const maxRetries = 2
+	var retryCount atomic.Int32
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "test-session",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "test-session", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "test-session", "", ""}: {
+				// Disable standalone SSE stream to simplify the test.
+				status: http.StatusMethodNotAllowed,
+			},
+			{"POST", "test-session", methodCallTool, ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				// Return SSE stream with fixed event ID.
+				body: `id: fixed_1
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"test"}}
+
+`,
+			},
+			// Resumption attempts with the same event ID (no progress).
+			{"GET", "test-session", "", "fixed_1"}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					retryCount.Add(1)
+					// Return the same event ID - no progress.
+					return `id: fixed_1
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"retry"}}
+
+`, http.StatusOK
+				},
+			},
+			{"DELETE", "test-session", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		MaxRetries: maxRetries,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// Make a call that will trigger reconnections without progress.
+	_, err = session.CallTool(ctx, &CallToolParams{Name: "test"})
+	if err == nil {
+		t.Fatal("CallTool succeeded unexpectedly, want error due to exceeded retries")
+	}
+
+	// Check that the error mentions exceeding retries without progress.
+	wantErr := "exceeded"
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("CallTool error = %q, want containing %q", err.Error(), wantErr)
+	}
+
+	// Verify that we actually retried the expected number of times.
+	// We expect maxRetries+1 attempts because we increment before checking the limit.
+	if got := retryCount.Load(); got != int32(maxRetries+1) {
+		t.Errorf("retry count = %d, want exactly %d", got, maxRetries+1)
+	}
+}
+
+func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name                 string
+		disableStandaloneSSE bool
+		expectGETRequest     bool
+	}{
+		{
+			name:                 "default behavior (standalone SSE enabled)",
+			disableStandaloneSSE: false,
+			expectGETRequest:     true,
+		},
+		{
+			name:                 "standalone SSE disabled",
+			disableStandaloneSSE: true,
+			expectGETRequest:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			getRequestKey := streamableRequestKey{"GET", "123", "", ""}
+
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: latestProtocolVersion,
+					},
+					getRequestKey: {
+						header: header{
+							"Content-Type": "text/event-stream",
+						},
+						wantProtocolVersion: latestProtocolVersion,
+						optional:            !test.expectGETRequest,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{
+				Endpoint:             httpServer.URL,
+				DisableStandaloneSSE: test.disableStandaloneSSE,
+			}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+
+			// Give some time for the standalone SSE connection to be established (if enabled)
+			time.Sleep(100 * time.Millisecond)
+
+			// Verify the connection state
+			streamableConn, ok := session.mcpConn.(*streamableClientConn)
+			if !ok {
+				t.Fatalf("Expected *streamableClientConn, got %T", session.mcpConn)
+			}
+
+			if got, want := streamableConn.disableStandaloneSSE, test.disableStandaloneSSE; got != want {
+				t.Errorf("disableStandaloneSSE field: got %v, want %v", got, want)
+			}
+
+			// Clean up
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+
+			// Check if GET request was received
+			fake.calledMu.Lock()
+			getRequestReceived := false
+			if fake.called != nil {
+				getRequestReceived = fake.called[getRequestKey]
+			}
+			fake.calledMu.Unlock()
+
+			if got, want := getRequestReceived, test.expectGETRequest; got != want {
+				t.Errorf("GET request received: got %v, want %v", got, want)
+			}
+
+			// If we expected a GET request, verify it was actually received
+			if test.expectGETRequest {
+				if missing := fake.missingRequests(); len(missing) > 0 {
+					// Filter out optional requests
+					var requiredMissing []streamableRequestKey
+					for _, key := range missing {
+						if resp, ok := fake.responses[key]; ok && !resp.optional {
+							requiredMissing = append(requiredMissing, key)
+						}
+					}
+					if len(requiredMissing) > 0 {
+						t.Errorf("did not receive expected requests: %v", requiredMissing)
+					}
+				}
+			} else {
+				// If we didn't expect a GET request, verify it wasn't sent
+				if getRequestReceived {
+					t.Error("GET request was sent unexpectedly when DisableStandaloneSSE is true")
+				}
 			}
 		})
 	}

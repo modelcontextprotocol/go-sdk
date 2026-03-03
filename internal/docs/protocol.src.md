@@ -232,9 +232,55 @@ The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/
 
 ### Client
 
-Client-side OAuth is implemented by setting  
-[`StreamableClientTransport.HTTPClient`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.5.0/mcp#StreamableClientTransport.HTTPClient) to a custom [`http.Client`](https://pkg.go.dev/net/http#Client)
-Additional support is forthcoming; see modelcontextprotocol/go-sdk#493.
+> [!IMPORTANT]
+> Client-side OAuth support is currently experimental and requires the `mcp_go_client_oauth` build tag to compile.
+> API changes may still be made, based on developer feedback. The build tag will be removed in `v1.5.0`, which
+> is planned to be released by the end of March 2026.
+
+Client-side authorization is supported via the
+[`StreamableClientTransport.OAuthHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableClientTransport.OAuthHandler)
+field. If the handler is provided, the transport will automatically use it to
+add an `Authorization: Bearer <token>` header to every request. The transport
+will also call the handler's `Authorize` method if the server returns
+`401 Unauthorized` or `403 Forbidden` errors to perform the authorization flow
+or facilitate scope step-up authorization.
+
+The SDK implements the Authorization Code flow in
+[`auth.AuthorizationCodeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#AuthorizationCodeHandler).
+This handler supports:
+
+- [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents)
+- [Pre-registered clients](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration)
+- [Dynamic Client Registration](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration)
+
+To use it, configure the handler and assign it to the transport:
+
+```go
+authHandler, _ := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
+	RedirectURL: "https://myapp.com/oauth2-callback",
+	// Configure one of the following:
+	// ClientIDMetadataDocumentConfig: ...
+	// PreregisteredClientConfig: ...
+	// DynamicClientRegistrationConfig: ...
+	AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+		// Open the args.URL in a browser and return the resulting code and state.
+		// See full example in examples/auth/client/main.go.
+		code := ...
+		state := ...
+		return &auth.AuthorizationResult{Code: code, State: state}, nil
+	},
+})
+
+transport := &mcp.StreamableClientTransport{
+	Endpoint:     "https://example.com/mcp",
+	OAuthHandler: authHandler,
+}
+client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+session, err := client.Connect(ctx, transport, nil)
+```
+
+The `auth.AuthorizationCodeHandler` automatically manages token refreshing
+and step-up authentication (when the server returns `insufficient_scope` error).
 
 ## Security
 
@@ -243,9 +289,12 @@ the MCP spec's [Security Best Practices](https://modelcontextprotocol.io/specifi
 
 ### Confused Deputy
 
-The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation), obtaining user consent for dynamically registered clients,
-happens on the MCP client. At present we don't provide client-side OAuth support.
-
+The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation),
+obtaining user consent for dynamically registered clients, is mostly the
+responsibility of the MCP Proxy server implementation. The SDK client does
+generate cryptographically secure random `state` values for each authorization
+request by default and validates them when the authorization code is returned.
+Mismatched state values will result in an error.
 
 ### Token Passthrough
 

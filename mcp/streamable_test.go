@@ -1666,55 +1666,6 @@ func textContent(t *testing.T, res *CallToolResult) string {
 	return text.Text
 }
 
-func TestTokenInfo(t *testing.T) {
-	oldAuth := testAuth.Load()
-	defer testAuth.Store(oldAuth)
-	testAuth.Store(true)
-	ctx := context.Background()
-
-	// Create a server with a tool that returns TokenInfo.
-	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
-		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
-	}
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
-
-	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	verifier := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
-		return &auth.TokenInfo{
-			Scopes: []string{"scope"},
-			// Expiration is far, far in the future.
-			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
-		}, nil
-	}
-	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
-	defer httpServer.Close()
-
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	defer session.Close()
-
-	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Content) == 0 {
-		t.Fatal("missing content")
-	}
-	tc, ok := res.Content[0].(*TextContent)
-	if !ok {
-		t.Fatal("not TextContent")
-	}
-	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
-		t.Errorf("got %q, want %q", g, w)
-	}
-}
-
 func TestSessionHijackingPrevention(t *testing.T) {
 	// This test verifies that sessions bound to a user ID cannot be accessed
 	// by a different user (session hijacking prevention).
@@ -1829,7 +1780,9 @@ func TestStreamableGET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+	// GET without session should return 400 Bad Request (not 405) because
+	// GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 		t.Errorf("initial GET: got status %d, want %d", got, want)
 	}
 	defer resp.Body.Close()
@@ -1874,6 +1827,101 @@ func TestStreamableGET(t *testing.T) {
 	defer resp.Body.Close()
 	if got, want := resp.StatusCode, http.StatusNoContent; got != want {
 		t.Errorf("DELETE with session ID: got status %d, want %d", got, want)
+	}
+}
+
+// TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
+// 405 Method Not Allowed responses MUST include an Allow header.
+func TestStreamable405AllowHeader(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name       string
+		stateless  bool
+		method     string
+		wantStatus int
+		wantAllow  string
+	}{
+		{
+			name:       "unsupported method stateful",
+			stateless:  false,
+			method:     "PUT",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "GET, POST, DELETE",
+		},
+		{
+			name:       "GET in stateless mode",
+			stateless:  true,
+			method:     "GET",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
+		},
+		{
+			// DELETE without session returns 400 Bad Request (not 405)
+			// because DELETE is a valid method, just requires a session ID.
+			name:       "DELETE without session stateless",
+			stateless:  true,
+			method:     "DELETE",
+			wantStatus: http.StatusBadRequest,
+			wantAllow:  "", // No Allow header for 400 responses
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{Stateless: tt.stateless}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			req, err := http.NewRequest(tt.method, httpServer.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("status code: got %d, want %d", got, tt.wantStatus)
+			}
+
+			allow := resp.Header.Get("Allow")
+			if allow != tt.wantAllow {
+				t.Errorf("Allow header: got %q, want %q", allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
+// TestStreamableGETWithoutSession verifies that GET without session ID in stateful mode
+// returns 400 Bad Request (not 405), since GET is a supported method that requires a session.
+func TestStreamableGETWithoutSession(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest("GET", httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// GET without session should return 400 Bad Request, not 405 Method Not Allowed,
+	// because GET is a valid method - it just requires a session ID.
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+		t.Errorf("status code: got %d, want %d", got, want)
 	}
 }
 
@@ -2121,6 +2169,56 @@ collectLoop:
 	}
 }
 
+// TestProcessStreamPrimingEvent verifies that the streamable client correctly ignores
+// SSE events with empty data buffers, which are used as priming events (e.g. SEP-1699).
+func TestProcessStreamPrimingEvent(t *testing.T) {
+	// We create a mock response with a priming event (empty data, with an ID),
+	// followed by a normal event.
+	sseData := `id: 123
+
+id: 124
+data: {"jsonrpc":"2.0","id":1,"result":{}}
+
+`
+
+	ctx := t.Context()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	incoming := make(chan jsonrpc.Message, 10)
+	done := make(chan struct{})
+
+	conn := &streamableClientConn{
+		ctx:      ctx,
+		done:     done,
+		incoming: incoming,
+		failed:   make(chan struct{}),
+		logger:   ensureLogger(nil),
+	}
+
+	lastID, _, clientClosed := conn.processStream(ctx, "test", resp, nil)
+
+	if clientClosed {
+		t.Fatalf("processStream was unexpectedly closed by client")
+	}
+
+	if lastID != "124" {
+		t.Errorf("lastEventID = %q, want %q", lastID, "124")
+	}
+
+	select {
+	case msg := <-incoming:
+		if res, ok := msg.(*jsonrpc.Response); !(ok && res.ID == jsonrpc2.Int64ID(1)) {
+			t.Errorf("got unexpected message: %v", msg)
+		}
+	default:
+		t.Errorf("expected a JSON-RPC message to be produced")
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
@@ -2181,5 +2279,160 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 				t.Errorf("event %d: ping event unexpectedly decoded as valid JSON-RPC", i)
 			}
 		}
+	}
+}
+
+func Test_ExportErrSessionMissing(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Setup server
+	impl := &Implementation{Name: "test", Version: "1.0.0"}
+	server := NewServer(impl, nil)
+	handler := NewStreamableHTTPHandler(func(r *http.Request) *Server { return server }, nil)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// 2. Setup client
+	clientTransport := &StreamableClientTransport{
+		Endpoint: ts.URL,
+	}
+	client := NewClient(impl, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// 3. Manually invalidate session on server
+	handler.mu.Lock()
+	if len(handler.sessions) != 1 {
+		handler.mu.Unlock()
+		t.Fatalf("expected 1 session, got %d", len(handler.sessions))
+	}
+	for id := range handler.sessions {
+		delete(handler.sessions, id)
+	}
+	handler.mu.Unlock()
+
+	// 4. Try to call a tool (or any request)
+	_, err = session.ListTools(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// 5. Verify it's ErrSessionMissing
+	if !errors.Is(err, ErrSessionMissing) {
+		t.Errorf("expected error to wrap ErrSessionMissing, got: %v", err)
+	}
+}
+
+// TestStreamableLocalhostProtection verifies that DNS rebinding protection
+// is automatically enabled for localhost servers.
+func TestStreamableLocalhostProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name              string
+		listenAddr        string // Address to listen on
+		hostHeader        string // Host header in request
+		disableProtection bool   // DisableLocalhostProtection setting
+		wantStatus        int
+	}{
+		// Auto-enabled for localhost listeners (127.0.0.1).
+		{
+			name:              "127.0.0.1 accepts 127.0.0.1",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "127.0.0.1:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 accepts localhost",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects evil.com:80",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com:80",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+		{
+			name:              "127.0.0.1 rejects localhost.evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "localhost.evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+
+		// When listening on 0.0.0.0, requests arriving via localhost are still protected
+		// because LocalAddrContextKey returns the actual connection's local address.
+		// This is actually more secure - DNS rebinding attacks target localhost regardless
+		// of the listener configuration.
+		{
+			name:              "0.0.0.0 via localhost rejects evil.com",
+			listenAddr:        "0.0.0.0:0",
+			hostHeader:        "evil.com",
+			disableProtection: false,
+			wantStatus:        http.StatusForbidden,
+		},
+
+		// Explicit disable
+		{
+			name:              "disabled accepts evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: true,
+			wantStatus:        http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{
+				Stateless:                  true, // Simpler for testing
+				DisableLocalhostProtection: tt.disableProtection,
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+
+			listener, err := net.Listen("tcp", tt.listenAddr)
+			if err != nil {
+				t.Fatalf("Failed to listen on %s: %v", tt.listenAddr, err)
+			}
+			defer listener.Close()
+
+			srv := &http.Server{Handler: handler}
+			go srv.Serve(listener)
+			defer srv.Close()
+
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest("POST", fmt.Sprintf("http://%s", listener.Addr().String()), reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tt.hostHeader
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
 	}
 }
