@@ -73,8 +73,17 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 			tokenInfo, errmsg, code := verify(r, verifier, opts)
 			if code != 0 {
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
-					if opts != nil && opts.ResourceMetadataURL != "" {
-						w.Header().Add("WWW-Authenticate", "Bearer resource_metadata="+opts.ResourceMetadataURL)
+					if opts != nil {
+						var params []string
+						if opts.ResourceMetadataURL != "" {
+							params = append(params, "resource_metadata=\""+opts.ResourceMetadataURL+"\"")
+						}
+						if len(opts.Scopes) > 0 {
+							params = append(params, "scope=\""+strings.Join(opts.Scopes, " ")+"\"")
+						}
+						if len(params) > 0 {
+							w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
+						}
 					}
 				}
 				http.Error(w, errmsg, code)
