@@ -183,7 +183,13 @@ func createMockMCPServer(t *testing.T) *httptest.Server {
 			return
 		}
 
-		resp := oauthex.JWTBearerResponse{
+		resp := struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in,omitempty"`
+			Scope        string `json:"scope,omitempty"`
+			RefreshToken string `json:"refresh_token,omitempty"`
+		}{
 			AccessToken:  "mcp-access-token",
 			TokenType:    "Bearer",
 			ExpiresIn:    3600,
