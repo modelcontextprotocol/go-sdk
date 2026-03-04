@@ -40,3 +40,10 @@ type OAuthHandler interface {
 	// The function is responsible for closing the response body.
 	Authorize(context.Context, *http.Request, *http.Response) error
 }
+
+// OAuthHandlerBase is an embeddable type that satisfies the private method
+// requirement of [OAuthHandler]. Extension packages should embed this type
+// in their handler structs to implement OAuthHandler.
+type OAuthHandlerBase struct{}
+
+func (OAuthHandlerBase) isOAuthHandler() {}
