@@ -212,7 +212,7 @@ func writeErrorResponse(w http.ResponseWriter, errorCode, errorDescription strin
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description,omitempty"`
 	}{
-		ErrorCode:        errorCode,
+		Error:            errorCode,
 		ErrorDescription: errorDescription,
 	}
 

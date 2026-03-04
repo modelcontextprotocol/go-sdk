@@ -153,7 +153,7 @@ func InitiateOIDCLogin(
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	meta, err := oauthex.GetAuthServerMeta(ctx, config.IssuerURL, httpClient)
+	meta, err := GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
@@ -248,7 +248,7 @@ func CompleteOIDCLogin(
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	meta, err := oauthex.GetAuthServerMeta(ctx, config.IssuerURL, httpClient)
+	meta, err := GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
