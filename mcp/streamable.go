@@ -238,6 +238,15 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 	}
 
+	// Validate 'Content-Type' header.
+	if req.Method == http.MethodPost {
+		contentType := req.Header.Get("Content-Type")
+		if contentType != "application/json" {
+			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
+
 	// Allow multiple 'Accept' headers.
 	// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept#syntax
 	accept := strings.Split(strings.Join(req.Header.Values("Accept"), ","), ",")

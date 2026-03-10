@@ -833,6 +833,36 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 0,
 		},
 		{
+			name: "content type headers",
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					// Request with incorrect Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"text/plain"}},
+					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Request with empty Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {""}},
+					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Correct Content-Type should pass.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"application/json"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+			},
+			wantSessions: 1,
+		},
+		{
 			name: "accept headers",
 			requests: []streamableRequest{
 				initialize,
@@ -1409,9 +1439,15 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	if sessionID != "" {
 		req.Header.Set(sessionIDHeader, sessionID)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if s.method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	maps.Copy(req.Header, s.headers)
+
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Del("Content-Type")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
