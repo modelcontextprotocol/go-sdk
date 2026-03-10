@@ -174,6 +174,12 @@ type StreamableHTTPOptions struct {
 	// Only disable this if you understand the security implications.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	DisableLocalhostProtection bool
+
+	// CrossOriginProtection allows to customize cross-origin protection.
+	// The deny handler set in the CrossOriginProtection through SetDenyHandler
+	// is ignored.
+	// If nil, default (zero-value) cross-origin protection will be used.
+	CrossOriginProtection *http.CrossOriginProtection
 }
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
@@ -190,8 +196,10 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 		h.opts = *opts
 	}
 
-	if h.opts.Logger == nil { // ensure we have a logger
-		h.opts.Logger = ensureLogger(nil)
+	h.opts.Logger = ensureLogger(h.opts.Logger)
+
+	if h.opts.CrossOriginProtection == nil {
+		h.opts.CrossOriginProtection = &http.CrossOriginProtection{}
 	}
 
 	return h
@@ -226,6 +234,12 @@ func (h *StreamableHTTPHandler) closeAll() {
 // The option will be removed in the 1.6.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
+// disableoriginverification is a compatibility parameter that allows to disable
+// the verification of the 'Origin' header, which was added in the 1.5.0 version of the SDK.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.7.0 version of the SDK.
+var disableoriginverification = mcpgodebug.Value("disableoriginverification")
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -237,6 +251,15 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			}
 		}
 	}
+
+	// Verify the 'Origin' header to protect against CSRF attacks.
+	if disableoriginverification != "1" {
+		if err := h.opts.CrossOriginProtection.Check(req); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+	
 
 	// Validate 'Content-Type' header.
 	if req.Method == http.MethodPost {

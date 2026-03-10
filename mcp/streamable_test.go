@@ -2472,3 +2472,76 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamableOriginProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name           string
+		protection     *http.CrossOriginProtection
+		requestOrigin  string
+		wantStatusCode int
+	}{
+		{
+			name:           "default protection with Origin header",
+			protection:     nil,
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+		{
+			name: "custom protection with trusted origin and same Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "custom protection with trusted origin and different Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://malicious.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{
+				Stateless:             true, // avoid session ID requirement
+				CrossOriginProtection: tt.protection,
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(handler)
+			defer httpServer.Close()
+
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", tt.requestOrigin)
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatusCode {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatusCode)
+			}
+		})
+	}
+}
