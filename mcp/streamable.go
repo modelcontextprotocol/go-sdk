@@ -179,6 +179,8 @@ type StreamableHTTPOptions struct {
 	// The deny handler set in the CrossOriginProtection through SetDenyHandler
 	// is ignored.
 	// If nil, default (zero-value) cross-origin protection will be used.
+	// Use `disablecrossoriginprotection` MCPGODEBUG compatibility parameter
+	// to disable the default protection until v1.6.0.
 	CrossOriginProtection *http.CrossOriginProtection
 }
 
@@ -234,11 +236,12 @@ func (h *StreamableHTTPHandler) closeAll() {
 // The option will be removed in the 1.6.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
-// disableoriginverification is a compatibility parameter that allows to disable
-// the verification of the 'Origin' header, which was added in the 1.5.0 version of the SDK.
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.7.0 version of the SDK.
-var disableoriginverification = mcpgodebug.Value("disableoriginverification")
+// disablecrossoriginprotection is a compatibility parameter that allows to disable
+// the verification of the 'Origin' and 'Content-Type' headers, which was added in
+// the 1.4.1 version of the SDK. See the documentation for the mcpgodebug package
+// for instructions how to enable it.
+// The option will be removed in the 1.6.0 version of the SDK.
+var disablecrossoriginprotection = mcpgodebug.Value("disablecrossoriginprotection")
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
@@ -252,21 +255,19 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 	}
 
-	// Verify the 'Origin' header to protect against CSRF attacks.
-	if disableoriginverification != "1" {
+	if disablecrossoriginprotection != "1" {
+		// Verify the 'Origin' header to protect against CSRF attacks.
 		if err := h.opts.CrossOriginProtection.Check(req); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-	}
-	
-
-	// Validate 'Content-Type' header.
-	if req.Method == http.MethodPost {
-		contentType := req.Header.Get("Content-Type")
-		if contentType != "application/json" {
-			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
-			return
+		// Validate 'Content-Type' header.
+		if req.Method == http.MethodPost {
+			contentType := req.Header.Get("Content-Type")
+			if contentType != "application/json" {
+				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
+				return
+			}
 		}
 	}
 
