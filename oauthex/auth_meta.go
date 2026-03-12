@@ -14,9 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -136,13 +133,9 @@ type AuthServerMeta struct {
 //
 // [RFC 8414]: https://tools.ietf.org/html/rfc8414
 func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.Client) (*AuthServerMeta, error) {
-	u, err := url.Parse(metadataURL)
-	if err != nil {
-		return nil, err
-	}
 	// Only allow HTTP for local addresses (testing or development purposes).
-	if !util.IsLoopback(u.Host) && u.Scheme != "https" {
-		return nil, fmt.Errorf("metadataURL %q does not use HTTPS", metadataURL)
+	if err := checkHTTPSOrLoopback(metadataURL); err != nil {
+		return nil, fmt.Errorf("metadataURL: %v", err)
 	}
 	asm, err := getJSON[AuthServerMeta](ctx, c, metadataURL, 1<<20)
 	if err != nil {
@@ -173,6 +166,8 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 
 // validateAuthServerMetaURLs validates all URL fields in AuthServerMeta
 // to ensure they don't use dangerous schemes that could enable XSS attacks.
+// It also validates that URLs likely to be called by the client use
+// HTTPS or are loopback addresses.
 func validateAuthServerMetaURLs(asm *AuthServerMeta) error {
 	urls := []struct {
 		name  string
@@ -194,5 +189,22 @@ func validateAuthServerMetaURLs(asm *AuthServerMeta) error {
 			return fmt.Errorf("%s: %w", u.name, err)
 		}
 	}
+
+	urls = []struct {
+		name  string
+		value string
+	}{
+		{"authorization_endpoint", asm.AuthorizationEndpoint},
+		{"token_endpoint", asm.TokenEndpoint},
+		{"registration_endpoint", asm.RegistrationEndpoint},
+		{"introspection_endpoint", asm.IntrospectionEndpoint},
+	}
+
+	for _, u := range urls {
+		if err := checkHTTPSOrLoopback(u.value); err != nil {
+			return fmt.Errorf("%s: %w", u.name, err)
+		}
+	}
+
 	return nil
 }
