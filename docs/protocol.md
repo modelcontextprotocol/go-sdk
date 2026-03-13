@@ -360,7 +360,7 @@ and step-up authentication (when the server returns `insufficient_scope` error).
 ## Security
 
 Here we discuss the mitigations described under
-the MCP spec's [Security Best Practices](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices) section, and how we handle them.
+the MCP's [Security Best Practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices) section, and how we handle them.
 
 ### Confused Deputy
 
