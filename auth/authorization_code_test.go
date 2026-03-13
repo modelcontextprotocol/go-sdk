@@ -125,8 +125,11 @@ func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
 		"WWW-Authenticate",
 		"Bearer error=invalid_token",
 	)
-	handler := &AuthorizationCodeHandler{} // No config needed for this test.
-	err := handler.Authorize(t.Context(), req, resp)
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+	err = handler.Authorize(t.Context(), req, resp)
 	if err != nil {
 		t.Fatalf("Authorize() failed: %v", err)
 	}
@@ -200,16 +203,7 @@ func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
 }
 
 func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
-	validConfig := func() *AuthorizationCodeHandlerConfig {
-		return &AuthorizationCodeHandlerConfig{
-			ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://example.com/client"},
-			RedirectURL:                    "https://example.com/callback",
-			AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
-				return nil, nil
-			},
-		}
-	}
-	// Ensure the base config is valid
+	// Ensure the base config is valid.
 	if _, err := NewAuthorizationCodeHandler(validConfig()); err != nil {
 		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
 	}
@@ -324,7 +318,11 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 }
 
 func TestGetProtectedResourceMetadata_Success(t *testing.T) {
-	handler := &AuthorizationCodeHandler{} // No config needed for this method
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
+
 	pathForChallenge := "/protected-resource"
 
 	tests := []struct {
@@ -398,8 +396,11 @@ func TestGetProtectedResourceMetadata_Success(t *testing.T) {
 }
 
 func TestGetProtectedResourceMetadata_Backcompat(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
 	var challenges []oauthex.Challenge
-	handler := &AuthorizationCodeHandler{} // No config needed for this method
 	got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, "http://localhost:1234/resource")
 	if err != nil {
 		t.Fatalf("getProtectedResourceMetadata() error = %v", err)
@@ -423,8 +424,11 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 		ScopesSupported:      []string{"read", "write"},
 	}
 	mux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(metadata))
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
 	var challenges []oauthex.Challenge
-	handler := &AuthorizationCodeHandler{} // No config needed for this method
 	got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, server.URL+"/resource")
 	if err == nil || !strings.Contains(err.Error(), "authorization servers") {
 		t.Errorf("getProtectedResourceMetadata() = %v, want error containing \"authorization servers\"", err)
@@ -435,7 +439,10 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 }
 
 func TestGetAuthServerMetadata(t *testing.T) {
-	handler := &AuthorizationCodeHandler{} // No config needed for this method
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
 
 	tests := []struct {
 		name           string
@@ -563,11 +570,11 @@ func TestHandleRegistration(t *testing.T) {
 				ClientIDMetadataDocumentSupported: true,
 			},
 			handlerConfig: &AuthorizationCodeHandlerConfig{
-				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com"},
+				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com/metadata.json"},
 			},
 			want: &resolvedClientConfig{
 				registrationType: registrationTypeClientIDMetadataDocument,
-				clientID:         "https://client.example.com",
+				clientID:         "https://client.example.com/metadata.json",
 			},
 		},
 		{
@@ -597,7 +604,7 @@ func TestHandleRegistration(t *testing.T) {
 		{
 			name: "NoneSupported",
 			handlerConfig: &AuthorizationCodeHandlerConfig{
-				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com"},
+				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com/metadata.json"},
 			},
 			wantError: true,
 		},
@@ -607,7 +614,14 @@ func TestHandleRegistration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{RegistrationConfig: tt.serverConfig})
 			s.Start(t)
-			handler := &AuthorizationCodeHandler{config: tt.handlerConfig}
+			tt.handlerConfig.AuthorizationCodeFetcher = func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+				return nil, nil
+			}
+			tt.handlerConfig.RedirectURL = "https://example.com/callback"
+			handler, err := NewAuthorizationCodeHandler(tt.handlerConfig)
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v, want nil", err)
+			}
 			asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
 				AuthorizationServers: []string{s.URL()},
 			})
@@ -644,11 +658,20 @@ func TestDynamicRegistration(t *testing.T) {
 		},
 	})
 	s.Start(t)
-	handler := &AuthorizationCodeHandler{config: &AuthorizationCodeHandlerConfig{
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
 		DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
-			Metadata: &oauthex.ClientRegistrationMetadata{},
+			Metadata: &oauthex.ClientRegistrationMetadata{
+				RedirectURIs: []string{"https://example.com/callback"},
+			},
 		},
-	}}
+		RedirectURL: "https://example.com/callback",
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
 	asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
 		AuthorizationServers: []string{s.URL()},
 	})
@@ -670,5 +693,17 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 	if got.authStyle != oauth2.AuthStyleInHeader {
 		t.Errorf("handleRegistration() authStyle = %v, want %v", got.authStyle, oauth2.AuthStyleInHeader)
+	}
+}
+
+// validConfig for test to create an AuthorizationCodeHandler using its constructor.
+// Values that are relevant to the test should be set explicitly.
+func validConfig() *AuthorizationCodeHandlerConfig {
+	return &AuthorizationCodeHandlerConfig{
+		ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://example.com/client"},
+		RedirectURL:                    "https://example.com/callback",
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, nil
+		},
 	}
 }

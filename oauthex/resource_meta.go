@@ -98,13 +98,9 @@ func resourceMetadataURL(cs []Challenge) string {
 //   - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
 func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
-	u, err := url.Parse(metadataURL)
-	if err != nil {
-		return nil, err
-	}
 	// Only allow HTTP for local addresses (testing or development purposes).
-	if !util.IsLoopback(u.Host) && u.Scheme != "https" {
-		return nil, fmt.Errorf("metadataURL %q does not use HTTPS", metadataURL)
+	if err := checkHTTPSOrLoopback(metadataURL); err != nil {
+		return nil, fmt.Errorf("metadataURL: %v", err)
 	}
 	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, metadataURL, 1<<20)
 	if err != nil {
@@ -115,9 +111,12 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL 
 		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, resourceURL)
 	}
 	// Validate the authorization server URLs to prevent XSS attacks (see #526).
-	for _, u := range prm.AuthorizationServers {
+	for i, u := range prm.AuthorizationServers {
 		if err := checkURLScheme(u); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("authorization_servers[%d]: %v", i, err)
+		}
+		if err := checkHTTPSOrLoopback(u); err != nil {
+			return nil, fmt.Errorf("authorization_servers[%d]: %v", i, err)
 		}
 	}
 	return prm, nil

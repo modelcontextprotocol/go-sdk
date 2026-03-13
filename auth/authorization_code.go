@@ -101,6 +101,19 @@ type AuthorizationCodeHandlerConfig struct {
 	// It should return the authorization code and state once the Authorization Server
 	// redirects back to the RedirectURL.
 	AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
+
+	// Client is an optional HTTP client to use for HTTP requests.
+	// It is used for the following requests:
+	//  - Fetching Protected Resource Metadata
+	//  - Fetching Authorization Server Metadata
+	//  - Registering a client dynamically
+	//  - Exchanging an authorization code for an access token
+	//  - Refreshing an access token
+	// Custom clients can include additional security configurations,
+	// such as SSRF protections, see
+	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
+	// If not provided, http.DefaultClient will be used.
+	Client *http.Client
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -165,6 +178,9 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		// If the RedirectURL was supposed to be set by the dynamic client registration,
 		// it should have been set by now. Otherwise, it is required.
 		return nil, errors.New("RedirectURL is required")
+	}
+	if config.Client == nil {
+		config.Client = http.DefaultClient
 	}
 	return &AuthorizationCodeHandler{config: config}, nil
 }
@@ -280,7 +296,7 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
 	for _, url := range protectedResourceMetadataURLs(resourceMetadataURLFromChallenges(wwwChallenges), mcpServerURL) {
-		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, http.DefaultClient)
+		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, h.config.Client)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -359,7 +375,7 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata) (*oauthex.AuthServerMeta, error) {
 	authServerURL := prm.AuthorizationServers[0]
 	for _, u := range authorizationServerMetadataURLs(authServerURL) {
-		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, http.DefaultClient)
+		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, h.config.Client)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
 		}
@@ -488,7 +504,7 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 3. Attempt to use dynamic client registration.
 	dcrCfg := h.config.DynamicClientRegistrationConfig
 	if dcrCfg != nil && asm.RegistrationEndpoint != "" {
-		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, http.DefaultClient)
+		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, h.config.Client)
 		if err != nil {
 			return nil, fmt.Errorf("failed to register client: %w", err)
 		}
@@ -542,10 +558,11 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		oauth2.VerifierOption(authResult.usedCodeVerifier),
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	}
-	token, err := cfg.Exchange(ctx, authResult.Code, opts...)
+	clientCtx := context.WithValue(ctx, oauth2.HTTPClient, h.config.Client)
+	token, err := cfg.Exchange(clientCtx, authResult.Code, opts...)
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
-	h.tokenSource = cfg.TokenSource(ctx, token)
+	h.tokenSource = cfg.TokenSource(clientCtx, token)
 	return nil
 }

@@ -13,6 +13,7 @@
 1. [Security](#security)
 	1. [Confused Deputy](#confused-deputy)
 	1. [Token Passthrough](#token-passthrough)
+	1. [Server-Side Request Forgery (SSRF)](#server-side-request-forgery-(ssrf))
 	1. [Session Hijacking](#session-hijacking)
 1. [Utilities](#utilities)
 	1. [Cancellation](#cancellation)
@@ -363,7 +364,7 @@ the MCP spec's [Security Best Practices](https://modelcontextprotocol.io/specifi
 
 ### Confused Deputy
 
-The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation),
+The [mitigation](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation),
 obtaining user consent for dynamically registered clients, is mostly the
 responsibility of the MCP Proxy server implementation. The SDK client does
 generate cryptographically secure random `state` values for each authorization
@@ -372,15 +373,36 @@ Mismatched state values will result in an error.
 
 ### Token Passthrough
 
-The [mitigation](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-2), accepting only tokens that were issued for the server, depends on the structure
+The [mitigation](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-2), accepting only tokens that were issued for the server, depends on the structure
 of tokens and is the responsibility of the
 [`TokenVerifier`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenVerifier)
 provided to 
 [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
 
+### Server-Side Request Forgery (SSRF)
+
+The [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-3) are as follows:
+
+- _Enforce HTTPS_. The OAuth helpers provided by the SDK reject the `http://` URLs
+except loopback addresses (`localhost`, `127.0.0.1`, `::1`).
+
+- _Block Private IP Ranges_. The OAuth helpers provided by the SDK allow passing
+a custom `http.Client`. Developers are advised to customize the client it with
+appropriate network protections, including IP range blocking. The SDK does not provide
+this capability out of the box.
+
+- _Validate Redirect Targets_. Similarly to previous point, customized `http.Client`
+can be used to validate network hops. The SDK does not provide this capability out
+of the box.
+
+- _Use Egress Proxies_. This is out of scope for the SDK and can be configured separately.
+
+- _DNS Resolution Considerations_. The SDK has DNS rebinding protection on the server side which is enabled by default. For the client side, consider providing
+a custom `http.Client` that would implement DNS pinning.
+
 ### Session Hijacking
 
-The [mitigations](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#mitigation-3) are as follows:
+The [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-4) are as follows:
 
 - _Verify all inbound requests_. The [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken)
 middleware function will verify all HTTP requests that it receives. It is the
