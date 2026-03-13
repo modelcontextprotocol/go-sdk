@@ -833,6 +833,36 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 0,
 		},
 		{
+			name: "content type headers",
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					// Request with incorrect Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"text/plain"}},
+					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Request with empty Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {""}},
+					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Correct Content-Type should pass.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"application/json"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+			},
+			wantSessions: 1,
+		},
+		{
 			name: "accept headers",
 			requests: []streamableRequest{
 				initialize,
@@ -1409,9 +1439,15 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	if sessionID != "" {
 		req.Header.Set(sessionIDHeader, sessionID)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if s.method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	maps.Copy(req.Header, s.headers)
+
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Del("Content-Type")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2432,6 +2468,79 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 
 			if got := resp.StatusCode; got != tt.wantStatus {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestStreamableOriginProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name           string
+		protection     *http.CrossOriginProtection
+		requestOrigin  string
+		wantStatusCode int
+	}{
+		{
+			name:           "default protection with Origin header",
+			protection:     nil,
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+		{
+			name: "custom protection with trusted origin and same Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "custom protection with trusted origin and different Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://malicious.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{
+				Stateless:             true, // avoid session ID requirement
+				CrossOriginProtection: tt.protection,
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(handler)
+			defer httpServer.Close()
+
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", tt.requestOrigin)
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatusCode {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatusCode)
 			}
 		})
 	}

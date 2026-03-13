@@ -22,7 +22,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "^1.25"
+          go-version: "^1.26"
       - name: Start everything-server
         run: |
           go run ./conformance/everything-server/main.go -http=":3001" &
@@ -45,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "^1.25"
+          go-version: "^1.26"
       - name: "Run conformance tests" 
         uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
         with:
