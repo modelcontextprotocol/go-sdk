@@ -1,0 +1,21 @@
+site_name: MCP Go SDK
+site_description: User documentation for the Model Context Protocol Go SDK
+repo_url: https://github.com/modelcontextprotocol/go-sdk
+edit_uri: ''
+docs_dir: docs
+site_dir: site
+exclude_docs: |
+  index.html
+nav:
+  - Home: index.md
+  - Protocol: protocol.md
+  - Client features: client.md
+  - Server features: server.md
+  - Troubleshooting: troubleshooting.md
+  - Backwards compatibility: mcpgodebug.md
+  - Rough edges: rough_edges.md
+  - API reference: https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
