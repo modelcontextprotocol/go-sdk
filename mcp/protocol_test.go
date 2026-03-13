@@ -63,6 +63,22 @@ func TestParamsMeta(t *testing.T) {
 	if g := p.GetProgressToken(); g != "t" {
 		t.Errorf("got %v, want `t`", g)
 	}
+	if got := p.GetMeta()["progressToken"]; got != "t" {
+		t.Errorf("got %v, want `t`", got)
+	}
+	if g, w := toJSON(p), `{"_meta":{"progressToken":"t","x":2},"name":"name"}`; g != w && g != `{"_meta":{"x":2,"progressToken":"t"},"name":"name"}` {
+		t.Errorf("got %s, want %s", g, w)
+	}
+
+	// Setting a progress token should also initialize a nil Meta map.
+	p3 := &CallToolParams{Name: "nil-meta"}
+	p3.SetProgressToken("t3")
+	if g := p3.GetProgressToken(); g != "t3" {
+		t.Errorf("got %v, want `t3`", g)
+	}
+	if g, w := toJSON(p3), `{"_meta":{"progressToken":"t3"},"name":"nil-meta"}`; g != w {
+		t.Errorf("got %s, want %s", g, w)
+	}
 
 	// You can set a progress token to an int, int32 or int64.
 	p.SetProgressToken(int(1))

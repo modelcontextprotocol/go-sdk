@@ -447,6 +447,7 @@ func setProgressToken(p Params, pt any) {
 	m := p.GetMeta()
 	if m == nil {
 		m = map[string]any{}
+		p.SetMeta(m)
 	}
 	m[progressTokenKey] = pt
 }
