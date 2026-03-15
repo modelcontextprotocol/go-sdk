@@ -357,6 +357,41 @@ session, err := client.Connect(ctx, transport, nil)
 The `auth.AuthorizationCodeHandler` automatically manages token refreshing
 and step-up authentication (when the server returns `insufficient_scope` error).
 
+#### Enterprise Authentication Flow (SEP-990)
+
+For enterprise SSO scenarios, the SDK provides an
+[`EnterpriseAuthFlow`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#EnterpriseAuthFlow)
+function that implements the complete token exchange flow:
+
+1. **Token Exchange** at IdP: ID Token → ID-JAG
+2. **JWT Bearer Grant** at MCP Server: ID-JAG → Access Token
+
+This flow is typically used after obtaining an ID Token via OIDC login:
+
+```go
+// Step 1: Obtain ID token via OIDC (see auth.InitiateOIDCLogin and auth.CompleteOIDCLogin)
+idToken := "..." // from OIDC login
+
+// Step 2: Exchange for MCP access token
+config := &auth.EnterpriseAuthConfig{
+    IdPIssuerURL:     "https://company.okta.com",
+    IdPClientID:      "client-id-at-idp",
+    IdPClientSecret:  "secret-at-idp",
+    MCPAuthServerURL: "https://auth.mcpserver.example",
+    MCPResourceURI:   "https://mcp.mcpserver.example",
+    MCPClientID:      "client-id-at-mcp",
+    MCPClientSecret:  "secret-at-mcp",
+    MCPScopes:        []string{"read", "write"},
+}
+
+accessToken, err := auth.EnterpriseAuthFlow(ctx, config, idToken)
+// Use accessToken with MCP client
+```
+
+Helper functions are provided for OIDC login:
+- [`InitiateOIDCLogin`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#InitiateOIDCLogin) - Generate authorization URL with PKCE
+- [`CompleteOIDCLogin`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#CompleteOIDCLogin) - Exchange authorization code for tokens
+
 ## Security
 
 Here we discuss the mitigations described under
@@ -575,3 +610,4 @@ func Example_progress() {
 	// frobbing widgets 2/2
 }
 ```
+
