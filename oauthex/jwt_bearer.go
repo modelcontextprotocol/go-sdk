@@ -11,13 +11,8 @@ package oauthex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -73,104 +68,37 @@ func ExchangeJWTBearer(
 	if err := checkURLScheme(tokenEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid token endpoint: %w", err)
 	}
-	// Build the JWT Bearer grant request per RFC 7523 Section 2.1
-	formData := url.Values{}
-	formData.Set("grant_type", GrantTypeJWTBearer)
-	formData.Set("assertion", assertion)
-	// Add client authentication (following OAuth 2.0 client_secret_post method)
-	// Note: Per SEP-990 Section 5.1, the client_id in the assertion must match
-	// the authenticated client
-	if clientID != "" {
-		formData.Set("client_id", clientID)
+
+	// Per RFC 6749 Section 3.2, parameters sent without a value (like the empty
+	// "code" parameter) MUST be treated as if they were omitted from the request.
+	// The oauth2 library's Exchange method sends an empty code, but compliant
+	// servers should ignore it.
+	cfg := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  tokenEndpoint,
+			AuthStyle: oauth2.AuthStyleInParams, // Use POST body auth per SEP-990
+		},
 	}
-	if clientSecret != "" {
-		formData.Set("client_secret", clientSecret)
-	}
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(formData.Encode()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT bearer grant request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Accept", "application/json")
-	// Use provided client or default
+
+	// Use custom HTTP client if provided
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	// Execute the request
-	httpResp, err := httpClient.Do(httpReq)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+
+	// Exchange with JWT Bearer grant type and assertion.
+	// SetAuthURLParam overrides the default grant_type and adds the assertion parameter.
+	token, err := cfg.Exchange(
+		ctxWithClient,
+		"", // empty code - per RFC 6749 Section 3.2, empty params should be ignored
+		oauth2.SetAuthURLParam("grant_type", GrantTypeJWTBearer),
+		oauth2.SetAuthURLParam("assertion", assertion),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("JWT bearer grant request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
-	// Read response body (limit to 1MB for safety, following SDK pattern)
-	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read JWT bearer grant response: %w", err)
-	}
-	// Handle success response (200 OK per OAuth 2.0)
-	if httpResp.StatusCode == http.StatusOK {
-		var resp struct {
-			AccessToken  string `json:"access_token"`
-			TokenType    string `json:"token_type"`
-			ExpiresIn    int    `json:"expires_in,omitempty"`
-			RefreshToken string `json:"refresh_token,omitempty"`
-			Scope        string `json:"scope,omitempty"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("failed to parse JWT bearer grant response: %w (body: %s)", err, string(body))
-		}
-		// Validate response per OAuth 2.0
-		if resp.AccessToken == "" {
-			return nil, fmt.Errorf("response missing required field: access_token")
-		}
-		if resp.TokenType == "" {
-			return nil, fmt.Errorf("response missing required field: token_type")
-		}
-		// Convert to golang.org/x/oauth2.Token
-		token := &oauth2.Token{
-			AccessToken:  resp.AccessToken,
-			TokenType:    resp.TokenType,
-			RefreshToken: resp.RefreshToken,
-		}
-		// Set expiration if provided
-		if resp.ExpiresIn > 0 {
-			token.Expiry = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
-		}
-		// Add scope to extra data if provided
-		if resp.Scope != "" {
-			token = token.WithExtra(map[string]interface{}{
-				"scope": resp.Scope,
-			})
-		}
-		return token, nil
-	}
-	// Handle error response (400 Bad Request per RFC 6749)
-	if httpResp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description,omitempty"`
-			ErrorURI         string `json:"error_uri,omitempty"`
-		}
-		if err := json.Unmarshal(body, &errResp); err != nil {
-			return nil, fmt.Errorf("failed to parse error response: %w (body: %s)", err, string(body))
-		}
-		return nil, &oauth2.RetrieveError{
-			Response:         httpResp,
-			Body:             body,
-			ErrorCode:        errResp.Error,
-			ErrorDescription: errResp.ErrorDescription,
-			ErrorURI:         errResp.ErrorURI,
-		}
-	}
-	// Handle unexpected status codes
-	return nil, &oauth2.RetrieveError{
-		Response: httpResp,
-		Body:     body,
-	}
+
+	return token, nil
 }

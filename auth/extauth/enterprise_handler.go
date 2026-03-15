@@ -32,40 +32,50 @@ type EnterpriseHandlerConfig struct {
 
 	// IdPIssuerURL is the enterprise IdP's issuer URL (e.g., "https://acme.okta.com").
 	// Used for OIDC discovery to find the token endpoint.
+	// REQUIRED.
 	IdPIssuerURL string
 
 	// IdPClientID is the MCP Client's ID registered at the IdP.
+	// OPTIONAL. Required if the IdP requires client authentication for token exchange.
 	IdPClientID string
 
 	// IdPClientSecret is the MCP Client's secret registered at the IdP.
+	// OPTIONAL. Required if the IdP requires client authentication for token exchange.
 	IdPClientSecret string
 
 	// MCP Server configuration (the resource being accessed)
 
 	// MCPAuthServerURL is the MCP Server's authorization server issuer URL.
 	// Used as the audience for token exchange and for metadata discovery.
+	// REQUIRED.
 	MCPAuthServerURL string
 
 	// MCPResourceURI is the MCP Server's resource identifier (RFC 9728).
 	// Used as the resource parameter in token exchange.
+	// REQUIRED.
 	MCPResourceURI string
 
 	// MCPClientID is the MCP Client's ID registered at the MCP Server.
+	// OPTIONAL. Required if the MCP Server requires client authentication.
 	MCPClientID string
 
 	// MCPClientSecret is the MCP Client's secret registered at the MCP Server.
+	// OPTIONAL. Required if the MCP Server requires client authentication.
 	MCPClientSecret string
 
 	// MCPScopes is the list of scopes to request at the MCP Server.
+	// OPTIONAL.
 	MCPScopes []string
 
 	// IDTokenFetcher is called to obtain an ID Token when authorization is needed.
 	// The implementation should handle the OIDC login flow (e.g., browser redirect,
 	// callback handling) and return the ID token.
+	// REQUIRED.
 	IDTokenFetcher IDTokenFetcher
 
 	// HTTPClient is an optional HTTP client for customization.
 	// If nil, http.DefaultClient is used.
+	// OPTIONAL.
 	HTTPClient *http.Client
 }
 
@@ -117,12 +127,8 @@ func (h *EnterpriseHandler) TokenSource(ctx context.Context) (oauth2.TokenSource
 // Authorize performs the Enterprise Managed Authorization flow.
 // It is called when a request fails with 401 or 403.
 func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	}()
+	defer resp.Body.Close()
+	defer io.Copy(io.Discard, resp.Body)
 
 	httpClient := h.config.HTTPClient
 	if httpClient == nil {

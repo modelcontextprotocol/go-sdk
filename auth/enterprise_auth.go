@@ -133,7 +133,7 @@ func EnterpriseAuthFlow(
 	}
 
 	// Step 1: Discover IdP token endpoint via OIDC discovery
-	idpMeta, err := GetAuthServerMetadatForIssuer(ctx, config.IdPIssuerURL, httpClient)
+	idpMeta, err := GetAuthServerMetadataForIssuer(ctx, config.IdPIssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover IdP metadata: %w", err)
 	}
@@ -161,7 +161,7 @@ func EnterpriseAuthFlow(
 	}
 
 	// Step 3: JWT Bearer Grant (ID-JAG → Access Token)
-	mcpMeta, err := GetAuthServerMetadatForIssuer(ctx, config.MCPAuthServerURL, httpClient)
+	mcpMeta, err := GetAuthServerMetadataForIssuer(ctx, config.MCPAuthServerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
 	}
@@ -178,19 +178,4 @@ func EnterpriseAuthFlow(
 		return nil, fmt.Errorf("JWT bearer grant failed: %w", err)
 	}
 	return accessToken, nil
-}
-
-// GetAuthServerMetadatForIssuer fetches authorization server metadata for the given issuer URL.
-// It tries standard well-known endpoints (OAuth 2.0 and OIDC) and returns the first successful result.
-func GetAuthServerMetadatForIssuer(ctx context.Context, IssuerURL string, httpClient *httpClient) (*oauthex.AuthServerMeta, error) {
-	for _, metadataURL := range authorizationServerMetadataURLs(issuerURL) {
-		asm, err := oauthex.GetAuthServerMeta(ctx, metadataURL, issuerURL, httpClient)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
-		}
-		if asm != nil {
-			return asm, nil
-		}
-	}
-	return nil, fmt.Errorf("no authorization server metadata found for %s", issuerURL)
 }

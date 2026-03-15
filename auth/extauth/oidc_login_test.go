@@ -4,7 +4,7 @@
 
 //go:build mcp_go_client_oauth
 
-package auth
+package extauth
 
 import (
 	"context"
@@ -381,4 +381,96 @@ func createMockOIDCServerWithToken(t *testing.T) *httptest.Server {
 func base64EncodeClaims(claims map[string]interface{}) string {
 	claimsJSON, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString(claimsJSON)
+}
+
+// TestPerformOIDCLogin tests the combined OIDC login flow with callback.
+func TestPerformOIDCLogin(t *testing.T) {
+	// Create mock IdP server
+	idpServer := createMockOIDCServerWithToken(t)
+	defer idpServer.Close()
+	config := &OIDCLoginConfig{
+		IssuerURL:    idpServer.URL,
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURL:  "http://localhost:8080/callback",
+		Scopes:       []string{"openid", "profile", "email"},
+		HTTPClient:   idpServer.Client(),
+	}
+
+	t.Run("successful flow", func(t *testing.T) {
+		tokens, err := PerformOIDCLogin(context.Background(), config,
+			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+				// Validate authURL has required parameters
+				u, err := url.Parse(authURL)
+				if err != nil {
+					return nil, fmt.Errorf("invalid authURL: %w", err)
+				}
+				q := u.Query()
+				if q.Get("response_type") != "code" {
+					return nil, fmt.Errorf("missing response_type")
+				}
+				if q.Get("state") == "" {
+					return nil, fmt.Errorf("missing state")
+				}
+
+				// Simulate successful user authentication
+				return &OIDCAuthorizationResult{
+					Code:  "mock-auth-code",
+					State: expectedState, // Return the expected state
+				}, nil
+			})
+
+		if err != nil {
+			t.Fatalf("PerformOIDCLogin failed: %v", err)
+		}
+
+		if tokens.IDToken == "" {
+			t.Error("IDToken is empty")
+		}
+		if tokens.AccessToken == "" {
+			t.Error("AccessToken is empty")
+		}
+	})
+
+	t.Run("state mismatch", func(t *testing.T) {
+		_, err := PerformOIDCLogin(context.Background(), config,
+			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+				// Return wrong state to simulate CSRF attack
+				return &OIDCAuthorizationResult{
+					Code:  "mock-auth-code",
+					State: "wrong-state",
+				}, nil
+			})
+
+		if err == nil {
+			t.Error("expected error for state mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), "state mismatch") {
+			t.Errorf("expected state mismatch error, got: %v", err)
+		}
+	})
+
+	t.Run("fetcher error", func(t *testing.T) {
+		_, err := PerformOIDCLogin(context.Background(), config,
+			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+				return nil, fmt.Errorf("user cancelled")
+			})
+
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "user cancelled") {
+			t.Errorf("expected 'user cancelled' error, got: %v", err)
+		}
+	})
+
+	t.Run("nil fetcher", func(t *testing.T) {
+		_, err := PerformOIDCLogin(context.Background(), config, nil)
+		if err == nil {
+			t.Error("expected error for nil fetcher, got nil")
+		}
+		if !strings.Contains(err.Error(), "authCodeFetcher is required") {
+			t.Errorf("expected 'authCodeFetcher is required' error, got: %v", err)
+		}
+	})
 }
