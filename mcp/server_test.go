@@ -18,6 +18,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 type testItem struct {
@@ -999,5 +1000,69 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestSendNotification(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := NewServer(testImpl, nil)
+	cTrans, sTrans := NewInMemoryTransports()
+	
+	// Create channels to capture notifications
+	notifCh := make(chan *jsonrpc2.Request, 1)
+	
+	// Intercept client transport to capture notifications
+	cConn, err := cTrans.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			msg, err := cConn.Read(ctx)
+			if err != nil {
+				return
+			}
+			if req, ok := msg.(*jsonrpc.Request); ok && !req.IsCall() {
+				// Capture notifications (requests without ID)
+				notifCh <- req
+			}
+		}
+	}()
+
+	ss, err := s.Connect(ctx, sTrans, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send a custom notification
+	type diffParams struct {
+		File string `json:"file"`
+		Hunk int    `json:"hunk"`
+	}
+	
+	err = ss.SendNotification(ctx, "ide/diffAccepted", diffParams{File: "main.go", Hunk: 2})
+	if err != nil {
+		t.Fatalf("SendNotification failed: %v", err)
+	}
+
+	// Wait for the notification to be received
+	select {
+	case req := <-notifCh:
+		if req.Method != "ide/diffAccepted" {
+			t.Errorf("got method %q, want %q", req.Method, "ide/diffAccepted")
+		}
+		
+		var gotParams diffParams
+		if err := json.Unmarshal(req.Params, &gotParams); err != nil {
+			t.Fatalf("failed to unmarshal params: %v", err)
+		}
+		
+		if gotParams.File != "main.go" || gotParams.Hunk != 2 {
+			t.Errorf("got params %+v, want {File: main.go, Hunk: 2}", gotParams)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for notification")
 	}
 }
