@@ -1106,6 +1106,14 @@ func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
 }
 
+// SendNotification sends a custom notification from the client to the server
+// associated with this session. This is typically used for protocol extensions
+// that send arbitrary JSON-RPC notifications.
+func (cs *ClientSession) SendNotification(ctx context.Context, method string, params any) error {
+	cp := &customNotificationParams{payload: params}
+	return handleNotify(ctx, "x-notifications/"+method, newClientRequest(cs, Params(cp)))
+}
+
 // Tools provides an iterator for all tools available on the server,
 // automatically fetching pages and managing cursors.
 // The params argument can set the initial cursor.
