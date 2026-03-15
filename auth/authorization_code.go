@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -198,6 +199,7 @@ func isNonRootHTTPSURL(u string) bool {
 // On success, [AuthorizationCodeHandler.TokenSource] will return a token source with the fetched token.
 func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	defer resp.Body.Close()
+	defer io.Copy(io.Discard, resp.Body)
 
 	wwwChallenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
 	if err != nil {
@@ -393,40 +395,6 @@ func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, pr
 		RegistrationEndpoint:  authServerURL + "/register",
 	}
 	return asm, nil
-}
-
-// authorizationServerMetadataURLs returns a list of URLs to try when looking for
-// authorization server metadata as mandated by the MCP specification:
-// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
-func authorizationServerMetadataURLs(issuerURL string) []string {
-	var urls []string
-
-	baseURL, err := url.Parse(issuerURL)
-	if err != nil {
-		return nil
-	}
-
-	if baseURL.Path == "" {
-		// "OAuth 2.0 Authorization Server Metadata".
-		baseURL.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, baseURL.String())
-		// "OpenID Connect Discovery 1.0".
-		baseURL.Path = "/.well-known/openid-configuration"
-		urls = append(urls, baseURL.String())
-		return urls
-	}
-
-	originalPath := baseURL.Path
-	// "OAuth 2.0 Authorization Server Metadata with path insertion".
-	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path insertion".
-	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path appending".
-	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
-	urls = append(urls, baseURL.String())
-	return urls
 }
 
 type registrationType int

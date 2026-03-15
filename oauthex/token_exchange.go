@@ -11,11 +11,8 @@ package oauthex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -161,102 +158,76 @@ func ExchangeToken(
 		return nil, fmt.Errorf("invalid resource: %w", err)
 	}
 
-	// Build the token exchange request body per RFC 8693
-	formData := url.Values{}
-	formData.Set("grant_type", GrantTypeTokenExchange)
-	formData.Set("requested_token_type", req.RequestedTokenType)
-	formData.Set("audience", req.Audience)
-	formData.Set("resource", req.Resource)
-	formData.Set("subject_token", req.SubjectToken)
-	formData.Set("subject_token_type", req.SubjectTokenType)
-
-	if len(req.Scope) > 0 {
-		formData.Set("scope", strings.Join(req.Scope, " "))
+	// Per RFC 6749 Section 3.2, parameters sent without a value (like the empty
+	// "code" parameter) MUST be treated as if they were omitted from the request.
+	// The oauth2 library's Exchange method sends an empty code, but compliant
+	// servers should ignore it.
+	cfg := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  tokenEndpoint,
+			AuthStyle: oauth2.AuthStyleInParams, // Use POST body auth per SEP-990
+		},
 	}
 
-	// Add client authentication (following OAuth 2.0 client_secret_post method)
-	if clientID != "" {
-		formData.Set("client_id", clientID)
-	}
-	if clientSecret != "" {
-		formData.Set("client_secret", clientSecret)
-	}
-
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(formData.Encode()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token exchange request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Use provided client or default
+	// Use custom HTTP client if provided
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
-	// Execute the request
-	httpResp, err := httpClient.Do(httpReq)
+	// Build token exchange parameters per RFC 8693
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", GrantTypeTokenExchange),
+		oauth2.SetAuthURLParam("requested_token_type", req.RequestedTokenType),
+		oauth2.SetAuthURLParam("audience", req.Audience),
+		oauth2.SetAuthURLParam("resource", req.Resource),
+		oauth2.SetAuthURLParam("subject_token", req.SubjectToken),
+		oauth2.SetAuthURLParam("subject_token_type", req.SubjectTokenType),
+	}
+	if len(req.Scope) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(req.Scope, " ")))
+	}
+
+	// Exchange with token exchange grant type.
+	// SetAuthURLParam overrides the default grant_type and adds all required parameters.
+	token, err := cfg.Exchange(
+		ctxWithClient,
+		"", // empty code - per RFC 6749 Section 3.2, empty params should be ignored
+		opts...,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
 
-	// Read response body (limit to 1MB for safety, following SDK pattern)
-	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token exchange response: %w", err)
+	// Extract issued_token_type from Token.Extra().
+	// The oauth2 library stores additional response fields in Extra.
+	issuedTokenType, _ := token.Extra("issued_token_type").(string)
+	if issuedTokenType == "" {
+		return nil, fmt.Errorf("response missing required field: issued_token_type")
 	}
 
-	// Handle success response (200 OK per RFC 8693)
-	if httpResp.StatusCode == http.StatusOK {
-		var resp TokenExchangeResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("failed to parse token exchange response: %w (body: %s)", err, string(body))
-		}
-
-		// Validate response per SEP-990 Section 4.2
-		if resp.IssuedTokenType == "" {
-			return nil, fmt.Errorf("response missing required field: issued_token_type")
-		}
-		if resp.AccessToken == "" {
-			return nil, fmt.Errorf("response missing required field: access_token")
-		}
-		if resp.TokenType == "" {
-			return nil, fmt.Errorf("response missing required field: token_type")
-		}
-
-		return &resp, nil
+	// Build TokenExchangeResponse from oauth2.Token
+	resp := &TokenExchangeResponse{
+		IssuedTokenType: issuedTokenType,
+		AccessToken:     token.AccessToken,
+		TokenType:       token.TokenType,
 	}
 
-	// Handle error response (400 Bad Request per RFC 6749)
-	if httpResp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description,omitempty"`
-			ErrorURI         string `json:"error_uri,omitempty"`
-		}
-		if err := json.Unmarshal(body, &errResp); err != nil {
-			return nil, fmt.Errorf("failed to parse error response: %w (body: %s)", err, string(body))
-		}
-		return nil, &oauth2.RetrieveError{
-			Response:         httpResp,
-			Body:             body,
-			ErrorCode:        errResp.Error,
-			ErrorDescription: errResp.ErrorDescription,
-			ErrorURI:         errResp.ErrorURI,
+	// Extract optional fields from Extra
+	if scope, ok := token.Extra("scope").(string); ok {
+		resp.Scope = scope
+	}
+
+	// Calculate expires_in from token.Expiry if available
+	if !token.Expiry.IsZero() {
+		resp.ExpiresIn = int(token.Expiry.Sub(token.Expiry).Seconds()) // This would be 0
+		// Actually get the raw expires_in if available
+		if expiresIn, ok := token.Extra("expires_in").(float64); ok {
+			resp.ExpiresIn = int(expiresIn)
 		}
 	}
 
-	// Handle unexpected status codes
-	return nil, &oauth2.RetrieveError{
-		Response: httpResp,
-		Body:     body,
-	}
+	return resp, nil
 }

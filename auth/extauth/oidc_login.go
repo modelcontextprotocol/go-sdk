@@ -8,21 +8,15 @@
 
 //go:build mcp_go_client_oauth
 
-package auth
+package extauth
 
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
-	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
@@ -32,24 +26,30 @@ import (
 // Users can alternatively obtain ID tokens through their own methods.
 type OIDCLoginConfig struct {
 	// IssuerURL is the IdP's issuer URL (e.g., "https://acme.okta.com").
+	// REQUIRED.
 	IssuerURL string
 	// ClientID is the MCP Client's ID registered at the IdP.
+	// REQUIRED.
 	ClientID string
 	// ClientSecret is the MCP Client's secret at the IdP.
-	// This is OPTIONAL and only used if the client is confidential.
+	// OPTIONAL. Only required if the client is confidential.
 	ClientSecret string
 	// RedirectURL is the OAuth2 redirect URI registered with the IdP.
 	// This must match exactly what was registered with the IdP.
+	// REQUIRED.
 	RedirectURL string
 	// Scopes are the OAuth2/OIDC scopes to request.
 	// "openid" is REQUIRED for OIDC. Common values: ["openid", "profile", "email"]
+	// REQUIRED.
 	Scopes []string
-	// LoginHint is an OPTIONAL hint to the IdP about the user's identity.
+	// LoginHint is a hint to the IdP about the user's identity.
 	// Some IdPs may require this (e.g., as an email address for routing to SSO providers).
 	// Example: "user@example.com"
+	// OPTIONAL.
 	LoginHint string
 	// HTTPClient is the HTTP client for making requests.
 	// If nil, http.DefaultClient is used.
+	// OPTIONAL.
 	HTTPClient *http.Client
 }
 
@@ -153,37 +153,42 @@ func InitiateOIDCLogin(
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	meta, err := GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
+	meta, err := auth.GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
 	if meta.AuthorizationEndpoint == "" {
 		return nil, fmt.Errorf("authorization_endpoint not found in OIDC metadata")
 	}
-	// Generate PKCE code verifier and challenge (RFC 7636)
-	codeVerifier, err := generateCodeVerifier()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate PKCE verifier: %w", err)
-	}
-	codeChallenge := generateCodeChallenge(codeVerifier)
+
+	// Generate PKCE code verifier (RFC 7636)
+	codeVerifier := oauth2.GenerateVerifier()
+
 	// Generate state for CSRF protection (RFC 6749 Section 10.12)
-	state, err := generateState()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate state: %w", err)
+	state := rand.Text()
+
+	// Build oauth2.Config to use standard library's AuthCodeURL.
+	oauth2Config := &oauth2.Config{
+		ClientID:     config.ClientID,
+		ClientSecret: config.ClientSecret,
+		RedirectURL:  config.RedirectURL,
+		Scopes:       config.Scopes,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  meta.AuthorizationEndpoint,
+			TokenURL: meta.TokenEndpoint,
+		},
 	}
-	// Build authorization URL per OIDC Core Section 3.1.2.1
-	authURL, err := buildAuthorizationURL(
-		meta.AuthorizationEndpoint,
-		config.ClientID,
-		config.RedirectURL,
-		config.Scopes,
-		state,
-		codeChallenge,
-		config.LoginHint,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build authorization URL: %w", err)
+
+	// Build authorization URL using oauth2.Config.AuthCodeURL with PKCE.
+	// S256ChallengeOption automatically computes the S256 challenge from the verifier.
+	authURLOpts := []oauth2.AuthCodeOption{
+		oauth2.S256ChallengeOption(codeVerifier),
 	}
+	if config.LoginHint != "" {
+		authURLOpts = append(authURLOpts, oauth2.SetAuthURLParam("login_hint", config.LoginHint))
+	}
+	authURL := oauth2Config.AuthCodeURL(state, authURLOpts...)
+
 	return &OIDCAuthorizationRequest{
 		AuthURL:      authURL,
 		State:        state,
@@ -248,35 +253,42 @@ func CompleteOIDCLogin(
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	meta, err := GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
+	meta, err := auth.GetAuthServerMetadataForIssuer(ctx, config.IssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
 	if meta.TokenEndpoint == "" {
 		return nil, fmt.Errorf("token_endpoint not found in OIDC metadata")
 	}
-	// Build token request per OIDC Core Section 3.1.3.1
-	formData := url.Values{}
-	formData.Set("grant_type", "authorization_code")
-	formData.Set("code", authCode)
-	formData.Set("redirect_uri", config.RedirectURL)
-	formData.Set("client_id", config.ClientID)
-	formData.Set("code_verifier", codeVerifier)
-	// Add client_secret if provided (confidential client)
-	if config.ClientSecret != "" {
-		formData.Set("client_secret", config.ClientSecret)
+
+	// Build oauth2.Config for token exchange.
+	oauth2Config := &oauth2.Config{
+		ClientID:     config.ClientID,
+		ClientSecret: config.ClientSecret,
+		RedirectURL:  config.RedirectURL,
+		Scopes:       config.Scopes,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  meta.AuthorizationEndpoint,
+			TokenURL: meta.TokenEndpoint,
+		},
 	}
-	// Exchange authorization code for tokens
-	oauth2Token, err := exchangeAuthorizationCode(
-		ctx,
-		meta.TokenEndpoint,
-		formData,
-		httpClient,
+
+	// Use custom HTTP client if provided
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+
+	// Exchange authorization code for tokens using oauth2.Config.Exchange.
+	// VerifierOption provides the PKCE code_verifier for the token request.
+	oauth2Token, err := oauth2Config.Exchange(
+		ctxWithClient,
+		authCode,
+		oauth2.VerifierOption(codeVerifier),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
-	// Extract ID Token from response
+
+	// Extract ID Token from response.
+	// oauth2.Token.Extra() provides access to additional fields like id_token.
 	idToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok || idToken == "" {
 		return nil, fmt.Errorf("id_token not found in token response")
@@ -290,165 +302,96 @@ func CompleteOIDCLogin(
 	}, nil
 }
 
-// generateCodeVerifier generates a cryptographically random code verifier
-// for PKCE per RFC 7636 Section 4.1.
-func generateCodeVerifier() (string, error) {
-	// Per RFC 7636: code verifier is 43-128 characters from [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
-	// We use 32 random bytes (256 bits) base64url-encoded = 43 characters
-	randomBytes := make([]byte, 32)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
+// OIDCAuthorizationResult contains the authorization code and state returned
+// from the IdP after user authentication.
+type OIDCAuthorizationResult struct {
+	// Code is the authorization code returned by the IdP.
+	Code string
+	// State is the state parameter returned by the IdP.
+	// This MUST match the state sent in the authorization request.
+	State string
 }
 
-// generateCodeChallenge generates the PKCE code challenge from the verifier
-// using SHA256 per RFC 7636 Section 4.2.
-func generateCodeChallenge(verifier string) string {
-	hash := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(hash[:])
-}
+// AuthorizationCodeFetcher is a callback function that handles directing the user
+// to the authorization URL and returning the authorization result.
+//
+// Implementations should:
+// 1. Direct the user to authURL (e.g., open in browser)
+// 2. Wait for the IdP redirect to the configured RedirectURL
+// 3. Extract the code and state from the redirect query parameters
+// 4. Return them in OIDCAuthorizationResult
+//
+// The expectedState parameter is provided for CSRF validation. Implementations
+// MUST verify that the returned state matches expectedState.
+type AuthorizationCodeFetcher func(ctx context.Context, authURL string, expectedState string) (*OIDCAuthorizationResult, error)
 
-// generateState generates a cryptographically random state parameter
-// for CSRF protection per RFC 6749 Section 10.12.
-func generateState() (string, error) {
-	randomBytes := make([]byte, 32)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
-}
-
-// buildAuthorizationURL constructs the OIDC authorization URL.
-func buildAuthorizationURL(
-	authEndpoint string,
-	clientID string,
-	redirectURL string,
-	scopes []string,
-	state string,
-	codeChallenge string,
-	loginHint string,
-) (string, error) {
-	u, err := url.Parse(authEndpoint)
-	if err != nil {
-		return "", fmt.Errorf("invalid authorization endpoint: %w", err)
-	}
-	q := u.Query()
-	q.Set("response_type", "code")
-	q.Set("client_id", clientID)
-	q.Set("redirect_uri", redirectURL)
-	q.Set("scope", strings.Join(scopes, " "))
-	q.Set("state", state)
-	q.Set("code_challenge", codeChallenge)
-	q.Set("code_challenge_method", "S256")
-	// Add login_hint if provided (optional per OIDC spec, but some IdPs may require it)
-	if loginHint != "" {
-		q.Set("login_hint", loginHint)
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
-}
-
-// exchangeAuthorizationCode exchanges the authorization code for tokens.
-func exchangeAuthorizationCode(
+// PerformOIDCLogin performs the complete OIDC Authorization Code flow with PKCE
+// in a single function call. This is the recommended approach for most use cases.
+//
+// The authCodeFetcher callback handles the user interaction:
+// - Directing the user to the IdP login page
+// - Waiting for the redirect with the authorization code
+// - Validating CSRF state and returning the result
+//
+// Example:
+//
+//	config := &OIDCLoginConfig{
+//		IssuerURL:   "https://acme.okta.com",
+//		ClientID:    "client-id",
+//		RedirectURL: "http://localhost:8080/callback",
+//		Scopes:      []string{"openid", "profile", "email"},
+//	}
+//
+//	tokens, err := PerformOIDCLogin(ctx, config, func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+//		// Open browser for user
+//		fmt.Printf("Please visit: %s\n", authURL)
+//
+//		// Start local server to receive callback
+//		code, state := waitForCallback(ctx)
+//
+//		// Validate state for CSRF protection
+//		if state != expectedState {
+//			return nil, fmt.Errorf("state mismatch")
+//		}
+//
+//		return &OIDCAuthorizationResult{Code: code, State: state}, nil
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	// Use tokens.IDToken with EnterpriseHandler
+func PerformOIDCLogin(
 	ctx context.Context,
-	tokenEndpoint string,
-	formData url.Values,
-	httpClient *http.Client,
-) (*oauth2.Token, error) {
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(formData.Encode()),
-	)
+	config *OIDCLoginConfig,
+	authCodeFetcher AuthorizationCodeFetcher,
+) (*OIDCTokenResponse, error) {
+	if authCodeFetcher == nil {
+		return nil, fmt.Errorf("authCodeFetcher is required")
+	}
+
+	// Step 1: Initiate the OIDC flow to get the authorization URL
+	authReq, err := InitiateOIDCLogin(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
+		return nil, fmt.Errorf("failed to initiate OIDC login: %w", err)
 	}
 
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Execute request
-	httpResp, err := httpClient.Do(httpReq)
+	// Step 2: Use callback to get authorization code from user interaction
+	authResult, err := authCodeFetcher(ctx, authReq.AuthURL, authReq.State)
 	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
+		return nil, fmt.Errorf("failed to fetch authorization code: %w", err)
 	}
-	defer httpResp.Body.Close()
 
-	// Read response body (limit to 1MB for safety)
-	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
+	// Step 3: Validate state for CSRF protection
+	if authResult.State != authReq.State {
+		return nil, fmt.Errorf("state mismatch: expected %q, got %q", authReq.State, authResult.State)
+	}
+
+	// Step 4: Exchange authorization code for tokens
+	tokens, err := CompleteOIDCLogin(ctx, config, authResult.Code, authReq.CodeVerifier)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read token response: %w", err)
+		return nil, fmt.Errorf("failed to complete OIDC login: %w", err)
 	}
 
-	// Handle success response (200 OK)
-	if httpResp.StatusCode == http.StatusOK {
-		// Parse token response manually (following jwt_bearer.go pattern)
-		var tokenResp struct {
-			AccessToken  string `json:"access_token"`
-			TokenType    string `json:"token_type"`
-			ExpiresIn    int    `json:"expires_in,omitempty"`
-			RefreshToken string `json:"refresh_token,omitempty"`
-			IDToken      string `json:"id_token,omitempty"`
-			Scope        string `json:"scope,omitempty"`
-		}
-		if err := json.Unmarshal(body, &tokenResp); err != nil {
-			return nil, fmt.Errorf("failed to parse token response: %w (body: %s)", err, string(body))
-		}
-
-		// Validate required fields
-		if tokenResp.AccessToken == "" {
-			return nil, fmt.Errorf("response missing required field: access_token")
-		}
-		if tokenResp.TokenType == "" {
-			return nil, fmt.Errorf("response missing required field: token_type")
-		}
-
-		// Convert to oauth2.Token
-		token := &oauth2.Token{
-			AccessToken:  tokenResp.AccessToken,
-			TokenType:    tokenResp.TokenType,
-			RefreshToken: tokenResp.RefreshToken,
-		}
-
-		// Set expiration if provided
-		if tokenResp.ExpiresIn > 0 {
-			token.Expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-		}
-
-		// Add extra fields (id_token, scope)
-		extra := make(map[string]interface{})
-		if tokenResp.IDToken != "" {
-			extra["id_token"] = tokenResp.IDToken
-		}
-		if tokenResp.Scope != "" {
-			extra["scope"] = tokenResp.Scope
-		}
-		if len(extra) > 0 {
-			token = token.WithExtra(extra)
-		}
-
-		return token, nil
-	}
-
-	// Handle error response (400 Bad Request)
-	if httpResp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description,omitempty"`
-			ErrorURI         string `json:"error_uri,omitempty"`
-		}
-		if err := json.Unmarshal(body, &errResp); err != nil {
-			return nil, fmt.Errorf("failed to parse error response: %w (body: %s)", err, string(body))
-		}
-		if errResp.ErrorDescription != "" {
-			return nil, fmt.Errorf("token request failed: %s (%s)", errResp.Error, errResp.ErrorDescription)
-		}
-		return nil, fmt.Errorf("token request failed: %s", errResp.Error)
-	}
-
-	// Handle unexpected status codes
-	return nil, fmt.Errorf("unexpected status code %d: %s", httpResp.StatusCode, string(body))
+	return tokens, nil
 }
