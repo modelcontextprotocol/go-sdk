@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -76,10 +77,10 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 					if opts != nil {
 						var params []string
 						if opts.ResourceMetadataURL != "" {
-							params = append(params, "resource_metadata=\""+opts.ResourceMetadataURL+"\"")
+							params = append(params, fmt.Sprintf("resource_metadata=%q", opts.ResourceMetadataURL))
 						}
 						if len(opts.Scopes) > 0 {
-							params = append(params, "scope=\""+strings.Join(opts.Scopes, " ")+"\"")
+							params = append(params, fmt.Sprintf("scope=%q", strings.Join(opts.Scopes, " ")))
 						}
 						if len(params) > 0 {
 							w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
