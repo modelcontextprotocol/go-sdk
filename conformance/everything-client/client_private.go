@@ -6,8 +6,6 @@
 // It mirrors the functionality of the TypeScript conformance client at
 // https://github.com/modelcontextprotocol/typescript-sdk/blob/main/src/conformance/everything-client.ts
 
-//go:build mcp_go_client_oauth
-
 package main
 
 import (

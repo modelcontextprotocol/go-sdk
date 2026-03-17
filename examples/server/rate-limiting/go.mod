@@ -1,6 +1,6 @@
 module github.com/modelcontextprotocol/go-sdk/examples/rate-limiting
 
-go 1.23.0
+go 1.24.0
 
 require (
 	github.com/modelcontextprotocol/go-sdk v0.3.0
