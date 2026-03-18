@@ -237,7 +237,7 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 func validateClientRegistrationURLs(meta *ClientRegistrationMetadata) error {
 	// Validate redirect URIs
 	for i, uri := range meta.RedirectURIs {
-		if err := checkURLScheme(uri); err != nil {
+		if err := CheckURLScheme(uri); err != nil {
 			return fmt.Errorf("redirect_uris[%d]: %w", i, err)
 		}
 	}
@@ -255,7 +255,7 @@ func validateClientRegistrationURLs(meta *ClientRegistrationMetadata) error {
 	}
 
 	for _, u := range urls {
-		if err := checkURLScheme(u.value); err != nil {
+		if err := CheckURLScheme(u.value); err != nil {
 			return fmt.Errorf("%s: %w", u.name, err)
 		}
 	}

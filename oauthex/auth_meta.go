@@ -185,7 +185,7 @@ func validateAuthServerMetaURLs(asm *AuthServerMeta) error {
 	}
 
 	for _, u := range urls {
-		if err := checkURLScheme(u.value); err != nil {
+		if err := CheckURLScheme(u.value); err != nil {
 			return fmt.Errorf("%s: %w", u.name, err)
 		}
 	}

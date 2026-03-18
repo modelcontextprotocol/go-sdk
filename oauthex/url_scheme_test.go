@@ -15,7 +15,7 @@ import (
 	"testing"
 )
 
-// TestCheckURLScheme tests the checkURLScheme function directly.
+// TestCheckURLScheme tests the CheckURLScheme function directly.
 func TestCheckURLScheme(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -40,9 +40,9 @@ func TestCheckURLScheme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkURLScheme(tt.url)
+			err := CheckURLScheme(tt.url)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("checkURLScheme(%q): got err %v, want err %v", tt.url, err != nil, tt.wantErr)
+				t.Errorf("CheckURLScheme(%q): got err %v, want err %v", tt.url, err != nil, tt.wantErr)
 			}
 		})
 	}

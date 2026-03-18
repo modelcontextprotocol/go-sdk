@@ -65,7 +65,7 @@ func ExchangeJWTBearer(
 		return nil, fmt.Errorf("assertion is required")
 	}
 	// Validate URL scheme to prevent XSS attacks (see #526)
-	if err := checkURLScheme(tokenEndpoint); err != nil {
+	if err := CheckURLScheme(tokenEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid token endpoint: %w", err)
 	}
 

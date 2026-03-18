@@ -112,7 +112,7 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL 
 	}
 	// Validate the authorization server URLs to prevent XSS attacks (see #526).
 	for i, u := range prm.AuthorizationServers {
-		if err := checkURLScheme(u); err != nil {
+		if err := CheckURLScheme(u); err != nil {
 			return nil, fmt.Errorf("authorization_servers[%d]: %v", i, err)
 		}
 		if err := checkHTTPSOrLoopback(u); err != nil {
