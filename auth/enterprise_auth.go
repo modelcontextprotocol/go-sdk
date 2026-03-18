@@ -133,7 +133,7 @@ func EnterpriseAuthFlow(
 	}
 
 	// Step 1: Discover IdP token endpoint via OIDC discovery
-	idpMeta, err := GetAuthServerMetadataForIssuer(ctx, config.IdPIssuerURL, httpClient)
+	idpMeta, err := GetAuthServerMetadata(ctx, config.IdPIssuerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover IdP metadata: %w", err)
 	}
@@ -161,7 +161,7 @@ func EnterpriseAuthFlow(
 	}
 
 	// Step 3: JWT Bearer Grant (ID-JAG → Access Token)
-	mcpMeta, err := GetAuthServerMetadataForIssuer(ctx, config.MCPAuthServerURL, httpClient)
+	mcpMeta, err := GetAuthServerMetadata(ctx, config.MCPAuthServerURL, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
 	}

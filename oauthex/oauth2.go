@@ -63,10 +63,10 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 	return &t, nil
 }
 
-// checkURLScheme ensures that its argument is a valid URL with a scheme
+// CheckURLScheme ensures that its argument is a valid URL with a scheme
 // that prevents XSS attacks.
 // See #526.
-func checkURLScheme(u string) error {
+func CheckURLScheme(u string) error {
 	if u == "" {
 		return nil
 	}
@@ -93,10 +93,4 @@ func checkHTTPSOrLoopback(addr string) error {
 		return fmt.Errorf("URL %q does not use HTTPS or is not a loopback address", addr)
 	}
 	return nil
-}
-
-// CheckURLScheme validates a URL scheme for security.
-// This is exported for use by the auth package.
-func CheckURLScheme(u string) error {
-	return checkURLScheme(u)
 }

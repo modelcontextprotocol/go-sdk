@@ -142,7 +142,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 2: Discover IdP token endpoint via OIDC discovery
-	idpMeta, err := auth.GetAuthServerMetadataForIssuer(ctx, h.config.IdPIssuerURL, httpClient)
+	idpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.IdPIssuerURL, httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to discover IdP metadata: %w", err)
 	}
@@ -170,7 +170,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 4: Discover MCP Server token endpoint
-	mcpMeta, err := auth.GetAuthServerMetadataForIssuer(ctx, h.config.MCPAuthServerURL, httpClient)
+	mcpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.MCPAuthServerURL, httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
 	}

@@ -18,9 +18,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
-// GetAuthServerMetadataForIssuer fetches authorization server metadata for the given issuer URL.
+// GetAuthServerMetadata fetches authorization server metadata for the given issuer URL.
 // It tries standard well-known endpoints (OAuth 2.0 and OIDC) and returns the first successful result.
-func GetAuthServerMetadataForIssuer(ctx context.Context, issuerURL string, httpClient *http.Client) (*oauthex.AuthServerMeta, error) {
+func GetAuthServerMetadata(ctx context.Context, issuerURL string, httpClient *http.Client) (*oauthex.AuthServerMeta, error) {
 	for _, metadataURL := range authorizationServerMetadataURLs(issuerURL) {
 		asm, err := oauthex.GetAuthServerMeta(ctx, metadataURL, issuerURL, httpClient)
 		if err != nil {
