@@ -188,3 +188,99 @@ func TestProtectedResourceMetadataHandler(t *testing.T) {
 		})
 	}
 }
+
+func TestRequireBearerToken(t *testing.T) {
+	verifier := func(_ context.Context, token string, _ *http.Request) (*TokenInfo, error) {
+		if token == "valid" {
+			return &TokenInfo{Expiration: time.Now().Add(time.Hour), Scopes: []string{"read"}}, nil
+		}
+		return nil, ErrInvalidToken
+	}
+
+	tests := []struct {
+		name       string
+		opts       *RequireBearerTokenOptions
+		authHeader string
+		wantHeader string
+		wantStatus int
+	}{
+		{
+			name:       "no middleware options",
+			opts:       nil,
+			authHeader: "Bearer invalid",
+			wantHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "metadata only",
+			opts: &RequireBearerTokenOptions{
+				ResourceMetadataURL: "https://example.com/resource-metadata",
+			},
+			authHeader: "Bearer invalid",
+			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\"",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "scopes only",
+			opts: &RequireBearerTokenOptions{
+				Scopes: []string{"read", "write"},
+			},
+			authHeader: "Bearer invalid",
+			wantHeader: "Bearer scope=\"read write\"",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "metadata and scopes",
+			opts: &RequireBearerTokenOptions{
+				ResourceMetadataURL: "https://example.com/resource-metadata",
+				Scopes:              []string{"read", "write"},
+			},
+			authHeader: "Bearer invalid",
+			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "insufficient scope",
+			opts: &RequireBearerTokenOptions{
+				Scopes: []string{"admin"},
+			},
+			authHeader: "Bearer valid", // Has "read", needs "admin" -> 403
+			wantHeader: "Bearer scope=\"admin\"",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "success",
+			opts: &RequireBearerTokenOptions{
+				Scopes: []string{"read"},
+			},
+			authHeader: "Bearer valid",
+			wantHeader: "",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := RequireBearerToken(verifier, tt.opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+
+			got := rec.Header().Get("WWW-Authenticate")
+			if got != tt.wantHeader {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tt.wantHeader)
+			}
+		})
+	}
+}
