@@ -64,6 +64,16 @@ func TestParamsMeta(t *testing.T) {
 		t.Errorf("got %v, want `t`", g)
 	}
 
+	// The GetProgressToken and SetProgressToken methods work on a params struct that doesn't have a Meta field.
+	if g := p2.GetProgressToken(); g != nil {
+		t.Errorf("got %v, want nil", g)
+	}
+
+	p2.SetProgressToken("t")
+	if g := p2.GetProgressToken(); g != "t" {
+		t.Errorf("got %v, want `t`", g)
+	}
+
 	// You can set a progress token to an int, int32 or int64.
 	p.SetProgressToken(int(1))
 	p.SetProgressToken(int32(1))
