@@ -128,8 +128,10 @@ func TestExchangeToken(t *testing.T) {
 			context.Background(),
 			server.URL,
 			req,
-			"test-client-id",
-			"test-client-secret",
+			&ClientCredentials{
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+			},
 			server.Client(),
 		)
 
@@ -171,8 +173,10 @@ func TestExchangeToken(t *testing.T) {
 			context.Background(),
 			server.URL,
 			req,
-			"test-client-id",
-			"test-client-secret",
+			&ClientCredentials{
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+			},
 			server.Client(),
 		)
 
@@ -195,8 +199,10 @@ func TestExchangeToken(t *testing.T) {
 			context.Background(),
 			server.URL,
 			req,
-			"test-client-id",
-			"test-client-secret",
+			&ClientCredentials{
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+			},
 			server.Client(),
 		)
 

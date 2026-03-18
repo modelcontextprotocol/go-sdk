@@ -34,6 +34,17 @@ const (
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
+// ClientCredentials holds client authentication credentials for OAuth token requests.
+type ClientCredentials struct {
+	// ClientID is the OAuth2 client identifier.
+	// REQUIRED.
+	ClientID string
+
+	// ClientSecret is the OAuth2 client secret for confidential clients.
+	// OPTIONAL. Not required for public clients.
+	ClientSecret string
+}
+
 // TokenExchangeRequest represents a Token Exchange request per RFC 8693.
 // This is used for Enterprise Managed Authorization (SEP-990) where an MCP Client
 // exchanges an ID Token from an enterprise IdP for an ID-JAG that can be used
@@ -99,10 +110,6 @@ type TokenExchangeResponse struct {
 // The tokenEndpoint parameter should be the IdP's token endpoint (typically
 // obtained from the IdP's authorization server metadata).
 //
-// Client authentication must be performed by the caller by including appropriate
-// credentials in the request (e.g., using Basic auth via the Authorization header,
-// or including client_id and client_secret in the form data).
-//
 // Example:
 //
 //	req := &TokenExchangeRequest{
@@ -113,14 +120,14 @@ type TokenExchangeResponse struct {
 //		SubjectToken:      idToken,
 //		SubjectTokenType:  TokenTypeIDToken,
 //	}
+//	clientCreds := &ClientCredentials{ClientID: "my-client", ClientSecret: "secret"}
 //
-//	resp, err := ExchangeToken(ctx, idpTokenEndpoint, req, clientID, clientSecret, nil)
+//	resp, err := ExchangeToken(ctx, idpTokenEndpoint, req, clientCreds, nil)
 func ExchangeToken(
 	ctx context.Context,
 	tokenEndpoint string,
 	req *TokenExchangeRequest,
-	clientID string,
-	clientSecret string,
+	clientCreds *ClientCredentials,
 	httpClient *http.Client,
 ) (*TokenExchangeResponse, error) {
 	if tokenEndpoint == "" {
@@ -128,6 +135,9 @@ func ExchangeToken(
 	}
 	if req == nil {
 		return nil, fmt.Errorf("token exchange request is required")
+	}
+	if clientCreds == nil {
+		return nil, fmt.Errorf("client credentials are required")
 	}
 
 	// Validate required fields per SEP-990 Section 4
@@ -163,8 +173,8 @@ func ExchangeToken(
 	// The oauth2 library's Exchange method sends an empty code, but compliant
 	// servers should ignore it.
 	cfg := &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientID:     clientCreds.ClientID,
+		ClientSecret: clientCreds.ClientSecret,
 		Endpoint: oauth2.Endpoint{
 			TokenURL:  tokenEndpoint,
 			AuthStyle: oauth2.AuthStyleInParams, // Use POST body auth per SEP-990
