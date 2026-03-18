@@ -21,10 +21,19 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// grantTypeJWTBearer is the grant type for RFC 7523 JWT Bearer authorization grant.
+const grantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+// IDTokenResult contains the ID token obtained from OIDC login.
+type IDTokenResult struct {
+	// Token is the OpenID Connect ID Token (JWT).
+	Token string
+}
+
 // IDTokenFetcher is called to obtain an ID Token from the enterprise IdP.
 // This is typically done via OIDC login flow where the user authenticates
 // with their enterprise identity provider.
-type IDTokenFetcher func(ctx context.Context) (string, error)
+type IDTokenFetcher func(ctx context.Context) (*IDTokenResult, error)
 
 // EnterpriseHandlerConfig is the configuration for [EnterpriseHandler].
 type EnterpriseHandlerConfig struct {
@@ -136,7 +145,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 1: Get ID Token via the configured fetcher (e.g., OIDC login)
-	idToken, err := h.config.IDTokenFetcher(ctx)
+	idTokenResult, err := h.config.IDTokenFetcher(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to obtain ID token: %w", err)
 	}
@@ -153,7 +162,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 		Audience:           h.config.MCPAuthServerURL,
 		Resource:           h.config.MCPResourceURI,
 		Scope:              h.config.MCPScopes,
-		SubjectToken:       idToken,
+		SubjectToken:       idTokenResult.Token,
 		SubjectTokenType:   oauthex.TokenTypeIDToken,
 	}
 
@@ -161,8 +170,10 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 		ctx,
 		idpMeta.TokenEndpoint,
 		tokenExchangeReq,
-		h.config.IdPClientID,
-		h.config.IdPClientSecret,
+		&oauthex.ClientCredentials{
+			ClientID:     h.config.IdPClientID,
+			ClientSecret: h.config.IdPClientSecret,
+		},
 		httpClient,
 	)
 	if err != nil {
@@ -176,12 +187,14 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 5: JWT Bearer Grant (ID-JAG → Access Token)
-	accessToken, err := oauthex.ExchangeJWTBearer(
+	accessToken, err := exchangeJWTBearer(
 		ctx,
 		mcpMeta.TokenEndpoint,
 		tokenExchangeResp.AccessToken,
-		h.config.MCPClientID,
-		h.config.MCPClientSecret,
+		&oauthex.ClientCredentials{
+			ClientID:     h.config.MCPClientID,
+			ClientSecret: h.config.MCPClientSecret,
+		},
 		httpClient,
 	)
 	if err != nil {
@@ -191,4 +204,40 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	// Store the token source for subsequent requests
 	h.tokenSource = oauth2.StaticTokenSource(accessToken)
 	return nil
+}
+
+// exchangeJWTBearer exchanges an Identity Assertion JWT Authorization Grant (ID-JAG)
+// for an access token using JWT Bearer Grant per RFC 7523.
+func exchangeJWTBearer(
+	ctx context.Context,
+	tokenEndpoint string,
+	assertion string,
+	clientCreds *oauthex.ClientCredentials,
+	httpClient *http.Client,
+) (*oauth2.Token, error) {
+	cfg := &oauth2.Config{
+		ClientID:     clientCreds.ClientID,
+		ClientSecret: clientCreds.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  tokenEndpoint,
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
+	}
+
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+
+	token, err := cfg.Exchange(
+		ctxWithClient,
+		"",
+		oauth2.SetAuthURLParam("grant_type", grantTypeJWTBearer),
+		oauth2.SetAuthURLParam("assertion", assertion),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("JWT bearer grant request failed: %w", err)
+	}
+
+	return token, nil
 }

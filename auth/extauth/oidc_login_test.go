@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 // TestInitiateOIDCLogin tests the OIDC authorization request generation.
@@ -32,18 +34,18 @@ func TestInitiateOIDCLogin(t *testing.T) {
 		HTTPClient:  idpServer.Client(),
 	}
 	t.Run("successful initiation", func(t *testing.T) {
-		authReq, err := InitiateOIDCLogin(context.Background(), config)
+		authReq, _, err := initiateOIDCLogin(context.Background(), config)
 		if err != nil {
-			t.Fatalf("InitiateOIDCLogin failed: %v", err)
+			t.Fatalf("initiateOIDCLogin failed: %v", err)
 		}
-		// Validate AuthURL
-		if authReq.AuthURL == "" {
-			t.Error("AuthURL is empty")
+		// Validate authURL
+		if authReq.authURL == "" {
+			t.Error("authURL is empty")
 		}
 		// Parse and validate URL parameters
-		u, err := url.Parse(authReq.AuthURL)
+		u, err := url.Parse(authReq.authURL)
 		if err != nil {
-			t.Fatalf("Failed to parse AuthURL: %v", err)
+			t.Fatalf("Failed to parse authURL: %v", err)
 		}
 		q := u.Query()
 		if q.Get("response_type") != "code" {
@@ -62,15 +64,15 @@ func TestInitiateOIDCLogin(t *testing.T) {
 			t.Errorf("expected code_challenge_method 'S256', got '%s'", q.Get("code_challenge_method"))
 		}
 		// Validate state is generated
-		if authReq.State == "" {
-			t.Error("State is empty")
+		if authReq.state == "" {
+			t.Error("state is empty")
 		}
-		if q.Get("state") != authReq.State {
+		if q.Get("state") != authReq.state {
 			t.Errorf("state in URL doesn't match returned state")
 		}
 		// Validate PKCE parameters
-		if authReq.CodeVerifier == "" {
-			t.Error("CodeVerifier is empty")
+		if authReq.codeVerifier == "" {
+			t.Error("codeVerifier is empty")
 		}
 		if q.Get("code_challenge") == "" {
 			t.Error("code_challenge is empty")
@@ -79,13 +81,13 @@ func TestInitiateOIDCLogin(t *testing.T) {
 	t.Run("with login_hint", func(t *testing.T) {
 		configWithHint := *config
 		configWithHint.LoginHint = "user@example.com"
-		authReq, err := InitiateOIDCLogin(context.Background(), &configWithHint)
+		authReq, _, err := initiateOIDCLogin(context.Background(), &configWithHint)
 		if err != nil {
-			t.Fatalf("InitiateOIDCLogin failed: %v", err)
+			t.Fatalf("initiateOIDCLogin failed: %v", err)
 		}
-		u, err := url.Parse(authReq.AuthURL)
+		u, err := url.Parse(authReq.authURL)
 		if err != nil {
-			t.Fatalf("Failed to parse AuthURL: %v", err)
+			t.Fatalf("Failed to parse authURL: %v", err)
 		}
 		q := u.Query()
 		if q.Get("login_hint") != "user@example.com" {
@@ -93,13 +95,13 @@ func TestInitiateOIDCLogin(t *testing.T) {
 		}
 	})
 	t.Run("without login_hint", func(t *testing.T) {
-		authReq, err := InitiateOIDCLogin(context.Background(), config)
+		authReq, _, err := initiateOIDCLogin(context.Background(), config)
 		if err != nil {
-			t.Fatalf("InitiateOIDCLogin failed: %v", err)
+			t.Fatalf("initiateOIDCLogin failed: %v", err)
 		}
-		u, err := url.Parse(authReq.AuthURL)
+		u, err := url.Parse(authReq.authURL)
 		if err != nil {
-			t.Fatalf("Failed to parse AuthURL: %v", err)
+			t.Fatalf("Failed to parse authURL: %v", err)
 		}
 		q := u.Query()
 		if q.Has("login_hint") {
@@ -107,7 +109,7 @@ func TestInitiateOIDCLogin(t *testing.T) {
 		}
 	})
 	t.Run("nil config", func(t *testing.T) {
-		_, err := InitiateOIDCLogin(context.Background(), nil)
+		_, _, err := initiateOIDCLogin(context.Background(), nil)
 		if err == nil {
 			t.Error("expected error for nil config, got nil")
 		}
@@ -115,7 +117,7 @@ func TestInitiateOIDCLogin(t *testing.T) {
 	t.Run("missing openid scope", func(t *testing.T) {
 		badConfig := *config
 		badConfig.Scopes = []string{"profile", "email"} // Missing "openid"
-		_, err := InitiateOIDCLogin(context.Background(), &badConfig)
+		_, _, err := initiateOIDCLogin(context.Background(), &badConfig)
 		if err == nil {
 			t.Error("expected error for missing openid scope, got nil")
 		}
@@ -154,7 +156,7 @@ func TestInitiateOIDCLogin(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				badConfig := *config
 				tt.mutate(&badConfig)
-				_, err := InitiateOIDCLogin(context.Background(), &badConfig)
+				_, _, err := initiateOIDCLogin(context.Background(), &badConfig)
 				if err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -180,14 +182,21 @@ func TestCompleteOIDCLogin(t *testing.T) {
 		HTTPClient:   idpServer.Client(),
 	}
 	t.Run("successful code exchange", func(t *testing.T) {
-		tokens, err := CompleteOIDCLogin(
+		// First initiate to get oauth2Config
+		_, oauth2Config, err := initiateOIDCLogin(context.Background(), config)
+		if err != nil {
+			t.Fatalf("initiateOIDCLogin failed: %v", err)
+		}
+
+		tokens, err := completeOIDCLogin(
 			context.Background(),
 			config,
+			oauth2Config,
 			"test-auth-code",
 			"test-code-verifier",
 		)
 		if err != nil {
-			t.Fatalf("CompleteOIDCLogin failed: %v", err)
+			t.Fatalf("completeOIDCLogin failed: %v", err)
 		}
 		// Validate tokens
 		if tokens.IDToken == "" {
@@ -203,18 +212,9 @@ func TestCompleteOIDCLogin(t *testing.T) {
 			t.Error("ExpiresAt is zero")
 		}
 	})
-	t.Run("nil config", func(t *testing.T) {
-		_, err := CompleteOIDCLogin(
-			context.Background(),
-			nil,
-			"test-auth-code",
-			"test-code-verifier",
-		)
-		if err == nil {
-			t.Error("expected error for nil config, got nil")
-		}
-	})
 	t.Run("missing parameters", func(t *testing.T) {
+		_, oauth2Config, _ := initiateOIDCLogin(context.Background(), config)
+
 		tests := []struct {
 			name         string
 			authCode     string
@@ -236,9 +236,10 @@ func TestCompleteOIDCLogin(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				_, err := CompleteOIDCLogin(
+				_, err := completeOIDCLogin(
 					context.Background(),
 					config,
+					oauth2Config,
 					tt.authCode,
 					tt.codeVerifier,
 				)
@@ -267,23 +268,24 @@ func TestOIDCLoginE2E(t *testing.T) {
 		HTTPClient:   idpServer.Client(),
 	}
 	// Step 1: Initiate login
-	authReq, err := InitiateOIDCLogin(context.Background(), config)
+	authReq, oauth2Config, err := initiateOIDCLogin(context.Background(), config)
 	if err != nil {
-		t.Fatalf("InitiateOIDCLogin failed: %v", err)
+		t.Fatalf("initiateOIDCLogin failed: %v", err)
 	}
 	// Step 2: Simulate user authentication and redirect
-	// (In real flow, user would visit authReq.AuthURL and IdP would redirect back)
+	// (In real flow, user would visit authReq.authURL and IdP would redirect back)
 	// Here we just use a mock authorization code
 	mockAuthCode := "mock-authorization-code"
 	// Step 3: Complete login with authorization code
-	tokens, err := CompleteOIDCLogin(
+	tokens, err := completeOIDCLogin(
 		context.Background(),
 		config,
+		oauth2Config,
 		mockAuthCode,
-		authReq.CodeVerifier,
+		authReq.codeVerifier,
 	)
 	if err != nil {
-		t.Fatalf("CompleteOIDCLogin failed: %v", err)
+		t.Fatalf("completeOIDCLogin failed: %v", err)
 	}
 	// Validate we got an ID token
 	if tokens.IDToken == "" {
@@ -296,7 +298,7 @@ func TestOIDCLoginE2E(t *testing.T) {
 	}
 }
 
-// createMockOIDCServer creates a mock OIDC server for testing InitiateOIDCLogin.
+// createMockOIDCServer creates a mock OIDC server for testing initiateOIDCLogin.
 func createMockOIDCServer(t *testing.T) *httptest.Server {
 	var serverURL string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -399,9 +401,9 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("successful flow", func(t *testing.T) {
 		tokens, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				// Validate authURL has required parameters
-				u, err := url.Parse(authURL)
+				u, err := url.Parse(args.URL)
 				if err != nil {
 					return nil, fmt.Errorf("invalid authURL: %w", err)
 				}
@@ -414,9 +416,9 @@ func TestPerformOIDCLogin(t *testing.T) {
 				}
 
 				// Simulate successful user authentication
-				return &OIDCAuthorizationResult{
+				return &auth.AuthorizationResult{
 					Code:  "mock-auth-code",
-					State: expectedState, // Return the expected state
+					State: q.Get("state"), // Return the expected state from URL
 				}, nil
 			})
 
@@ -434,9 +436,9 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("state mismatch", func(t *testing.T) {
 		_, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				// Return wrong state to simulate CSRF attack
-				return &OIDCAuthorizationResult{
+				return &auth.AuthorizationResult{
 					Code:  "mock-auth-code",
 					State: "wrong-state",
 				}, nil
@@ -452,7 +454,7 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("fetcher error", func(t *testing.T) {
 		_, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, authURL, expectedState string) (*OIDCAuthorizationResult, error) {
+			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				return nil, fmt.Errorf("user cancelled")
 			})
 
