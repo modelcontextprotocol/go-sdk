@@ -336,8 +336,7 @@ user's responsibility to wrap that function around all handlers in their server.
 - _Secure session IDs_. This SDK generates cryptographically secure session IDs by default.
 If you create your own with 
 [`ServerOptions.GetSessionID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.GetSessionID), it is your responsibility to ensure they are secure.
-If you are using Go 1.24 or above,
-we recommend using [`crypto/rand.Text`](https://pkg.go.dev/crypto/rand#Text) 
+We recommend using [`crypto/rand.Text`](https://pkg.go.dev/crypto/rand#Text).
 
 - _Binding session IDs to user information_. The SDK supports this mitigation through
 [`TokenInfo.UserID`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#TokenInfo.UserID).
