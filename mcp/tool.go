@@ -56,10 +56,18 @@ type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error
 // or error. The effective result will be populated as described above.
 type ToolHandlerFor[In, Out any] func(_ context.Context, request *CallToolRequest, input In) (result *CallToolResult, output Out, _ error)
 
+// RoundTripToolHandler handles tools/call requests taking advantage of Multi Round-Trip Requests.
+// It returns a *RoundTripCallToolResult which encapsulates either a complete or incomplete result.
+type RoundTripToolHandler func(context.Context, *CallToolRequest) (*RoundTripCallToolResult, error)
+
+// RoundTripToolHandlerFor is the generic, typed version of RoundTripToolHandler.
+// Like ToolHandlerFor, it handles input unmarshaling and validation.
+type RoundTripToolHandlerFor[In, Out any] func(_ context.Context, request *CallToolRequest, input In) (result *RoundTripCallToolResult, output Out, _ error)
+
 // A serverTool is a tool definition that is bound to a tool handler.
 type serverTool struct {
 	tool    *Tool
-	handler ToolHandler
+	handler RoundTripToolHandler
 }
 
 // applySchema validates whether data is valid JSON according to the provided

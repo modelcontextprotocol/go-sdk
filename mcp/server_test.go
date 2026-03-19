@@ -656,10 +656,10 @@ type schema = jsonschema.Schema
 
 func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out, wantIn, wantOut any, wantErrContaining string) {
 	t.Helper()
-	th := func(context.Context, *CallToolRequest, In) (*CallToolResult, Out, error) {
+	th := func(context.Context, *CallToolRequest, In) (*RoundTripCallToolResult, Out, error) {
 		return nil, out, nil
 	}
-	gott, goth, err := toolForErr(tool, th, nil)
+	gott, goth, err := roundTripToolForErr(tool, th, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,10 +687,10 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 		t.Errorf("got error %v, want no error", err)
 	}
 
-	if gott.OutputSchema != nil && err == nil && !result.IsError {
+	if gott.OutputSchema != nil && err == nil && result.Complete != nil && !result.Complete.IsError {
 		// Check that structured content matches exactly.
-		unstructured := result.Content[0].(*TextContent).Text
-		structured := string(result.StructuredContent.(json.RawMessage))
+		unstructured := result.Complete.Content[0].(*TextContent).Text
+		structured := string(result.Complete.StructuredContent.(json.RawMessage))
 		if diff := cmp.Diff(unstructured, structured); diff != "" {
 			t.Errorf("Unstructured content does not match structured content exactly (-unstructured +structured):\n%s", diff)
 		}
