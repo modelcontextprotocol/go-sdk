@@ -628,6 +628,14 @@ func (s *Server) changeAndNotify(notification string, change func() bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if change() && s.shouldSendListChangedNotification(notification) {
+		if len(s.sessions) == 0 {
+			if t := s.pendingNotifications[notification]; t != nil {
+				t.Stop()
+				s.pendingNotifications[notification] = nil
+			}
+			return
+		}
+
 		// Reset the outstanding delayed call, if any.
 		if t := s.pendingNotifications[notification]; t == nil {
 			s.pendingNotifications[notification] = time.AfterFunc(notificationDelay, func() { s.notifySessions(notification) })
