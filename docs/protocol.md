@@ -357,40 +357,63 @@ session, err := client.Connect(ctx, transport, nil)
 The `auth.AuthorizationCodeHandler` automatically manages token refreshing
 and step-up authentication (when the server returns `insufficient_scope` error).
 
-#### Enterprise Authentication Flow (SEP-990)
+#### Enterprise Managed Authorization (SEP-990)
 
-For enterprise SSO scenarios, the SDK provides an
-[`EnterpriseAuthFlow`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#EnterpriseAuthFlow)
-function that implements the complete token exchange flow:
+For enterprise SSO scenarios where users authenticate with an enterprise Identity Provider (IdP),
+the SDK provides
+[`extauth.EnterpriseHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth/extauth#EnterpriseHandler),
+an implementation of `OAuthHandler` that automates the Enterprise Managed Authorization flow:
 
-1. **Token Exchange** at IdP: ID Token → ID-JAG
-2. **JWT Bearer Grant** at MCP Server: ID-JAG → Access Token
+1. **OIDC Login**: User authenticates with enterprise IdP → ID Token
+2. **Token Exchange** (RFC 8693): ID Token → ID-JAG at IdP
+3. **JWT Bearer Grant** (RFC 7523): ID-JAG → Access Token at MCP Server
 
-This flow is typically used after obtaining an ID Token via OIDC login:
+To use enterprise managed authorization, create an `EnterpriseHandler` and assign it to your transport:
 
 ```go
-// Step 1: Obtain ID token via OIDC (see auth.InitiateOIDCLogin and auth.CompleteOIDCLogin)
-idToken := "..." // from OIDC login
+// Create ID token fetcher using OIDC login
+idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
+    oidcConfig := &extauth.OIDCLoginConfig{
+        IssuerURL:    "https://company.okta.com",
+        ClientID:     "idp-client-id",
+        ClientSecret: "idp-client-secret",
+        RedirectURL:  "http://localhost:3142",
+        Scopes:       []string{"openid", "profile", "email"},
+    }
 
-// Step 2: Exchange for MCP access token
-config := &auth.EnterpriseAuthConfig{
-    IdPIssuerURL:     "https://company.okta.com",
-    IdPClientID:      "client-id-at-idp",
-    IdPClientSecret:  "secret-at-idp",
-    MCPAuthServerURL: "https://auth.mcpserver.example",
-    MCPResourceURI:   "https://mcp.mcpserver.example",
-    MCPClientID:      "client-id-at-mcp",
-    MCPClientSecret:  "secret-at-mcp",
-    MCPScopes:        []string{"read", "write"},
+    tokens, err := extauth.PerformOIDCLogin(ctx, oidcConfig, authCodeFetcher)
+    if err != nil {
+        return nil, err
+    }
+
+    return &extauth.IDTokenResult{Token: tokens.IDToken}, nil
 }
 
-accessToken, err := auth.EnterpriseAuthFlow(ctx, config, idToken)
-// Use accessToken with MCP client
+// Create Enterprise Handler
+enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
+    IdPIssuerURL:     "https://company.okta.com",
+    IdPClientID:      "idp-client-id",
+    IdPClientSecret:  "idp-client-secret",
+    MCPAuthServerURL: "https://auth.mcpserver.example",
+    MCPResourceURI:   "https://mcp.mcpserver.example",
+    MCPClientID:      "mcp-client-id",
+    MCPClientSecret:  "mcp-client-secret",
+    MCPScopes:        []string{"read", "write"},
+    IDTokenFetcher:   idTokenFetcher,
+})
+
+// Use with transport
+transport := &mcp.StreamableClientTransport{
+    Endpoint:     "https://example.com/mcp",
+    OAuthHandler: enterpriseHandler,
+}
+client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+session, err := client.Connect(ctx, transport, nil)
 ```
 
-Helper functions are provided for OIDC login:
-- [`InitiateOIDCLogin`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#InitiateOIDCLogin) - Generate authorization URL with PKCE
-- [`CompleteOIDCLogin`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#CompleteOIDCLogin) - Exchange authorization code for tokens
+The `EnterpriseHandler` automatically manages the token exchange flow and token refreshing.
+
+For a complete working example, see [examples/auth/enterprise-client](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/auth/enterprise-client).
 
 ## Security
 

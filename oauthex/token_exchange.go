@@ -109,20 +109,6 @@ type TokenExchangeResponse struct {
 //
 // The tokenEndpoint parameter should be the IdP's token endpoint (typically
 // obtained from the IdP's authorization server metadata).
-//
-// Example:
-//
-//	req := &TokenExchangeRequest{
-//		RequestedTokenType: TokenTypeIDJAG,
-//		Audience:          "https://auth.mcpserver.example/",
-//		Resource:          "https://mcp.mcpserver.example/",
-//		Scope:             []string{"read", "write"},
-//		SubjectToken:      idToken,
-//		SubjectTokenType:  TokenTypeIDToken,
-//	}
-//	clientCreds := &ClientCredentials{ClientID: "my-client", ClientSecret: "secret"}
-//
-//	resp, err := ExchangeToken(ctx, idpTokenEndpoint, req, clientCreds, nil)
 func ExchangeToken(
 	ctx context.Context,
 	tokenEndpoint string,
