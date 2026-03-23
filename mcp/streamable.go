@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -1515,8 +1516,12 @@ var (
 	// reconnectInitialDelay is the base delay for the first reconnect attempt.
 	//
 	// Mutable for testing.
-	reconnectInitialDelay = 1 * time.Second
+	reconnectInitialDelay atomic.Int64
 )
+
+func init() {
+	reconnectInitialDelay.Store(int64(1 * time.Second))
+}
 
 // Connect implements the [Transport] interface.
 //
@@ -2196,7 +2201,7 @@ func calculateReconnectDelay(attempt int) time.Duration {
 		return 0
 	}
 	// Calculate the exponential backoff using the grow factor.
-	backoffDuration := time.Duration(float64(reconnectInitialDelay) * math.Pow(reconnectGrowFactor, float64(attempt-1)))
+	backoffDuration := time.Duration(float64(reconnectInitialDelay.Load()) * math.Pow(reconnectGrowFactor, float64(attempt-1)))
 	// Cap the backoffDuration at maxDelay.
 	backoffDuration = min(backoffDuration, reconnectMaxDelay)
 

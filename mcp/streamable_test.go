@@ -626,7 +626,10 @@ func TestServerTransportCleanup(t *testing.T) {
 
 	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
 	handler.onTransportDeletion = func(sessionID string) {
-		chans[sessionID] <- struct{}{}
+		mu.Lock()
+		ch := chans[sessionID]
+		mu.Unlock()
+		ch <- struct{}{}
 	}
 
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
@@ -658,7 +661,11 @@ func TestServerTransportCleanup(t *testing.T) {
 		t.Cleanup(func() { _ = clientSession.Close() })
 	}
 
-	for _, ch := range chans {
+	mu.Lock()
+	channels := slices.Collect(maps.Values(chans))
+	mu.Unlock()
+
+	for _, ch := range channels {
 		select {
 		case <-ctx.Done():
 			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
