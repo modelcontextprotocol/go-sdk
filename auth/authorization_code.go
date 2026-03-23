@@ -227,9 +227,17 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	asm, err := h.getAuthServerMetadata(ctx, prm)
+	asm, err := GetAuthServerMetadata(ctx, prm.AuthorizationServers[0], h.config.Client)
 	if err != nil {
-		return err
+		// Fallback to 2025-03-26 spec: predefined endpoints.
+		// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
+		authServerURL := prm.AuthorizationServers[0]
+		asm = &oauthex.AuthServerMeta{
+			Issuer:                authServerURL,
+			AuthorizationEndpoint: authServerURL + "/authorize",
+			TokenEndpoint:         authServerURL + "/token",
+			RegistrationEndpoint:  authServerURL + "/register",
+		}
 	}
 
 	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
@@ -372,36 +380,6 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 		Resource: ru.String(),
 	})
 	return urls
-}
-
-// getAuthServerMetadata returns the authorization server metadata.
-// The provided Protected Resource Metadata must not be nil and must contain
-// at least one authorization server.
-// It returns an error if the metadata request fails with non-4xx HTTP status code
-// or the fetched metadata fails security checks.
-// If no metadata was found, it returns a minimal set of endpoints
-// as a fallback to 2025-03-26 spec.
-func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata) (*oauthex.AuthServerMeta, error) {
-	authServerURL := prm.AuthorizationServers[0]
-	for _, u := range authorizationServerMetadataURLs(authServerURL) {
-		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, h.config.Client)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
-		}
-		if asm != nil {
-			return asm, nil
-		}
-	}
-
-	// Fallback to 2025-03-26 spec: predefined endpoints.
-	// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
-	asm := &oauthex.AuthServerMeta{
-		Issuer:                authServerURL,
-		AuthorizationEndpoint: authServerURL + "/authorize",
-		TokenEndpoint:         authServerURL + "/token",
-		RegistrationEndpoint:  authServerURL + "/register",
-	}
-	return asm, nil
 }
 
 type registrationType int

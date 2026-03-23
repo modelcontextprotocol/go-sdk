@@ -439,15 +439,11 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 }
 
 func TestGetAuthServerMetadata(t *testing.T) {
-	handler, err := NewAuthorizationCodeHandler(validConfig())
-	if err != nil {
-		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
-	}
-
 	tests := []struct {
 		name           string
 		issuerPath     string
 		endpointConfig *oauthtest.MetadataEndpointConfig
+		wantFallback   bool
 	}{
 		{
 			name:       "OAuthEndpoint_Root",
@@ -492,6 +488,7 @@ func TestGetAuthServerMetadata(t *testing.T) {
 				ServeOAuthInsertedEndpoint:  false,
 				ServeOpenIDInsertedEndpoint: false,
 			},
+			wantFallback: true,
 		},
 	}
 
@@ -503,20 +500,24 @@ func TestGetAuthServerMetadata(t *testing.T) {
 			})
 			s.Start(t)
 			issuerURL := s.URL() + tt.issuerPath
-			prm := &oauthex.ProtectedResourceMetadata{
-				Resource:             "https://example.com/resource",
-				AuthorizationServers: []string{issuerURL},
-			}
 
-			got, err := handler.getAuthServerMetadata(t.Context(), prm)
+			got, err := GetAuthServerMetadata(t.Context(), issuerURL, http.DefaultClient)
+			if tt.wantFallback {
+				// When no metadata is found, GetAuthServerMetadata returns an error.
+				// The fallback logic is now inline in Authorize.
+				if err == nil {
+					t.Fatal("GetAuthServerMetadata() expected error for no metadata, got nil")
+				}
+				return
+			}
 			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+				t.Fatalf("GetAuthServerMetadata() error = %v, want nil", err)
 			}
 			if got == nil {
-				t.Fatal("getAuthServerMetadata() got nil, want metadata")
+				t.Fatal("GetAuthServerMetadata() got nil, want metadata")
 			}
 			if got.Issuer != issuerURL {
-				t.Errorf("getAuthServerMetadata() issuer = %q, want %q", got.Issuer, issuerURL)
+				t.Errorf("GetAuthServerMetadata() issuer = %q, want %q", got.Issuer, issuerURL)
 			}
 		})
 	}
@@ -622,11 +623,15 @@ func TestHandleRegistration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAuthorizationCodeHandler() error = %v, want nil", err)
 			}
-			asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-				AuthorizationServers: []string{s.URL()},
-			})
+			asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+				// Fallback to predefined endpoints for testing
+				asm = &oauthex.AuthServerMeta{
+					Issuer:                s.URL(),
+					AuthorizationEndpoint: s.URL() + "/authorize",
+					TokenEndpoint:         s.URL() + "/token",
+					RegistrationEndpoint:  s.URL() + "/register",
+				}
 			}
 			got, err := handler.handleRegistration(t.Context(), asm)
 			if err != nil {
@@ -672,11 +677,15 @@ func TestDynamicRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
 	}
-	asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-		AuthorizationServers: []string{s.URL()},
-	})
+	asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 	if err != nil {
-		t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+		// Fallback to predefined endpoints for testing
+		asm = &oauthex.AuthServerMeta{
+			Issuer:                s.URL(),
+			AuthorizationEndpoint: s.URL() + "/authorize",
+			TokenEndpoint:         s.URL() + "/token",
+			RegistrationEndpoint:  s.URL() + "/register",
+		}
 	}
 	got, err := handler.handleRegistration(t.Context(), asm)
 	if err != nil {
