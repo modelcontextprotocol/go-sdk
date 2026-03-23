@@ -44,13 +44,10 @@ type EnterpriseHandlerConfig struct {
 	// REQUIRED.
 	IdPIssuerURL string
 
-	// IdPClientID is the MCP Client's ID registered at the IdP.
-	// OPTIONAL. Required if the IdP requires client authentication for token exchange.
-	IdPClientID string
-
-	// IdPClientSecret is the MCP Client's secret registered at the IdP.
-	// OPTIONAL. Required if the IdP requires client authentication for token exchange.
-	IdPClientSecret string
+	// IdPCredentials contains the MCP Client's credentials registered at the IdP.
+	// OPTIONAL. Set to nil for public clients. Required if the IdP requires client
+	// authentication for token exchange.
+	IdPCredentials *oauthex.ClientCredentials
 
 	// MCP Server configuration (the resource being accessed)
 
@@ -64,13 +61,9 @@ type EnterpriseHandlerConfig struct {
 	// REQUIRED.
 	MCPResourceURI string
 
-	// MCPClientID is the MCP Client's ID registered at the MCP Server.
-	// OPTIONAL. Required if the MCP Server requires client authentication.
-	MCPClientID string
-
-	// MCPClientSecret is the MCP Client's secret registered at the MCP Server.
-	// OPTIONAL. Required if the MCP Server requires client authentication.
-	MCPClientSecret string
+	// MCPCredentials contains the MCP Client's credentials registered at the MCP Server.
+	// OPTIONAL. Set to nil if the MCP Server doesn't require client authentication.
+	MCPCredentials *oauthex.ClientCredentials
 
 	// MCPScopes is the list of scopes to request at the MCP Server.
 	// OPTIONAL.
@@ -170,10 +163,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 		ctx,
 		idpMeta.TokenEndpoint,
 		tokenExchangeReq,
-		&oauthex.ClientCredentials{
-			ClientID:     h.config.IdPClientID,
-			ClientSecret: h.config.IdPClientSecret,
-		},
+		h.config.IdPCredentials,
 		httpClient,
 	)
 	if err != nil {
@@ -191,10 +181,7 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 		ctx,
 		mcpMeta.TokenEndpoint,
 		tokenExchangeResp.AccessToken,
-		&oauthex.ClientCredentials{
-			ClientID:     h.config.MCPClientID,
-			ClientSecret: h.config.MCPClientSecret,
-		},
+		h.config.MCPCredentials,
 		httpClient,
 	)
 	if err != nil {

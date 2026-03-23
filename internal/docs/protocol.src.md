@@ -299,11 +299,13 @@ To use enterprise managed authorization, create an `EnterpriseHandler` and assig
 // Create ID token fetcher using OIDC login
 idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
     oidcConfig := &extauth.OIDCLoginConfig{
-        IssuerURL:    "https://company.okta.com",
-        ClientID:     "idp-client-id",
-        ClientSecret: "idp-client-secret",
-        RedirectURL:  "http://localhost:3142",
-        Scopes:       []string{"openid", "profile", "email"},
+        IssuerURL: "https://company.okta.com",
+        Credentials: &oauthex.ClientCredentials{
+            ClientID:     "idp-client-id",
+            ClientSecret: "idp-client-secret",
+        },
+        RedirectURL: "http://localhost:3142",
+        Scopes:      []string{"openid", "profile", "email"},
     }
 
     tokens, err := extauth.PerformOIDCLogin(ctx, oidcConfig, authCodeFetcher)
@@ -316,15 +318,19 @@ idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
 
 // Create Enterprise Handler
 enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
-    IdPIssuerURL:     "https://company.okta.com",
-    IdPClientID:      "idp-client-id",
-    IdPClientSecret:  "idp-client-secret",
+    IdPIssuerURL: "https://company.okta.com",
+    IdPCredentials: &oauthex.ClientCredentials{
+        ClientID:     "idp-client-id",
+        ClientSecret: "idp-client-secret",
+    },
     MCPAuthServerURL: "https://auth.mcpserver.example",
     MCPResourceURI:   "https://mcp.mcpserver.example",
-    MCPClientID:      "mcp-client-id",
-    MCPClientSecret:  "mcp-client-secret",
-    MCPScopes:        []string{"read", "write"},
-    IDTokenFetcher:   idTokenFetcher,
+    MCPCredentials: &oauthex.ClientCredentials{
+        ClientID:     "mcp-client-id",
+        ClientSecret: "mcp-client-secret",
+    },
+    MCPScopes:      []string{"read", "write"},
+    IDTokenFetcher: idTokenFetcher,
 })
 
 // Use with transport

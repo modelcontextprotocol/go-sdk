@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 // TestInitiateOIDCLogin tests the OIDC authorization request generation.
@@ -27,8 +28,10 @@ func TestInitiateOIDCLogin(t *testing.T) {
 	idpServer := createMockOIDCServer(t)
 	defer idpServer.Close()
 	config := &OIDCLoginConfig{
-		IssuerURL:   idpServer.URL,
-		ClientID:    "test-client",
+		IssuerURL: idpServer.URL,
+		Credentials: &oauthex.ClientCredentials{
+			ClientID: "test-client",
+		},
 		RedirectURL: "http://localhost:8080/callback",
 		Scopes:      []string{"openid", "profile", "email"},
 		HTTPClient:  idpServer.Client(),
@@ -138,17 +141,26 @@ func TestInitiateOIDCLogin(t *testing.T) {
 			},
 			{
 				name:      "missing ClientID",
-				mutate:    func(c *OIDCLoginConfig) { c.ClientID = "" },
+				mutate:    func(c *OIDCLoginConfig) { c.Credentials.ClientID = "" },
 				expectErr: "ClientID is required",
 			},
 			{
-				name:      "missing RedirectURL",
-				mutate:    func(c *OIDCLoginConfig) { c.RedirectURL = "" },
+				name: "missing RedirectURL",
+				mutate: func(c *OIDCLoginConfig) {
+					c.RedirectURL = ""
+					// Ensure ClientID is present to test RedirectURL validation
+					c.Credentials = &oauthex.ClientCredentials{ClientID: "test"}
+				},
 				expectErr: "RedirectURL is required",
 			},
 			{
-				name:      "missing Scopes",
-				mutate:    func(c *OIDCLoginConfig) { c.Scopes = nil },
+				name: "missing Scopes",
+				mutate: func(c *OIDCLoginConfig) {
+					c.Scopes = nil
+					// Ensure required fields are present to test Scopes validation
+					c.Credentials = &oauthex.ClientCredentials{ClientID: "test"}
+					c.RedirectURL = "http://localhost:8080/callback"
+				},
 				expectErr: "Scopes is required",
 			},
 		}
@@ -174,12 +186,14 @@ func TestCompleteOIDCLogin(t *testing.T) {
 	idpServer := createMockOIDCServerWithToken(t)
 	defer idpServer.Close()
 	config := &OIDCLoginConfig{
-		IssuerURL:    idpServer.URL,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURL:  "http://localhost:8080/callback",
-		Scopes:       []string{"openid", "profile", "email"},
-		HTTPClient:   idpServer.Client(),
+		IssuerURL: idpServer.URL,
+		Credentials: &oauthex.ClientCredentials{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+		},
+		RedirectURL: "http://localhost:8080/callback",
+		Scopes:      []string{"openid", "profile", "email"},
+		HTTPClient:  idpServer.Client(),
 	}
 	t.Run("successful code exchange", func(t *testing.T) {
 		// First initiate to get oauth2Config
@@ -260,12 +274,14 @@ func TestOIDCLoginE2E(t *testing.T) {
 	idpServer := createMockOIDCServerWithToken(t)
 	defer idpServer.Close()
 	config := &OIDCLoginConfig{
-		IssuerURL:    idpServer.URL,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURL:  "http://localhost:8080/callback",
-		Scopes:       []string{"openid", "profile", "email"},
-		HTTPClient:   idpServer.Client(),
+		IssuerURL: idpServer.URL,
+		Credentials: &oauthex.ClientCredentials{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+		},
+		RedirectURL: "http://localhost:8080/callback",
+		Scopes:      []string{"openid", "profile", "email"},
+		HTTPClient:  idpServer.Client(),
 	}
 	// Step 1: Initiate login
 	authReq, oauth2Config, err := initiateOIDCLogin(context.Background(), config)
@@ -391,12 +407,14 @@ func TestPerformOIDCLogin(t *testing.T) {
 	idpServer := createMockOIDCServerWithToken(t)
 	defer idpServer.Close()
 	config := &OIDCLoginConfig{
-		IssuerURL:    idpServer.URL,
-		ClientID:     "test-client",
-		ClientSecret: "test-secret",
-		RedirectURL:  "http://localhost:8080/callback",
-		Scopes:       []string{"openid", "profile", "email"},
-		HTTPClient:   idpServer.Client(),
+		IssuerURL: idpServer.URL,
+		Credentials: &oauthex.ClientCredentials{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+		},
+		RedirectURL: "http://localhost:8080/callback",
+		Scopes:      []string{"openid", "profile", "email"},
+		HTTPClient:  idpServer.Client(),
 	}
 
 	t.Run("successful flow", func(t *testing.T) {

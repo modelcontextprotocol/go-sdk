@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/auth/extauth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 var (
@@ -116,11 +117,13 @@ func main() {
 		log.Println("Starting OIDC login flow...")
 
 		oidcConfig := &extauth.OIDCLoginConfig{
-			IssuerURL:    *idpIssuerURL,
-			ClientID:     *idpClientID,
-			ClientSecret: *idpClientSecret,
-			RedirectURL:  fmt.Sprintf("http://localhost:%d", *callbackPort),
-			Scopes:       []string{"openid", "profile", "email"},
+			IssuerURL: *idpIssuerURL,
+			Credentials: &oauthex.ClientCredentials{
+				ClientID:     *idpClientID,
+				ClientSecret: *idpClientSecret,
+			},
+			RedirectURL: fmt.Sprintf("http://localhost:%d", *callbackPort),
+			Scopes:      []string{"openid", "profile", "email"},
 		}
 
 		// PerformOIDCLogin handles the complete OIDC Authorization Code flow with PKCE
@@ -141,16 +144,20 @@ func main() {
 	log.Println("Creating enterprise authorization handler...")
 	enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
 		// IdP configuration (where the user authenticates)
-		IdPIssuerURL:    *idpIssuerURL,
-		IdPClientID:     *idpClientID,
-		IdPClientSecret: *idpClientSecret,
+		IdPIssuerURL: *idpIssuerURL,
+		IdPCredentials: &oauthex.ClientCredentials{
+			ClientID:     *idpClientID,
+			ClientSecret: *idpClientSecret,
+		},
 
 		// MCP Server configuration (the resource being accessed)
 		MCPAuthServerURL: *mcpAuthServerURL,
 		MCPResourceURI:   *mcpResourceURI,
-		MCPClientID:      *mcpClientID,
-		MCPClientSecret:  *mcpClientSecret,
-		MCPScopes:        []string{"read", "write"},
+		MCPCredentials: &oauthex.ClientCredentials{
+			ClientID:     *mcpClientID,
+			ClientSecret: *mcpClientSecret,
+		},
+		MCPScopes: []string{"read", "write"},
 
 		// ID Token fetcher (performs OIDC login when needed)
 		IDTokenFetcher: idTokenFetcher,

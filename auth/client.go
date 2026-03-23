@@ -45,5 +45,3 @@ type OAuthHandler interface {
 // requirement of [OAuthHandler]. Extension packages should embed this type
 // in their handler structs to implement OAuthHandler.
 type OAuthHandlerBase struct{}
-
-func (OAuthHandlerBase) isOAuthHandler() {}

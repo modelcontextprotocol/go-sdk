@@ -28,12 +28,11 @@ type OIDCLoginConfig struct {
 	// IssuerURL is the IdP's issuer URL (e.g., "https://acme.okta.com").
 	// REQUIRED.
 	IssuerURL string
-	// ClientID is the MCP Client's ID registered at the IdP.
-	// REQUIRED.
-	ClientID string
-	// ClientSecret is the MCP Client's secret at the IdP.
-	// OPTIONAL. Only required if the client is confidential.
-	ClientSecret string
+	// Credentials contains the MCP Client's credentials registered at the IdP.
+	// The ClientID field is REQUIRED. The ClientSecret field is OPTIONAL
+	// (only required if the client is confidential, not a public client).
+	// REQUIRED (struct itself), but ClientSecret field can be empty.
+	Credentials *oauthex.ClientCredentials
 	// RedirectURL is the OAuth2 redirect URI registered with the IdP.
 	// This must match exactly what was registered with the IdP.
 	// REQUIRED.
@@ -139,8 +138,8 @@ func initiateOIDCLogin(
 	if config.IssuerURL == "" {
 		return nil, nil, fmt.Errorf("IssuerURL is required")
 	}
-	if config.ClientID == "" {
-		return nil, nil, fmt.Errorf("ClientID is required")
+	if config.Credentials == nil || config.Credentials.ClientID == "" {
+		return nil, nil, fmt.Errorf("Credentials.ClientID is required")
 	}
 	if config.RedirectURL == "" {
 		return nil, nil, fmt.Errorf("RedirectURL is required")
@@ -183,8 +182,8 @@ func initiateOIDCLogin(
 	state := rand.Text()
 
 	oauth2Config := &oauth2.Config{
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
+		ClientID:     config.Credentials.ClientID,
+		ClientSecret: config.Credentials.ClientSecret,
 		RedirectURL:  config.RedirectURL,
 		Scopes:       config.Scopes,
 		Endpoint: oauth2.Endpoint{
