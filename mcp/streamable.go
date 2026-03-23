@@ -176,6 +176,21 @@ type StreamableHTTPOptions struct {
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	DisableLocalhostProtection bool
 
+	// RecoverExpiredSessions controls whether the server silently creates
+	// a new session when a client presents a session ID that is no longer
+	// known (e.g. after a server restart that cleared in-memory sessions).
+	//
+	// When true, instead of returning 404 Not Found for an unknown
+	// session ID, the server creates a new stateful session with default
+	// initialization state so the request is handled normally. The
+	// response includes the new session's Mcp-Session-Id header, allowing
+	// the client to adopt it for subsequent requests.
+	//
+	// This is useful for servers that store sessions in memory and want
+	// graceful behaviour across restarts without requiring clients to
+	// detect 404 and re-initialize.
+	RecoverExpiredSessions bool
+
 	// CrossOriginProtection allows to customize cross-origin protection.
 	// The deny handler set in the CrossOriginProtection through SetDenyHandler
 	// is ignored.
@@ -300,17 +315,27 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	sessionID := req.Header.Get(sessionIDHeader)
 	var sessInfo *sessionInfo
+	// recovering is set when the client provides a session ID that we
+	// don't recognise and RecoverExpiredSessions is enabled. The
+	// session-creation block below will bootstrap a new stateful
+	// session with default initialization state.
+	var recovering bool
 	if sessionID != "" {
 		h.mu.Lock()
 		sessInfo = h.sessions[sessionID]
 		h.mu.Unlock()
 		if sessInfo == nil && !h.opts.Stateless {
-			// Unless we're in 'stateless' mode, which doesn't perform any Session-ID
-			// validation, we require that the session ID matches a known session.
-			//
-			// In stateless mode, a temporary transport is be created below.
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
+			if h.opts.RecoverExpiredSessions {
+				// Clear the stale session ID so a fresh one is
+				// generated below.
+				sessionID = ""
+				recovering = true
+			} else {
+				// Unknown session and no recovery: reject per
+				// spec §2.5.3.
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
 		}
 		// Prevent session hijacking: if the session was created with a user ID,
 		// verify that subsequent requests come from the same user.
@@ -423,19 +448,23 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			logger:       h.opts.Logger,
 		}
 
-		// Sessions without a session ID are also stateless: there's no way to
-		// address them.
+		// Sessions without a session ID are also stateless: there's
+		// no way to address them.
 		stateless := h.opts.Stateless || sessionID == ""
-		// To support stateless mode, we initialize the session with a default
-		// state, so that it doesn't reject subsequent requests.
+
+		// Bootstrap default initialization state when the session
+		// can't rely on a prior initialize handshake: either because
+		// it's stateless, or because we're recovering a session the
+		// server has forgotten.
+		needsBootstrap := stateless || recovering
 		var connectOpts *ServerSessionOptions
-		if stateless {
-			// Peek at the body to see if it is initialize or initialized.
-			// We want those to be handled as usual.
+		if needsBootstrap {
+			// Peek at the body to see if it is initialize or
+			// initialized. We want those to be handled as usual.
 			var hasInitialize, hasInitialized bool
 			{
-				// TODO: verify that this allows protocol version negotiation for
-				// stateless servers.
+				// TODO: verify that this allows protocol version
+				// negotiation for stateless servers.
 				body, err := io.ReadAll(req.Body)
 				if err != nil {
 					http.Error(w, "failed to read body", http.StatusBadRequest)
@@ -461,8 +490,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				}
 			}
 
-			// If we don't have InitializeParams or InitializedParams in the request,
-			// set the initial state to a default value.
+			// If we don't have InitializeParams or
+			// InitializedParams in the request, set the initial
+			// state to a default value.
 			state := new(ServerSessionState)
 			if !hasInitialize {
 				state.InitializeParams = &InitializeParams{
@@ -477,20 +507,23 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 				State: state,
 			}
 		} else {
-			// Cleanup is only required in stateful mode, as transportation is
-			// not stored in the map otherwise.
-			connectOpts = &ServerSessionOptions{
-				onClose: func() {
-					h.mu.Lock()
-					defer h.mu.Unlock()
-					if info, ok := h.sessions[transport.SessionID]; ok {
-						info.stopTimer()
-						delete(h.sessions, transport.SessionID)
-						if h.onTransportDeletion != nil {
-							h.onTransportDeletion(transport.SessionID)
-						}
+			connectOpts = &ServerSessionOptions{}
+		}
+
+		if !stateless {
+			// Cleanup on close is required for stateful sessions
+			// (including recovered ones) since they are stored in
+			// the session map.
+			connectOpts.onClose = func() {
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				if info, ok := h.sessions[transport.SessionID]; ok {
+					info.stopTimer()
+					delete(h.sessions, transport.SessionID)
+					if h.onTransportDeletion != nil {
+						h.onTransportDeletion(transport.SessionID)
 					}
-				},
+				}
 			}
 		}
 
