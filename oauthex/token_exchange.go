@@ -163,7 +163,7 @@ func ExchangeToken(
 		ClientSecret: clientCreds.ClientSecret,
 		Endpoint: oauth2.Endpoint{
 			TokenURL:  tokenEndpoint,
-			AuthStyle: oauth2.AuthStyleInParams, // Use POST body auth per SEP-990
+			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}
 
