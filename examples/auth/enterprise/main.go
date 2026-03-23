@@ -22,19 +22,19 @@ import (
 )
 
 var (
-	// IdP (Identity Provider) configuration
+	// IdP (Identity Provider) configuration.
 	idpIssuerURL    = flag.String("idp_issuer", "https://your-idp.okta.com", "IdP issuer URL (e.g., https://your-company.okta.com)")
 	idpClientID     = flag.String("idp_client_id", "", "Client ID registered at the IdP")
 	idpClientSecret = flag.String("idp_client_secret", "", "Client secret at the IdP (optional for public clients)")
 
-	// MCP Server configuration
+	// MCP Server configuration.
 	mcpServerURL     = flag.String("mcp_server", "http://localhost:8000/mcp", "URL of the MCP server")
 	mcpAuthServerURL = flag.String("mcp_auth_server", "https://auth.mcpserver.example", "MCP server's authorization server URL")
 	mcpResourceURI   = flag.String("mcp_resource_uri", "https://mcp.mcpserver.example", "MCP server's resource identifier (RFC 9728)")
 	mcpClientID      = flag.String("mcp_client_id", "", "Client ID at the MCP server (optional)")
 	mcpClientSecret  = flag.String("mcp_client_secret", "", "Client secret at the MCP server (optional)")
 
-	// OAuth callback configuration
+	// OAuth callback configuration.
 	callbackPort = flag.Int("callback_port", 3142, "Port for the local HTTP server that will receive the OAuth callback")
 )
 
@@ -52,7 +52,7 @@ type codeReceiver struct {
 func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		// Extract the authorization code and state from the callback URL
+		// Extract the authorization code and state from the callback URL.
 		r.authChan <- &auth.AuthorizationResult{
 			Code:  req.URL.Query().Get("code"),
 			State: req.URL.Query().Get("state"),
@@ -93,12 +93,12 @@ func (r *codeReceiver) close() {
 func main() {
 	flag.Parse()
 
-	// Validate required configuration
+	// Validate required configuration.
 	if *idpClientID == "" {
 		log.Fatal("--idp_client_id is required")
 	}
 
-	// Set up the OAuth callback receiver
+	// Set up the OAuth callback receiver.
 	receiver := &codeReceiver{
 		authChan: make(chan *auth.AuthorizationResult),
 		errChan:  make(chan error),
@@ -112,7 +112,7 @@ func main() {
 
 	log.Printf("OAuth callback server listening on http://localhost:%d", *callbackPort)
 
-	// Create an ID Token fetcher that performs OIDC login with the enterprise IdP
+	// Create an ID Token fetcher that performs OIDC login with the enterprise IdP.
 	idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
 		log.Println("Starting OIDC login flow...")
 
@@ -126,7 +126,7 @@ func main() {
 			Scopes:      []string{"openid", "profile", "email"},
 		}
 
-		// PerformOIDCLogin handles the complete OIDC Authorization Code flow with PKCE
+		// PerformOIDCLogin handles the complete OIDC Authorization Code flow with PKCE.
 		tokens, err := extauth.PerformOIDCLogin(ctx, oidcConfig, receiver.getAuthorizationCode)
 		if err != nil {
 			return nil, fmt.Errorf("OIDC login failed: %w", err)
@@ -136,21 +136,21 @@ func main() {
 		return &extauth.IDTokenResult{Token: tokens.IDToken}, nil
 	}
 
-	// Create the Enterprise Handler
+	// Create the Enterprise Handler.
 	// This handler implements the complete Enterprise Managed Authorization flow:
-	// 1. OIDC Login: User authenticates with enterprise IdP → ID Token (via idTokenFetcher)
-	// 2. Token Exchange (RFC 8693): ID Token → ID-JAG at IdP
-	// 3. JWT Bearer Grant (RFC 7523): ID-JAG → Access Token at MCP Server
+	// 1. OIDC Login: User authenticates with enterprise IdP → ID Token (via idTokenFetcher).
+	// 2. Token Exchange (RFC 8693): ID Token → ID-JAG at IdP.
+	// 3. JWT Bearer Grant (RFC 7523): ID-JAG → Access Token at MCP Server.
 	log.Println("Creating enterprise authorization handler...")
 	enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
-		// IdP configuration (where the user authenticates)
+		// IdP configuration (where the user authenticates).
 		IdPIssuerURL: *idpIssuerURL,
 		IdPCredentials: &oauthex.ClientCredentials{
 			ClientID:     *idpClientID,
 			ClientSecret: *idpClientSecret,
 		},
 
-		// MCP Server configuration (the resource being accessed)
+		// MCP Server configuration (the resource being accessed).
 		MCPAuthServerURL: *mcpAuthServerURL,
 		MCPResourceURI:   *mcpResourceURI,
 		MCPCredentials: &oauthex.ClientCredentials{
@@ -159,14 +159,14 @@ func main() {
 		},
 		MCPScopes: []string{"read", "write"},
 
-		// ID Token fetcher (performs OIDC login when needed)
+		// ID Token fetcher (performs OIDC login when needed).
 		IDTokenFetcher: idTokenFetcher,
 	})
 	if err != nil {
 		log.Fatalf("failed to create enterprise handler: %v", err)
 	}
 
-	// Create the MCP client transport with the enterprise handler
+	// Create the MCP client transport with the enterprise handler.
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:     *mcpServerURL,
 		OAuthHandler: enterpriseHandler,
@@ -187,7 +187,7 @@ func main() {
 
 	log.Println("Successfully connected to MCP server!")
 
-	// List available tools as a demonstration
+	// List available tools as a demonstration.
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
 		log.Fatalf("failed to list tools: %v", err)

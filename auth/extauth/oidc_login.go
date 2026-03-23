@@ -71,11 +71,6 @@ type OIDCTokenResponse struct {
 // PerformOIDCLogin performs the complete OIDC Authorization Code flow with PKCE
 // in a single function call. This is the recommended approach for obtaining an
 // ID Token for use with [EnterpriseHandler].
-//
-// The authCodeFetcher callback handles the user interaction:
-//   - Directing the user to the IdP login page
-//   - Waiting for the redirect with the authorization code
-//   - Validating CSRF state and returning the result
 func PerformOIDCLogin(
 	ctx context.Context,
 	config *OIDCLoginConfig,
