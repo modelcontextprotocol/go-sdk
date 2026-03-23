@@ -68,19 +68,6 @@ type OIDCTokenResponse struct {
 	ExpiresAt int64
 }
 
-// AuthorizationCodeFetcher is a callback function that handles directing the user
-// to the authorization URL and returning the authorization result.
-//
-// Implementations should:
-//  1. Direct the user to args.URL (e.g., open in browser)
-//  2. Wait for the IdP redirect to the configured RedirectURL
-//  3. Extract the code and state from the redirect query parameters
-//  4. Return them in auth.AuthorizationResult
-//
-// The implementation MUST verify that the returned state matches the state
-// sent in the authorization request (available via parsing args.URL).
-type AuthorizationCodeFetcher func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error)
-
 // PerformOIDCLogin performs the complete OIDC Authorization Code flow with PKCE
 // in a single function call. This is the recommended approach for obtaining an
 // ID Token for use with [EnterpriseHandler].
@@ -92,7 +79,7 @@ type AuthorizationCodeFetcher func(ctx context.Context, args auth.AuthorizationA
 func PerformOIDCLogin(
 	ctx context.Context,
 	config *OIDCLoginConfig,
-	authCodeFetcher AuthorizationCodeFetcher,
+	authCodeFetcher auth.AuthorizationCodeFetcher,
 ) (*OIDCTokenResponse, error) {
 	if authCodeFetcher == nil {
 		return nil, fmt.Errorf("authCodeFetcher is required")
@@ -103,7 +90,7 @@ func PerformOIDCLogin(
 		return nil, fmt.Errorf("failed to initiate OIDC login: %w", err)
 	}
 
-	authResult, err := authCodeFetcher(ctx, auth.AuthorizationArgs{URL: authReq.authURL})
+	authResult, err := authCodeFetcher(ctx, &auth.AuthorizationArgs{URL: authReq.authURL})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization code: %w", err)
 	}

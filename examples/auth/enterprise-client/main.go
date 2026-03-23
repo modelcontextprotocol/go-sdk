@@ -71,7 +71,7 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 
 // getAuthorizationCode implements the AuthorizationCodeFetcher interface.
 // It displays the authorization URL to the user and waits for the callback.
-func (r *codeReceiver) getAuthorizationCode(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+func (r *codeReceiver) getAuthorizationCode(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 	fmt.Printf("\nPlease open the following URL in your browser to authenticate:\n%s\n\n", args.URL)
 	select {
 	case authRes := <-r.authChan:

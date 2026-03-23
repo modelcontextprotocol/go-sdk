@@ -68,11 +68,20 @@ type AuthorizationResult struct {
 	State string
 }
 
-// AuthorizationArgs is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
+// AuthorizationArgs is the input to [AuthorizationCodeFetcher].
 type AuthorizationArgs struct {
 	// Authorization URL to be opened in a browser for the user to start the authorization process.
 	URL string
 }
+
+// AuthorizationCodeFetcher is called to initiate the OAuth authorization flow.
+// It is responsible for directing the user to the authorization URL (e.g., opening
+// in a browser) and returning the authorization code and state once the Authorization
+// Server redirects back to the configured RedirectURL.
+//
+// The implementation MUST verify that the returned state matches the state
+// sent in the authorization request (available by parsing args.URL).
+type AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
 
 // AuthorizationCodeHandlerConfig is the configuration for [AuthorizationCodeHandler].
 type AuthorizationCodeHandlerConfig struct {
@@ -98,10 +107,8 @@ type AuthorizationCodeHandlerConfig struct {
 	RedirectURL string
 
 	// AuthorizationCodeFetcher is a required function called to initiate the authorization flow.
-	// It is responsible for opening the URL in a browser for the user to start the authorization process.
-	// It should return the authorization code and state once the Authorization Server
-	// redirects back to the RedirectURL.
-	AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
+	// See [AuthorizationCodeFetcher] for details.
+	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
 	// Client is an optional HTTP client to use for HTTP requests.
 	// It is used for the following requests:

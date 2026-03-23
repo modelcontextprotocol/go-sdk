@@ -419,7 +419,7 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("successful flow", func(t *testing.T) {
 		tokens, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				// Validate authURL has required parameters
 				u, err := url.Parse(args.URL)
 				if err != nil {
@@ -454,7 +454,7 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("state mismatch", func(t *testing.T) {
 		_, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				// Return wrong state to simulate CSRF attack
 				return &auth.AuthorizationResult{
 					Code:  "mock-auth-code",
@@ -472,7 +472,7 @@ func TestPerformOIDCLogin(t *testing.T) {
 
 	t.Run("fetcher error", func(t *testing.T) {
 		_, err := PerformOIDCLogin(context.Background(), config,
-			func(ctx context.Context, args auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				return nil, fmt.Errorf("user cancelled")
 			})
 
