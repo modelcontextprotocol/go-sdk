@@ -896,10 +896,24 @@ func TestStreamableServerTransport(t *testing.T) {
 				},
 				{
 					method:         "POST",
-					headers:        http.Header{"Accept": {"text/*, application/*"}},
-					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					headers:        http.Header{"Accept": {"application/json;charset=utf-8, text/event-stream"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{Content: []Content{}}, nil)},
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"application/json;charset=utf-8", "text/event-stream"}},
+					messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/*, application/*"}},
+					messages:       []jsonrpc.Message{req(7, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
 				},
 			},
 			wantSessions: 1,
@@ -1960,11 +1974,48 @@ func TestStreamableGETWithoutSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// GET without session should return 400 Bad Request, not 405 Method Not Allowed,
 	// because GET is a valid method - it just requires a session ID.
 	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 		t.Errorf("status code: got %d, want %d", got, want)
+	}
+	if got, want := strings.TrimSpace(string(body)), "Bad Request: GET requires an Mcp-Session-Id header"; got != want {
+		t.Errorf("body: got %q, want %q", got, want)
+	}
+}
+
+func TestStreamableGETWithoutEventStreamAccept(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest("GET", httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+		t.Errorf("status code: got %d, want %d", got, want)
+	}
+	if got, want := strings.TrimSpace(string(body)), "Accept must contain 'text/event-stream' for GET requests"; got != want {
+		t.Errorf("body: got %q, want %q", got, want)
 	}
 }
 
