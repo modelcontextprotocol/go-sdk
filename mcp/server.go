@@ -1028,6 +1028,13 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
 	}
+
+	// Start keepalive before returning the session to avoid race conditions with Close.
+	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
+	if s.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
+	}
+
 	return ss, nil
 }
 
@@ -1054,9 +1061,6 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if wasInitd {
 		ss.server.opts.Logger.Error("duplicate initialized notification")
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
-	}
-	if ss.server.opts.KeepAlive > 0 {
-		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
@@ -1107,7 +1111,7 @@ type ServerSession struct {
 	server          *Server
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
-	keepaliveCancel context.CancelFunc // TODO: theory around why keepaliveCancel need not be guarded
+	keepaliveCancel context.CancelFunc
 
 	mu    sync.Mutex
 	state ServerSessionState
