@@ -46,9 +46,9 @@ func TestAuthorize(t *testing.T) {
 
 	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
 		RedirectURL: "http://localhost:12345/callback",
-		PreregisteredClientConfig: &PreregisteredClientConfig{
-			ClientSecretAuthConfig: &ClientSecretAuthConfig{
-				ClientID:     "test_client_id",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
 				ClientSecret: "test_client_secret",
 			},
 		},
@@ -154,9 +154,9 @@ func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
 		{
 			name: "PreregisteredClientConfig",
 			config: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "test_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "test_client_secret",
 					},
 				},
@@ -223,7 +223,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
 				cfg.ClientIDMetadataDocumentConfig = nil
-				cfg.PreregisteredClientConfig = nil
+				cfg.PreregisteredClient = nil
 				cfg.DynamicClientRegistrationConfig = nil
 				return cfg
 			},
@@ -256,7 +256,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_MissingSecretConfig",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{}
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{}
 				return cfg
 			},
 		},
@@ -264,8 +264,9 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptyID",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "secret",
 					},
 				}
@@ -276,9 +277,10 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptySecret",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID: "test_client_id",
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "",
 					},
 				}
 				return cfg
@@ -588,9 +590,9 @@ func TestHandleRegistration(t *testing.T) {
 				},
 			},
 			handlerConfig: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "pre_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "pre_client_secret",
 					},
 				},

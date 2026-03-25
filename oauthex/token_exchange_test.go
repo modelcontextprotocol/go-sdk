@@ -129,8 +129,10 @@ func TestExchangeToken(t *testing.T) {
 			server.URL,
 			req,
 			&ClientCredentials{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
+				ClientID: "test-client-id",
+				ClientSecretAuth: &ClientSecretAuth{
+					ClientSecret: "test-client-secret",
+				},
 			},
 			server.Client(),
 		)
@@ -174,8 +176,10 @@ func TestExchangeToken(t *testing.T) {
 			server.URL,
 			req,
 			&ClientCredentials{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
+				ClientID: "test-client-id",
+				ClientSecretAuth: &ClientSecretAuth{
+					ClientSecret: "test-client-secret",
+				},
 			},
 			server.Client(),
 		)
@@ -200,8 +204,10 @@ func TestExchangeToken(t *testing.T) {
 			server.URL,
 			req,
 			&ClientCredentials{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
+				ClientID: "test-client-id",
+				ClientSecretAuth: &ClientSecretAuth{
+					ClientSecret: "test-client-secret",
+				},
 			},
 			server.Client(),
 		)

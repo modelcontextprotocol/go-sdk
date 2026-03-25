@@ -188,8 +188,10 @@ func TestCompleteOIDCLogin(t *testing.T) {
 	config := &OIDCLoginConfig{
 		IssuerURL: idpServer.URL,
 		Credentials: &oauthex.ClientCredentials{
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ClientID: "test-client",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test-secret",
+			},
 		},
 		RedirectURL: "http://localhost:8080/callback",
 		Scopes:      []string{"openid", "profile", "email"},
@@ -276,8 +278,10 @@ func TestOIDCLoginE2E(t *testing.T) {
 	config := &OIDCLoginConfig{
 		IssuerURL: idpServer.URL,
 		Credentials: &oauthex.ClientCredentials{
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ClientID: "test-client",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test-secret",
+			},
 		},
 		RedirectURL: "http://localhost:8080/callback",
 		Scopes:      []string{"openid", "profile", "email"},
@@ -409,8 +413,10 @@ func TestPerformOIDCLogin(t *testing.T) {
 	config := &OIDCLoginConfig{
 		IssuerURL: idpServer.URL,
 		Credentials: &oauthex.ClientCredentials{
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ClientID: "test-client",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test-secret",
+			},
 		},
 		RedirectURL: "http://localhost:8080/callback",
 		Scopes:      []string{"openid", "profile", "email"},
