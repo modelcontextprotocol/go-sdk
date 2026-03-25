@@ -45,8 +45,9 @@ type EnterpriseHandlerConfig struct {
 	IdPIssuerURL string
 
 	// IdPCredentials contains the MCP Client's credentials registered at the IdP.
-	// OPTIONAL. Set to nil for public clients. Required if the IdP requires client
-	// authentication for token exchange.
+	// REQUIRED. These credentials are used for token exchange at the IdP.
+	// The ClientID is always required. ClientSecretAuth is optional and only needed
+	// if the IdP requires client authentication (confidential clients).
 	IdPCredentials *oauthex.ClientCredentials
 
 	// MCP Server configuration (the resource being accessed)
@@ -62,7 +63,9 @@ type EnterpriseHandlerConfig struct {
 	MCPResourceURI string
 
 	// MCPCredentials contains the MCP Client's credentials registered at the MCP Server.
-	// OPTIONAL. Set to nil if the MCP Server doesn't require client authentication.
+	// REQUIRED. These credentials are used for JWT Bearer grant at the MCP Server.
+	// The ClientID is always required. ClientSecretAuth is optional and only needed
+	// if the MCP Server requires client authentication.
 	MCPCredentials *oauthex.ClientCredentials
 
 	// MCPScopes is the list of scopes to request at the MCP Server.
@@ -108,11 +111,23 @@ func NewEnterpriseHandler(config *EnterpriseHandlerConfig) (*EnterpriseHandler, 
 	if config.IdPIssuerURL == "" {
 		return nil, errors.New("IdPIssuerURL is required")
 	}
+	if config.IdPCredentials == nil {
+		return nil, errors.New("IdPCredentials is required")
+	}
+	if err := config.IdPCredentials.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid IdPCredentials: %w", err)
+	}
 	if config.MCPAuthServerURL == "" {
 		return nil, errors.New("MCPAuthServerURL is required")
 	}
 	if config.MCPResourceURI == "" {
 		return nil, errors.New("MCPResourceURI is required")
+	}
+	if config.MCPCredentials == nil {
+		return nil, errors.New("MCPCredentials is required")
+	}
+	if err := config.MCPCredentials.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid MCPCredentials: %w", err)
 	}
 	if config.IDTokenFetcher == nil {
 		return nil, errors.New("IDTokenFetcher is required")
@@ -203,12 +218,15 @@ func exchangeJWTBearer(
 	httpClient *http.Client,
 ) (*oauth2.Token, error) {
 	cfg := &oauth2.Config{
-		ClientID:     clientCreds.ClientID,
-		ClientSecret: clientCreds.ClientSecret,
+		ClientID: clientCreds.ClientID,
 		Endpoint: oauth2.Endpoint{
 			TokenURL:  tokenEndpoint,
 			AuthStyle: oauth2.AuthStyleInParams,
 		},
+	}
+	// Set ClientSecret if ClientSecretAuth is configured
+	if clientCreds.ClientSecretAuth != nil {
+		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
 	}
 
 	if httpClient == nil {

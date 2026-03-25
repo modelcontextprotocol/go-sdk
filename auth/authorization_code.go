@@ -21,18 +21,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// ClientSecretAuthConfig is used to configure client authentication using client_secret.
-// Authentication method will be selected based on the authorization server's supported methods,
-// according to the following preference order:
-//  1. client_secret_post
-//  2. client_secret_basic
-type ClientSecretAuthConfig struct {
-	// ClientID is the client ID to be used for client authentication.
-	ClientID string
-	// ClientSecret is the client secret to be used for client authentication.
-	ClientSecret string
-}
-
 // ClientIDMetadataDocumentConfig is used to configure the Client ID Metadata Document
 // based client registration per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents.
@@ -41,14 +29,6 @@ type ClientIDMetadataDocumentConfig struct {
 	// URL is the client identifier URL as per
 	// https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00#section-3.
 	URL string
-}
-
-// PreregisteredClientConfig is used to configure a pre-registered client per
-// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration.
-// Currently only "client_secret_basic" and "client_secret_post" authentication methods are supported.
-type PreregisteredClientConfig struct {
-	// ClientSecretAuthConfig is the client_secret based configuration to be used for client authentication.
-	ClientSecretAuthConfig *ClientSecretAuthConfig
 }
 
 // DynamicClientRegistrationConfig is used to configure dynamic client registration per
@@ -92,7 +72,7 @@ type AuthorizationCodeHandlerConfig struct {
 	//  3. Dynamic Client Registration
 	// At least one method must be configured.
 	ClientIDMetadataDocumentConfig  *ClientIDMetadataDocumentConfig
-	PreregisteredClientConfig       *PreregisteredClientConfig
+	PreregisteredClient             *oauthex.ClientCredentials
 	DynamicClientRegistrationConfig *DynamicClientRegistrationConfig
 
 	// RedirectURL is a required URL to redirect to after authorization.
@@ -149,7 +129,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		return nil, errors.New("config must be provided")
 	}
 	if config.ClientIDMetadataDocumentConfig == nil &&
-		config.PreregisteredClientConfig == nil &&
+		config.PreregisteredClient == nil &&
 		config.DynamicClientRegistrationConfig == nil {
 		return nil, errors.New("at least one client registration configuration must be provided")
 	}
@@ -159,13 +139,9 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
 		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
 	}
-	preCfg := config.PreregisteredClientConfig
-	if preCfg != nil {
-		if preCfg.ClientSecretAuthConfig == nil {
-			return nil, errors.New("ClientSecretAuthConfig is required for pre-registered client")
-		}
-		if preCfg.ClientSecretAuthConfig.ClientID == "" || preCfg.ClientSecretAuthConfig.ClientSecret == "" {
-			return nil, fmt.Errorf("pre-registered client ID or secret is empty")
+	if config.PreregisteredClient != nil {
+		if err := config.PreregisteredClient.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid PreregisteredClient configuration: %w", err)
 		}
 	}
 	dCfg := config.DynamicClientRegistrationConfig
@@ -444,13 +420,17 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 		}, nil
 	}
 	// 2. Attempt to use pre-registered client configuration.
-	pCfg := h.config.PreregisteredClientConfig
-	if pCfg != nil {
+	preCfg := h.config.PreregisteredClient
+	if preCfg != nil {
 		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported)
+		clientSecret := ""
+		if preCfg.ClientSecretAuth != nil {
+			clientSecret = preCfg.ClientSecretAuth.ClientSecret
+		}
 		return &resolvedClientConfig{
 			registrationType: registrationTypePreregistered,
-			clientID:         pCfg.ClientSecretAuthConfig.ClientID,
-			clientSecret:     pCfg.ClientSecretAuthConfig.ClientSecret,
+			clientID:         preCfg.ClientID,
+			clientSecret:     clientSecret,
 			authStyle:        authStyle,
 		}, nil
 	}

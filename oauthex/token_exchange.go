@@ -34,17 +34,6 @@ const (
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
-// ClientCredentials holds client authentication credentials for OAuth token requests.
-type ClientCredentials struct {
-	// ClientID is the OAuth2 client identifier.
-	// REQUIRED.
-	ClientID string
-
-	// ClientSecret is the OAuth2 client secret for confidential clients.
-	// OPTIONAL. Not required for public clients.
-	ClientSecret string
-}
-
 // TokenExchangeRequest represents a Token Exchange request per RFC 8693.
 // This is used for Enterprise Managed Authorization (SEP-990) where an MCP Client
 // exchanges an ID Token from an enterprise IdP for an ID-JAG that can be used
@@ -125,8 +114,11 @@ func ExchangeToken(
 	if clientCreds == nil {
 		return nil, fmt.Errorf("client credentials are required")
 	}
+	if err := clientCreds.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid client credentials: %w", err)
+	}
 
-	// Validate required fields per SEP-990 Section 4
+	// Validate required fields per SEP-990 Section 4.
 	if req.RequestedTokenType == "" {
 		return nil, fmt.Errorf("requested_token_type is required")
 	}
@@ -143,7 +135,7 @@ func ExchangeToken(
 		return nil, fmt.Errorf("subject_token_type is required")
 	}
 
-	// Validate URL schemes to prevent XSS attacks (see #526)
+	// Validate URL schemes to prevent XSS attacks (see #526).
 	if err := CheckURLScheme(tokenEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid token endpoint: %w", err)
 	}
@@ -159,21 +151,24 @@ func ExchangeToken(
 	// The oauth2 library's Exchange method sends an empty code, but compliant
 	// servers should ignore it.
 	cfg := &oauth2.Config{
-		ClientID:     clientCreds.ClientID,
-		ClientSecret: clientCreds.ClientSecret,
+		ClientID: clientCreds.ClientID,
 		Endpoint: oauth2.Endpoint{
 			TokenURL:  tokenEndpoint,
 			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}
+	// Set ClientSecret if ClientSecretAuth is configured.
+	if clientCreds.ClientSecretAuth != nil {
+		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
+	}
 
-	// Use custom HTTP client if provided
+	// Use custom HTTP client if provided.
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
-	// Build token exchange parameters per RFC 8693
+	// Build token exchange parameters per RFC 8693.
 	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("grant_type", GrantTypeTokenExchange),
 		oauth2.SetAuthURLParam("requested_token_type", req.RequestedTokenType),
@@ -204,19 +199,19 @@ func ExchangeToken(
 		return nil, fmt.Errorf("response missing required field: issued_token_type")
 	}
 
-	// Build TokenExchangeResponse from oauth2.Token
+	// Build TokenExchangeResponse from oauth2.Token.
 	resp := &TokenExchangeResponse{
 		IssuedTokenType: issuedTokenType,
 		AccessToken:     token.AccessToken,
 		TokenType:       token.TokenType,
 	}
 
-	// Extract optional fields from Extra
+	// Extract optional fields from Extra.
 	if scope, ok := token.Extra("scope").(string); ok {
 		resp.Scope = scope
 	}
 
-	// Calculate expires_in from token.Expiry if available
+	// Calculate expires_in from token.Expiry if available.
 	if !token.Expiry.IsZero() {
 		resp.ExpiresIn = int(token.Expiry.Sub(token.Expiry).Seconds()) // This would be 0
 		// Actually get the raw expires_in if available
@@ -227,3 +222,4 @@ func ExchangeToken(
 
 	return resp, nil
 }
+

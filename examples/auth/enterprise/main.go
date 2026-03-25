@@ -116,12 +116,18 @@ func main() {
 	idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
 		log.Println("Starting OIDC login flow...")
 
-		oidcConfig := &extauth.OIDCLoginConfig{
-			IssuerURL: *idpIssuerURL,
-			Credentials: &oauthex.ClientCredentials{
-				ClientID:     *idpClientID,
+		creds := &oauthex.ClientCredentials{
+			ClientID: *idpClientID,
+		}
+		if *idpClientSecret != "" {
+			creds.ClientSecretAuth = &oauthex.ClientSecretAuth{
 				ClientSecret: *idpClientSecret,
-			},
+			}
+		}
+
+		oidcConfig := &extauth.OIDCLoginConfig{
+			IssuerURL:   *idpIssuerURL,
+			Credentials: creds,
 			RedirectURL: fmt.Sprintf("http://localhost:%d", *callbackPort),
 			Scopes:      []string{"openid", "profile", "email"},
 		}
@@ -142,22 +148,40 @@ func main() {
 	// 2. Token Exchange (RFC 8693): ID Token → ID-JAG at IdP.
 	// 3. JWT Bearer Grant (RFC 7523): ID-JAG → Access Token at MCP Server.
 	log.Println("Creating enterprise authorization handler...")
+
+	// Prepare IdP credentials
+	idpCreds := &oauthex.ClientCredentials{
+		ClientID: *idpClientID,
+	}
+	if *idpClientSecret != "" {
+		idpCreds.ClientSecretAuth = &oauthex.ClientSecretAuth{
+			ClientSecret: *idpClientSecret,
+		}
+	}
+
+	// Prepare MCP credentials
+	var mcpCreds *oauthex.ClientCredentials
+	if *mcpClientID != "" {
+		mcpCreds = &oauthex.ClientCredentials{
+			ClientID: *mcpClientID,
+		}
+		if *mcpClientSecret != "" {
+			mcpCreds.ClientSecretAuth = &oauthex.ClientSecretAuth{
+				ClientSecret: *mcpClientSecret,
+			}
+		}
+	}
+
 	enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
 		// IdP configuration (where the user authenticates).
-		IdPIssuerURL: *idpIssuerURL,
-		IdPCredentials: &oauthex.ClientCredentials{
-			ClientID:     *idpClientID,
-			ClientSecret: *idpClientSecret,
-		},
+		IdPIssuerURL:   *idpIssuerURL,
+		IdPCredentials: idpCreds,
 
 		// MCP Server configuration (the resource being accessed).
 		MCPAuthServerURL: *mcpAuthServerURL,
 		MCPResourceURI:   *mcpResourceURI,
-		MCPCredentials: &oauthex.ClientCredentials{
-			ClientID:     *mcpClientID,
-			ClientSecret: *mcpClientSecret,
-		},
-		MCPScopes: []string{"read", "write"},
+		MCPCredentials:   mcpCreds,
+		MCPScopes:        []string{"read", "write"},
 
 		// ID Token fetcher (performs OIDC login when needed).
 		IDTokenFetcher: idTokenFetcher,

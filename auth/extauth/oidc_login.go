@@ -164,14 +164,17 @@ func initiateOIDCLogin(
 	state := rand.Text()
 
 	oauth2Config := &oauth2.Config{
-		ClientID:     config.Credentials.ClientID,
-		ClientSecret: config.Credentials.ClientSecret,
-		RedirectURL:  config.RedirectURL,
-		Scopes:       config.Scopes,
+		ClientID:    config.Credentials.ClientID,
+		RedirectURL: config.RedirectURL,
+		Scopes:      config.Scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  meta.AuthorizationEndpoint,
 			TokenURL: meta.TokenEndpoint,
 		},
+	}
+	// Set ClientSecret if ClientSecretAuth is configured
+	if config.Credentials.ClientSecretAuth != nil {
+		oauth2Config.ClientSecret = config.Credentials.ClientSecretAuth.ClientSecret
 	}
 
 	authURLOpts := []oauth2.AuthCodeOption{
