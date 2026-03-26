@@ -52,30 +52,21 @@ type OIDCLoginConfig struct {
 	HTTPClient *http.Client
 }
 
-// OIDCTokenResponse contains the tokens returned from a successful OIDC login.
-type OIDCTokenResponse struct {
-	// IDToken is the OpenID Connect ID Token (JWT).
-	// This can be passed to EnterpriseHandler's IDTokenFetcher.
-	IDToken string
-	// AccessToken is the OAuth2 access token (if issued by IdP).
-	// This is typically not needed for SEP-990, but may be useful for other IdP APIs.
-	AccessToken string
-	// RefreshToken is the OAuth2 refresh token (if issued by IdP).
-	RefreshToken string
-	// TokenType is the token type (typically "Bearer").
-	TokenType string
-	// ExpiresAt is when the ID token expires.
-	ExpiresAt int64
-}
-
 // PerformOIDCLogin performs the complete OIDC Authorization Code flow with PKCE
 // in a single function call. This is the recommended approach for obtaining an
 // ID Token for use with [EnterpriseHandler].
+//
+// Returns an oauth2.Token where:
+//   - Extra("id_token") contains the OpenID Connect ID Token (JWT)
+//   - AccessToken contains the OAuth2 access token (if issued by IdP)
+//   - RefreshToken contains the OAuth2 refresh token (if issued by IdP)
+//   - TokenType is the token type (typically "Bearer")
+//   - Expiry is when the token expires
 func PerformOIDCLogin(
 	ctx context.Context,
 	config *OIDCLoginConfig,
 	authCodeFetcher auth.AuthorizationCodeFetcher,
-) (*OIDCTokenResponse, error) {
+) (*oauth2.Token, error) {
 	if authCodeFetcher == nil {
 		return nil, fmt.Errorf("authCodeFetcher is required")
 	}
@@ -200,7 +191,7 @@ func completeOIDCLogin(
 	oauth2Config *oauth2.Config,
 	authCode string,
 	codeVerifier string,
-) (*OIDCTokenResponse, error) {
+) (*oauth2.Token, error) {
 	if authCode == "" {
 		return nil, fmt.Errorf("authCode is required")
 	}
@@ -223,15 +214,11 @@ func completeOIDCLogin(
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
 
+	// Validate that id_token is present in the response
 	idToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok || idToken == "" {
 		return nil, fmt.Errorf("id_token not found in token response")
 	}
-	return &OIDCTokenResponse{
-		IDToken:      idToken,
-		AccessToken:  oauth2Token.AccessToken,
-		RefreshToken: oauth2Token.RefreshToken,
-		TokenType:    oauth2Token.TokenType,
-		ExpiresAt:    oauth2Token.Expiry.Unix(),
-	}, nil
+
+	return oauth2Token, nil
 }

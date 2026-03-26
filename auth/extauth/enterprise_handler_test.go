@@ -2,479 +2,250 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+// Package extauth provides OAuth handler implementations for MCP authorization extensions.
+// This package implements Enterprise Managed Authorization as defined in SEP-990.
+
 //go:build mcp_go_client_oauth
 
 package extauth
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"golang.org/x/oauth2"
 )
 
-// TestNewEnterpriseHandler_Validation tests validation in NewEnterpriseHandler.
-func TestNewEnterpriseHandler_Validation(t *testing.T) {
-	validConfig := &EnterpriseHandlerConfig{
-		IdPIssuerURL: "https://idp.example.com",
-		IdPCredentials: &oauthex.ClientCredentials{
-			ClientID: "idp_client_id",
-		},
-		MCPAuthServerURL: "https://mcp-auth.example.com",
-		MCPResourceURI:   "https://mcp.example.com",
-		MCPCredentials: &oauthex.ClientCredentials{
-			ClientID: "mcp_client_id",
-		},
-		IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) {
-			return &IDTokenResult{Token: "mock_id_token"}, nil
-		},
-	}
+// grantTypeJWTBearer is the grant type for RFC 7523 JWT Bearer authorization grant.
+const grantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
-	tests := []struct {
-		name      string
-		config    *EnterpriseHandlerConfig
-		wantError string
-	}{
-		{
-			name:      "nil config",
-			config:    nil,
-			wantError: "config must be provided",
-		},
-		{
-			name: "missing IdPIssuerURL",
-			config: &EnterpriseHandlerConfig{
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "IdPIssuerURL is required",
-		},
-		{
-			name: "nil IdPCredentials",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   nil,
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "IdPCredentials is required",
-		},
-		{
-			name: "invalid IdPCredentials - empty ClientID",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL: "https://idp.example.com",
-				IdPCredentials: &oauthex.ClientCredentials{
-					ClientID: "", // Invalid - empty
-				},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "invalid IdPCredentials",
-		},
-		{
-			name: "invalid IdPCredentials - empty ClientSecret in ClientSecretAuth",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL: "https://idp.example.com",
-				IdPCredentials: &oauthex.ClientCredentials{
-					ClientID: "idp_client_id",
-					ClientSecretAuth: &oauthex.ClientSecretAuth{
-						ClientSecret: "", // Invalid - empty secret when ClientSecretAuth is set
-					},
-				},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "invalid IdPCredentials",
-		},
-		{
-			name: "missing MCPAuthServerURL",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "MCPAuthServerURL is required",
-		},
-		{
-			name: "missing MCPResourceURI",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "MCPResourceURI is required",
-		},
-		{
-			name: "nil MCPCredentials",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   nil,
-				IDTokenFetcher:   func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "MCPCredentials is required",
-		},
-		{
-			name: "invalid MCPCredentials - empty ClientID",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials: &oauthex.ClientCredentials{
-					ClientID: "", // Invalid - empty
-				},
-				IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) { return nil, nil },
-			},
-			wantError: "invalid MCPCredentials",
-		},
-		{
-			name: "missing IDTokenFetcher",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL:     "https://idp.example.com",
-				IdPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials:   &oauthex.ClientCredentials{ClientID: "id"},
-				IDTokenFetcher:   nil,
-			},
-			wantError: "IDTokenFetcher is required",
-		},
-		{
-			name:      "valid config - public clients (no ClientSecretAuth)",
-			config:    validConfig,
-			wantError: "",
-		},
-		{
-			name: "valid config - confidential clients (with ClientSecretAuth)",
-			config: &EnterpriseHandlerConfig{
-				IdPIssuerURL: "https://idp.example.com",
-				IdPCredentials: &oauthex.ClientCredentials{
-					ClientID: "idp_client_id",
-					ClientSecretAuth: &oauthex.ClientSecretAuth{
-						ClientSecret: "idp_secret",
-					},
-				},
-				MCPAuthServerURL: "https://mcp-auth.example.com",
-				MCPResourceURI:   "https://mcp.example.com",
-				MCPCredentials: &oauthex.ClientCredentials{
-					ClientID: "mcp_client_id",
-					ClientSecretAuth: &oauthex.ClientSecretAuth{
-						ClientSecret: "mcp_secret",
-					},
-				},
-				IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) {
-					return &IDTokenResult{Token: "mock_id_token"}, nil
-				},
-			},
-			wantError: "",
-		},
-	}
+// IDTokenFetcher is called to obtain an ID Token from the enterprise IdP.
+// This is typically done via OIDC login flow where the user authenticates
+// with their enterprise identity provider.
+//
+// Returns an oauth2.Token where Extra("id_token") contains the OpenID Connect ID Token (JWT).
+type IDTokenFetcher func(ctx context.Context) (*oauth2.Token, error)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler, err := NewEnterpriseHandler(tt.config)
-			if tt.wantError != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tt.wantError)
-				}
-				if !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("expected no error, got %v", err)
-				}
-				if handler == nil {
-					t.Fatal("expected handler to be non-nil")
-				}
-			}
-		})
-	}
+// EnterpriseHandlerConfig is the configuration for [EnterpriseHandler].
+type EnterpriseHandlerConfig struct {
+	// IdP configuration (where the user authenticates)
+
+	// IdPIssuerURL is the enterprise IdP's issuer URL (e.g., "https://acme.okta.com").
+	// Used for OIDC discovery to find the token endpoint.
+	// REQUIRED.
+	IdPIssuerURL string
+
+	// IdPCredentials contains the MCP Client's credentials registered at the IdP.
+	// REQUIRED. These credentials are used for token exchange at the IdP.
+	// The ClientID is always required. ClientSecretAuth is optional and only needed
+	// if the IdP requires client authentication (confidential clients).
+	IdPCredentials *oauthex.ClientCredentials
+
+	// MCP Server configuration (the resource being accessed)
+
+	// MCPAuthServerURL is the MCP Server's authorization server issuer URL.
+	// Used as the audience for token exchange and for metadata discovery.
+	// REQUIRED.
+	MCPAuthServerURL string
+
+	// MCPResourceURI is the MCP Server's resource identifier (RFC 9728).
+	// Used as the resource parameter in token exchange.
+	// REQUIRED.
+	MCPResourceURI string
+
+	// MCPCredentials contains the MCP Client's credentials registered at the MCP Server.
+	// REQUIRED. These credentials are used for JWT Bearer grant at the MCP Server.
+	// The ClientID is always required. ClientSecretAuth is optional and only needed
+	// if the MCP Server requires client authentication.
+	MCPCredentials *oauthex.ClientCredentials
+
+	// MCPScopes is the list of scopes to request at the MCP Server.
+	// OPTIONAL.
+	MCPScopes []string
+
+	// IDTokenFetcher is called to obtain an ID Token when authorization is needed.
+	// The implementation should handle the OIDC login flow (e.g., browser redirect,
+	// callback handling) and return the ID token.
+	// REQUIRED.
+	IDTokenFetcher IDTokenFetcher
+
+	// HTTPClient is an optional HTTP client for customization.
+	// If nil, http.DefaultClient is used.
+	// OPTIONAL.
+	HTTPClient *http.Client
 }
 
-// TestEnterpriseHandler_Authorize_E2E tests the complete enterprise authorization flow.
-func TestEnterpriseHandler_Authorize_E2E(t *testing.T) {
-	// Set up IdP (Identity Provider) fake server with token exchange support
-	idpServer := setupIdPServer(t)
+// EnterpriseHandler is an implementation of [auth.OAuthHandler] that uses
+// Enterprise Managed Authorization (SEP-990) to obtain access tokens.
+//
+// The flow consists of:
+//  1. OIDC Login: User authenticates with enterprise IdP → ID Token
+//  2. Token Exchange (RFC 8693): ID Token → ID-JAG at IdP
+//  3. JWT Bearer Grant (RFC 7523): ID-JAG → Access Token at MCP Server
+type EnterpriseHandler struct {
+	auth.OAuthHandlerBase
+	config *EnterpriseHandlerConfig
 
-	// Set up MCP authorization server with JWT bearer grant support
-	mcpAuthServer := setupMCPAuthServer(t)
-
-	// Create enterprise handler
-	handler, err := NewEnterpriseHandler(&EnterpriseHandlerConfig{
-		IdPIssuerURL: idpServer.URL,
-		IdPCredentials: &oauthex.ClientCredentials{
-			ClientID: "idp_client_id",
-			ClientSecretAuth: &oauthex.ClientSecretAuth{
-				ClientSecret: "idp_secret",
-			},
-		},
-		MCPAuthServerURL: mcpAuthServer.URL,
-		MCPResourceURI:   "https://mcp.example.com",
-		MCPCredentials: &oauthex.ClientCredentials{
-			ClientID: "mcp_client_id",
-			ClientSecretAuth: &oauthex.ClientSecretAuth{
-				ClientSecret: "mcp_secret",
-			},
-		},
-		MCPScopes: []string{"read", "write"},
-		IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) {
-			return &IDTokenResult{Token: "mock_id_token_from_user_login"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewEnterpriseHandler failed: %v", err)
-	}
-
-	// Simulate a 401 response from MCP server
-	req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/api", nil)
-	resp := &http.Response{
-		StatusCode: http.StatusUnauthorized,
-		Header:     make(http.Header),
-		Body:       http.NoBody,
-		Request:    req,
-	}
-
-	// Perform authorization
-	if err := handler.Authorize(context.Background(), req, resp); err != nil {
-		t.Fatalf("Authorize failed: %v", err)
-	}
-
-	// Verify token source is set
-	tokenSource, err := handler.TokenSource(context.Background())
-	if err != nil {
-		t.Fatalf("TokenSource failed: %v", err)
-	}
-	if tokenSource == nil {
-		t.Fatal("expected token source to be set after authorization")
-	}
-
-	// Verify we can get a token
-	token, err := tokenSource.Token()
-	if err != nil {
-		t.Fatalf("Token() failed: %v", err)
-	}
-	if token.AccessToken != "mcp_access_token_from_jwt_bearer" {
-		t.Errorf("unexpected access token: got %q, want %q",
-			token.AccessToken, "mcp_access_token_from_jwt_bearer")
-	}
+	// tokenSource is the token source obtained after authorization.
+	tokenSource oauth2.TokenSource
 }
 
-// setupIdPServer creates a fake IdP server that supports token exchange.
-func setupIdPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
+// Compile-time check that EnterpriseHandler implements auth.OAuthHandler.
+var _ auth.OAuthHandler = (*EnterpriseHandler)(nil)
 
-	var server *httptest.Server
-
-	// OAuth/OIDC metadata endpoint - uses closure to get server URL
-	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"issuer":                           server.URL,
-			"token_endpoint":                   server.URL + "/token",
-			"authorization_endpoint":           server.URL + "/authorize",
-			"code_challenge_methods_supported": []string{"S256"},
-		})
-	})
-
-	// Token endpoint - supports token exchange (RFC 8693)
-	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "failed to parse form", http.StatusBadRequest)
-			return
-		}
-
-		grantType := r.Form.Get("grant_type")
-		if grantType != oauthex.GrantTypeTokenExchange {
-			http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
-			return
-		}
-
-		// Verify client authentication
-		clientID := r.Form.Get("client_id")
-		clientSecret := r.Form.Get("client_secret")
-		if clientID != "idp_client_id" || clientSecret != "idp_secret" {
-			http.Error(w, "invalid client credentials", http.StatusUnauthorized)
-			return
-		}
-
-		// Verify token exchange parameters
-		if r.Form.Get("requested_token_type") != oauthex.TokenTypeIDJAG {
-			http.Error(w, "invalid requested_token_type", http.StatusBadRequest)
-			return
-		}
-		if r.Form.Get("subject_token_type") != oauthex.TokenTypeIDToken {
-			http.Error(w, "invalid subject_token_type", http.StatusBadRequest)
-			return
-		}
-		if r.Form.Get("subject_token") == "" {
-			http.Error(w, "missing subject_token", http.StatusBadRequest)
-			return
-		}
-
-		// Return ID-JAG (Identity Assertion JWT Authorization Grant)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token":      "id-jag-token-from-idp",
-			"issued_token_type": oauthex.TokenTypeIDJAG,
-			"token_type":        "N_A",
-			"expires_in":        300,
-			"scope":             "read write",
-		})
-	})
-
-	server = httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	return server
+// NewEnterpriseHandler creates a new EnterpriseHandler.
+// It performs validation of the configuration and returns an error if invalid.
+func NewEnterpriseHandler(config *EnterpriseHandlerConfig) (*EnterpriseHandler, error) {
+	if config == nil {
+		return nil, errors.New("config must be provided")
+	}
+	if config.IdPIssuerURL == "" {
+		return nil, errors.New("IdPIssuerURL is required")
+	}
+	if config.IdPCredentials == nil {
+		return nil, errors.New("IdPCredentials is required")
+	}
+	if err := config.IdPCredentials.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid IdPCredentials: %w", err)
+	}
+	if config.MCPAuthServerURL == "" {
+		return nil, errors.New("MCPAuthServerURL is required")
+	}
+	if config.MCPResourceURI == "" {
+		return nil, errors.New("MCPResourceURI is required")
+	}
+	if config.MCPCredentials == nil {
+		return nil, errors.New("MCPCredentials is required")
+	}
+	if err := config.MCPCredentials.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid MCPCredentials: %w", err)
+	}
+	if config.IDTokenFetcher == nil {
+		return nil, errors.New("IDTokenFetcher is required")
+	}
+	return &EnterpriseHandler{config: config}, nil
 }
 
-// setupMCPAuthServer creates a fake MCP authorization server that supports JWT bearer grant.
-func setupMCPAuthServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-
-	var server *httptest.Server
-
-	// OAuth metadata endpoint - uses closure to get server URL
-	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"issuer":                           server.URL,
-			"token_endpoint":                   server.URL + "/token",
-			"code_challenge_methods_supported": []string{"S256"},
-		})
-	})
-
-	// Token endpoint - supports JWT bearer grant (RFC 7523)
-	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "failed to parse form", http.StatusBadRequest)
-			return
-		}
-
-		grantType := r.Form.Get("grant_type")
-		if grantType != "urn:ietf:params:oauth:grant-type:jwt-bearer" {
-			http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
-			return
-		}
-
-		// Verify client authentication
-		clientID := r.Form.Get("client_id")
-		clientSecret := r.Form.Get("client_secret")
-		if clientID != "mcp_client_id" || clientSecret != "mcp_secret" {
-			http.Error(w, "invalid client credentials", http.StatusUnauthorized)
-			return
-		}
-
-		// Verify assertion (ID-JAG)
-		assertion := r.Form.Get("assertion")
-		if assertion != "id-jag-token-from-idp" {
-			http.Error(w, "invalid assertion", http.StatusBadRequest)
-			return
-		}
-
-		// Return access token
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "mcp_access_token_from_jwt_bearer",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
-			"scope":        "read write",
-		})
-	})
-
-	server = httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	return server
+// TokenSource returns the token source for outgoing requests.
+// Returns nil if authorization has not been performed yet.
+func (h *EnterpriseHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return h.tokenSource, nil
 }
 
-// TestEnterpriseHandler_Authorize_IDTokenFetcherError tests error handling when IDTokenFetcher fails.
-func TestEnterpriseHandler_Authorize_IDTokenFetcherError(t *testing.T) {
-	handler, err := NewEnterpriseHandler(&EnterpriseHandlerConfig{
-		IdPIssuerURL: "https://idp.example.com",
-		IdPCredentials: &oauthex.ClientCredentials{
-			ClientID: "idp_client_id",
-		},
-		MCPAuthServerURL: "https://mcp-auth.example.com",
-		MCPResourceURI:   "https://mcp.example.com",
-		MCPCredentials: &oauthex.ClientCredentials{
-			ClientID: "mcp_client_id",
-		},
-		IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) {
-			return nil, fmt.Errorf("user cancelled login")
-		},
-	})
+// Authorize performs the Enterprise Managed Authorization flow.
+// It is called when a request fails with 401 or 403.
+func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	defer resp.Body.Close()
+	defer io.Copy(io.Discard, resp.Body)
+
+	httpClient := h.config.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	// Step 1: Get ID Token via the configured fetcher (e.g., OIDC login)
+	oidcToken, err := h.config.IDTokenFetcher(ctx)
 	if err != nil {
-		t.Fatalf("NewEnterpriseHandler failed: %v", err)
+		return fmt.Errorf("failed to obtain ID token: %w", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/api", nil)
-	resp := &http.Response{
-		StatusCode: http.StatusUnauthorized,
-		Header:     make(http.Header),
-		Body:       http.NoBody,
-		Request:    req,
+	// Extract ID token from the oauth2.Token
+	idToken, ok := oidcToken.Extra("id_token").(string)
+	if !ok || idToken == "" {
+		return fmt.Errorf("id_token not found in OIDC token response")
 	}
 
-	err = handler.Authorize(context.Background(), req, resp)
-	if err == nil {
-		t.Fatal("expected error from Authorize, got nil")
+	// Step 2: Discover IdP token endpoint via OIDC discovery
+	idpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.IdPIssuerURL, httpClient)
+	if err != nil {
+		return fmt.Errorf("failed to discover IdP metadata: %w", err)
 	}
-	if !strings.Contains(err.Error(), "failed to obtain ID token") {
-		t.Errorf("expected error about ID token, got: %v", err)
+
+	// Step 3: Token Exchange (ID Token → ID-JAG)
+	tokenExchangeReq := &oauthex.TokenExchangeRequest{
+		RequestedTokenType: oauthex.TokenTypeIDJAG,
+		Audience:           h.config.MCPAuthServerURL,
+		Resource:           h.config.MCPResourceURI,
+		Scope:              h.config.MCPScopes,
+		SubjectToken:       idToken,
+		SubjectTokenType:   oauthex.TokenTypeIDToken,
 	}
+
+	idJAGToken, err := oauthex.ExchangeToken(
+		ctx,
+		idpMeta.TokenEndpoint,
+		tokenExchangeReq,
+		h.config.IdPCredentials,
+		httpClient,
+	)
+	if err != nil {
+		return fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	// Step 4: Discover MCP Server token endpoint
+	mcpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.MCPAuthServerURL, httpClient)
+	if err != nil {
+		return fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
+	}
+
+	// Step 5: JWT Bearer Grant (ID-JAG → Access Token)
+	// The ID-JAG is in the AccessToken field of the token (despite the name)
+	accessToken, err := exchangeJWTBearer(
+		ctx,
+		mcpMeta.TokenEndpoint,
+		idJAGToken.AccessToken,
+		h.config.MCPCredentials,
+		httpClient,
+	)
+	if err != nil {
+		return fmt.Errorf("JWT bearer grant failed: %w", err)
+	}
+
+	// Store the token source for subsequent requests
+	h.tokenSource = oauth2.StaticTokenSource(accessToken)
+	return nil
 }
 
-// TestEnterpriseHandler_TokenSource_BeforeAuthorization tests TokenSource before authorization.
-func TestEnterpriseHandler_TokenSource_BeforeAuthorization(t *testing.T) {
-	handler, err := NewEnterpriseHandler(&EnterpriseHandlerConfig{
-		IdPIssuerURL: "https://idp.example.com",
-		IdPCredentials: &oauthex.ClientCredentials{
-			ClientID: "idp_client_id",
+// exchangeJWTBearer exchanges an Identity Assertion JWT Authorization Grant (ID-JAG)
+// for an access token using JWT Bearer Grant per RFC 7523.
+func exchangeJWTBearer(
+	ctx context.Context,
+	tokenEndpoint string,
+	assertion string,
+	clientCreds *oauthex.ClientCredentials,
+	httpClient *http.Client,
+) (*oauth2.Token, error) {
+	cfg := &oauth2.Config{
+		ClientID: clientCreds.ClientID,
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  tokenEndpoint,
+			AuthStyle: oauth2.AuthStyleInParams,
 		},
-		MCPAuthServerURL: "https://mcp-auth.example.com",
-		MCPResourceURI:   "https://mcp.example.com",
-		MCPCredentials: &oauthex.ClientCredentials{
-			ClientID: "mcp_client_id",
-		},
-		IDTokenFetcher: func(ctx context.Context) (*IDTokenResult, error) {
-			return &IDTokenResult{Token: "mock_id_token"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewEnterpriseHandler failed: %v", err)
+	}
+	// Set ClientSecret if ClientSecretAuth is configured
+	if clientCreds.ClientSecretAuth != nil {
+		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
 	}
 
-	tokenSource, err := handler.TokenSource(context.Background())
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+
+	token, err := cfg.Exchange(
+		ctxWithClient,
+		"",
+		oauth2.SetAuthURLParam("grant_type", grantTypeJWTBearer),
+		oauth2.SetAuthURLParam("assertion", assertion),
+	)
 	if err != nil {
-		t.Fatalf("TokenSource failed: %v", err)
+		return nil, fmt.Errorf("JWT bearer grant request failed: %w", err)
 	}
-	if tokenSource != nil {
-		t.Errorf("expected nil token source before authorization, got %v", tokenSource)
-	}
+
+	return token, nil
 }

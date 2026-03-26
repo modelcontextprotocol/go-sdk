@@ -66,31 +66,6 @@ type TokenExchangeRequest struct {
 	SubjectTokenType string
 }
 
-// TokenExchangeResponse represents the response from a token exchange request
-// per RFC 8693 Section 2.2.
-type TokenExchangeResponse struct {
-	// IssuedTokenType is the type of the security token in AccessToken.
-	// For SEP-990, this MUST be TokenTypeIDJAG.
-	IssuedTokenType string `json:"issued_token_type"`
-
-	// AccessToken is the security token issued by the authorization server.
-	// Despite the name "access_token" (required by RFC 8693), for SEP-990
-	// this contains an ID-JAG JWT, not an OAuth access token.
-	AccessToken string `json:"access_token"`
-
-	// TokenType indicates the type of token returned. For SEP-990, this is "N_A"
-	// because the issued token is not an OAuth access token.
-	TokenType string `json:"token_type"`
-
-	// Scope is the scope of the issued token, if the issued token scope is
-	// different from the requested scope. Per RFC 8693, this SHOULD be included
-	// if the scope differs from the request.
-	Scope string `json:"scope,omitempty"`
-
-	// ExpiresIn is the lifetime in seconds of the issued token.
-	ExpiresIn int `json:"expires_in,omitempty"`
-}
-
 // ExchangeToken performs a token exchange request per RFC 8693 for Enterprise
 // Managed Authorization (SEP-990). It exchanges an identity assertion (typically
 // an ID Token) for an Identity Assertion JWT Authorization Grant (ID-JAG) that
@@ -98,13 +73,20 @@ type TokenExchangeResponse struct {
 //
 // The tokenEndpoint parameter should be the IdP's token endpoint (typically
 // obtained from the IdP's authorization server metadata).
+//
+// Returns an oauth2.Token where:
+//   - Extra("issued_token_type") contains the type of the issued token (e.g., TokenTypeIDJAG)
+//   - AccessToken contains the ID-JAG JWT (despite the name, this is not an OAuth access token)
+//   - TokenType is typically "N_A" for SEP-990
+//   - Extra("scope") may contain the scope if different from the request
+//   - Expiry is when the token expires
 func ExchangeToken(
 	ctx context.Context,
 	tokenEndpoint string,
 	req *TokenExchangeRequest,
 	clientCreds *ClientCredentials,
 	httpClient *http.Client,
-) (*TokenExchangeResponse, error) {
+) (*oauth2.Token, error) {
 	if tokenEndpoint == "" {
 		return nil, fmt.Errorf("token endpoint is required")
 	}
@@ -192,34 +174,12 @@ func ExchangeToken(
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 
-	// Extract issued_token_type from Token.Extra().
+	// Validate that issued_token_type is present in the response.
 	// The oauth2 library stores additional response fields in Extra.
 	issuedTokenType, _ := token.Extra("issued_token_type").(string)
 	if issuedTokenType == "" {
 		return nil, fmt.Errorf("response missing required field: issued_token_type")
 	}
 
-	// Build TokenExchangeResponse from oauth2.Token.
-	resp := &TokenExchangeResponse{
-		IssuedTokenType: issuedTokenType,
-		AccessToken:     token.AccessToken,
-		TokenType:       token.TokenType,
-	}
-
-	// Extract optional fields from Extra.
-	if scope, ok := token.Extra("scope").(string); ok {
-		resp.Scope = scope
-	}
-
-	// Calculate expires_in from token.Expiry if available.
-	if !token.Expiry.IsZero() {
-		resp.ExpiresIn = int(token.Expiry.Sub(token.Expiry).Seconds()) // This would be 0
-		// Actually get the raw expires_in if available
-		if expiresIn, ok := token.Extra("expires_in").(float64); ok {
-			resp.ExpiresIn = int(expiresIn)
-		}
-	}
-
-	return resp, nil
+	return token, nil
 }
-

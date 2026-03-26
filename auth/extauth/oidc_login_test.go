@@ -204,7 +204,7 @@ func TestCompleteOIDCLogin(t *testing.T) {
 			t.Fatalf("initiateOIDCLogin failed: %v", err)
 		}
 
-		tokens, err := completeOIDCLogin(
+		token, err := completeOIDCLogin(
 			context.Background(),
 			config,
 			oauth2Config,
@@ -215,17 +215,18 @@ func TestCompleteOIDCLogin(t *testing.T) {
 			t.Fatalf("completeOIDCLogin failed: %v", err)
 		}
 		// Validate tokens
-		if tokens.IDToken == "" {
-			t.Error("IDToken is empty")
+		idToken, ok := token.Extra("id_token").(string)
+		if !ok || idToken == "" {
+			t.Error("id_token is missing or empty")
 		}
-		if tokens.AccessToken == "" {
+		if token.AccessToken == "" {
 			t.Error("AccessToken is empty")
 		}
-		if tokens.TokenType != "Bearer" {
-			t.Errorf("expected TokenType 'Bearer', got '%s'", tokens.TokenType)
+		if token.TokenType != "Bearer" {
+			t.Errorf("expected TokenType 'Bearer', got '%s'", token.TokenType)
 		}
-		if tokens.ExpiresAt == 0 {
-			t.Error("ExpiresAt is zero")
+		if token.Expiry.IsZero() {
+			t.Error("Expiry is zero")
 		}
 	})
 	t.Run("missing parameters", func(t *testing.T) {
@@ -297,7 +298,7 @@ func TestOIDCLoginE2E(t *testing.T) {
 	// Here we just use a mock authorization code
 	mockAuthCode := "mock-authorization-code"
 	// Step 3: Complete login with authorization code
-	tokens, err := completeOIDCLogin(
+	token, err := completeOIDCLogin(
 		context.Background(),
 		config,
 		oauth2Config,
@@ -308,11 +309,12 @@ func TestOIDCLoginE2E(t *testing.T) {
 		t.Fatalf("completeOIDCLogin failed: %v", err)
 	}
 	// Validate we got an ID token
-	if tokens.IDToken == "" {
-		t.Error("Expected ID token, got empty string")
+	idToken, ok := token.Extra("id_token").(string)
+	if !ok || idToken == "" {
+		t.Error("Expected ID token, got empty or missing")
 	}
 	// Validate ID token is a JWT (has 3 parts)
-	parts := strings.Split(tokens.IDToken, ".")
+	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
 		t.Errorf("Expected JWT with 3 parts, got %d parts", len(parts))
 	}
@@ -424,7 +426,7 @@ func TestPerformOIDCLogin(t *testing.T) {
 	}
 
 	t.Run("successful flow", func(t *testing.T) {
-		tokens, err := PerformOIDCLogin(context.Background(), config,
+		token, err := PerformOIDCLogin(context.Background(), config,
 			func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 				// Validate authURL has required parameters
 				u, err := url.Parse(args.URL)
@@ -450,10 +452,11 @@ func TestPerformOIDCLogin(t *testing.T) {
 			t.Fatalf("PerformOIDCLogin failed: %v", err)
 		}
 
-		if tokens.IDToken == "" {
-			t.Error("IDToken is empty")
+		idToken, ok := token.Extra("id_token").(string)
+		if !ok || idToken == "" {
+			t.Error("id_token is missing or empty")
 		}
-		if tokens.AccessToken == "" {
+		if token.AccessToken == "" {
 			t.Error("AccessToken is empty")
 		}
 	})

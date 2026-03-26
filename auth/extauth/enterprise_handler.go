@@ -24,16 +24,12 @@ import (
 // grantTypeJWTBearer is the grant type for RFC 7523 JWT Bearer authorization grant.
 const grantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
-// IDTokenResult contains the ID token obtained from OIDC login.
-type IDTokenResult struct {
-	// Token is the OpenID Connect ID Token (JWT).
-	Token string
-}
-
 // IDTokenFetcher is called to obtain an ID Token from the enterprise IdP.
 // This is typically done via OIDC login flow where the user authenticates
 // with their enterprise identity provider.
-type IDTokenFetcher func(ctx context.Context) (*IDTokenResult, error)
+//
+// Returns an oauth2.Token where Extra("id_token") contains the OpenID Connect ID Token (JWT).
+type IDTokenFetcher func(ctx context.Context) (*oauth2.Token, error)
 
 // EnterpriseHandlerConfig is the configuration for [EnterpriseHandler].
 type EnterpriseHandlerConfig struct {
@@ -153,9 +149,15 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 1: Get ID Token via the configured fetcher (e.g., OIDC login)
-	idTokenResult, err := h.config.IDTokenFetcher(ctx)
+	oidcToken, err := h.config.IDTokenFetcher(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to obtain ID token: %w", err)
+	}
+
+	// Extract ID token from the oauth2.Token
+	idToken, ok := oidcToken.Extra("id_token").(string)
+	if !ok || idToken == "" {
+		return fmt.Errorf("id_token not found in OIDC token response")
 	}
 
 	// Step 2: Discover IdP token endpoint via OIDC discovery
@@ -170,11 +172,11 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 		Audience:           h.config.MCPAuthServerURL,
 		Resource:           h.config.MCPResourceURI,
 		Scope:              h.config.MCPScopes,
-		SubjectToken:       idTokenResult.Token,
+		SubjectToken:       idToken,
 		SubjectTokenType:   oauthex.TokenTypeIDToken,
 	}
 
-	tokenExchangeResp, err := oauthex.ExchangeToken(
+	idJAGToken, err := oauthex.ExchangeToken(
 		ctx,
 		idpMeta.TokenEndpoint,
 		tokenExchangeReq,
@@ -192,10 +194,11 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Step 5: JWT Bearer Grant (ID-JAG → Access Token)
+	// The ID-JAG is in the AccessToken field of the token (despite the name)
 	accessToken, err := exchangeJWTBearer(
 		ctx,
 		mcpMeta.TokenEndpoint,
-		tokenExchangeResp.AccessToken,
+		idJAGToken.AccessToken,
 		h.config.MCPCredentials,
 		httpClient,
 	)
