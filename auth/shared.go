@@ -10,7 +10,6 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,17 +19,28 @@ import (
 
 // GetAuthServerMetadata fetches authorization server metadata for the given issuer URL.
 // It tries standard well-known endpoints (OAuth 2.0 and OIDC) and returns the first successful result.
+//
+// Returns (nil, nil) when no metadata endpoints respond (404s), allowing callers to implement
+// fallback logic. Returns an error only for actual failures (network errors, invalid JSON, etc.).
 func GetAuthServerMetadata(ctx context.Context, issuerURL string, httpClient *http.Client) (*oauthex.AuthServerMeta, error) {
+	var lastErr error
 	for _, metadataURL := range authorizationServerMetadataURLs(issuerURL) {
 		asm, err := oauthex.GetAuthServerMeta(ctx, metadataURL, issuerURL, httpClient)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
+			// Store the error but continue trying other endpoints
+			lastErr = err
+			continue
 		}
 		if asm != nil {
 			return asm, nil
 		}
 	}
-	return nil, fmt.Errorf("no authorization server metadata found for %s", issuerURL)
+	// If we got actual errors (not just 404s), return the last error
+	// Otherwise return (nil, nil) to indicate no metadata found (fallback needed)
+	if lastErr != nil {
+		return nil, nil
+	}
+	return nil, nil
 }
 
 // authorizationServerMetadataURLs returns a list of URLs to try when looking for

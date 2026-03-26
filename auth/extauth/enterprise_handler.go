@@ -165,6 +165,9 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	if err != nil {
 		return fmt.Errorf("failed to discover IdP metadata: %w", err)
 	}
+	if idpMeta == nil {
+		return fmt.Errorf("no authorization server metadata found for IdP: %s", h.config.IdPIssuerURL)
+	}
 
 	// Step 3: Token Exchange (ID Token → ID-JAG)
 	tokenExchangeReq := &oauthex.TokenExchangeRequest{
@@ -191,6 +194,9 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	mcpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.MCPAuthServerURL, httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to discover MCP auth server metadata: %w", err)
+	}
+	if mcpMeta == nil {
+		return fmt.Errorf("no authorization server metadata found for MCP server: %s", h.config.MCPAuthServerURL)
 	}
 
 	// Step 5: JWT Bearer Grant (ID-JAG → Access Token)

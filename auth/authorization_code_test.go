@@ -505,10 +505,13 @@ func TestGetAuthServerMetadata(t *testing.T) {
 
 			got, err := GetAuthServerMetadata(t.Context(), issuerURL, http.DefaultClient)
 			if tt.wantFallback {
-				// When no metadata is found, GetAuthServerMetadata returns an error.
+				// When no metadata is found, GetAuthServerMetadata returns (nil, nil).
 				// The fallback logic is now inline in Authorize.
-				if err == nil {
-					t.Fatal("GetAuthServerMetadata() expected error for no metadata, got nil")
+				if err != nil {
+					t.Fatalf("GetAuthServerMetadata() unexpected error = %v, want nil", err)
+				}
+				if got != nil {
+					t.Fatal("GetAuthServerMetadata() expected nil for no metadata, got metadata")
 				}
 				return
 			}
@@ -627,6 +630,9 @@ func TestHandleRegistration(t *testing.T) {
 			}
 			asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 			if err != nil {
+				t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
+			}
+			if asm == nil {
 				// Fallback to predefined endpoints for testing
 				asm = &oauthex.AuthServerMeta{
 					Issuer:                s.URL(),
@@ -681,6 +687,9 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 	asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 	if err != nil {
+		t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
+	}
+	if asm == nil {
 		// Fallback to predefined endpoints for testing
 		asm = &oauthex.AuthServerMeta{
 			Issuer:                s.URL(),

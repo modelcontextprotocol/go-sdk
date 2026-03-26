@@ -147,6 +147,9 @@ func initiateOIDCLogin(
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
+	if meta != nil {
+		return nil, nil, fmt.Errorf("no authorization server metadata found for OIDC issuer: %s", config.IssuerURL)
+	}
 	if meta.AuthorizationEndpoint == "" {
 		return nil, nil, fmt.Errorf("authorization_endpoint not found in OIDC metadata")
 	}
