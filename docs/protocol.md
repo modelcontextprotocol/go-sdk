@@ -15,6 +15,7 @@
 	1. [Token Passthrough](#token-passthrough)
 	1. [Server-Side Request Forgery (SSRF)](#server-side-request-forgery-(ssrf))
 	1. [Session Hijacking](#session-hijacking)
+	1. [Issuer Mix-Up](#issuer-mix-up)
 1. [Utilities](#utilities)
 	1. [Cancellation](#cancellation)
 	1. [Ping](#ping)
@@ -327,6 +328,7 @@ This handler supports:
 - [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents)
 - [Pre-registered clients](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration)
 - [Dynamic Client Registration](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration)
+- [RFC 9207](https://www.rfc-editor.org/rfc/rfc9207) Authorization Server Issuer Identification
 
 To use it, configure the handler and assign it to the transport:
 
@@ -338,11 +340,12 @@ authHandler, _ := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandle
 	// PreregisteredClientConfig: ...
 	// DynamicClientRegistrationConfig: ...
 	AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
-		// Open the args.URL in a browser and return the resulting code and state.
+		// Open the args.URL in a browser and return the resulting code, state, and iss.
 		// See full example in examples/auth/client/main.go.
 		code := ...
 		state := ...
-		return &auth.AuthorizationResult{Code: code, State: state}, nil
+		iss := ... // "iss" query parameter from the redirect URI (RFC 9207)
+		return &auth.AuthorizationResult{Code: code, State: state, Iss: iss}, nil
 	},
 })
 
@@ -425,6 +428,22 @@ sets `UserID` on the returned `TokenInfo`, the streamable transport will:
   (such as a `sub` claim in a JWT, or a user ID associated with an API key), set
   `TokenInfo.UserID` to enable this protection. This prevents an attacker with a valid
   token from hijacking another user's session by guessing or obtaining their session ID.
+
+### Issuer Mix-Up
+
+The [mitigation](https://www.rfc-editor.org/rfc/rfc9207) against issuer mix-up attacks is
+implemented per [RFC 9207](https://www.rfc-editor.org/rfc/rfc9207). The SDK client validates
+the `iss` parameter in authorization responses to ensure they originated from the expected
+authorization server:
+
+- If `iss` is present in the redirect URI, the SDK verifies it matches the issuer from the
+  authorization server's metadata. A mismatch results in an error.
+- If `iss` is absent but the authorization server advertises
+  `authorization_response_iss_parameter_supported: true` in its [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414)
+  metadata, the SDK rejects the response with an error.
+
+The `AuthorizationCodeFetcher` is responsible for extracting the `iss` query parameter from
+the redirect URI and returning it in [`AuthorizationResult.Iss`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#AuthorizationResult).
 
 ## Utilities
 

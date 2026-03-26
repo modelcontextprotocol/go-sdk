@@ -39,6 +39,7 @@ func (r *codeReceiver) serveRedirectHandler(listener net.Listener) {
 		r.authChan <- &auth.AuthorizationResult{
 			Code:  req.URL.Query().Get("code"),
 			State: req.URL.Query().Get("state"),
+			Iss:   req.URL.Query().Get("iss"),
 		}
 		fmt.Fprint(w, "Authentication successful. You can close this window.")
 	})

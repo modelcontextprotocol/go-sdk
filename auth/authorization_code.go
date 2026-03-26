@@ -65,6 +65,12 @@ type AuthorizationResult struct {
 	Code string
 	// State string returned by the authorization server.
 	State string
+	// Iss is the issuer identifier returned by the authorization server in the
+	// authorization response per [RFC 9207]. The AuthorizationCodeFetcher should
+	// populate this from the "iss" query parameter in the redirect URI if present.
+	//
+	// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+	Iss string
 }
 
 // AuthorizationArgs is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
@@ -249,6 +255,9 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
+		return err
+	}
+	if err := validateIssuerResponse(authRes.Iss, asm.Issuer, asm.AuthorizationResponseIssParameterSupported); err != nil {
 		return err
 	}
 
@@ -549,6 +558,21 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 		AuthorizationResult: authRes,
 		usedCodeVerifier:    codeVerifier,
 	}, nil
+}
+
+// validateIssuerResponse validates the "iss" parameter in an authorization response
+// per [RFC 9207].
+//
+// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bool) error {
+	if iss != "" {
+		if iss != expectedIssuer {
+			return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
+		}
+	} else if issParameterSupported {
+		return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
+	}
+	return nil
 }
 
 // exchangeAuthorizationCode exchanges the authorization code for a token
