@@ -19,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth/extauth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -113,7 +114,7 @@ func main() {
 	log.Printf("OAuth callback server listening on http://localhost:%d", *callbackPort)
 
 	// Create an ID Token fetcher that performs OIDC login with the enterprise IdP.
-	idTokenFetcher := func(ctx context.Context) (*extauth.IDTokenResult, error) {
+	idTokenFetcher := func(ctx context.Context) (*oauth2.Token, error) {
 		log.Println("Starting OIDC login flow...")
 
 		creds := &oauthex.ClientCredentials{
@@ -139,7 +140,7 @@ func main() {
 		}
 
 		log.Println("OIDC login successful, obtained ID token")
-		return &extauth.IDTokenResult{Token: tokens.IDToken}, nil
+		return tokens, nil
 	}
 
 	// Create the Enterprise Handler.

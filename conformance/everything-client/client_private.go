@@ -98,9 +98,9 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 	// Try pre-registered client information if provided in the context.
 	if clientID, ok := configCtx["client_id"].(string); ok {
 		if clientSecret, ok := configCtx["client_secret"].(string); ok {
-			authConfig.PreregisteredClientConfig = &auth.PreregisteredClientConfig{
-				ClientSecretAuthConfig: &auth.ClientSecretAuthConfig{
-					ClientID:     clientID,
+			authConfig.PreregisteredClient = &oauthex.ClientCredentials{
+				ClientID: clientID,
+				ClientSecretAuth: &oauthex.ClientSecretAuth{
 					ClientSecret: clientSecret,
 				},
 			}
