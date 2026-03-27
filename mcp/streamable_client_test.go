@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -447,10 +446,10 @@ func TestStreamableClientResumption_Cancelled(t *testing.T) {
 	//
 	// TODO(#680): experiment with instead using synctest.
 	const tick = 10 * time.Millisecond
-	defer func(delay time.Duration) {
-		reconnectInitialDelay = delay
-	}(reconnectInitialDelay)
-	reconnectInitialDelay = 2 * tick
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(2 * tick))
 
 	// The setup: terminate a request stream and make the resumed request hang
 	// indefinitely. CallTool should still exit when its context is canceled.
@@ -703,10 +702,10 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 func TestStreamableClientRetryWithoutProgress(t *testing.T) {
 	// Speed up reconnection delays for testing.
 	const tick = 10 * time.Millisecond
-	defer func(delay time.Duration) {
-		reconnectInitialDelay = delay
-	}(reconnectInitialDelay)
-	reconnectInitialDelay = tick
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(tick))
 
 	// Use the fakeStreamableServer pattern like other tests to avoid race conditions.
 	ctx := context.Background()

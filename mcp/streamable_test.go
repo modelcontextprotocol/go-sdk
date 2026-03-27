@@ -626,7 +626,10 @@ func TestServerTransportCleanup(t *testing.T) {
 
 	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
 	handler.onTransportDeletion = func(sessionID string) {
-		chans[sessionID] <- struct{}{}
+		mu.Lock()
+		ch := chans[sessionID]
+		mu.Unlock()
+		ch <- struct{}{}
 	}
 
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
@@ -658,7 +661,11 @@ func TestServerTransportCleanup(t *testing.T) {
 		t.Cleanup(func() { _ = clientSession.Close() })
 	}
 
-	for _, ch := range chans {
+	mu.Lock()
+	channels := slices.Collect(maps.Values(chans))
+	mu.Unlock()
+
+	for _, ch := range channels {
 		select {
 		case <-ctx.Done():
 			t.Errorf("did not capture transport deletion event from all session in 10 seconds")
@@ -758,7 +765,7 @@ func TestStreamableServerTransport(t *testing.T) {
 			Logging: &LoggingCapabilities{},
 			Tools:   &ToolCapabilities{ListChanged: true},
 		},
-		ProtocolVersion: latestProtocolVersion,
+		ProtocolVersion: protocolVersion20250618,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 	initializedMsg := req(0, notificationInitialized, &InitializedParams{})
@@ -831,6 +838,36 @@ func TestStreamableServerTransport(t *testing.T) {
 				},
 			},
 			wantSessions: 0,
+		},
+		{
+			name: "content type headers",
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					// Request with incorrect Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"text/plain"}},
+					messages:       []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Request with empty Content-Type should be rejected.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {""}},
+					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusUnsupportedMediaType,
+				},
+				{
+					// Correct Content-Type should pass.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"application/json"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+			},
+			wantSessions: 1,
 		},
 		{
 			name: "accept headers",
@@ -1409,9 +1446,15 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	if sessionID != "" {
 		req.Header.Set(sessionIDHeader, sessionID)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if s.method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	maps.Copy(req.Header, s.headers)
+
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Del("Content-Type")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1664,55 +1707,6 @@ func textContent(t *testing.T, res *CallToolResult) string {
 		t.Fatalf("Content[0] is %T, want *TextContent", res.Content[0])
 	}
 	return text.Text
-}
-
-func TestTokenInfo(t *testing.T) {
-	oldAuth := testAuth.Load()
-	defer testAuth.Store(oldAuth)
-	testAuth.Store(true)
-	ctx := context.Background()
-
-	// Create a server with a tool that returns TokenInfo.
-	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
-		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
-	}
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
-
-	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	verifier := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
-		return &auth.TokenInfo{
-			Scopes: []string{"scope"},
-			// Expiration is far, far in the future.
-			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
-		}, nil
-	}
-	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
-	defer httpServer.Close()
-
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
-	if err != nil {
-		t.Fatalf("client.Connect() failed: %v", err)
-	}
-	defer session.Close()
-
-	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Content) == 0 {
-		t.Fatal("missing content")
-	}
-	tc, ok := res.Content[0].(*TextContent)
-	if !ok {
-		t.Fatal("not TextContent")
-	}
-	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
-		t.Errorf("got %q, want %q", g, w)
-	}
 }
 
 func TestSessionHijackingPrevention(t *testing.T) {
@@ -2481,6 +2475,79 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 
 			if got := resp.StatusCode; got != tt.wantStatus {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestStreamableOriginProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name           string
+		protection     *http.CrossOriginProtection
+		requestOrigin  string
+		wantStatusCode int
+	}{
+		{
+			name:           "default protection with Origin header",
+			protection:     nil,
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+		{
+			name: "custom protection with trusted origin and same Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "custom protection with trusted origin and different Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://malicious.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &StreamableHTTPOptions{
+				Stateless:             true, // avoid session ID requirement
+				CrossOriginProtection: tt.protection,
+			}
+			handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(handler)
+			defer httpServer.Close()
+
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", tt.requestOrigin)
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatusCode {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatusCode)
 			}
 		})
 	}

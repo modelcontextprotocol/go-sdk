@@ -16,9 +16,9 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "^1.25"
+          go-version: "^1.26"
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -40,12 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ["1.24", "1.25"]
+        go: ["1.25", "1.26"]
     steps:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: ${{ matrix.go }}
       - name: Test
@@ -57,8 +57,8 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.24"
+          go-version: "1.26"
       - name: Test with -race
         run: go test -v -race ./...

@@ -631,6 +631,14 @@ func (s *Server) changeAndNotify(notification string, change func() bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if change() && s.shouldSendListChangedNotification(notification) {
+		if len(s.sessions) == 0 {
+			if t := s.pendingNotifications[notification]; t != nil {
+				t.Stop()
+				s.pendingNotifications[notification] = nil
+			}
+			return
+		}
+
 		// Reset the outstanding delayed call, if any.
 		if t := s.pendingNotifications[notification]; t == nil {
 			s.pendingNotifications[notification] = time.AfterFunc(notificationDelay, func() { s.notifySessions(notification) })
@@ -837,7 +845,7 @@ func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, boo
 // and the current working directory is unavailable, fileResourceHandler panics.
 //
 // Lexical path traversal attacks, where the path has ".." elements that escape dir,
-// are always caught. Go 1.24 and above also protects against symlink-based attacks,
+// are always caught. The SDK also protects against symlink-based attacks,
 // where symlinks under dir lead out of the tree.
 func fileResourceHandler(dir string) ResourceHandler {
 	// Convert dir to an absolute path.

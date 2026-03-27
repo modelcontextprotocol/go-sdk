@@ -4,12 +4,6 @@
 
 package mcp
 
-// Protocol types for version 2025-06-18.
-// To see the schema changes from the previous version, run:
-//
-//   prefix=https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/refs/heads/main/schema
-//   sdiff -l <(curl $prefix/2025-03-26/schema.ts) <(curl $prefix/2025/06-18/schema.ts)
-
 import (
 	"encoding/json"
 	"fmt"

@@ -34,10 +34,15 @@ contains feature documentation, mapping the MCP spec to the packages above.
 
 The following table shows which versions of the Go SDK support which versions of the MCP specification:
 
-| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                        |
-|-----------------|-------------------|------------------------------------------------|
-| v1.2.0+         | 2025-06-18        | 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 |
-| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05             |
+| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                            |
+|-----------------|-------------------|----------------------------------------------------|
+| v1.4.0+         | 2025-11-25\*      | 2025-11-25\*, 2025-06-18, 2025-03-26, 2024-11-05   |
+| v1.2.0 - v1.3.1 | 2025-11-25\*\*    | 2025-11-25\*\*, 2025-06-18, 2025-03-26, 2024-11-05 |
+| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05                 |
+
+\* Client side OAuth has experimental support.
+
+\*\* Partial support for 2025-11-25 (client side OAuth and Sampling with tools not available).
 
 New releases of the SDK target only supported versions of Go. See
 https://go.dev/doc/devel/release#policy for more information.

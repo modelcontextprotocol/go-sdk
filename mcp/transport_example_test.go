@@ -2,9 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-// Uses strings.SplitSeq.
-//go:build go1.24
-
 package mcp_test
 
 import (
@@ -45,8 +42,8 @@ func ExampleLoggingTransport() {
 	}
 
 	// Output:
-	// read: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"server","version":"v0.0.1"}}}
-	// write: {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"client","version":"v0.0.1"},"protocolVersion":"2025-06-18","capabilities":{"roots":{"listChanged":true}}}}
+	// read: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-11-25","serverInfo":{"name":"server","version":"v0.0.1"}}}
+	// write: {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"client","version":"v0.0.1"},"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true}}}}
 	// write: {"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
 }
 

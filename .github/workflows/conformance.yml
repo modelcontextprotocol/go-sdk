@@ -20,9 +20,9 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "^1.25"
+          go-version: "^1.26"
       - name: Start everything-server
         run: |
           go run ./conformance/everything-server/main.go -http=":3001" &
@@ -43,14 +43,14 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "^1.25"
+          go-version: "^1.26"
       - name: "Run conformance tests" 
         uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
         with:
           mode: client 
-          command: go run ./conformance/everything-client/main.go
+          command: go run -tags mcp_go_client_oauth ./conformance/everything-client
           suite: core
           expected-failures: ./conformance/baseline.yml
           node-version: 22
