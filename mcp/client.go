@@ -253,7 +253,7 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
 func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOptions) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil)
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +404,7 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel)
+	startKeepalive(cs, interval, &cs.keepaliveCancel, nil)
 }
 
 // AddRoots adds the given roots to the client,
@@ -441,7 +441,7 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 		}
 	}
 	c.mu.Unlock()
-	notifySessions(sessions, notification, params, c.opts.Logger)
+	notifySessions(sessions, notification, params, c.opts.Logger, nil)
 }
 
 // shouldSendListChangedNotification checks if the client's capabilities allow

@@ -152,7 +152,7 @@ type handler interface {
 	handle(ctx context.Context, req *jsonrpc.Request) (any, error)
 }
 
-func connect[H handler, State any](ctx context.Context, t Transport, b binder[H, State], s State, onClose func()) (H, error) {
+func connect[H handler, State any](ctx context.Context, t Transport, b binder[H, State], s State, onClose func(), onError func(error)) (H, error) {
 	var zero H
 	mcpConn, err := t.Connect(ctx)
 	if err != nil {
@@ -169,6 +169,10 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		preempter.conn = conn
 		return jsonrpc2.HandlerFunc(h.handle)
 	}
+	onInternalError := func(err error) { log.Printf("jsonrpc2 error: %v", err) }
+	if onError != nil {
+		onInternalError = func(err error) { onError(fmt.Errorf("jsonrpc2: %w", err)) }
+	}
 	_ = jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
 		Reader:    reader,
 		Writer:    writer,
@@ -178,7 +182,7 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnDone: func() {
 			b.disconnect(h)
 		},
-		OnInternalError: func(err error) { log.Printf("jsonrpc2 error: %v", err) },
+		OnInternalError: onInternalError,
 	})
 	assert(preempter.conn != nil, "unbound preempter")
 	return h, nil

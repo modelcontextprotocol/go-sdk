@@ -135,6 +135,15 @@ type ServerOptions struct {
 	// trade-offs and usage guidance.
 	SchemaCache *SchemaCache
 
+	// ErrorHandler, if non-nil, is called with out-of-band errors that occur
+	// during server operation but are not associated with a specific request.
+	// Examples include keepalive ping failures, notification delivery errors,
+	// and internal JSON-RPC protocol errors.
+	//
+	// If nil, these errors are logged using [ServerOptions.Logger] at the
+	// appropriate level.
+	ErrorHandler func(error)
+
 	// GetSessionID provides the next session ID to use for an incoming request.
 	// If nil, a default randomly generated ID will be used.
 	//
@@ -195,6 +204,15 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
+	}
+}
+
+// reportError reports an out-of-band error via the ErrorHandler, or logs it.
+func (s *Server) reportError(err error) {
+	if h := s.opts.ErrorHandler; h != nil {
+		h(err)
+	} else {
+		s.opts.Logger.Error("out-of-band error", "error", err)
 	}
 }
 
@@ -644,7 +662,7 @@ func (s *Server) notifySessions(n string) {
 	sessions := slices.Clone(s.sessions)
 	s.pendingNotifications[n] = nil
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
-	notifySessions(sessions, n, changeNotificationParams[n], s.opts.Logger)
+	notifySessions(sessions, n, changeNotificationParams[n], s.opts.Logger, s.opts.ErrorHandler)
 }
 
 // shouldSendListChangedNotification checks if the server's capabilities allow
@@ -873,7 +891,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	subscribedSessions := s.resourceSubscriptions[params.URI]
 	sessions := slices.Collect(maps.Keys(subscribedSessions))
 	s.mu.Unlock()
-	notifySessions(sessions, notificationResourceUpdated, params, s.opts.Logger)
+	notifySessions(sessions, notificationResourceUpdated, params, s.opts.Logger, s.opts.ErrorHandler)
 	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
 	return nil
 }
@@ -1015,7 +1033,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 	}
 
 	s.opts.Logger.Info("server connecting")
-	ss, err := connect(ctx, t, s, state, onClose)
+	ss, err := connect(ctx, t, s, state, onClose, s.opts.ErrorHandler)
 	if err != nil {
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
@@ -1515,7 +1533,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel)
+	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.ErrorHandler)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

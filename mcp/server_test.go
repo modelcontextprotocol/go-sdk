@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"log/slog"
 	"slices"
@@ -1000,4 +1001,28 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestErrorHandler(t *testing.T) {
+	t.Run("reportError calls ErrorHandler", func(t *testing.T) {
+		var got error
+		s := NewServer(testImpl, &ServerOptions{
+			ErrorHandler: func(err error) { got = err },
+		})
+		s.reportError(errors.New("test error"))
+		if got == nil || got.Error() != "test error" {
+			t.Errorf("ErrorHandler got %v, want 'test error'", got)
+		}
+	})
+
+	t.Run("reportError falls back to logger", func(t *testing.T) {
+		var buf bytes.Buffer
+		s := NewServer(testImpl, &ServerOptions{
+			Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+		})
+		s.reportError(errors.New("logged error"))
+		if !strings.Contains(buf.String(), "logged error") {
+			t.Errorf("log output = %q, want containing 'logged error'", buf.String())
+		}
+	})
 }

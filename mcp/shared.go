@@ -391,7 +391,8 @@ const (
 // notifySessions calls Notify on all the sessions.
 // Should be called on a copy of the peer sessions.
 // The logger must be non-nil.
-func notifySessions[S Session, P Params](sessions []S, method string, params P, logger *slog.Logger) {
+// If onError is non-nil, it is called for each notification error instead of logging.
+func notifySessions[S Session, P Params](sessions []S, method string, params P, logger *slog.Logger, onError func(error)) {
 	if sessions == nil {
 		return
 	}
@@ -406,7 +407,11 @@ func notifySessions[S Session, P Params](sessions []S, method string, params P, 
 	for _, s := range sessions {
 		req := newRequest(s, params)
 		if err := handleNotify(ctx, method, req); err != nil {
-			logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			if onError != nil {
+				onError(fmt.Errorf("calling %s: %w", method, err))
+			} else {
+				logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
 		}
 	}
 }
@@ -581,7 +586,8 @@ type keepaliveSession interface {
 // startKeepalive starts the keepalive mechanism for a session.
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc) {
+// If onError is non-nil, it is called when a ping fails before the session is closed.
+func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, onError func(error)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -601,6 +607,9 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
 				if err != nil {
+					if onError != nil {
+						onError(fmt.Errorf("keepalive ping failed: %w", err))
+					}
 					// Ping failed, close the session
 					_ = session.Close()
 					return
