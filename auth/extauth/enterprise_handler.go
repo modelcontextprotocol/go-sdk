@@ -88,7 +88,6 @@ type EnterpriseHandlerConfig struct {
 //  2. Token Exchange (RFC 8693): ID Token → ID-JAG at IdP
 //  3. JWT Bearer Grant (RFC 7523): ID-JAG → Access Token at MCP Server
 type EnterpriseHandler struct {
-	auth.OAuthHandlerBase
 	config *EnterpriseHandlerConfig
 
 	// tokenSource is the token source obtained after authorization.

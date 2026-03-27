@@ -22,8 +22,6 @@ import (
 // [github.com/modelcontextprotocol/go-sdk/mcp.StreamableClientTransport]
 // for an example.
 type OAuthHandler interface {
-	isOAuthHandler()
-
 	// TokenSource returns a token source to be used for outgoing requests.
 	// Returned token source might be nil. In that case, the transport will not
 	// add any authorization headers to the request.
@@ -40,10 +38,3 @@ type OAuthHandler interface {
 	// The function is responsible for closing the response body.
 	Authorize(context.Context, *http.Request, *http.Response) error
 }
-
-// OAuthHandlerBase is an embeddable type that satisfies the private method
-// requirement of [OAuthHandler]. Extension packages should embed this type
-// in their handler structs to implement OAuthHandler.
-type OAuthHandlerBase struct{}
-
-func (OAuthHandlerBase) isOAuthHandler() {}

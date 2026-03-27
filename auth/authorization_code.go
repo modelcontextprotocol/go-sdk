@@ -115,8 +115,6 @@ type AuthorizationCodeHandler struct {
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
 
-func (h *AuthorizationCodeHandler) isOAuthHandler() {}
-
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	return h.tokenSource, nil
 }
