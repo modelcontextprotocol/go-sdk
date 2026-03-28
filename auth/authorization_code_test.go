@@ -440,94 +440,6 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetadata(t *testing.T) {
-	tests := []struct {
-		name           string
-		issuerPath     string
-		endpointConfig *oauthtest.MetadataEndpointConfig
-		wantFallback   bool
-	}{
-		{
-			name:       "OAuthEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OAuthEndpoint_Path",
-			issuerPath: "/oauth",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDAppendedEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDAppendedEndpoint: true,
-			},
-		},
-		{
-			name:       "NoMetadata",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				// All metadata endpoints disabled.
-				ServeOAuthInsertedEndpoint:  false,
-				ServeOpenIDInsertedEndpoint: false,
-			},
-			wantFallback: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
-				IssuerPath:             tt.issuerPath,
-				MetadataEndpointConfig: tt.endpointConfig,
-			})
-			s.Start(t)
-			issuerURL := s.URL() + tt.issuerPath
-
-			got, err := GetAuthServerMetadata(t.Context(), issuerURL, http.DefaultClient)
-			if tt.wantFallback {
-				// When no metadata is found, GetAuthServerMetadata returns (nil, nil).
-				// The fallback logic is now inline in Authorize.
-				if err != nil {
-					t.Fatalf("GetAuthServerMetadata() unexpected error = %v, want nil", err)
-				}
-				if got != nil {
-					t.Fatal("GetAuthServerMetadata() expected nil for no metadata, got metadata")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("GetAuthServerMetadata() error = %v, want nil", err)
-			}
-			if got == nil {
-				t.Fatal("GetAuthServerMetadata() got nil, want metadata")
-			}
-			if got.Issuer != issuerURL {
-				t.Errorf("GetAuthServerMetadata() issuer = %q, want %q", got.Issuer, issuerURL)
-			}
-		})
-	}
-}
-
 func TestSelectTokenAuthMethod(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -632,15 +544,6 @@ func TestHandleRegistration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
 			}
-			if asm == nil {
-				// Fallback to predefined endpoints for testing
-				asm = &oauthex.AuthServerMeta{
-					Issuer:                s.URL(),
-					AuthorizationEndpoint: s.URL() + "/authorize",
-					TokenEndpoint:         s.URL() + "/token",
-					RegistrationEndpoint:  s.URL() + "/register",
-				}
-			}
 			got, err := handler.handleRegistration(t.Context(), asm)
 			if err != nil {
 				if !tt.wantError {
@@ -688,15 +591,6 @@ func TestDynamicRegistration(t *testing.T) {
 	asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 	if err != nil {
 		t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
-	}
-	if asm == nil {
-		// Fallback to predefined endpoints for testing
-		asm = &oauthex.AuthServerMeta{
-			Issuer:                s.URL(),
-			AuthorizationEndpoint: s.URL() + "/authorize",
-			TokenEndpoint:         s.URL() + "/token",
-			RegistrationEndpoint:  s.URL() + "/register",
-		}
 	}
 	got, err := handler.handleRegistration(t.Context(), asm)
 	if err != nil {
