@@ -58,9 +58,6 @@ type AuthorizationArgs struct {
 // It is responsible for directing the user to the authorization URL (e.g., opening
 // in a browser) and returning the authorization code and state once the Authorization
 // Server redirects back to the configured RedirectURL.
-//
-// The implementation MUST verify that the returned state matches the state
-// sent in the authorization request (available by parsing args.URL).
 type AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
 
 // AuthorizationCodeHandlerConfig is the configuration for [AuthorizationCodeHandler].

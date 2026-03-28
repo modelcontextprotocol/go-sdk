@@ -38,7 +38,7 @@ func GetAuthServerMetadata(ctx context.Context, issuerURL string, httpClient *ht
 	// If we got actual errors (not just 404s), return the last error
 	// Otherwise return (nil, nil) to indicate no metadata found (fallback needed)
 	if lastErr != nil {
-		return nil, nil
+		return nil, lastErr
 	}
 	return nil, nil
 }

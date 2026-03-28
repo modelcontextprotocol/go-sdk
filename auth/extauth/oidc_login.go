@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -121,14 +122,7 @@ func initiateOIDCLogin(
 		return nil, nil, fmt.Errorf("Scopes is required (must include 'openid')")
 	}
 
-	hasOpenID := false
-	for _, scope := range config.Scopes {
-		if scope == "openid" {
-			hasOpenID = true
-			break
-		}
-	}
-	if !hasOpenID {
+	if !slices.Contains(config.Scopes, "openid") {
 		return nil, nil, fmt.Errorf("Scopes must include 'openid' for OIDC")
 	}
 
