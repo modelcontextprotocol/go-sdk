@@ -205,7 +205,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	if err != nil {
 		return fmt.Errorf("failed to get authorization server metadata: %w", err)
 	}
-	if asm != nil {
+	if asm == nil {
 		// Fallback to 2025-03-26 spec: predefined endpoints.
 		// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
 		authServerURL := prm.AuthorizationServers[0]
