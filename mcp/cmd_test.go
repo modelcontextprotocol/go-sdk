@@ -200,8 +200,7 @@ func TestStdioContextCancellation(t *testing.T) {
 func TestCmdTransport(t *testing.T) {
 	requireExec(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	cmd := createServerCommand(t, "default")
 
@@ -287,8 +286,7 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			// Use a command that won't exit when stdin is closed
 			cmd := exec.Command("sleep", "20")
