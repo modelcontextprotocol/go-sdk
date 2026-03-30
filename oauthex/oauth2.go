@@ -10,7 +10,6 @@ package oauthex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -18,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
