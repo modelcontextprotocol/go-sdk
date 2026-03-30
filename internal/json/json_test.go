@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -60,6 +61,43 @@ func TestUnmarshalCaseSensitivity(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Errorf("Unmarshal mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestNewDecoderCaseSensitivity(t *testing.T) {
+	type Target struct {
+		Field       string `json:"field"`
+		TaggedField string `json:"custom_tag"`
+	}
+
+	tests := []struct {
+		name string
+		json string
+		want Target
+	}{
+		{
+			name: "exact match",
+			json: `{"field": "value", "custom_tag": "tagged"}`,
+			want: Target{Field: "value", TaggedField: "tagged"},
+		},
+		{
+			name: "case mismatch",
+			json: `{"Field": "value", "Custom_tag": "tagged"}`,
+			want: Target{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got Target
+			dec := NewDecoder(strings.NewReader(tt.json))
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode failed: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Decode mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
