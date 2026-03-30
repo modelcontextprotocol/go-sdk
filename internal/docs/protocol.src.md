@@ -279,8 +279,77 @@ client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, 
 session, err := client.Connect(ctx, transport, nil)
 ```
 
-The `auth.AuthorizationCodeHandler` automatically manages token refreshing
-and step-up authentication (when the server returns `insufficient_scope` error).
+The `auth.AuthorizationCodeHandler` automatically manages token refreshing (if the server provides a refresh token) and step-up authentication (when the server returns `insufficient_scope` error).
+
+#### Enterprise Managed Authorization (SEP-990)
+
+For enterprise SSO scenarios where users authenticate with an enterprise Identity Provider (IdP),
+the SDK provides
+[`extauth.EnterpriseHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth/extauth#EnterpriseHandler),
+an implementation of `OAuthHandler` that automates the Enterprise Managed Authorization flow:
+
+1. **OIDC Login**: User authenticates with enterprise IdP → ID Token
+2. **Token Exchange** (RFC 8693): ID Token → ID-JAG at IdP
+3. **JWT Bearer Grant** (RFC 7523): ID-JAG → Access Token at MCP Server
+
+To use enterprise managed authorization, create an `EnterpriseHandler` and assign it to your transport:
+
+```go
+// Create ID token fetcher using OIDC login
+idTokenFetcher := func(ctx context.Context) (*oauth2.Token, error) {
+    oidcConfig := &extauth.OIDCLoginConfig{
+        IssuerURL: "https://company.okta.com",
+        Credentials: &oauthex.ClientCredentials{
+            ClientID: "idp-client-id",
+            ClientSecretAuth: &oauthex.ClientSecretAuth{
+                ClientSecret: "idp-client-secret",
+            },
+        },
+        RedirectURL: "http://localhost:3142",
+        Scopes:      []string{"openid", "profile", "email"},
+    }
+
+    tokens, err := extauth.PerformOIDCLogin(ctx, oidcConfig, authCodeFetcher)
+    if err != nil {
+        return nil, err
+    }
+
+    return tokens, nil
+}
+
+// Create Enterprise Handler
+enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
+    IdPIssuerURL: "https://company.okta.com",
+    IdPCredentials: &oauthex.ClientCredentials{
+        ClientID: "idp-client-id",
+        ClientSecretAuth: &oauthex.ClientSecretAuth{
+            ClientSecret: "idp-client-secret",
+        },
+    },
+    MCPAuthServerURL: "https://auth.mcpserver.example",
+    MCPResourceURI:   "https://mcp.mcpserver.example",
+    MCPCredentials: &oauthex.ClientCredentials{
+        ClientID: "mcp-client-id",
+        ClientSecretAuth: &oauthex.ClientSecretAuth{
+            ClientSecret: "mcp-client-secret",
+        },
+    },
+    MCPScopes:      []string{"read", "write"},
+    IDTokenFetcher: idTokenFetcher,
+})
+
+// Use with transport
+transport := &mcp.StreamableClientTransport{
+    Endpoint:     "https://example.com/mcp",
+    OAuthHandler: enterpriseHandler,
+}
+client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+session, err := client.Connect(ctx, transport, nil)
+```
+
+The `EnterpriseHandler` automatically manages the token exchange flow. Note that it intentionally does not support refresh tokens - when an access token expires, the entire authorization flow is repeated to ensure enterprise policies are consistently enforced.
+
+For a complete working example, see [examples/auth/enterprise](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/auth/enterprise).
 
 ## Security
 
@@ -397,3 +466,4 @@ or
 Issue #460 discusses some potential ergonomic improvements to this API.
 
 %include ../../mcp/mcp_example_test.go progress -
+

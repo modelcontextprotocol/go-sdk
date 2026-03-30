@@ -66,6 +66,7 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 // checkURLScheme ensures that its argument is a valid URL with a scheme
 // that prevents XSS attacks.
 // See #526.
+// Note: a copy of this function exists in auth/extauth/oidc_login.go; keep these in sync.
 func checkURLScheme(u string) error {
 	if u == "" {
 		return nil

@@ -87,10 +87,11 @@ func main() {
 		RedirectURL:              fmt.Sprintf("http://localhost:%d", *callbackPort),
 		AuthorizationCodeFetcher: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
-		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
-		// 	ClientSecretAuthConfig: &auth.ClientSecretAuthConfig{
+		// PreregisteredClient: &oauthex.ClientCredentials{
 		// 		ClientID:     "",
-		// 		ClientSecret: "",
+		// 		ClientSecretAuth: &oauthex.ClientSecretAuth{
+		// 			ClientSecret: "",
+		// 		},
 		// 	},
 		// },
 		// DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
