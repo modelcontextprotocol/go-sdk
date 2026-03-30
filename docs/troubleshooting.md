@@ -96,3 +96,31 @@ func ExampleStreamableHTTPHandler_middleware() {
 The second is to use a general purpose tool to inspect http traffic, such as
 [wireshark](https://www.wireshark.org/) or
 [tcpdump](https://linux.die.net/man/8/tcpdump).
+
+## Optional CI hardening for downstream servers
+
+If you maintain a Go MCP server in a separate repository, a manual GitHub
+Actions workflow can also be a useful complement to local debugging:
+
+```yaml
+name: Optional MCP hardening
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hardening:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: aak204/MCP-Trust-Kit@v0.4.0
+        with:
+          cmd: go run ./cmd/your-server
+          sarif-out: mcp-trust.sarif
+```
+
+This is an optional example for downstream server repositories. If you already
+use code scanning, the generated SARIF can be uploaded in a separate step.
