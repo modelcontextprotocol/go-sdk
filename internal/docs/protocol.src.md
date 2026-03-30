@@ -144,7 +144,7 @@ to see the logical session
 > modelcontextprotocol/modelcontextprotocol#1442 for potential refinements.
 
 _See [examples/server/distributed](../examples/server/distributed/main.go) for
-an example using statless mode to implement a server distributed across
+an example using stateless mode to implement a server distributed across
 multiple processes._
 
 ### Custom transports
@@ -189,7 +189,7 @@ and invokes the
  passed to `RequireBearerToken` to parse the token and perform validation.
 The middleware function checks expiration and scopes (if they are provided in
 [`RequireBearerTokenOptions.Scopes`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.Scopes)), so the
-`TokenVerifer` doesn't have to.
+`TokenVerifier` doesn't have to.
 If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.ResourceMetadataURL) is set and verification fails, 
 the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
 Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).

@@ -36,7 +36,7 @@ func simpleGreeting(_ context.Context, _ *mcp.CallToolRequest, input Input) (*mc
 
 // manualGreeter handles the parsing and validation of input and output manually.
 //
-// Therfore, it needs to close over its resolved schemas, to use them in
+// Therefore, it needs to close over its resolved schemas, to use them in
 // validation.
 type manualGreeter struct {
 	inputSchema  *jsonschema.Resolved
