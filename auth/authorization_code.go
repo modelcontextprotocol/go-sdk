@@ -140,7 +140,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	dCfg := config.DynamicClientRegistrationConfig
 	if dCfg != nil {
 		if dCfg.Metadata == nil {
-			return nil, errors.New("Metadata is required for dynamic client registration")
+			return nil, errors.New("dynamic client registration requires non-nil Metadata")
 		}
 		if len(dCfg.Metadata.RedirectURIs) == 0 {
 			return nil, errors.New("Metadata.RedirectURIs is required for dynamic client registration")
@@ -281,17 +281,14 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 // If no metadata was found or the fetched metadata fails security checks,
 // it returns an error.
 func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, mcpServerURL string) (*oauthex.ProtectedResourceMetadata, error) {
-	var errs []error
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
 	for _, url := range protectedResourceMetadataURLs(resourceMetadataURLFromChallenges(wwwChallenges), mcpServerURL) {
 		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, h.config.Client)
 		if err != nil {
-			errs = append(errs, err)
 			continue
 		}
 		if prm == nil {
-			errs = append(errs, fmt.Errorf("protected resource metadata is nil"))
 			continue
 		}
 		if len(prm.AuthorizationServers) == 0 {

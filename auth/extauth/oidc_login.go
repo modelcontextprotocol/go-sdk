@@ -119,11 +119,11 @@ func initiateOIDCLogin(
 		return nil, nil, fmt.Errorf("RedirectURL is required")
 	}
 	if len(config.Scopes) == 0 {
-		return nil, nil, fmt.Errorf("Scopes is required (must include 'openid')")
+		return nil, nil, fmt.Errorf("at least one scope is required (must include 'openid')")
 	}
 
 	if !slices.Contains(config.Scopes, "openid") {
-		return nil, nil, fmt.Errorf("Scopes must include 'openid' for OIDC")
+		return nil, nil, fmt.Errorf("the 'openid' scope is required for OIDC")
 	}
 
 	if err := checkURLScheme(config.IssuerURL); err != nil {

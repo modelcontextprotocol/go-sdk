@@ -43,7 +43,6 @@ var (
 type codeReceiver struct {
 	authChan chan *auth.AuthorizationResult
 	errChan  chan error
-	listener net.Listener
 	server   *http.Server
 }
 

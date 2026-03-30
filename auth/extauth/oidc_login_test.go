@@ -159,7 +159,7 @@ func TestInitiateOIDCLogin(t *testing.T) {
 					c.Credentials = &oauthex.ClientCredentials{ClientID: "test"}
 					c.RedirectURL = "http://localhost:8080/callback"
 				},
-				expectErr: "Scopes is required",
+				expectErr: "at least one scope is required",
 			},
 		}
 		for _, tt := range tests {
