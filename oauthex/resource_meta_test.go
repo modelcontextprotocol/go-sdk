@@ -235,7 +235,7 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 
 type fakeResourceHandler struct {
 	http.ServeMux
-	resourceOverride     string // If set, use this instead of correct resource (for testing validation)
+	resourceOverride string // If set, use this instead of correct resource (for testing validation)
 }
 
 func (h *fakeResourceHandler) installHandlers(serverURL string) {

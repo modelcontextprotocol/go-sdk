@@ -5,8 +5,6 @@
 // This file implements Token Exchange (RFC 8693) for Enterprise Managed Authorization.
 // See https://datatracker.ietf.org/doc/html/rfc8693
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (

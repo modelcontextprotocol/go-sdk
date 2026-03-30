@@ -6,8 +6,6 @@
 // as part of Enterprise Managed Authorization (SEP-990).
 // See https://openid.net/specs/openid-connect-core-1_0.html
 
-//go:build mcp_go_client_oauth
-
 package extauth
 
 import (
