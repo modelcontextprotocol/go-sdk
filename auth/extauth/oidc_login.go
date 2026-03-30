@@ -15,7 +15,9 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -126,10 +128,10 @@ func initiateOIDCLogin(
 		return nil, nil, fmt.Errorf("Scopes must include 'openid' for OIDC")
 	}
 
-	if err := oauthex.CheckURLScheme(config.IssuerURL); err != nil {
+	if err := checkURLScheme(config.IssuerURL); err != nil {
 		return nil, nil, fmt.Errorf("invalid IssuerURL: %w", err)
 	}
-	if err := oauthex.CheckURLScheme(config.RedirectURL); err != nil {
+	if err := checkURLScheme(config.RedirectURL); err != nil {
 		return nil, nil, fmt.Errorf("invalid RedirectURL: %w", err)
 	}
 
@@ -218,4 +220,23 @@ func completeOIDCLogin(
 	}
 
 	return oauth2Token, nil
+}
+
+// checkURLScheme ensures that its argument is a valid URL with a scheme
+// that prevents XSS attacks.
+// See #526.
+// Note: a copy of this function exists in oauthex/oauth2.go; keep these in sync.
+func checkURLScheme(u string) error {
+	if u == "" {
+		return nil
+	}
+	uu, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(uu.Scheme)
+	if scheme == "javascript" || scheme == "data" || scheme == "vbscript" {
+		return fmt.Errorf("URL has disallowed scheme %q", scheme)
+	}
+	return nil
 }

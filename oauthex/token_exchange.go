@@ -118,13 +118,13 @@ func ExchangeToken(
 	}
 
 	// Validate URL schemes to prevent XSS attacks (see #526).
-	if err := CheckURLScheme(tokenEndpoint); err != nil {
+	if err := checkURLScheme(tokenEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid token endpoint: %w", err)
 	}
-	if err := CheckURLScheme(req.Audience); err != nil {
+	if err := checkURLScheme(req.Audience); err != nil {
 		return nil, fmt.Errorf("invalid audience: %w", err)
 	}
-	if err := CheckURLScheme(req.Resource); err != nil {
+	if err := checkURLScheme(req.Resource); err != nil {
 		return nil, fmt.Errorf("invalid resource: %w", err)
 	}
 
