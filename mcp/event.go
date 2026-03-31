@@ -376,10 +376,11 @@ func (s *MemoryEventStore) purge() {
 			for _, dl := range sm {
 				if dl.size > 0 {
 					r := dl.removeFirst()
-					if r > 0 {
-						changed = true
-						s.nBytes -= r
-					}
+					// Even if we remove an empty chunk, that's
+					// still progress. There may be non-empty
+					// chunks after it.
+					changed = true
+					s.nBytes -= r
 				}
 			}
 		}

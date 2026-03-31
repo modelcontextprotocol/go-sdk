@@ -676,13 +676,11 @@ func TestServerClosing(t *testing.T) {
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		if err := cs.Wait(); err != nil {
 			t.Errorf("server connection failed: %v", err)
 		}
-		wg.Done()
-	}()
+	})
 	if _, err := cs.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
 		Arguments: map[string]any{"Name": "user"},

@@ -108,9 +108,7 @@ func TestStreamableTransports(t *testing.T) {
 				}
 				// Now, spin off a goroutine that runs after the sampling request, to
 				// check behavior when the client request has completed.
-				sampleWG.Add(1)
-				go func() {
-					defer sampleWG.Done()
+				sampleWG.Go(func() {
 					<-sampleDone
 					// Test that sampling requests in the tool context fail outside of
 					// tool handling, but succeed on the background context.
@@ -120,7 +118,7 @@ func TestStreamableTransports(t *testing.T) {
 					} {
 						testSample(test)
 					}
-				}()
+				})
 				return &CallToolResult{}, nil, nil
 			})
 
@@ -268,9 +266,7 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 	client := NewClient(testImpl, nil)
 	var wg sync.WaitGroup
 	for range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 			if err != nil {
 				t.Errorf("Connect failed: %v", err)
@@ -287,7 +283,7 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 					t.Errorf("got count %d, want %d", got, i)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -924,10 +920,24 @@ func TestStreamableServerTransport(t *testing.T) {
 				},
 				{
 					method:         "POST",
-					headers:        http.Header{"Accept": {"text/*, application/*"}},
-					messages:       []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "tool"})},
+					headers:        http.Header{"Accept": {"application/json;charset=utf-8, text/event-stream"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
-					wantMessages:   []jsonrpc.Message{resp(4, &CallToolResult{Content: []Content{}}, nil)},
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"application/json;charset=utf-8", "text/event-stream"}},
+					messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+				},
+				{
+					method:         "POST",
+					headers:        http.Header{"Accept": {"text/*, application/*"}},
+					messages:       []jsonrpc.Message{req(7, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
 				},
 			},
 			wantSessions: 1,
@@ -1052,7 +1062,7 @@ func TestStreamableServerTransport(t *testing.T) {
 		{
 			name: "background",
 			// Enabling replay is necessary here because the standalone "GET" request
-			// is fully asynronous. Replay is needed to guarantee message delivery.
+			// is fully asynchronous. Replay is needed to guarantee message delivery.
 			//
 			// TODO(rfindley): this should no longer be necessary.
 			replay: true,
@@ -1321,9 +1331,7 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			for m := range out {
 				if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
@@ -1343,7 +1351,7 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 					cancel()
 				}
 			}
-		}()
+		})
 
 		gotSessionID, gotStatusCode, gotBody, err := request.do(ctx, httpServer.URL, sessionID.Load().(string), out)
 
@@ -1381,11 +1389,9 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 	var wg sync.WaitGroup
 	for i, request := range requests {
 		if request.async || request.onRequest > 0 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				doStep(t, i, request)
-			}()
+			})
 		} else {
 			doStep(t, i, request)
 		}
@@ -1988,11 +1994,48 @@ func TestStreamableGETWithoutSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// GET without session should return 400 Bad Request, not 405 Method Not Allowed,
 	// because GET is a valid method - it just requires a session ID.
 	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 		t.Errorf("status code: got %d, want %d", got, want)
+	}
+	if got, want := strings.TrimSpace(string(body)), "Bad Request: GET requires an Mcp-Session-Id header"; got != want {
+		t.Errorf("body: got %q, want %q", got, want)
+	}
+}
+
+func TestStreamableGETWithoutEventStreamAccept(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest("GET", httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
+		t.Errorf("status code: got %d, want %d", got, want)
+	}
+	if got, want := strings.TrimSpace(string(body)), "Accept must contain 'text/event-stream' for GET requests"; got != want {
+		t.Errorf("body: got %q, want %q", got, want)
 	}
 }
 
@@ -2099,18 +2142,15 @@ func TestStreamableSessionTimeout(t *testing.T) {
 	// Spin up two goroutines, each making a request every 10ms. These requests
 	// should keep the server from timing out.
 	var wg sync.WaitGroup
-	wg.Add(2)
 	for range 2 {
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for range 20 {
 				if _, err := session.ListTools(ctx, nil); err != nil {
 					t.Errorf("ListTools failed: %v", err)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -2182,8 +2222,7 @@ data: keepalive
 	}
 
 	// Create a minimal streamableClientConn for testing
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	incoming := make(chan jsonrpc.Message, 10)
 	done := make(chan struct{})

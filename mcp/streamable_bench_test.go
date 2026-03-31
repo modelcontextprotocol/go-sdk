@@ -5,7 +5,6 @@
 package mcp_test
 
 import (
-	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -51,8 +50,7 @@ func BenchmarkStreamableServing(b *testing.B) {
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	session, err := mcp.NewClient(testImpl, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 	if err != nil {
 		b.Fatal(err)
@@ -84,8 +82,7 @@ func BenchmarkStreamableServing_BadSessions(b *testing.B) {
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 
 	if *streamableHeap != "" {
 		writeHeap := func(file string) {
