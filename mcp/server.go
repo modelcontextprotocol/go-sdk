@@ -1296,7 +1296,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	}
 	err = resolved.ApplyDefaults(&res.Content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply schema defalts to elicitation result: %v", err)
+		return nil, fmt.Errorf("failed to apply schema defaults to elicitation result: %v", err)
 	}
 
 	return res, nil

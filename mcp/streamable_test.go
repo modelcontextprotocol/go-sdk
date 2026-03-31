@@ -1024,7 +1024,7 @@ func TestStreamableServerTransport(t *testing.T) {
 		{
 			name: "background",
 			// Enabling replay is necessary here because the standalone "GET" request
-			// is fully asynronous. Replay is needed to guarantee message delivery.
+			// is fully asynchronous. Replay is needed to guarantee message delivery.
 			//
 			// TODO(rfindley): this should no longer be necessary.
 			replay: true,
