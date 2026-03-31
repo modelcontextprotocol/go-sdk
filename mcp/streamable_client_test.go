@@ -119,14 +119,15 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	for k, v := range resp.header {
 		w.Header().Set(k, v)
 	}
+	rc := http.NewResponseController(w)
 	w.WriteHeader(status)
-	w.(http.Flusher).Flush() // flush response headers
+	rc.Flush() // flush response headers
 
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
 	w.Write([]byte(body))
-	w.(http.Flusher).Flush() // flush response
+	rc.Flush() // flush response
 
 	if resp.done != nil {
 		<-resp.done
