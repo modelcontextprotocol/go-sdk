@@ -253,7 +253,7 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 	requireExec(t)
 
 	// Unfortunately, since it does I/O, this test needs to rely on timing (we
-	// can't use synctest). However, we can still decreate the default
+	// can't use synctest). However, we can still decrease the default
 	// termination duration to speed up the test.
 	const defaultDur = 50 * time.Millisecond
 	defer mcp.SetDefaultTerminateDuration(defaultDur)()

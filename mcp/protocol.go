@@ -1220,7 +1220,7 @@ type ToolChoice struct {
 
 // ElicitationCapabilities describes the capabilities for elicitation.
 //
-// If neither Form nor URL is set, the 'Form' capabilitiy is assumed.
+// If neither Form nor URL is set, the 'Form' capability is assumed.
 type ElicitationCapabilities struct {
 	Form *FormElicitationCapabilities `json:"form,omitempty"`
 	URL  *URLElicitationCapabilities  `json:"url,omitempty"`
@@ -1552,7 +1552,7 @@ type ServerCapabilities struct {
 	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Prompts is present if the server supports prompts.
 	Prompts *PromptCapabilities `json:"prompts,omitempty"`
-	// Resources is present if the server supports resourcs.
+	// Resources is present if the server supports resources.
 	Resources *ResourceCapabilities `json:"resources,omitempty"`
 	// Tools is present if the supports tools.
 	Tools *ToolCapabilities `json:"tools,omitempty"`
