@@ -115,6 +115,13 @@ type AuthServerMeta struct {
 	// ClientIDMetadataDocumentSupported is a boolean indicating whether the authorization server
 	// supports client ID metadata documents.
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+
+	// AuthorizationResponseIssParameterSupported indicates whether the authorization server
+	// provides the "iss" parameter in authorization responses per [RFC 9207].
+	// When true, clients must verify the "iss" parameter is present and matches the Issuer field.
+	//
+	// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
 }
 
 // GetAuthServerMeta issues a GET request to retrieve authorization server metadata

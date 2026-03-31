@@ -17,6 +17,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -149,6 +150,8 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "client_secret_basic"},
+		// Advertise RFC 9207 support: the authorize endpoint includes "iss" in responses.
+		AuthorizationResponseIssParameterSupported: true,
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -237,8 +240,9 @@ func (s *FakeAuthorizationServer) handleAuthorize(w http.ResponseWriter, r *http
 	}
 
 	state := r.URL.Query().Get("state")
+	issuer := s.URL() + s.config.IssuerPath
 
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, code, state)
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s&iss=%s", redirectURI, code, state, url.QueryEscape(issuer))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 

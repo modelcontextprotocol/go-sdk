@@ -77,6 +77,7 @@ func fetchAuthorizationCodeAndState(ctx context.Context, args *auth.Authorizatio
 	return &auth.AuthorizationResult{
 		Code:  locURL.Query().Get("code"),
 		State: locURL.Query().Get("state"),
+		Iss:   locURL.Query().Get("iss"),
 	}, nil
 }
 
