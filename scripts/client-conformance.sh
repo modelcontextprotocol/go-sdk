@@ -63,7 +63,7 @@ else
 fi
 
 # Build the conformance server.
-go build -tags mcp_go_client_oauth -o "$WORKDIR/conformance-client" ./conformance/everything-client
+go build -o "$WORKDIR/conformance-client" ./conformance/everything-client
 
 # Run conformance tests from the work directory to avoid writing results to the repo.
 echo "Running conformance tests..."

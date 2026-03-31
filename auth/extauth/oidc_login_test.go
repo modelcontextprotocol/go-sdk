@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package extauth
 
 import (
@@ -161,7 +159,7 @@ func TestInitiateOIDCLogin(t *testing.T) {
 					c.Credentials = &oauthex.ClientCredentials{ClientID: "test"}
 					c.RedirectURL = "http://localhost:8080/callback"
 				},
-				expectErr: "Scopes is required",
+				expectErr: "at least one scope is required",
 			},
 		}
 		for _, tt := range tests {

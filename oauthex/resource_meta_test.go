@@ -2,14 +2,10 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -206,21 +202,14 @@ func TestParseSingleChallenge(t *testing.T) {
 }
 
 func TestGetProtectedResourceMetadata(t *testing.T) {
-	ctx := context.Background()
-	t.Run("FromHeader", func(t *testing.T) {
-		h := &fakeResourceHandler{serveWWWAuthenticate: true}
+	ctx := t.Context()
+	t.Run("Success", func(t *testing.T) {
+		h := &fakeResourceHandler{}
 		server := httptest.NewTLSServer(h)
 		h.installHandlers(server.URL)
 		client := server.Client()
-		serverURL := server.URL + "/resource"
-		res, err := client.Get(serverURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.StatusCode != http.StatusUnauthorized {
-			t.Fatal("want unauth")
-		}
-		prm, err := GetProtectedResourceMetadataFromHeader(ctx, serverURL, res.Header, client)
+		metadataURL := server.URL + "/.well-known/oauth-protected-resource"
+		prm, err := GetProtectedResourceMetadata(ctx, metadataURL, server.URL, client)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,53 +217,13 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 			t.Fatal("nil prm")
 		}
 	})
-	t.Run("FromID", func(t *testing.T) {
-		h := &fakeResourceHandler{serveWWWAuthenticate: false}
+	t.Run("RejectsIncorrectResource", func(t *testing.T) {
+		h := &fakeResourceHandler{resourceOverride: "https://attacker.com/evil"}
 		server := httptest.NewTLSServer(h)
 		h.installHandlers(server.URL)
 		client := server.Client()
-		prm, err := GetProtectedResourceMetadataFromID(ctx, server.URL, client)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if prm == nil {
-			t.Fatal("nil prm")
-		}
-	})
-	// Test that metadata URL and resource identifier are properly distinguished (issue #560).
-	t.Run("FromHeaderValidatesAgainstServerURL", func(t *testing.T) {
-		h := &fakeResourceHandler{serveWWWAuthenticate: true}
-		server := httptest.NewTLSServer(h)
-		h.installHandlers(server.URL)
-		client := server.Client()
-		serverURL := server.URL + "/resource"
-		res, err := client.Get(serverURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// This should succeed because we validate against serverURL, not metadataURL
-		prm, err := GetProtectedResourceMetadataFromHeader(ctx, serverURL, res.Header, client)
-		if err != nil {
-			t.Fatalf("Expected validation to succeed, got error: %v", err)
-		}
-		if prm == nil {
-			t.Fatal("Expected non-nil prm")
-		}
-		if prm.Resource != serverURL {
-			t.Errorf("Expected resource %q, got %q", serverURL, prm.Resource)
-		}
-	})
-	t.Run("FromHeaderRejectsImpersonation", func(t *testing.T) {
-		h := &fakeResourceHandler{serveWWWAuthenticate: true, resourceOverride: "https://attacker.com/evil"}
-		server := httptest.NewTLSServer(h)
-		h.installHandlers(server.URL)
-		client := server.Client()
-		serverURL := server.URL + "/resource"
-		res, err := client.Get(serverURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		prm, err := GetProtectedResourceMetadataFromHeader(ctx, serverURL, res.Header, client)
+		metadataURL := server.URL + "/.well-known/oauth-protected-resource"
+		prm, err := GetProtectedResourceMetadata(ctx, metadataURL, server.URL, client)
 		if err == nil {
 			t.Fatal("Expected validation error for mismatched resource, got nil")
 		}
@@ -286,28 +235,17 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 
 type fakeResourceHandler struct {
 	http.ServeMux
-	serveWWWAuthenticate bool
-	resourceOverride     string // If set, use this instead of correct resource (for testing validation)
+	resourceOverride string // If set, use this instead of correct resource (for testing validation)
 }
 
 func (h *fakeResourceHandler) installHandlers(serverURL string) {
 	path := "/.well-known/oauth-protected-resource"
-	url := serverURL + path
-	h.Handle("GET /resource", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.serveWWWAuthenticate {
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s"`, url))
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
 	h.Handle("GET "+path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// Per RFC 9728 section 3.3, the resource field should contain the actual resource identifier,
 		// which is the URL the client uses to access the resource (serverURL + "/resource" for WWW-Authenticate case).
-		// For the FromID test case, it's just the serverURL.
+		// For the well-known URL test case, it's just the serverURL.
 		resource := serverURL
-		if h.serveWWWAuthenticate {
-			resource = serverURL + "/resource"
-		}
 		// Allow testing with custom resource values (e.g., impersonation attacks).
 		if h.resourceOverride != "" {
 			resource = h.resourceOverride
