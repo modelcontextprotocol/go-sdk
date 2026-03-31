@@ -321,15 +321,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		var err error
 		input, err = applySchema(input, inputResolved)
 		if err != nil {
-			// TODO(#450): should this be considered a tool error? (and similar below)
-			return nil, fmt.Errorf("%w: validating \"arguments\": %v", jsonrpc2.ErrInvalidParams, err)
+			var errRes CallToolResult
+			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
+			return &errRes, nil
 		}
 
 		// Unmarshal and validate args.
 		var in In
 		if input != nil {
 			if err := internaljson.Unmarshal(input, &in); err != nil {
-				return nil, fmt.Errorf("%w: %v", jsonrpc2.ErrInvalidParams, err)
+				var errRes CallToolResult
+				errRes.SetError(err)
+				return &errRes, nil
 			}
 		}
 

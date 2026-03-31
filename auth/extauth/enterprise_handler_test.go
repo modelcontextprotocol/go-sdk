@@ -34,7 +34,7 @@ func TestNewEnterpriseHandler_Validation(t *testing.T) {
 				AccessToken: "mock_access_token",
 				TokenType:   "Bearer",
 			}
-			return token.WithExtra(map[string]interface{}{"id_token": "mock_id_token"}), nil
+			return token.WithExtra(map[string]any{"id_token": "mock_id_token"}), nil
 		},
 	}
 
@@ -192,7 +192,7 @@ func TestNewEnterpriseHandler_Validation(t *testing.T) {
 						AccessToken: "mock_access_token",
 						TokenType:   "Bearer",
 					}
-					return token.WithExtra(map[string]interface{}{"id_token": "mock_id_token"}), nil
+					return token.WithExtra(map[string]any{"id_token": "mock_id_token"}), nil
 				},
 			},
 			wantError: "",
@@ -252,7 +252,7 @@ func TestEnterpriseHandler_Authorize_E2E(t *testing.T) {
 				AccessToken: "mock_access_token",
 				TokenType:   "Bearer",
 			}
-			return token.WithExtra(map[string]interface{}{"id_token": "mock_id_token_from_user_login"}), nil
+			return token.WithExtra(map[string]any{"id_token": "mock_id_token_from_user_login"}), nil
 		},
 	})
 	if err != nil {
@@ -303,7 +303,7 @@ func setupIdPServer(t *testing.T) *httptest.Server {
 	// OAuth/OIDC metadata endpoint - uses closure to get server URL
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                           server.URL,
 			"token_endpoint":                   server.URL + "/token",
 			"authorization_endpoint":           server.URL + "/authorize",
@@ -348,7 +348,7 @@ func setupIdPServer(t *testing.T) *httptest.Server {
 
 		// Return ID-JAG (Identity Assertion JWT Authorization Grant)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]any{
 			"access_token":      "id-jag-token-from-idp",
 			"issued_token_type": oauthex.TokenTypeIDJAG,
 			"token_type":        "N_A",
@@ -373,7 +373,7 @@ func setupMCPAuthServer(t *testing.T) *httptest.Server {
 	// OAuth metadata endpoint - uses closure to get server URL
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                           server.URL,
 			"token_endpoint":                   server.URL + "/token",
 			"code_challenge_methods_supported": []string{"S256"},
@@ -410,7 +410,7 @@ func setupMCPAuthServer(t *testing.T) *httptest.Server {
 
 		// Return access token
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "mcp_access_token_from_jwt_bearer",
 			"token_type":   "Bearer",
 			"expires_in":   3600,
@@ -478,7 +478,7 @@ func TestEnterpriseHandler_TokenSource_BeforeAuthorization(t *testing.T) {
 				AccessToken: "mock_access_token",
 				TokenType:   "Bearer",
 			}
-			return token.WithExtra(map[string]interface{}{"id_token": "mock_id_token"}), nil
+			return token.WithExtra(map[string]any{"id_token": "mock_id_token"}), nil
 		},
 	})
 	if err != nil {

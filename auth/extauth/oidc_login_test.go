@@ -325,7 +325,7 @@ func createMockOIDCServer(t *testing.T) *httptest.Server {
 		// Handle OIDC discovery
 		if r.URL.Path == "/.well-known/openid-configuration" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                           serverURL,
 				"authorization_endpoint":           serverURL + "/authorize",
 				"token_endpoint":                   serverURL + "/token",
@@ -349,7 +349,7 @@ func createMockOIDCServerWithToken(t *testing.T) *httptest.Server {
 		// Handle OIDC discovery
 		if r.URL.Path == "/.well-known/openid-configuration" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                           serverURL,
 				"authorization_endpoint":           serverURL + "/authorize",
 				"token_endpoint":                   serverURL + "/token",
@@ -374,7 +374,7 @@ func createMockOIDCServerWithToken(t *testing.T) *httptest.Server {
 			// Create mock ID token (JWT)
 			now := time.Now().Unix()
 			idToken := fmt.Sprintf("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.%s.mock-signature",
-				base64EncodeClaims(map[string]interface{}{
+				base64EncodeClaims(map[string]any{
 					"iss":   serverURL,
 					"sub":   "test-user",
 					"aud":   "test-client",
@@ -384,7 +384,7 @@ func createMockOIDCServerWithToken(t *testing.T) *httptest.Server {
 				}))
 			// Return token response
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"access_token":  "mock-access-token",
 				"token_type":    "Bearer",
 				"expires_in":    3600,
@@ -400,7 +400,7 @@ func createMockOIDCServerWithToken(t *testing.T) *httptest.Server {
 }
 
 // base64EncodeClaims encodes JWT claims for testing.
-func base64EncodeClaims(claims map[string]interface{}) string {
+func base64EncodeClaims(claims map[string]any) string {
 	claimsJSON, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString(claimsJSON)
 }
