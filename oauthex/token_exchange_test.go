@@ -97,7 +97,7 @@ func TestExchangeToken(t *testing.T) {
 		}
 
 		// Return successful token exchange response per SEP-990 Section 4.2
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"issued_token_type": TokenTypeIDJAG,
 			"access_token":      "fake-id-jag-token",
 			"token_type":        "N_A",

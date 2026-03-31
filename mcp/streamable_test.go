@@ -108,9 +108,7 @@ func TestStreamableTransports(t *testing.T) {
 				}
 				// Now, spin off a goroutine that runs after the sampling request, to
 				// check behavior when the client request has completed.
-				sampleWG.Add(1)
-				go func() {
-					defer sampleWG.Done()
+				sampleWG.Go(func() {
 					<-sampleDone
 					// Test that sampling requests in the tool context fail outside of
 					// tool handling, but succeed on the background context.
@@ -120,7 +118,7 @@ func TestStreamableTransports(t *testing.T) {
 					} {
 						testSample(test)
 					}
-				}()
+				})
 				return &CallToolResult{}, nil, nil
 			})
 
@@ -268,9 +266,7 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 	client := NewClient(testImpl, nil)
 	var wg sync.WaitGroup
 	for range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 			if err != nil {
 				t.Errorf("Connect failed: %v", err)
@@ -287,7 +283,7 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 					t.Errorf("got count %d, want %d", got, i)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -1293,9 +1289,7 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			for m := range out {
 				if req, ok := m.(*jsonrpc.Request); ok && req.IsCall() {
@@ -1315,7 +1309,7 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 					cancel()
 				}
 			}
-		}()
+		})
 
 		gotSessionID, gotStatusCode, gotBody, err := request.do(ctx, httpServer.URL, sessionID.Load().(string), out)
 
@@ -1353,11 +1347,9 @@ func testStreamableHandler(t *testing.T, handler http.Handler, requests []stream
 	var wg sync.WaitGroup
 	for i, request := range requests {
 		if request.async || request.onRequest > 0 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				doStep(t, i, request)
-			}()
+			})
 		} else {
 			doStep(t, i, request)
 		}
@@ -2071,18 +2063,15 @@ func TestStreamableSessionTimeout(t *testing.T) {
 	// Spin up two goroutines, each making a request every 10ms. These requests
 	// should keep the server from timing out.
 	var wg sync.WaitGroup
-	wg.Add(2)
 	for range 2 {
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for range 20 {
 				if _, err := session.ListTools(ctx, nil); err != nil {
 					t.Errorf("ListTools failed: %v", err)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -2154,8 +2143,7 @@ data: keepalive
 	}
 
 	// Create a minimal streamableClientConn for testing
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	incoming := make(chan jsonrpc.Message, 10)
 	done := make(chan struct{})
