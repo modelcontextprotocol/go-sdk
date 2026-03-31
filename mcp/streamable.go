@@ -97,7 +97,7 @@ func (i *sessionInfo) startPOST() {
 	i.refs++
 }
 
-// endPOST sigals that a request for this session is ending, starting the
+// endPOST signals that a request for this session is ending, starting the
 // timeout if there are no other requests running.
 func (i *sessionInfo) endPOST() {
 	if i.timeout <= 0 {
@@ -1211,7 +1211,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	//
 	// Create a logical stream to track its responses.
 	// Important: don't publish the incoming messages until the stream is
-	// registered, as the server may attempt to respond to imcoming messages as
+	// registered, as the server may attempt to respond to incoming messages as
 	// soon as they're published.
 	stream, err := c.newStream(req.Context(), calls, crand.Text())
 	if err != nil {

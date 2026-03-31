@@ -51,17 +51,9 @@ func TestServerErrors(t *testing.T) {
 		executeCall  func() error
 		expectedCode int64
 	}{
-		{
-			name: "missing required param",
-			executeCall: func() error {
-				_, err := cs.CallTool(ctx, &CallToolParams{
-					Name:      "validate",
-					Arguments: map[string]any{}, // Missing required "name" field
-				})
-				return err
-			},
-			expectedCode: jsonrpc.CodeInvalidParams,
-		},
+		// Note: "missing required param" is tested separately below, because
+		// input validation errors are returned as tool results with IsError=true
+		// rather than JSON-RPC errors (see #450).
 		{
 			name: "unknown tool",
 			executeCall: func() error {
@@ -116,6 +108,44 @@ func TestServerErrors(t *testing.T) {
 				t.Error("got empty error message, want non-empty")
 			}
 		})
+	}
+}
+
+// TestInputValidationToolError validates that input validation errors (missing
+// required params, wrong types) are returned as tool results with IsError=true,
+// not as JSON-RPC errors. This allows LLMs to see the error and self-correct.
+// See #450.
+func TestInputValidationToolError(t *testing.T) {
+	ctx := context.Background()
+
+	type RequiredParams struct {
+		Name string `json:"name" jsonschema:"the name is required"`
+	}
+	handler := func(ctx context.Context, req *CallToolRequest, args RequiredParams) (*CallToolResult, any, error) {
+		return &CallToolResult{
+			Content: []Content{&TextContent{Text: "success"}},
+		}, nil, nil
+	}
+
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
+		AddTool(s, &Tool{Name: "validate", Description: "validates params"}, handler)
+	})
+	defer cleanup()
+
+	// Call the tool with missing required "name" field.
+	result, err := cs.CallTool(ctx, &CallToolParams{
+		Name:      "validate",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v; want tool result with IsError", err)
+	}
+	if !result.IsError {
+		t.Fatal("got IsError=false, want IsError=true for missing required param")
+	}
+	text := result.Content[0].(*TextContent).Text
+	if !strings.Contains(text, "name") {
+		t.Errorf("error text %q does not mention missing field \"name\"", text)
 	}
 }
 

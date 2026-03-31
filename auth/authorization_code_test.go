@@ -46,9 +46,9 @@ func TestAuthorize(t *testing.T) {
 
 	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
 		RedirectURL: "http://localhost:12345/callback",
-		PreregisteredClientConfig: &PreregisteredClientConfig{
-			ClientSecretAuthConfig: &ClientSecretAuthConfig{
-				ClientID:     "test_client_id",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
 				ClientSecret: "test_client_secret",
 			},
 		},
@@ -154,9 +154,9 @@ func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
 		{
 			name: "PreregisteredClientConfig",
 			config: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "test_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "test_client_secret",
 					},
 				},
@@ -223,7 +223,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
 				cfg.ClientIDMetadataDocumentConfig = nil
-				cfg.PreregisteredClientConfig = nil
+				cfg.PreregisteredClient = nil
 				cfg.DynamicClientRegistrationConfig = nil
 				return cfg
 			},
@@ -256,7 +256,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_MissingSecretConfig",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{}
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{}
 				return cfg
 			},
 		},
@@ -264,8 +264,9 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptyID",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "secret",
 					},
 				}
@@ -276,9 +277,10 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptySecret",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID: "test_client_id",
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "",
 					},
 				}
 				return cfg
@@ -438,90 +440,6 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetadata(t *testing.T) {
-	handler, err := NewAuthorizationCodeHandler(validConfig())
-	if err != nil {
-		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
-	}
-
-	tests := []struct {
-		name           string
-		issuerPath     string
-		endpointConfig *oauthtest.MetadataEndpointConfig
-	}{
-		{
-			name:       "OAuthEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OAuthEndpoint_Path",
-			issuerPath: "/oauth",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDAppendedEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDAppendedEndpoint: true,
-			},
-		},
-		{
-			name:       "NoMetadata",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				// All metadata endpoints disabled.
-				ServeOAuthInsertedEndpoint:  false,
-				ServeOpenIDInsertedEndpoint: false,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
-				IssuerPath:             tt.issuerPath,
-				MetadataEndpointConfig: tt.endpointConfig,
-			})
-			s.Start(t)
-			issuerURL := s.URL() + tt.issuerPath
-			prm := &oauthex.ProtectedResourceMetadata{
-				Resource:             "https://example.com/resource",
-				AuthorizationServers: []string{issuerURL},
-			}
-
-			got, err := handler.getAuthServerMetadata(t.Context(), prm)
-			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
-			}
-			if got == nil {
-				t.Fatal("getAuthServerMetadata() got nil, want metadata")
-			}
-			if got.Issuer != issuerURL {
-				t.Errorf("getAuthServerMetadata() issuer = %q, want %q", got.Issuer, issuerURL)
-			}
-		})
-	}
-}
-
 func TestSelectTokenAuthMethod(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -587,9 +505,9 @@ func TestHandleRegistration(t *testing.T) {
 				},
 			},
 			handlerConfig: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "pre_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "pre_client_secret",
 					},
 				},
@@ -622,11 +540,9 @@ func TestHandleRegistration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAuthorizationCodeHandler() error = %v, want nil", err)
 			}
-			asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-				AuthorizationServers: []string{s.URL()},
-			})
+			asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+				t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
 			}
 			got, err := handler.handleRegistration(t.Context(), asm)
 			if err != nil {
@@ -672,11 +588,9 @@ func TestDynamicRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
 	}
-	asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-		AuthorizationServers: []string{s.URL()},
-	})
+	asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 	if err != nil {
-		t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+		t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
 	}
 	got, err := handler.handleRegistration(t.Context(), asm)
 	if err != nil {
