@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build (go1.24 && goexperiment.synctest) || go1.25
-
 package mcp
 
 import (
@@ -89,12 +87,9 @@ func TestServerConformance(t *testing.T) {
 			// By comparison, gopls has a complicated framework based on progress
 			// reporting and careful accounting to detect when all 'expected' work
 			// on the server is complete.
-			runSyncTest(t, func(t *testing.T) { runServerTest(t, test) })
-
-			// TODO: in 1.25, use the following instead:
-			// synctest.Test(t, func(t *testing.T) {
-			// 	runServerTest(t, test)
-			// })
+			synctest.Test(t, func(t *testing.T) {
+				runServerTest(t, test)
+			})
 		})
 	}
 }
@@ -328,7 +323,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Before closing the stream, wait for all messages to be processed.
 	synctest.Wait()
 	if err != nil {
-		t.Fatalf("reading server messages failedd: %v", err)
+		t.Fatalf("reading server messages failed: %v", err)
 	}
 	if extra != nil {
 		t.Fatalf("got extra response: %v", extra)

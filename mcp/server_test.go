@@ -676,12 +676,19 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 	}
 	result, err := goth(context.Background(), ctr)
 	if wantErrContaining != "" {
-		if err == nil {
-			t.Errorf("got nil error, want error containing %q", wantErrContaining)
-		} else {
+		// Input validation errors are returned as tool results with IsError=true,
+		// not as Go errors. Check both possibilities.
+		if err != nil {
 			if !strings.Contains(err.Error(), wantErrContaining) {
 				t.Errorf("got error %q, want containing %q", err, wantErrContaining)
 			}
+		} else if result != nil && result.IsError {
+			text := result.Content[0].(*TextContent).Text
+			if !strings.Contains(text, wantErrContaining) {
+				t.Errorf("got tool error %q, want containing %q", text, wantErrContaining)
+			}
+		} else {
+			t.Errorf("got no error, want error containing %q", wantErrContaining)
 		}
 	} else if err != nil {
 		t.Errorf("got error %v, want no error", err)
@@ -763,13 +770,13 @@ func TestClientRootCapabilities(t *testing.T) {
 			var initParams json.RawMessage
 			if tc.capabilities != nil {
 				initParams = json.RawMessage(`{
-					"protocolVersion": "2025-06-18",
+					"protocolVersion": "2025-11-25",
 					"capabilities": ` + *tc.capabilities + `,
 					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
 				}`)
 			} else {
 				initParams = json.RawMessage(`{
-					"protocolVersion": "2025-06-18",
+					"protocolVersion": "2025-11-25",
 					"clientInfo": {"name": "TestClient", "version": "1.0.0"}
 				}`)
 			}

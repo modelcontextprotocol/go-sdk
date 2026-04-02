@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -76,47 +77,44 @@ func runCancelContextServer() {
 	}
 }
 
-// TODO: remove this test when Go 1.24 support is dropped (use go1.25 synctest version).
 func TestServerRunContextCancel(t *testing.T) {
-	server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
-	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
+	synctest.Test(t, func(t *testing.T) {
+		server := mcp.NewServer(&mcp.Implementation{Name: "greeter", Version: "v0.0.1"}, nil)
+		mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+		serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
-	// run the server and capture the exit error
-	onServerExit := make(chan error)
-	go func() {
-		onServerExit <- server.Run(ctx, serverTransport)
-	}()
+		// run the server and capture the exit error
+		onServerExit := make(chan error)
+		go func() {
+			onServerExit <- server.Run(ctx, serverTransport)
+		}()
 
-	// send a ping to the server to ensure it's running
-	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { session.Close() })
+		// send a ping to the server to ensure it's running
+		client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+		session, err := client.Connect(ctx, clientTransport, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { session.Close() })
 
-	if err := session.Ping(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
+		if err := session.Ping(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
 
-	// cancel the context to stop the server
-	cancel()
+		// cancel the context to stop the server
+		cancel()
 
-	// wait for the server to exit
-	// TODO: use synctest when available
-	select {
-	case <-time.After(5 * time.Second):
-		t.Fatal("server did not exit after context cancellation")
-	case err := <-onServerExit:
+		// wait for the server to exit
+
+		err = <-onServerExit
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("server did not exit after context cancellation, got error: %v", err)
 		}
-	}
+	})
 }
 
 func TestServerInterrupt(t *testing.T) {
@@ -202,8 +200,7 @@ func TestStdioContextCancellation(t *testing.T) {
 func TestCmdTransport(t *testing.T) {
 	requireExec(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	cmd := createServerCommand(t, "default")
 
@@ -256,7 +253,7 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 	requireExec(t)
 
 	// Unfortunately, since it does I/O, this test needs to rely on timing (we
-	// can't use synctest). However, we can still decreate the default
+	// can't use synctest). However, we can still decrease the default
 	// termination duration to speed up the test.
 	const defaultDur = 50 * time.Millisecond
 	defer mcp.SetDefaultTerminateDuration(defaultDur)()
@@ -289,8 +286,7 @@ func TestCommandTransportTerminateDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			// Use a command that won't exit when stdin is closed
 			cmd := exec.Command("sleep", "20")
