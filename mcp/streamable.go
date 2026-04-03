@@ -1053,9 +1053,9 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
 		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
+		rc := http.NewResponseController(w)
+		// Ignore returned error as flushing is best-effort.
+		_ = rc.Flush()
 	}
 
 	for _, data := range toReplay {

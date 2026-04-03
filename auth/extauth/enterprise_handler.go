@@ -5,8 +5,6 @@
 // Package extauth provides OAuth handler implementations for MCP authorization extensions.
 // This package implements Enterprise Managed Authorization as defined in SEP-990.
 
-//go:build mcp_go_client_oauth
-
 package extauth
 
 import (

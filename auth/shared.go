@@ -4,8 +4,6 @@
 
 // This file contains shared utilities for OAuth handlers.
 
-//go:build mcp_go_client_oauth
-
 package auth
 
 import (
