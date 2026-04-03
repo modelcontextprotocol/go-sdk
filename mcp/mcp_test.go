@@ -2228,4 +2228,45 @@ func TestToolErrorMiddleware(t *testing.T) {
 	}
 }
 
+func TestSetErrorPreservesContent(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		content     []Content
+		err         error
+		wantContent string
+	}{
+		{
+			name:        "nil content",
+			err:         errors.New("internal failure"),
+			wantContent: "internal failure",
+		},
+		{
+			name:        "empty slice content",
+			content:     []Content{},
+			err:         errors.New("internal failure"),
+			wantContent: "internal failure",
+		},
+		{
+			name:        "existing content preserved",
+			content:     []Content{&TextContent{Text: "user-friendly msg"}},
+			err:         errors.New("db timeout"),
+			wantContent: "user-friendly msg",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := CallToolResult{Content: tt.content}
+			res.SetError(tt.err)
+			if !res.IsError {
+				t.Fatal("want IsError=true")
+			}
+			if got := res.Content[0].(*TextContent).Text; got != tt.wantContent {
+				t.Errorf("Content text = %q, want %q", got, tt.wantContent)
+			}
+			if got := res.GetError(); got != tt.err {
+				t.Errorf("GetError() = %v, want %v", got, tt.err)
+			}
+		})
+	}
+}
+
 var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}
