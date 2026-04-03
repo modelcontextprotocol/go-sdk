@@ -265,11 +265,6 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 		// Validate 'Content-Type' header.
 		if req.Method == http.MethodPost {
-			// application/json meida type doesn't has require or optional parameters,
-			// but we should still parse the media type to be robust against
-			// parameters like charset=utf-8.
-			//
-			// https://datatracker.ietf.org/doc/html/rfc4627.html#section-6
 			mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 			if err != nil || mediaType != "application/json" {
 				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
