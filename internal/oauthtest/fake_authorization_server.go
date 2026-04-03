@@ -49,6 +49,14 @@ type RegistrationConfig struct {
 	DynamicClientRegistrationEnabled bool
 }
 
+// JWTBearerConfig configures support for the JWT Bearer grant type (RFC 7523)
+// on a [FakeAuthorizationServer].
+type JWTBearerConfig struct {
+	// ValidAssertions is the set of assertion values that are accepted.
+	// If empty, any non-empty assertion is accepted.
+	ValidAssertions []string
+}
+
 // Config holds configuration for FakeAuthorizationServer.
 type Config struct {
 	// The optional path component of the issuer URL.
@@ -59,6 +67,9 @@ type Config struct {
 	MetadataEndpointConfig *MetadataEndpointConfig
 	// Configuration for client registration.
 	RegistrationConfig *RegistrationConfig
+	// JWTBearerConfig enables RFC 7523 JWT Bearer grant at the /token endpoint.
+	// If non-nil, the server accepts grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer.
+	JWTBearerConfig *JWTBearerConfig
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -253,10 +264,19 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if r.Form.Get("grant_type") != "authorization_code" {
-		http.Error(w, "invalid grant_type", http.StatusBadRequest)
-		return
+
+	grantType := r.Form.Get("grant_type")
+	switch grantType {
+	case "authorization_code":
+		s.handleAuthorizationCodeGrant(w, r)
+	case "urn:ietf:params:oauth:grant-type:jwt-bearer":
+		s.handleJWTBearerGrant(w, r)
+	default:
+		http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
 	}
+}
+
+func (s *FakeAuthorizationServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
 	code := r.Form.Get("code")
 	if code == "" {
 		http.Error(w, "missing code", http.StatusBadRequest)
@@ -277,6 +297,31 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 	if expectedChallenge != codeInfo.CodeChallenge {
 		http.Error(w, "PKCE verification failed", http.StatusBadRequest)
 		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"access_token": "test_access_token",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	})
+}
+
+func (s *FakeAuthorizationServer) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request) {
+	if s.config.JWTBearerConfig == nil {
+		http.Error(w, "JWT bearer grant not supported", http.StatusBadRequest)
+		return
+	}
+	assertion := r.Form.Get("assertion")
+	if assertion == "" {
+		http.Error(w, "missing assertion", http.StatusBadRequest)
+		return
+	}
+	if len(s.config.JWTBearerConfig.ValidAssertions) > 0 {
+		if !slices.Contains(s.config.JWTBearerConfig.ValidAssertions, assertion) {
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
