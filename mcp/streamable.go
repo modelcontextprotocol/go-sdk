@@ -20,6 +20,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
+	"mime"
 	"net"
 	"net/http"
 	"slices"
@@ -264,8 +265,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 		// Validate 'Content-Type' header.
 		if req.Method == http.MethodPost {
-			contentType := req.Header.Get("Content-Type")
-			if contentType != "application/json" {
+			mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" {
 				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 				return
 			}
