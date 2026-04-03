@@ -890,6 +890,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					wantStatusCode: http.StatusOK,
 					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
 				},
+				{
+					// Correct Content-Type with parameters should pass.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"application/json; charset=utf-8"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
 			},
 			wantSessions: 1,
 		},
