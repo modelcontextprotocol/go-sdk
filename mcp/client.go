@@ -340,7 +340,8 @@ func (cs *ClientSession) ID() string {
 // Close is idempotent and concurrency safe.
 func (cs *ClientSession) Close() error {
 	// Note: keepaliveCancel access is safe without a mutex because:
-	// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+	// 1. keepaliveCancel is only written once during Client.Connect (through startKeepalive),
+	//    which happens before any code that may call Close from another goroutine
 	// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
 	// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
 	//    Close is idempotent and conn.Close() handles concurrent calls correctly

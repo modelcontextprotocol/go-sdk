@@ -363,6 +363,34 @@ func TestStreamableServerShutdown(t *testing.T) {
 	}
 }
 
+// TestStreamableStatelessKeepaliveRace verifies that there is no data race between
+// ServerSession.startKeepalive and ServerSession.Close in stateless servers.
+func TestStreamableStatelessKeepaliveRace(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, &ServerOptions{KeepAlive: time.Hour})
+	AddTool(server, &Tool{Name: "greet"}, sayHi)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	for range 50 {
+		cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{
+			Endpoint: httpServer.URL,
+		}, nil)
+		if err != nil {
+			t.Fatalf("NewClient() failed: %v", err)
+		}
+		_, _ = cs.CallTool(ctx, &CallToolParams{
+			Name:      "greet",
+			Arguments: map[string]any{"Name": "world"},
+		})
+		_ = cs.Close()
+	}
+}
+
 // TestClientReplay verifies that the client can recover from a mid-stream
 // network failure and receive replayed messages (if replay is configured). It
 // uses a proxy that is killed and restarted to simulate a recoverable network
@@ -858,6 +886,14 @@ func TestStreamableServerTransport(t *testing.T) {
 					// Correct Content-Type should pass.
 					method:         "POST",
 					headers:        http.Header{"Content-Type": {"application/json"}},
+					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
+					wantStatusCode: http.StatusOK,
+					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
+				},
+				{
+					// Correct Content-Type with parameters should pass.
+					method:         "POST",
+					headers:        http.Header{"Content-Type": {"application/json; charset=utf-8"}},
 					messages:       []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages:   []jsonrpc.Message{resp(5, &CallToolResult{Content: []Content{}}, nil)},
