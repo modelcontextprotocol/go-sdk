@@ -9,19 +9,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 // scenarioHandler is the function signature for all conformance test scenarios.
 // It takes a context and the server URL to connect to.
-type scenarioHandler func(ctx context.Context, serverURL string) error
+type scenarioHandler func(ctx context.Context, serverURL string, configCtx map[string]any) error
 
 var (
 	// registry stores all registered scenario handlers.
@@ -42,13 +47,36 @@ func init() {
 	registerScenario("tools_call", runToolsCallClient)
 	registerScenario("elicitation-sep1034-client-defaults", runElicitationDefaultsClient)
 	registerScenario("sse-retry", runSSERetryClient)
+
+	authScenarios := []string{
+		"auth/2025-03-26-oauth-metadata-backcompat",
+		"auth/2025-03-26-oauth-endpoint-fallback",
+		"auth/basic-cimd",
+		"auth/metadata-default",
+		"auth/metadata-var1",
+		"auth/metadata-var2",
+		"auth/metadata-var3",
+		"auth/pre-registration",
+		"auth/resource-mismatch",
+		"auth/scope-from-www-authenticate",
+		"auth/scope-from-scopes-supported",
+		"auth/scope-omitted-when-undefined",
+		"auth/scope-step-up",
+		"auth/scope-retry-limit",
+		"auth/token-endpoint-auth-basic",
+		"auth/token-endpoint-auth-post",
+		"auth/token-endpoint-auth-none",
+	}
+	for _, scenario := range authScenarios {
+		registerScenario(scenario, runAuthClient)
+	}
 }
 
 // ============================================================================
 // Basic scenarios
 // ============================================================================
 
-func runBasicClient(ctx context.Context, serverURL string) error {
+func runBasicClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -63,7 +91,7 @@ func runBasicClient(ctx context.Context, serverURL string) error {
 	return nil
 }
 
-func runToolsCallClient(ctx context.Context, serverURL string) error {
+func runToolsCallClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -97,7 +125,7 @@ func runToolsCallClient(ctx context.Context, serverURL string) error {
 // Elicitation scenarios
 // ============================================================================
 
-func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
+func runElicitationDefaultsClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	elicitationHandler := func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		return &mcp.ElicitResult{
 			Action:  "accept",
@@ -141,8 +169,7 @@ func runElicitationDefaultsClient(ctx context.Context, serverURL string) error {
 // SSE retry scenario
 // ============================================================================
 
-func runSSERetryClient(ctx context.Context, serverURL string) error {
-	// TODO: this scenario is not passing yet. It requires a fix in the client SSE handling.
+func runSSERetryClient(ctx context.Context, serverURL string, _ map[string]any) error {
 	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
@@ -175,6 +202,92 @@ func runSSERetryClient(ctx context.Context, serverURL string) error {
 }
 
 // ============================================================================
+// Auth scenarios
+// ============================================================================
+
+func fetchAuthorizationCodeAndState(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", args.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// In conformance tests the authorization server immediately redirects
+	// to the callback URL with the authorization code and state.
+	locURL, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		return nil, fmt.Errorf("parse location: %v", err)
+	}
+
+	return &auth.AuthorizationResult{
+		Code:  locURL.Query().Get("code"),
+		State: locURL.Query().Get("state"),
+	}, nil
+}
+
+func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
+	authConfig := &auth.AuthorizationCodeHandlerConfig{
+		RedirectURL:              "http://localhost:3000/callback",
+		AuthorizationCodeFetcher: fetchAuthorizationCodeAndState,
+		// Try client ID metadata document based registration.
+		ClientIDMetadataDocumentConfig: &auth.ClientIDMetadataDocumentConfig{
+			URL: "https://conformance-test.local/client-metadata.json",
+		},
+		// Try dynamic client registration.
+		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
+			Metadata: &oauthex.ClientRegistrationMetadata{
+				RedirectURIs: []string{"http://localhost:3000/callback"},
+			},
+		},
+	}
+	// Try pre-registered client information if provided in the context.
+	if clientID, ok := configCtx["client_id"].(string); ok {
+		if clientSecret, ok := configCtx["client_secret"].(string); ok {
+			authConfig.PreregisteredClient = &oauthex.ClientCredentials{
+				ClientID: clientID,
+				ClientSecretAuth: &oauthex.ClientSecretAuth{
+					ClientSecret: clientSecret,
+				},
+			}
+		}
+	}
+
+	authHandler, err := auth.NewAuthorizationCodeHandler(authConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create auth handler: %w", err)
+	}
+
+	session, err := connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		return fmt.Errorf("session.ListTools(): %v", err)
+	}
+
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "test-tool",
+		Arguments: map[string]any{},
+	}); err != nil {
+		return fmt.Errorf("session.CallTool('test-tool'): %v", err)
+	}
+
+	return nil
+}
+
+// ============================================================================
 // Main entry point
 // ============================================================================
 
@@ -185,6 +298,7 @@ func main() {
 
 	serverURL := os.Args[1]
 	scenarioName := os.Getenv("MCP_CONFORMANCE_SCENARIO")
+	configCtx := getConformanceContext()
 
 	if scenarioName == "" {
 		printUsageAndExit("MCP_CONFORMANCE_SCENARIO not set")
@@ -196,9 +310,19 @@ func main() {
 	}
 
 	ctx := context.Background()
-	if err := handler(ctx, serverURL); err != nil {
+	if err := handler(ctx, serverURL, configCtx); err != nil {
 		log.Fatalf("Scenario %q failed: %v", scenarioName, err)
 	}
+}
+
+func getConformanceContext() map[string]any {
+	ctxStr := os.Getenv("MCP_CONFORMANCE_CONTEXT")
+	if ctxStr == "" {
+		return nil
+	}
+	var ctx map[string]any
+	_ = json.Unmarshal([]byte(ctxStr), &ctx)
+	return ctx
 }
 
 func printUsageAndExit(format string, args ...any) {
@@ -214,6 +338,7 @@ func printUsageAndExit(format string, args ...any) {
 
 type connectConfig struct {
 	clientOptions *mcp.ClientOptions
+	oauthHandler  auth.OAuthHandler
 }
 
 type connectOption func(*connectConfig)
@@ -221,6 +346,12 @@ type connectOption func(*connectConfig)
 func withClientOptions(opts *mcp.ClientOptions) connectOption {
 	return func(c *connectConfig) {
 		c.clientOptions = opts
+	}
+}
+
+func withOAuthHandler(handler auth.OAuthHandler) connectOption {
+	return func(c *connectConfig) {
+		c.oauthHandler = handler
 	}
 }
 
@@ -237,11 +368,14 @@ func connectToServer(ctx context.Context, serverURL string, opts ...connectOptio
 		Version: "1.0.0",
 	}, config.clientOptions)
 
-	transport := &mcp.StreamableClientTransport{Endpoint: serverURL}
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:     serverURL,
+		OAuthHandler: config.oauthHandler,
+	}
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("client.Connect(): %v", err)
+		return nil, fmt.Errorf("client.Connect(): %w", err)
 	}
 
 	return session, nil

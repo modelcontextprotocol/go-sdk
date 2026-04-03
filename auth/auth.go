@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -25,8 +26,7 @@ type TokenInfo struct {
 	// session hijacking by ensuring that all requests for a given session
 	// come from the same user.
 	UserID string
-	// TODO: add standard JWT fields
-	Extra map[string]any
+	Extra  map[string]any
 }
 
 // The error that a TokenVerifier should return if the token cannot be verified.
@@ -74,8 +74,17 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 			tokenInfo, errmsg, code := verify(r, verifier, opts)
 			if code != 0 {
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
-					if opts != nil && opts.ResourceMetadataURL != "" {
-						w.Header().Add("WWW-Authenticate", "Bearer resource_metadata="+opts.ResourceMetadataURL)
+					if opts != nil {
+						var params []string
+						if opts.ResourceMetadataURL != "" {
+							params = append(params, fmt.Sprintf("resource_metadata=%q", opts.ResourceMetadataURL))
+						}
+						if len(opts.Scopes) > 0 {
+							params = append(params, fmt.Sprintf("scope=%q", strings.Join(opts.Scopes, " ")))
+						}
+						if len(params) > 0 {
+							w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
+						}
 					}
 				}
 				http.Error(w, errmsg, code)
@@ -105,6 +114,9 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 			return nil, err.Error(), http.StatusBadRequest
 		}
 		return nil, err.Error(), http.StatusInternalServerError
+	}
+	if tokenInfo == nil {
+		return nil, "token validation failed", http.StatusInternalServerError
 	}
 
 	// Check scopes. All must be present.

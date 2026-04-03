@@ -5,8 +5,6 @@
 // This file implements Protected Resource Metadata.
 // See https://www.rfc-editor.org/rfc/rfc9728.html.
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (
@@ -14,94 +12,99 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
-const defaultProtectedResourceMetadataURI = "/.well-known/oauth-protected-resource"
+// ProtectedResourceMetadata is the metadata for an OAuth 2.0 protected resource,
+// as defined in section 2 of https://www.rfc-editor.org/rfc/rfc9728.html.
+//
+// The following features are not supported:
+// - additional keys (§2, last sentence)
+// - human-readable metadata (§2.1)
+// - signed metadata (§2.2)
+type ProtectedResourceMetadata struct {
+	// Resource (resource) is the protected resource's resource identifier.
+	// Required.
+	Resource string `json:"resource"`
 
-// GetProtectedResourceMetadataFromID issues a GET request to retrieve protected resource
-// metadata from a resource server by its ID.
-// The resource ID is an HTTPS URL, typically with a host:port and possibly a path.
-// For example:
-//
-//	https://example.com/server
-//
-// This function, following the spec (§3), inserts the default well-known path into the
-// URL. In our example, the result would be
-//
-//	https://example.com/.well-known/oauth-protected-resource/server
-//
-// It then retrieves the metadata at that location using the given client (or the
-// default client if nil) and validates its resource field against resourceID.
-func GetProtectedResourceMetadataFromID(ctx context.Context, resourceID string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
-	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromID(%q)", resourceID)
+	// AuthorizationServers (authorization_servers) is an optional slice containing a list of
+	// OAuth authorization server issuer identifiers (as defined in RFC 8414) that can be
+	// used with this protected resource.
+	AuthorizationServers []string `json:"authorization_servers,omitempty"`
 
-	u, err := url.Parse(resourceID)
-	if err != nil {
-		return nil, err
-	}
-	// Insert well-known URI into URL.
-	u.Path = path.Join(defaultProtectedResourceMetadataURI, u.Path)
-	return getPRM(ctx, u.String(), c, resourceID)
+	// JWKSURI (jwks_uri) is an optional URL of the protected resource's JSON Web Key (JWK) Set
+	// document. This contains public keys belonging to the protected resource, such as
+	// signing key(s) that the resource server uses to sign resource responses.
+	JWKSURI string `json:"jwks_uri,omitempty"`
+
+	// ScopesSupported (scopes_supported) is a recommended slice containing a list of scope
+	// values (as defined in RFC 6749) used in authorization requests to request access
+	// to this protected resource.
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
+
+	// BearerMethodsSupported (bearer_methods_supported) is an optional slice containing
+	// a list of the supported methods of sending an OAuth 2.0 bearer token to the
+	// protected resource. Defined values are "header", "body", and "query".
+	BearerMethodsSupported []string `json:"bearer_methods_supported,omitempty"`
+
+	// ResourceSigningAlgValuesSupported (resource_signing_alg_values_supported) is an optional
+	// slice of JWS signing algorithms (alg values) supported by the protected
+	// resource for signing resource responses.
+	ResourceSigningAlgValuesSupported []string `json:"resource_signing_alg_values_supported,omitempty"`
+
+	// ResourceName (resource_name) is a human-readable name of the protected resource
+	// intended for display to the end user. It is RECOMMENDED that this field be included.
+	// This value may be internationalized.
+	ResourceName string `json:"resource_name,omitempty"`
+
+	// ResourceDocumentation (resource_documentation) is an optional URL of a page containing
+	// human-readable information for developers using the protected resource.
+	// This value may be internationalized.
+	ResourceDocumentation string `json:"resource_documentation,omitempty"`
+
+	// ResourcePolicyURI (resource_policy_uri) is an optional URL of a page containing
+	// human-readable policy information on how a client can use the data provided.
+	// This value may be internationalized.
+	ResourcePolicyURI string `json:"resource_policy_uri,omitempty"`
+
+	// ResourceTOSURI (resource_tos_uri) is an optional URL of a page containing the protected
+	// resource's human-readable terms of service. This value may be internationalized.
+	ResourceTOSURI string `json:"resource_tos_uri,omitempty"`
+
+	// TLSClientCertificateBoundAccessTokens (tls_client_certificate_bound_access_tokens) is an
+	// optional boolean indicating support for mutual-TLS client certificate-bound
+	// access tokens (RFC 8705). Defaults to false if omitted.
+	TLSClientCertificateBoundAccessTokens bool `json:"tls_client_certificate_bound_access_tokens,omitempty"`
+
+	// AuthorizationDetailsTypesSupported (authorization_details_types_supported) is an optional
+	// slice of 'type' values supported by the resource server for the
+	// 'authorization_details' parameter (RFC 9396).
+	AuthorizationDetailsTypesSupported []string `json:"authorization_details_types_supported,omitempty"`
+
+	// DPOPSigningAlgValuesSupported (dpop_signing_alg_values_supported) is an optional
+	// slice of JWS signing algorithms supported by the resource server for validating
+	// DPoP proof JWTs (RFC 9449).
+	DPOPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
+
+	// DPOPBoundAccessTokensRequired (dpop_bound_access_tokens_required) is an optional boolean
+	// specifying whether the protected resource always requires the use of DPoP-bound
+	// access tokens (RFC 9449). Defaults to false if omitted.
+	DPOPBoundAccessTokensRequired bool `json:"dpop_bound_access_tokens_required,omitempty"`
+
+	// SignedMetadata (signed_metadata) is an optional JWT containing metadata parameters
+	// about the protected resource as claims. If present, these values take precedence
+	// over values conveyed in plain JSON.
+	// TODO:implement.
+	// Note that §2.2 says it's okay to ignore this.
+	// SignedMetadata string `json:"signed_metadata,omitempty"`
 }
 
-// GetProtectedResourceMetadataFromHeader retrieves protected resource metadata
-// using information in the given header, using the given client (or the default
-// client if nil).
-// It issues a GET request to a URL discovered by parsing the WWW-Authenticate headers in the given request.
-// Per RFC 9728 section 3.3, it validates that the resource field of the resulting metadata
-// matches the serverURL (the URL that the client used to make the original request to the resource server).
-// If there is no metadata URL in the header, it returns nil, nil.
-func GetProtectedResourceMetadataFromHeader(ctx context.Context, serverURL string, header http.Header, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
-	defer util.Wrapf(&err, "GetProtectedResourceMetadataFromHeader")
-	headers := header[http.CanonicalHeaderKey("WWW-Authenticate")]
-	if len(headers) == 0 {
-		return nil, nil
-	}
-	cs, err := ParseWWWAuthenticate(headers)
-	if err != nil {
-		return nil, err
-	}
-	metadataURL := ResourceMetadataURL(cs)
-	if metadataURL == "" {
-		return nil, nil
-	}
-	return getPRM(ctx, metadataURL, c, serverURL)
-}
-
-// getPRM makes a GET request to the given URL, and validates the response.
-// As part of the validation, it compares the returned resource field to wantResource.
-func getPRM(ctx context.Context, purl string, c *http.Client, wantResource string) (*ProtectedResourceMetadata, error) {
-	if !strings.HasPrefix(strings.ToUpper(purl), "HTTPS://") {
-		return nil, fmt.Errorf("resource URL %q does not use HTTPS", purl)
-	}
-	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, purl, 1<<20)
-	if err != nil {
-		return nil, err
-	}
-	// Validate the Resource field (see RFC 9728, section 3.3).
-	if prm.Resource != wantResource {
-		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, wantResource)
-	}
-	// Validate the authorization server URLs to prevent XSS attacks (see #526).
-	for _, u := range prm.AuthorizationServers {
-		if err := checkURLScheme(u); err != nil {
-			return nil, err
-		}
-	}
-	return prm, nil
-}
-
-// challenge represents a single authentication challenge from a WWW-Authenticate header.
+// Challenge represents a single authentication challenge from a WWW-Authenticate header.
 // As per RFC 9110, Section 11.6.1, a challenge consists of a scheme and optional parameters.
-type challenge struct {
-	// GENERATED BY GEMINI 2.5.
-	//
+type Challenge struct {
 	// Scheme is the authentication scheme (e.g., "Bearer", "Basic").
 	// It is case-insensitive. A parsed value will always be lower-case.
 	Scheme string
@@ -110,24 +113,46 @@ type challenge struct {
 	Params map[string]string
 }
 
-// ResourceMetadataURL returns a resource metadata URL from the given challenges,
-// or the empty string if there is none.
-func ResourceMetadataURL(cs []challenge) string {
-	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; u != "" {
-			return u
+// GetProtectedResourceMetadata issues a GET request to retrieve protected resource
+// metadata from a resource server.
+// The metadataURL is typically a URL with a host:port and possibly a path.
+// The resourceURL is the resource URI the metadataURL is for.
+// The following checks are performed:
+//   - The metadataURL must use HTTPS or be a local address.
+//   - The resource field of the resulting metadata must match the resourceURL.
+//   - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
+func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
+	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
+	// Only allow HTTP for local addresses (testing or development purposes).
+	if err := checkHTTPSOrLoopback(metadataURL); err != nil {
+		return nil, fmt.Errorf("metadataURL: %v", err)
+	}
+	prm, err := getJSON[ProtectedResourceMetadata](ctx, c, metadataURL, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	// Validate the Resource field (see RFC 9728, section 3.3).
+	if prm.Resource != resourceURL {
+		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, resourceURL)
+	}
+	// Validate the authorization server URLs to prevent XSS attacks (see #526).
+	for i, u := range prm.AuthorizationServers {
+		if err := checkURLScheme(u); err != nil {
+			return nil, fmt.Errorf("authorization_servers[%d]: %v", i, err)
+		}
+		if err := checkHTTPSOrLoopback(u); err != nil {
+			return nil, fmt.Errorf("authorization_servers[%d]: %v", i, err)
 		}
 	}
-	return ""
+	return prm, nil
 }
 
 // ParseWWWAuthenticate parses a WWW-Authenticate header string.
 // The header format is defined in RFC 9110, Section 11.6.1, and can contain
 // one or more challenges, separated by commas.
 // It returns a slice of challenges or an error if one of the headers is malformed.
-func ParseWWWAuthenticate(headers []string) ([]challenge, error) {
-	// GENERATED BY GEMINI 2.5 (human-tweaked)
-	var challenges []challenge
+func ParseWWWAuthenticate(headers []string) ([]Challenge, error) {
+	var challenges []Challenge
 	for _, h := range headers {
 		challengeStrings, err := splitChallenges(h)
 		if err != nil {
@@ -151,7 +176,6 @@ func ParseWWWAuthenticate(headers []string) ([]challenge, error) {
 // It correctly handles commas within quoted strings and distinguishes between
 // commas separating auth-params and commas separating challenges.
 func splitChallenges(header string) ([]string, error) {
-	// GENERATED BY GEMINI 2.5.
 	var challenges []string
 	inQuotes := false
 	start := 0
@@ -195,15 +219,14 @@ func splitChallenges(header string) ([]string, error) {
 
 // parseSingleChallenge parses a string containing exactly one challenge.
 // challenge   = auth-scheme [ 1*SP ( token68 / #auth-param ) ]
-func parseSingleChallenge(s string) (challenge, error) {
-	// GENERATED BY GEMINI 2.5, human-tweaked.
+func parseSingleChallenge(s string) (Challenge, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return challenge{}, errors.New("empty challenge string")
+		return Challenge{}, errors.New("empty challenge string")
 	}
 
 	scheme, paramsStr, found := strings.Cut(s, " ")
-	c := challenge{Scheme: strings.ToLower(scheme)}
+	c := Challenge{Scheme: strings.ToLower(scheme)}
 	if !found {
 		return c, nil
 	}
@@ -215,7 +238,7 @@ func parseSingleChallenge(s string) (challenge, error) {
 		// Find the end of the parameter key.
 		keyEnd := strings.Index(paramsStr, "=")
 		if keyEnd <= 0 {
-			return challenge{}, fmt.Errorf("malformed auth parameter: expected key=value, but got %q", paramsStr)
+			return Challenge{}, fmt.Errorf("malformed auth parameter: expected key=value, but got %q", paramsStr)
 		}
 		key := strings.TrimSpace(paramsStr[:keyEnd])
 
@@ -243,7 +266,7 @@ func parseSingleChallenge(s string) (challenge, error) {
 
 			// A quoted string must be terminated.
 			if i == len(paramsStr) {
-				return challenge{}, fmt.Errorf("unterminated quoted string in auth parameter")
+				return Challenge{}, fmt.Errorf("unterminated quoted string in auth parameter")
 			}
 
 			value = valBuilder.String()
@@ -261,7 +284,7 @@ func parseSingleChallenge(s string) (challenge, error) {
 			}
 		}
 		if value == "" {
-			return challenge{}, fmt.Errorf("no value for auth param %q", key)
+			return Challenge{}, fmt.Errorf("no value for auth param %q", key)
 		}
 
 		// Per RFC 9110, parameter keys are case-insensitive.
@@ -272,10 +295,10 @@ func parseSingleChallenge(s string) (challenge, error) {
 			paramsStr = strings.TrimSpace(paramsStr[1:])
 		} else if paramsStr != "" {
 			// If there's content but it's not a new parameter, the format is wrong.
-			return challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
+			return Challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
 		}
 	}
 
 	// Per RFC 9110, the scheme is case-insensitive.
-	return challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
+	return Challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
 }

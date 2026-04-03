@@ -89,16 +89,14 @@ func parent() {
 		cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", childPortVar, port))
 		cmd.Stderr = os.Stderr
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			log.Printf("starting child %d at %s", i, childURL)
 			if err := cmd.Run(); err != nil && ctx.Err() == nil {
 				log.Printf("child %d failed: %v", i, err)
 			} else {
 				log.Printf("child %d exited gracefully", i)
 			}
-		}()
+		})
 	}
 
 	// Start a reverse proxy that round-robin's requests to each backend.
@@ -116,13 +114,11 @@ func parent() {
 		},
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := server.ListenAndServe(); err != nil && ctx.Err() == nil {
 			log.Printf("Server failed: %v", err)
 		}
-	}()
+	})
 
 	log.Printf("Serving at %s (CTRL-C to cancel)", *httpAddr)
 

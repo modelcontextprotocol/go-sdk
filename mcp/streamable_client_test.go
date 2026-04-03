@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2"
 )
 
 type streamableRequestKey struct {
@@ -118,14 +119,15 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	for k, v := range resp.header {
 		w.Header().Set(k, v)
 	}
+	rc := http.NewResponseController(w)
 	w.WriteHeader(status)
-	w.(http.Flusher).Flush() // flush response headers
+	rc.Flush() // flush response headers
 
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
 	w.Write([]byte(body))
-	w.(http.Flusher).Flush() // flush response
+	rc.Flush() // flush response
 
 	if resp.done != nil {
 		<-resp.done
@@ -447,10 +449,10 @@ func TestStreamableClientResumption_Cancelled(t *testing.T) {
 	//
 	// TODO(#680): experiment with instead using synctest.
 	const tick = 10 * time.Millisecond
-	defer func(delay time.Duration) {
-		reconnectInitialDelay = delay
-	}(reconnectInitialDelay)
-	reconnectInitialDelay = 2 * tick
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(2 * tick))
 
 	// The setup: terminate a request stream and make the resumed request hang
 	// indefinitely. CallTool should still exit when its context is canceled.
@@ -703,10 +705,10 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 func TestStreamableClientRetryWithoutProgress(t *testing.T) {
 	// Speed up reconnection delays for testing.
 	const tick = 10 * time.Millisecond
-	defer func(delay time.Duration) {
-		reconnectInitialDelay = delay
-	}(reconnectInitialDelay)
-	reconnectInitialDelay = tick
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(tick))
 
 	// Use the fakeStreamableServer pattern like other tests to avoid race conditions.
 	ctx := context.Background()
@@ -907,5 +909,161 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type mockOAuthHandler struct {
+	token           *oauth2.Token
+	authorizeErr    error
+	authorizeCalled bool
+}
+
+func (h *mockOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	if h.token == nil {
+		return nil, nil
+	}
+	return oauth2.StaticTokenSource(h.token), nil
+}
+
+func (h *mockOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	h.authorizeCalled = true
+	return h.authorizeErr
+}
+
+func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
+	ctx := context.Background()
+	token := &oauth2.Token{AccessToken: "test-token"}
+	oauthHandler := &mockOAuthHandler{token: token}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "123", "", ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+			},
+			{"DELETE", "123", "", ""}: {},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test-token" {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	session.Close()
+}
+
+func TestStreamableClientOAuth_401(t *testing.T) {
+	ctx := context.Background()
+	oauthHandler := &mockOAuthHandler{token: nil}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		// Accept any token.
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+	_, err := client.Connect(ctx, transport, nil)
+	if err == nil || !strings.Contains(err.Error(), "Unauthorized") {
+		t.Fatalf("client.Connect() error does not contain 'Unauthorized': %v", err)
+	}
+
+	if !oauthHandler.authorizeCalled {
+		t.Errorf("expected Authorize to be called")
+	}
+}
+
+func TestTokenInfo(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a server with a tool that returns TokenInfo.
+	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
+
+	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test-token" {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{
+			Scopes: []string{"scope"},
+			// Expiration is far, far in the future.
+			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
+		}, nil
+	}
+	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: &mockOAuthHandler{token: &oauth2.Token{AccessToken: "test-token"}},
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("missing content")
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok {
+		t.Fatal("not TextContent")
+	}
+	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
+		t.Errorf("got %q, want %q", g, w)
 	}
 }

@@ -38,6 +38,11 @@ protocol.
 
 See [troubleshooting.md](troubleshooting.md) for a troubleshooting guide.
 
+# Backwards compatibility
+
+See [mcpgodebug.md](mcpgodebug.md) for a list of backwards incompatible behavior changes
+and description how they can be temporarily undone.
+
 # Rough edges
 
 See [rough_edges.md](rough_edges.md) for a list of rough edges or API
