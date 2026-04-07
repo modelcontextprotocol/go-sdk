@@ -126,6 +126,24 @@ type AuthorizationCodeHandlerConfig struct {
 	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
 	// If not provided, http.DefaultClient will be used.
 	Client *http.Client
+
+	// NewTokenSource is an optional function that can be set to construct the
+	// token source that will be used by the [AuthorizationCodeHandler]. If
+	// non-nil, it is called after the authorization code is successfully
+	// exchanged for a token in [AuthorizationCodeHandler.Authorize]
+	// to obtain the [oauth2.TokenSource] returned by
+	// [AuthorizationCodeHandler.TokenSource]. Implementations must use the
+	// provided context, which is properly configured for constructing a
+	// TokenSource. The default is to call [oauth2.Config.TokenSource].
+	NewTokenSource func(context.Context, *oauth2.Config, *oauth2.Token) (oauth2.TokenSource, error)
+
+	// InitialTokenSource is an optional field that can be set to inject the
+	// token source that will be used by the [AuthorizationCodeHandler]. If
+	// non-nil, it is set as the token source that will be returned by
+	// [AuthorizationCodeHandler.TokenSource] during handler initialization.
+	// The default is nil, which means no token source has been set initially,
+	// and will trigger a call to [AuthorizationCodeHandler.Authorize].
+	InitialTokenSource oauth2.TokenSource
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -199,6 +217,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	}
 	return &AuthorizationCodeHandler{
 		config:        config,
+		tokenSource:   config.InitialTokenSource,
 		grantedScopes: make(map[string][]string),
 	}, nil
 }
@@ -615,7 +634,15 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	// completes. Use a background context that still carries the configured HTTP
 	// client so refreshes keep working for the life of the token source.
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
-	h.tokenSource = cfg.TokenSource(refreshCtx, token)
+	if h.config.NewTokenSource == nil {
+		h.tokenSource = cfg.TokenSource(refreshCtx, token)
+	} else {
+		ts, err := h.config.NewTokenSource(refreshCtx, cfg, token)
+		if err != nil {
+			return fmt.Errorf("constructing token source failed: %w", err)
+		}
+		h.tokenSource = ts
+	}
 	return nil
 }
 
