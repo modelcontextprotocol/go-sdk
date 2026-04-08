@@ -14,12 +14,19 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
-	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// notifyCancellationTimeout bounds the cancellation notification we send to
+// the peer when the caller's context is cancelled. The notification is
+// best-effort: a degraded connection (e.g. an OAuth flow that has been
+// abandoned) must not be able to block the caller's return path or
+// re-trigger expensive recovery on its behalf. See issue #882.
+const notifyCancellationTimeout = 5 * time.Second
 
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
@@ -220,8 +227,19 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
-		// Notify the peer of cancellation.
-		err := conn.Notify(xcontext.Detach(ctx), notificationCancelled, &CancelledParams{
+		// Best-effort notify the peer of cancellation. We deliberately bound
+		// this with a fresh, short-lived context derived from
+		// context.Background() rather than reusing (or merely detaching) the
+		// caller's already-cancelled context. The connection may be in a
+		// degraded state — for example, the original failure may have come
+		// from an OAuth flow whose handler context expired (see #882) — and
+		// reusing that context would either return immediately with an error
+		// or, worse, re-trigger expensive recovery (re-auth) on the caller's
+		// return path. The bounded background context lets the notification
+		// attempt to deliver but never blocks the caller indefinitely.
+		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), notifyCancellationTimeout)
+		defer cancelNotify()
+		err := conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
 			Reason:    ctx.Err().Error(),
 			RequestID: call.ID().Raw(),
 		})

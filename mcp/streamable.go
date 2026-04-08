@@ -1814,6 +1814,15 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil {
 		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
+			// If the caller's context was cancelled while we were running the
+			// authorization flow, treat the connection as failed so subsequent
+			// operations on it (e.g. the cancellation notify the call layer
+			// sends in response to ctx cancellation) short-circuit instead of
+			// re-invoking the OAuth handler. Otherwise the user gets prompted
+			// to authorize a request they have already abandoned. See #882.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				c.fail(fmt.Errorf("%s: authorization cancelled: %w", requestSummary, err))
+			}
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			// Wrap the authorization error as well for client inspection.
