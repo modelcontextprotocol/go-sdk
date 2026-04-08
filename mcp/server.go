@@ -321,15 +321,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		var err error
 		input, err = applySchema(input, inputResolved)
 		if err != nil {
-			// TODO(#450): should this be considered a tool error? (and similar below)
-			return nil, fmt.Errorf("%w: validating \"arguments\": %v", jsonrpc2.ErrInvalidParams, err)
+			var errRes CallToolResult
+			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
+			return &errRes, nil
 		}
 
 		// Unmarshal and validate args.
 		var in In
 		if input != nil {
 			if err := internaljson.Unmarshal(input, &in); err != nil {
-				return nil, fmt.Errorf("%w: %v", jsonrpc2.ErrInvalidParams, err)
+				var errRes CallToolResult
+				errRes.SetError(err)
+				return &errRes, nil
 			}
 		}
 
@@ -1028,6 +1031,13 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
 	}
+
+	// Start keepalive before returning the session to avoid race conditions with Close.
+	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
+	if s.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
+	}
+
 	return ss, nil
 }
 
@@ -1054,9 +1064,6 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if wasInitd {
 		ss.server.opts.Logger.Error("duplicate initialized notification")
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
-	}
-	if ss.server.opts.KeepAlive > 0 {
-		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
@@ -1107,7 +1114,7 @@ type ServerSession struct {
 	server          *Server
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
-	keepaliveCancel context.CancelFunc // TODO: theory around why keepaliveCancel need not be guarded
+	keepaliveCancel context.CancelFunc
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1293,7 +1300,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	}
 	err = resolved.ApplyDefaults(&res.Content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply schema defalts to elicitation result: %v", err)
+		return nil, fmt.Errorf("failed to apply schema defaults to elicitation result: %v", err)
 	}
 
 	return res, nil
@@ -1501,7 +1508,8 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 func (ss *ServerSession) Close() error {
 	if ss.keepaliveCancel != nil {
 		// Note: keepaliveCancel access is safe without a mutex because:
-		// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+		// 1. keepaliveCancel is only written once during Server.Connect (through startKeepalive),
+		//    which happens before any code that may call Close from another goroutine
 		// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
 		// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly

@@ -2,8 +2,6 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package main
 
 import (
@@ -29,7 +27,6 @@ var (
 type codeReceiver struct {
 	authChan chan *auth.AuthorizationResult
 	errChan  chan error
-	listener net.Listener
 	server   *http.Server
 }
 
@@ -87,10 +84,11 @@ func main() {
 		RedirectURL:              fmt.Sprintf("http://localhost:%d", *callbackPort),
 		AuthorizationCodeFetcher: receiver.getAuthorizationCode,
 		// Uncomment the client configuration you want to use.
-		// PreregisteredClientConfig: &auth.PreregisteredClientConfig{
-		// 	ClientSecretAuthConfig: &auth.ClientSecretAuthConfig{
+		// PreregisteredClient: &oauthex.ClientCredentials{
 		// 		ClientID:     "",
-		// 		ClientSecret: "",
+		// 		ClientSecretAuth: &oauthex.ClientSecretAuth{
+		// 			ClientSecret: "",
+		// 		},
 		// 	},
 		// },
 		// DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{

@@ -327,6 +327,29 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 	}
 }
 
+func TestMemoryEventStorePurgeEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryEventStore(nil)
+	s.SetMaxBytes(100)
+
+	// Append an empty chunk first.
+	if err := s.Append(ctx, "S1", "1", []byte("")); err != nil {
+		t.Fatal(err)
+	}
+	// Append a non-empty chunk.
+	if err := s.Append(ctx, "S1", "1", []byte("1234567890")); err != nil {
+		t.Fatal(err)
+	}
+	// Now nBytes = 10, but the first chunk is empty.
+
+	// This should not panic.
+	s.SetMaxBytes(5)
+
+	if s.nBytes > 5 {
+		t.Errorf("got nBytes %d, want <= 5", s.nBytes)
+	}
+}
+
 func BenchmarkMemoryEventStore(b *testing.B) {
 	// Benchmark with various settings for event store size, number of session,
 	// and payload size.

@@ -2,8 +2,6 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthtest
 
 import (
@@ -282,7 +280,7 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
 		"expires_in":   3600,

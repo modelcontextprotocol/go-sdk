@@ -20,6 +20,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
+	"mime"
 	"net"
 	"net/http"
 	"slices"
@@ -97,7 +98,7 @@ func (i *sessionInfo) startPOST() {
 	i.refs++
 }
 
-// endPOST sigals that a request for this session is ending, starting the
+// endPOST signals that a request for this session is ending, starting the
 // timeout if there are no other requests running.
 func (i *sessionInfo) endPOST() {
 	if i.timeout <= 0 {
@@ -279,8 +280,8 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 		// Validate 'Content-Type' header.
 		if req.Method == http.MethodPost {
-			contentType := req.Header.Get("Content-Type")
-			if contentType != "application/json" {
+			mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" {
 				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 				return
 			}
@@ -289,19 +290,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 
 	// Allow multiple 'Accept' headers.
 	// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept#syntax
-	accept := strings.Split(strings.Join(req.Header.Values("Accept"), ","), ",")
-	var jsonOK, streamOK bool
-	for _, c := range accept {
-		switch strings.TrimSpace(c) {
-		case "application/json", "application/*":
-			jsonOK = true
-		case "text/event-stream", "text/*":
-			streamOK = true
-		case "*/*":
-			jsonOK = true
-			streamOK = true
-		}
-	}
+	jsonOK, streamOK := streamableAccepts(req.Header.Values("Accept"))
 
 	if req.Method == http.MethodGet {
 		if !streamOK {
@@ -582,6 +571,26 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	sessInfo.transport.ServeHTTP(w, req)
+}
+
+func streamableAccepts(values []string) (jsonOK, streamOK bool) {
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			token := strings.TrimSpace(raw)
+			// Ignore Accept parameters like ";charset=utf-8"; match the base media type.
+			base, _, _ := strings.Cut(token, ";")
+			switch strings.ToLower(strings.TrimSpace(base)) {
+			case "application/json", "application/*":
+				jsonOK = true
+			case "text/event-stream", "text/*":
+				streamOK = true
+			case "*/*":
+				jsonOK = true
+				streamOK = true
+			}
+		}
+	}
+	return jsonOK, streamOK
 }
 
 // A StreamableServerTransport implements the server side of the MCP streamable
@@ -1078,9 +1087,9 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
 		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
+		rc := http.NewResponseController(w)
+		// Ignore returned error as flushing is best-effort.
+		_ = rc.Flush()
 	}
 
 	for _, data := range toReplay {
@@ -1236,7 +1245,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	//
 	// Create a logical stream to track its responses.
 	// Important: don't publish the incoming messages until the stream is
-	// registered, as the server may attempt to respond to imcoming messages as
+	// registered, as the server may attempt to respond to incoming messages as
 	// soon as they're published.
 	stream, err := c.newStream(req.Context(), calls, crand.Text())
 	if err != nil {
