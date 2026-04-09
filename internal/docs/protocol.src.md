@@ -143,7 +143,7 @@ to see the logical session
 > modelcontextprotocol/modelcontextprotocol#1372, or
 > modelcontextprotocol/modelcontextprotocol#1442 for potential refinements.
 
-_See [examples/server/distributed](../examples/server/distributed/main.go) for
+_See [examples/server/distributed](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/distributed/main.go) for
 an example using stateless mode to implement a server distributed across
 multiple processes._
 
@@ -155,7 +155,7 @@ by implementing the
 [`Transport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Transport)
 interface: a logical bidirectional stream of JSON-RPC messages.
 
-_Full example: [examples/server/custom-transport](../examples/server/custom-transport/main.go)._
+_Full example: [examples/server/custom-transport](https://github.com/modelcontextprotocol/go-sdk/blob/main//examples/server/custom-transport/main.go)._
 
 ### Concurrency
 
@@ -368,7 +368,7 @@ of tokens and is the responsibility of the
 provided to 
 [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
 
-### Server-Side Request Forgery (SSRF)
+### Server-Side Request Forgery
 
 The [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-3) are as follows:
 
