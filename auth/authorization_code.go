@@ -565,13 +565,19 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 //
 // [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
 func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bool) error {
-	if iss != "" {
+	if issParameterSupported {
+		if iss == "" {
+			return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
+		}
 		if iss != expectedIssuer {
 			return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
 		}
-	} else if issParameterSupported {
-		return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
+	} else {
+		if iss != "" {
+			return fmt.Errorf("authorization server does not advertise RFC 9207 iss parameter support but iss was received in the authorization response")
+		}
 	}
+
 	return nil
 }
 

@@ -40,6 +40,11 @@ func init() {
 		"auth/token-endpoint-auth-basic",
 		"auth/token-endpoint-auth-post",
 		"auth/token-endpoint-auth-none",
+		"auth/iss-supported",
+		"auth/iss-not-advertised",
+		"auth/iss-supported-missing",
+		"auth/iss-wrong-issuer",
+		"auth/iss-unexpected",
 	}
 	for _, scenario := range authScenarios {
 		registerScenario(scenario, runAuthClient)
