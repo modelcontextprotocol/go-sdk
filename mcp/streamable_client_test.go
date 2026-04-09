@@ -1018,9 +1018,12 @@ func TestStreamableClientOAuth_401(t *testing.T) {
 }
 
 // blockingCountingOAuthHandler is an OAuthHandler that blocks inside
-// Authorize until the caller's context is cancelled, then returns ctx.Err().
-// It records how many times Authorize is invoked. Used by the regression
-// test for #882.
+// Authorize until the caller's context is cancelled, then returns a custom
+// error that does NOT wrap context.Canceled. This mirrors real-world OAuth
+// handlers that catch the cancellation internally and surface their own
+// error type. The fix for #882 checks ctx.Err() directly rather than
+// relying on the error from Authorize, so this must still trigger c.fail().
+// It records how many times Authorize is invoked.
 type blockingCountingOAuthHandler struct {
 	mu        sync.Mutex
 	callCount int
@@ -1037,7 +1040,10 @@ func (h *blockingCountingOAuthHandler) Authorize(ctx context.Context, req *http.
 	// Block until the caller's context is cancelled, mirroring an
 	// interactive OAuth flow that the user has abandoned.
 	<-ctx.Done()
-	return ctx.Err()
+	// Return a custom error that does not wrap context.Canceled, as a
+	// real-world handler might. The code under test must check ctx.Err()
+	// to detect the cancellation, not this error.
+	return fmt.Errorf("oauth flow interrupted")
 }
 
 func (h *blockingCountingOAuthHandler) Calls() int {
