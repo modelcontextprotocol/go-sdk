@@ -22,3 +22,4 @@ jobs:
           publish_dir: ./docs
           publish_branch: gh-pages
           enable_jekyll: true
+          cname: go.sdk.modelcontextprotocol.io
