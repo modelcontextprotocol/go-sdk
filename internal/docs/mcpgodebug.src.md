@@ -1,4 +1,4 @@
- # Backwards compatibility and MCPGODEBUG
+# Backwards compatibility and MCPGODEBUG
 
  According to our compatibility promise, we can't break backward compatibility
  of the SDK API. However, sometimes we need to change the behavior of the SDK
