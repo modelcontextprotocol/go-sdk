@@ -182,7 +182,7 @@ type StreamableHTTPOptions struct {
 	// is ignored.
 	// If nil, default (zero-value) cross-origin protection will be used.
 	// Use `disablecrossoriginprotection` MCPGODEBUG compatibility parameter
-	// to disable the default protection until v1.6.0.
+	// to disable the default protection until v1.7.0.
 	CrossOriginProtection *http.CrossOriginProtection
 }
 
@@ -235,14 +235,14 @@ func (h *StreamableHTTPHandler) closeAll() {
 // disablelocalhostprotection is a compatibility parameter that allows to disable
 // DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
 // See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.6.0 version of the SDK.
+// The option will be removed in the 1.7.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
 // disablecrossoriginprotection is a compatibility parameter that allows to disable
 // the verification of the 'Origin' and 'Content-Type' headers, which was added in
 // the 1.4.1 version of the SDK. See the documentation for the mcpgodebug package
 // for instructions how to enable it.
-// The option will be removed in the 1.6.0 version of the SDK.
+// The option will be removed in the 1.7.0 version of the SDK.
 var disablecrossoriginprotection = mcpgodebug.Value("disablecrossoriginprotection")
 
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
