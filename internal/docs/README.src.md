@@ -1,4 +1,21 @@
-# Features
+# Overview
+
+The SDK consists of several importable packages:
+
+- The
+  [`github.com/modelcontextprotocol/go-sdk/mcp`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp)
+  package defines the primary APIs for constructing and using MCP clients and
+  servers.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/jsonrpc`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonrpc) package is for users implementing
+  their own transports.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
+  package provides some primitives for supporting OAuth.
+- The
+  [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
+  package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
+
 
 These docs mirror the [official MCP spec](https://modelcontextprotocol.io/specification/2025-06-18).
 Use the index below to learn how the SDK implements a particular aspect of the

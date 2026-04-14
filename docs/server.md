@@ -399,8 +399,8 @@ mcp.AddTool(server, &mcp.Tool{
 }, WeatherTool)
 ```
 
-_See [mcp/tool_example_test.go](../mcp/tool_example_test.go) for the full
-example, or [examples/server/toolschemas](examples/server/toolschemas/main.go)
+_See [mcp/tool_example_test.go](https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/tool_example_test.go) for the full
+example, or [examples/server/toolschemas](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/toolschemas/main.go)
 for more examples of customizing tool schemas._
 
 **Stateless server deployments:** Some deployments create a new
