@@ -9,8 +9,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -217,6 +219,177 @@ func TestSSE405AllowHeader(t *testing.T) {
 			allow := resp.Header.Get("Allow")
 			if allow != "GET, POST" {
 				t.Errorf("Allow header: got %q, want %q", allow, "GET, POST")
+			}
+		})
+	}
+}
+
+// TestSSELocalhostProtection verifies that DNS rebinding protection
+// is automatically enabled for localhost servers.
+func TestSSELocalhostProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name              string
+		listenAddr        string
+		hostHeader        string
+		disableProtection bool
+		wantStatus        int
+	}{
+		{
+			name:       "127.0.0.1 accepts 127.0.0.1",
+			listenAddr: "127.0.0.1:0",
+			hostHeader: "127.0.0.1:1234",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "127.0.0.1 accepts localhost",
+			listenAddr: "127.0.0.1:0",
+			hostHeader: "localhost:1234",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "127.0.0.1 rejects evil.com",
+			listenAddr: "127.0.0.1:0",
+			hostHeader: "evil.com",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "127.0.0.1 rejects evil.com:80",
+			listenAddr: "127.0.0.1:0",
+			hostHeader: "evil.com:80",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "127.0.0.1 rejects localhost.evil.com",
+			listenAddr: "127.0.0.1:0",
+			hostHeader: "localhost.evil.com",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "0.0.0.0 via localhost rejects evil.com",
+			listenAddr: "0.0.0.0:0",
+			hostHeader: "evil.com",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:              "disabled accepts evil.com",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "evil.com",
+			disableProtection: true,
+			wantStatus:        http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &SSEOptions{
+				DisableLocalhostProtection: tt.disableProtection,
+			}
+			handler := NewSSEHandler(func(req *http.Request) *Server { return server }, opts)
+
+			listener, err := net.Listen("tcp", tt.listenAddr)
+			if err != nil {
+				t.Fatalf("Failed to listen on %s: %v", tt.listenAddr, err)
+			}
+			defer listener.Close()
+
+			srv := &http.Server{Handler: handler}
+			go srv.Serve(listener)
+			defer srv.Close()
+
+			// Use a GET request since it's the entry point for SSE sessions.
+			// For accepted requests, the response will be a hanging SSE stream,
+			// but we only need to check the initial status code.
+			req, err := http.NewRequest("GET", fmt.Sprintf("http://%s", listener.Addr().String()), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tt.hostHeader
+			req.Header.Set("Accept", "text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatus {
+				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestSSEOriginProtection(t *testing.T) {
+	server := NewServer(testImpl, nil)
+
+	tests := []struct {
+		name           string
+		protection     *http.CrossOriginProtection
+		requestOrigin  string
+		wantStatusCode int
+	}{
+		{
+			name:           "default protection with Origin header",
+			protection:     nil,
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+		{
+			name: "custom protection with trusted origin and same Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://example.com",
+			wantStatusCode: http.StatusNotFound, // origin accepted; session not found
+		},
+		{
+			name: "custom protection with trusted origin and different Origin",
+			protection: func() *http.CrossOriginProtection {
+				p := http.NewCrossOriginProtection()
+				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}(),
+			requestOrigin:  "https://malicious.com",
+			wantStatusCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &SSEOptions{
+				CrossOriginProtection: tt.protection,
+			}
+			handler := NewSSEHandler(func(req *http.Request) *Server { return server }, opts)
+			httpServer := httptest.NewServer(handler)
+			defer httpServer.Close()
+
+			// Use POST with a valid session-like URL to test origin protection
+			// without creating a hanging GET connection.
+			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL+"?sessionid=nonexistent", reqReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", tt.requestOrigin)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if got := resp.StatusCode; got != tt.wantStatusCode {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Status code: got %d, want %d (body: %s)", got, tt.wantStatusCode, body)
 			}
 		})
 	}
