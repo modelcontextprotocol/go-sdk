@@ -1026,7 +1026,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 	}
 
 	s.opts.Logger.Info("server connecting")
-	ss, err := connect(ctx, t, s, state, onClose)
+	ss, err := connect(ctx, t, s, state, onClose, s.opts.Logger)
 	if err != nil {
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
@@ -1531,7 +1531,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel)
+	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.
