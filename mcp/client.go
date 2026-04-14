@@ -253,7 +253,7 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
 func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOptions) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil, nil)
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil, nil, c.opts.Logger)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +405,7 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel, nil)
+	startKeepalive(cs, interval, &cs.keepaliveCancel, nil, cs.client.opts.Logger)
 }
 
 // AddRoots adds the given roots to the client,

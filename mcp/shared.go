@@ -587,8 +587,11 @@ type keepaliveSession interface {
 // startKeepalive starts the keepalive mechanism for a session.
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
-// If onError is non-nil, it is called when a ping fails before the session is closed.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, onError func(error)) {
+//
+// If onError is non-nil, it is called when a ping fails before the session is
+// closed. Otherwise the failure is reported via logger (which must be non-nil)
+// so it is not silently dropped. See #218.
+func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, onError func(error), logger *slog.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -610,8 +613,9 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				if err != nil {
 					if onError != nil {
 						onError(fmt.Errorf("keepalive ping failed: %w", err))
+					} else {
+						logger.Error("keepalive ping failed; closing session", "error", err)
 					}
-					// Ping failed, close the session
 					_ = session.Close()
 					return
 				}

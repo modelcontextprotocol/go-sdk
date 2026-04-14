@@ -1817,6 +1817,52 @@ func TestKeepAliveFailure(t *testing.T) {
 	})
 }
 
+// TestKeepAliveFailure_Logged verifies that a keepalive ping failure is
+// reported via the configured slog.Logger instead of being silently dropped.
+// Regression test for #218.
+func TestKeepAliveFailure_Logged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+
+		ct, st := NewInMemoryTransports()
+
+		// Server without keepalive.
+		s := NewServer(testImpl, nil)
+		AddTool(s, greetTool(), sayHi)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Client with a short keepalive and a logger that writes to a
+		// buffer so we can assert on its output.
+		var buf bytes.Buffer
+		clientOpts := &ClientOptions{
+			KeepAlive: 50 * time.Millisecond,
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+		}
+		c := NewClient(testImpl, clientOpts)
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		synctest.Wait()
+
+		// Trigger a ping failure by closing the server side.
+		ss.Close()
+
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+
+		got := buf.String() // slog serializes Write calls internally
+		if !strings.Contains(got, "keepalive ping failed") {
+			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		}
+	})
+}
+
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
