@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1154,5 +1155,67 @@ func TestTokenInfo(t *testing.T) {
 	}
 	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
 		t.Errorf("got %q, want %q", g, w)
+	}
+}
+
+// errTestAuthorizeFailed is a sentinel error returned by
+// retrieveErrorOAuthHandler.Authorize().
+var errTestAuthorizeFailed = errors.New("authorize intentionally failed for test")
+
+// retrieveErrorOAuthHandler is a mock OAuthHandler that always returns
+// an oauth2.RetrieveError from its TokenSource's Token() method.
+type retrieveErrorOAuthHandler struct {
+	authorizeCalled bool
+}
+
+func (h *retrieveErrorOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return h, nil
+}
+
+func (h *retrieveErrorOAuthHandler) Token() (*oauth2.Token, error) {
+	return nil, &oauth2.RetrieveError{
+		Response: &http.Response{StatusCode: http.StatusBadRequest},
+		Body:     []byte("test retrieve error"),
+	}
+}
+
+func (h *retrieveErrorOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	h.authorizeCalled = true
+	return errTestAuthorizeFailed
+}
+
+// TestStreamableClientOAuth_RetrieveError verifies that a RetrieveError from
+// the OAuth token source correctly triggers the Authorize fallback flow instead
+// of immediately breaking the connection.
+func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
+	ctx := context.Background()
+	oauthHandler := &retrieveErrorOAuthHandler{}
+
+	// Setup a dummy HTTP server. The server won't actually be reached because
+	// the token retrieval fails before the request is dispatched.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	// Configure the transport with our mock OAuth handler that returns a RetrieveError.
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+
+	// Attempt to connect. The Connect call will trigger the initialization request,
+	// which will fail to retrieve the token and instead invoke Authorize().
+	_, err := client.Connect(ctx, transport, nil)
+
+	// Expect the connection to fail with a sentinel error.
+	if !errors.Is(err, errTestAuthorizeFailed) {
+		t.Fatalf("client.Connect() error = %v, want %v", err, errTestAuthorizeFailed)
+	}
+
+	// Double-check that Authorize() was actually invoked.
+	if !oauthHandler.authorizeCalled {
+		t.Errorf("expected Authorize to be called")
 	}
 }
