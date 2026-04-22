@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -928,6 +929,61 @@ func TestKeepAlive(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("call failed after keepalive: %v", err)
+		}
+		if len(result.Content) == 0 {
+			t.Fatal("expected content in result")
+		}
+		if textContent, ok := result.Content[0].(*TextContent); !ok || textContent.Text != "hi user" {
+			t.Fatalf("unexpected result: %v", result.Content[0])
+		}
+	})
+}
+
+func TestKeepAliveMethodNotFound(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+
+		ct, st := NewInMemoryTransports()
+
+		// Server that rejects ping with method-not-found, simulating a
+		// server that does not implement the optional ping method.
+		s := NewServer(testImpl, nil)
+		AddTool(s, greetTool(), sayHi)
+		s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+			return func(ctx context.Context, method string, req Request) (Result, error) {
+				if method == "ping" {
+					return nil, jsonrpc2.ErrMethodNotFound
+				}
+				return next(ctx, method, req)
+			}
+		})
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		clientOpts := &ClientOptions{
+			KeepAlive: 50 * time.Millisecond,
+		}
+		c := NewClient(testImpl, clientOpts)
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Advance past several keepalive cycles.
+		time.Sleep(200 * time.Millisecond)
+
+		// The session should still be alive despite the server not
+		// supporting ping.
+		result, err := cs.CallTool(ctx, &CallToolParams{
+			Name:      "greet",
+			Arguments: map[string]any{"Name": "user"},
+		})
+		if err != nil {
+			t.Fatalf("call failed after keepalive with method-not-found: %v", err)
 		}
 		if len(result.Content) == 0 {
 			t.Fatal("expected content in result")

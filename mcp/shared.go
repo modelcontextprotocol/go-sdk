@@ -14,6 +14,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -605,6 +606,10 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
 				if err != nil {
+					if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
+						// Peer doesn't support ping, stop the keepalive process.
+						return
+					}
 					// Ping failed; log it before closing the session so the
 					// failure is observable to operators. See #218.
 					logger.Error("keepalive ping failed; closing session", "error", err)
