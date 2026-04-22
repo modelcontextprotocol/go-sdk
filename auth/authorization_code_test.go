@@ -6,7 +6,9 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -606,6 +608,221 @@ func TestDynamicRegistration(t *testing.T) {
 	if got.authStyle != oauth2.AuthStyleInHeader {
 		t.Errorf("handleRegistration() authStyle = %v, want %v", got.authStyle, oauth2.AuthStyleInHeader)
 	}
+}
+
+func TestDynamicRegistrationRetryApplicationType(t *testing.T) {
+	tests := []struct {
+		name           string
+		redirectURIs   []string
+		wantRetryType  string
+		wantRegistered bool
+		rejectOnRetry  bool
+	}{
+		{
+			name:           "inferred native retries with web",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			wantRetryType:  "web",
+			wantRegistered: true,
+		},
+		{
+			name:           "inferred web retries with native",
+			redirectURIs:   []string{"https://example.com/callback"},
+			wantRetryType:  "native",
+			wantRegistered: true,
+		},
+		{
+			name:           "retry also fails",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			rejectOnRetry:  true,
+			wantRegistered: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempt int
+			regHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt++
+				body, _ := io.ReadAll(r.Body)
+				var meta oauthex.ClientRegistrationMetadata
+				json.Unmarshal(body, &meta)
+
+				if attempt == 1 {
+					// Always reject the first attempt with invalid_redirect_uri.
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"Redirect URI not allowed for this application type"}`))
+					return
+				}
+				if tt.rejectOnRetry {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"Still not allowed"}`))
+					return
+				}
+				// Verify the retry used the adjusted application_type.
+				if meta.ApplicationType != tt.wantRetryType {
+					t.Errorf("retry application_type = %q, want %q", meta.ApplicationType, tt.wantRetryType)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				json.NewEncoder(w).Encode(&oauthex.ClientRegistrationResponse{
+					ClientID:                   "test-client",
+					ClientSecret:               "test-secret",
+					ClientRegistrationMetadata: meta,
+				})
+			})
+
+			server := httptest.NewServer(regHandler)
+			t.Cleanup(server.Close)
+
+			handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+				DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+					Metadata: &oauthex.ClientRegistrationMetadata{
+						RedirectURIs: tt.redirectURIs,
+					},
+				},
+				RedirectURL: tt.redirectURIs[0],
+				AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+					return nil, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+			}
+
+			asm := &oauthex.AuthServerMeta{
+				RegistrationEndpoint: server.URL,
+			}
+
+			got, err := handler.handleRegistration(t.Context(), asm)
+			if !tt.wantRegistered {
+				if err == nil {
+					t.Fatal("handleRegistration() = nil error, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("handleRegistration() error = %v", err)
+			}
+			if got.clientID != "test-client" {
+				t.Errorf("clientID = %q, want %q", got.clientID, "test-client")
+			}
+			if attempt != 2 {
+				t.Errorf("registration attempts = %d, want 2", attempt)
+			}
+		})
+	}
+}
+
+func TestInferApplicationType(t *testing.T) {
+	tests := []struct {
+		name         string
+		redirectURIs []string
+		want         string
+	}{
+		{
+			name:         "localhost",
+			redirectURIs: []string{"http://localhost:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "127.0.0.1",
+			redirectURIs: []string{"http://127.0.0.1:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "IPv6 loopback",
+			redirectURIs: []string{"http://[::1]:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "custom scheme",
+			redirectURIs: []string{"myapp://callback"},
+			want:         "native",
+		},
+		{
+			name:         "HTTPS remote",
+			redirectURIs: []string{"https://myapp.example.com/callback"},
+			want:         "web",
+		},
+		{
+			name:         "mixed with localhost",
+			redirectURIs: []string{"https://myapp.example.com/callback", "http://localhost:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "multiple remote",
+			redirectURIs: []string{"https://app1.example.com/cb", "https://app2.example.com/cb"},
+			want:         "web",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferApplicationType(tt.redirectURIs)
+			if got != tt.want {
+				t.Errorf("inferApplicationType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplicationTypeInference(t *testing.T) {
+	fetcher := func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+		return nil, nil
+	}
+
+	t.Run("inferred as native for localhost", func(t *testing.T) {
+		cfg := &AuthorizationCodeHandlerConfig{
+			DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+				Metadata: &oauthex.ClientRegistrationMetadata{
+					RedirectURIs: []string{"http://localhost:8085/callback"},
+				},
+			},
+			AuthorizationCodeFetcher: fetcher,
+		}
+		if _, err := NewAuthorizationCodeHandler(cfg); err != nil {
+			t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+		}
+		if cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType != "native" {
+			t.Errorf("ApplicationType = %q, want %q", cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType, "native")
+		}
+	})
+
+	t.Run("inferred as web for remote", func(t *testing.T) {
+		cfg := &AuthorizationCodeHandlerConfig{
+			DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+				Metadata: &oauthex.ClientRegistrationMetadata{
+					RedirectURIs: []string{"https://example.com/callback"},
+				},
+			},
+			AuthorizationCodeFetcher: fetcher,
+		}
+		if _, err := NewAuthorizationCodeHandler(cfg); err != nil {
+			t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+		}
+		if cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType != "web" {
+			t.Errorf("ApplicationType = %q, want %q", cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType, "web")
+		}
+	})
+
+	t.Run("explicit value preserved", func(t *testing.T) {
+		cfg := &AuthorizationCodeHandlerConfig{
+			DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+				Metadata: &oauthex.ClientRegistrationMetadata{
+					RedirectURIs:    []string{"http://localhost:8085/callback"},
+					ApplicationType: "web",
+				},
+			},
+			AuthorizationCodeFetcher: fetcher,
+		}
+		if _, err := NewAuthorizationCodeHandler(cfg); err != nil {
+			t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+		}
+		if cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType != "web" {
+			t.Errorf("ApplicationType = %q, want %q (should not be overridden)", cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType, "web")
+		}
+	})
 }
 
 // validConfig for test to create an AuthorizationCodeHandler using its constructor.

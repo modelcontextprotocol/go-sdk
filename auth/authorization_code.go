@@ -150,6 +150,9 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		} else if !slices.Contains(dCfg.Metadata.RedirectURIs, config.RedirectURL) {
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
 		}
+		if dCfg.Metadata.ApplicationType == "" {
+			dCfg.Metadata.ApplicationType = inferApplicationType(dCfg.Metadata.RedirectURIs)
+		}
 	}
 	if config.RedirectURL == "" {
 		// If the RedirectURL was supposed to be set by the dynamic client registration,
@@ -168,6 +171,31 @@ func isNonRootHTTPSURL(u string) bool {
 		return false
 	}
 	return pu.Scheme == "https" && pu.Path != ""
+}
+
+// inferApplicationType returns "native" or "web" based on the redirect URIs.
+// If any redirect URI uses a loopback host or a non-http(s) scheme (custom
+// scheme), the application is classified as "native". Otherwise, it is "web".
+func inferApplicationType(redirectURIs []string) string {
+	for _, uri := range redirectURIs {
+		u, err := url.Parse(uri)
+		if err != nil {
+			continue
+		}
+		switch u.Scheme {
+		case "http", "https":
+			if isLoopback(u.Hostname()) {
+				return "native"
+			}
+		default:
+			return "native"
+		}
+	}
+	return "web"
+}
+
+func isLoopback(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // Authorize performs the authorization flow.
@@ -432,7 +460,21 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	if dcrCfg != nil && asm.RegistrationEndpoint != "" {
 		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, h.config.Client)
 		if err != nil {
-			return nil, fmt.Errorf("failed to register client: %w", err)
+			// If registration failed due to redirect URI constraints, retry with
+			// the opposite application_type per the MCP specification.
+			var regErr *oauthex.ClientRegistrationError
+			if errors.As(err, &regErr) && regErr.ErrorCode == "invalid_redirect_uri" {
+				retryType := "native"
+				if dcrCfg.Metadata.ApplicationType == "native" {
+					retryType = "web"
+				}
+				retryCfg := *dcrCfg.Metadata
+				retryCfg.ApplicationType = retryType
+				regResp, err = oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, &retryCfg, h.config.Client)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to register client: %w", err)
+			}
 		}
 		cfg := &resolvedClientConfig{
 			registrationType: registrationTypeDynamic,

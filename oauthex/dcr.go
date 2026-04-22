@@ -89,6 +89,10 @@ type ClientRegistrationMetadata struct {
 	// SoftwareStatement is an OPTIONAL JWT that asserts client metadata values.
 	// Values in the software statement take precedence over other metadata values.
 	SoftwareStatement string `json:"software_statement,omitempty"`
+
+	// ApplicationType indicates the type of application, valid values are "native" and "web".
+	// If omitted, OIDC-compliant authorization servers default to "web".
+	ApplicationType string `json:"application_type,omitempty"`
 }
 
 // ClientRegistrationResponse represents the fields returned by the Authorization Server
