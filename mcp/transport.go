@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -152,7 +152,9 @@ type handler interface {
 	handle(ctx context.Context, req *jsonrpc.Request) (any, error)
 }
 
-func connect[H handler, State any](ctx context.Context, t Transport, b binder[H, State], s State, onClose func()) (H, error) {
+// connect wires a transport to a binder. logger must be non-nil; it receives
+// jsonrpc2 internal errors that would otherwise be dropped (see #218).
+func connect[H handler, State any](ctx context.Context, t Transport, b binder[H, State], s State, onClose func(), logger *slog.Logger) (H, error) {
 	var zero H
 	mcpConn, err := t.Connect(ctx)
 	if err != nil {
@@ -178,7 +180,9 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnDone: func() {
 			b.disconnect(h)
 		},
-		OnInternalError: func(err error) { log.Printf("jsonrpc2 error: %v", err) },
+		OnInternalError: func(err error) {
+			logger.Error("jsonrpc2 internal error", "error", err)
+		},
 	})
 	assert(preempter.conn != nil, "unbound preempter")
 	return h, nil

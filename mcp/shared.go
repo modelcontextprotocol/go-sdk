@@ -14,6 +14,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -582,7 +583,10 @@ type keepaliveSession interface {
 // startKeepalive starts the keepalive mechanism for a session.
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc) {
+//
+// logger must be non-nil; ping failures (which terminate the keepalive loop and
+// close the session) are reported via logger so they are not silently dropped.
+func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, logger *slog.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -602,7 +606,13 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
 				if err != nil {
-					// Ping failed, close the session
+					if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
+						// Peer doesn't support ping, stop the keepalive process.
+						return
+					}
+					// Ping failed; log it before closing the session so the
+					// failure is observable to operators. See #218.
+					logger.Error("keepalive ping failed; closing session", "error", err)
 					_ = session.Close()
 					return
 				}
