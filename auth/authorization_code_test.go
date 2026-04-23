@@ -670,6 +670,7 @@ func TestApplicationTypeInference(t *testing.T) {
 		redirectURIs   []string
 		initialAppType string
 		wantAppType    string
+		wantErr        bool
 	}{
 		{
 			name:         "inferred as native for localhost",
@@ -687,10 +688,22 @@ func TestApplicationTypeInference(t *testing.T) {
 			wantAppType:  "",
 		},
 		{
-			name:           "explicit value preserved",
+			name:           "explicit value matching inference is preserved",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			initialAppType: "native",
+			wantAppType:    "native",
+		},
+		{
+			name:           "explicit value conflicts with inference returns error",
 			redirectURIs:   []string{"http://localhost:8085/callback"},
 			initialAppType: "web",
-			wantAppType:    "web",
+			wantErr:        true,
+		},
+		{
+			name:           "explicit value when inference is ambiguous returns error",
+			redirectURIs:   []string{"https://example.com/callback", "http://localhost:8085/callback"},
+			initialAppType: "web",
+			wantErr:        true,
 		},
 		{
 			name:         "invalid URI returns empty application type",
@@ -710,8 +723,12 @@ func TestApplicationTypeInference(t *testing.T) {
 				},
 				AuthorizationCodeFetcher: fetcher,
 			}
-			if _, err := NewAuthorizationCodeHandler(cfg); err != nil {
-				t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+			_, err := NewAuthorizationCodeHandler(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
 			}
 			got := cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType
 			if got != tt.wantAppType {

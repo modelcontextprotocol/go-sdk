@@ -37,9 +37,8 @@ type DynamicClientRegistrationConfig struct {
 	// https://datatracker.ietf.org/doc/html/rfc7591#section-2.
 	//
 	// If Metadata.ApplicationType is empty, it will be inferred from
-	// Metadata.RedirectURIs. If all valid URIs are compatible (e.g., all loopback
-	// or custom schemes for "native", or all non-loopback HTTP/HTTPS for "web"),
-	// the inferred type will be set. Otherwise, it is left empty.
+	// Metadata.RedirectURIs. When set will be validated against the inferred type
+	// and an error will be returned if they conflict.
 	Metadata *oauthex.ClientRegistrationMetadata
 }
 
@@ -156,8 +155,11 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		} else if !slices.Contains(dCfg.Metadata.RedirectURIs, config.RedirectURL) {
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
 		}
+		applicationType := inferApplicationType(dCfg.Metadata.RedirectURIs)
 		if dCfg.Metadata.ApplicationType == "" {
-			dCfg.Metadata.ApplicationType = inferApplicationType(dCfg.Metadata.RedirectURIs)
+			dCfg.Metadata.ApplicationType = applicationType
+		} else if dCfg.Metadata.ApplicationType != applicationType {
+			return nil, fmt.Errorf("application type %q conflicts with the application type inferred from redirect URIs", dCfg.Metadata.ApplicationType)
 		}
 	}
 	if config.RedirectURL == "" {
@@ -179,7 +181,7 @@ func isNonRootHTTPSURL(u string) bool {
 	return pu.Scheme == "https" && pu.Path != ""
 }
 
-// inferApplicationType returns "native" or "web" based on the redirect URIs.
+// inferApplicationType returns an application type based on the redirect URIs.
 func inferApplicationType(redirectURIs []string) string {
 	hasNative := false
 	hasWeb := false
