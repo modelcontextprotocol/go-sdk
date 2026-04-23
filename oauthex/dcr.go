@@ -90,7 +90,8 @@ type ClientRegistrationMetadata struct {
 	// Values in the software statement take precedence over other metadata values.
 	SoftwareStatement string `json:"software_statement,omitempty"`
 
-	// ApplicationType indicates the type of application, valid values are "native" and "web".
+	// ApplicationType is an OPTIONAL string that indicates the type of application.
+	// Valid values are "native" and "web".
 	// If omitted, OIDC-compliant authorization servers default to "web".
 	ApplicationType string `json:"application_type,omitempty"`
 }

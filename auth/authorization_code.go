@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
@@ -151,7 +152,11 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
 		}
 		if dCfg.Metadata.ApplicationType == "" {
-			dCfg.Metadata.ApplicationType = inferApplicationType(dCfg.Metadata.RedirectURIs)
+			var err error
+			dCfg.Metadata.ApplicationType, err = inferApplicationType(dCfg.Metadata.RedirectURIs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to infer application type from redirect URIs: %w", err)
+			}
 		}
 	}
 	if config.RedirectURL == "" {
@@ -174,29 +179,37 @@ func isNonRootHTTPSURL(u string) bool {
 }
 
 // inferApplicationType returns "native" or "web" based on the redirect URIs.
-// If any redirect URI uses a loopback host or a non-http(s) scheme (custom
-// scheme), the application is classified as "native". Otherwise, it is "web".
-func inferApplicationType(redirectURIs []string) string {
+// If all redirect URIs use a loopback host or a non-http(s) scheme,
+// the application is classified as "native". Otherwise, it is "web".
+func inferApplicationType(redirectURIs []string) (string, error) {
+	hasNative := false
+	hasWeb := false
 	for _, uri := range redirectURIs {
 		u, err := url.Parse(uri)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("invalid redirect URI %q: %w", uri, err)
 		}
 		switch u.Scheme {
 		case "http", "https":
-			if isLoopback(u.Hostname()) {
-				return "native"
+			if util.IsLoopback(u.Hostname()) {
+				hasNative = true
+			} else {
+				hasWeb = true
 			}
 		default:
-			return "native"
+			hasNative = true
 		}
 	}
-	return "web"
+
+	if hasNative && hasWeb {
+		return "", errors.New("mixed redirect URI types: found both native and web URIs")
+	}
+	if hasNative {
+		return "native", nil
+	}
+	return "web", nil
 }
 
-func isLoopback(host string) bool {
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
-}
 
 // Authorize performs the authorization flow.
 // It is designed to perform the whole Authorization Code Grant flow.
@@ -460,21 +473,7 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	if dcrCfg != nil && asm.RegistrationEndpoint != "" {
 		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, h.config.Client)
 		if err != nil {
-			// If registration failed due to redirect URI constraints, retry with
-			// the opposite application_type per the MCP specification.
-			var regErr *oauthex.ClientRegistrationError
-			if errors.As(err, &regErr) && regErr.ErrorCode == "invalid_redirect_uri" {
-				retryType := "native"
-				if dcrCfg.Metadata.ApplicationType == "native" {
-					retryType = "web"
-				}
-				retryCfg := *dcrCfg.Metadata
-				retryCfg.ApplicationType = retryType
-				regResp, err = oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, &retryCfg, h.config.Client)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("failed to register client: %w", err)
-			}
+			return nil, fmt.Errorf("failed to register client: %w", err)
 		}
 		cfg := &resolvedClientConfig{
 			registrationType: registrationTypeDynamic,
