@@ -179,8 +179,6 @@ func isNonRootHTTPSURL(u string) bool {
 }
 
 // inferApplicationType returns "native" or "web" based on the redirect URIs.
-// If all redirect URIs use a loopback host or a non-http(s) scheme,
-// the application is classified as "native". Otherwise, it is "web".
 func inferApplicationType(redirectURIs []string) (string, error) {
 	hasNative := false
 	hasWeb := false
@@ -209,7 +207,6 @@ func inferApplicationType(redirectURIs []string) (string, error) {
 	}
 	return "web", nil
 }
-
 
 // Authorize performs the authorization flow.
 // It is designed to perform the whole Authorization Code Grant flow.
