@@ -1506,9 +1506,9 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 
 	newSessionID := resp.Header.Get(sessionIDHeader)
 
-	contentType := resp.Header.Get("Content-Type")
+	contentType := baseMediaType(resp.Header.Get("Content-Type"))
 	var respBody []byte
-	if strings.HasPrefix(contentType, "text/event-stream") {
+	if contentType == "text/event-stream" {
 		r := readerInto{resp.Body, new(bytes.Buffer)}
 		for evt, err := range scanEvents(r) {
 			if err != nil {
@@ -1525,7 +1525,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 			}
 		}
 		respBody = r.w.Bytes()
-	} else if strings.HasPrefix(contentType, "application/json") {
+	} else if contentType == "application/json" {
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading json body: %w", err)
@@ -2044,6 +2044,28 @@ func TestStreamableGETWithoutEventStreamAccept(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(string(body)), "Accept must contain 'text/event-stream' for GET requests"; got != want {
 		t.Errorf("body: got %q, want %q", got, want)
+	}
+}
+
+func TestBaseMediaType(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", want: ""},
+		{name: "json", value: "application/json", want: "application/json"},
+		{name: "json with params", value: "Application/JSON; charset=utf-8", want: "application/json"},
+		{name: "event stream with params", value: "Text/Event-Stream; charset=utf-8", want: "text/event-stream"},
+		{name: "invalid", value: "application/json; charset", want: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := baseMediaType(test.value); got != test.want {
+				t.Errorf("baseMediaType(%q) = %q, want %q", test.value, got, test.want)
+			}
+		})
 	}
 }
 

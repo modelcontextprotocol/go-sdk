@@ -264,6 +264,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 		contentType         string
 	}{
 		{http.StatusOK, "", "text/event-stream"},
+		{http.StatusOK, "", "text/event-stream; charset=utf-8"},
 		{http.StatusMethodNotAllowed, "", "text/event-stream"},
 		//// The client error status code is not treated as an error in non-strict
 		//// mode.
@@ -274,7 +275,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(fmt.Sprintf("status=%d", test.status), func(t *testing.T) {
+		t.Run(fmt.Sprintf("status=%d content_type=%q", test.status, test.contentType), func(t *testing.T) {
 			fake := &fakeStreamableServer{
 				t: t,
 				responses: fakeResponses{
