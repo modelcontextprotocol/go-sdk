@@ -152,11 +152,11 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
 		}
 		if dCfg.Metadata.ApplicationType == "" {
-			var err error
-			dCfg.Metadata.ApplicationType, err = inferApplicationType(dCfg.Metadata.RedirectURIs)
+			applicationType, err := inferApplicationType(dCfg.Metadata.RedirectURIs)
 			if err != nil {
 				return nil, fmt.Errorf("failed to infer application type from redirect URIs: %w", err)
 			}
+			dCfg.Metadata.ApplicationType = applicationType
 		}
 	}
 	if config.RedirectURL == "" {
