@@ -35,6 +35,11 @@ type ClientIDMetadataDocumentConfig struct {
 type DynamicClientRegistrationConfig struct {
 	// Metadata to be used in dynamic client registration request as per
 	// https://datatracker.ietf.org/doc/html/rfc7591#section-2.
+	//
+	// If Metadata.ApplicationType is empty, it will be inferred from
+	// Metadata.RedirectURIs. If all valid URIs are compatible (e.g., all loopback
+	// or custom schemes for "native", or all non-loopback HTTP/HTTPS for "web"),
+	// the inferred type will be set. Otherwise, it is left empty.
 	Metadata *oauthex.ClientRegistrationMetadata
 }
 
@@ -152,11 +157,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
 		}
 		if dCfg.Metadata.ApplicationType == "" {
-			applicationType, err := inferApplicationType(dCfg.Metadata.RedirectURIs)
-			if err != nil {
-				return nil, fmt.Errorf("failed to infer application type from redirect URIs: %w", err)
-			}
-			dCfg.Metadata.ApplicationType = applicationType
+			dCfg.Metadata.ApplicationType = inferApplicationType(dCfg.Metadata.RedirectURIs)
 		}
 	}
 	if config.RedirectURL == "" {
@@ -179,13 +180,13 @@ func isNonRootHTTPSURL(u string) bool {
 }
 
 // inferApplicationType returns "native" or "web" based on the redirect URIs.
-func inferApplicationType(redirectURIs []string) (string, error) {
+func inferApplicationType(redirectURIs []string) string {
 	hasNative := false
 	hasWeb := false
 	for _, uri := range redirectURIs {
 		u, err := url.Parse(uri)
 		if err != nil {
-			return "", fmt.Errorf("invalid redirect URI %q: %w", uri, err)
+			return ""
 		}
 		switch u.Scheme {
 		case "http", "https":
@@ -200,12 +201,12 @@ func inferApplicationType(redirectURIs []string) (string, error) {
 	}
 
 	if hasNative && hasWeb {
-		return "", errors.New("mixed redirect URI types: found both native and web URIs")
+		return ""
 	}
 	if hasNative {
-		return "native", nil
+		return "native"
 	}
-	return "web", nil
+	return "web"
 }
 
 // Authorize performs the authorization flow.
