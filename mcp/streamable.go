@@ -264,12 +264,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		// Validate 'Content-Type' header.
-		if req.Method == http.MethodPost {
-			mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
-			if err != nil || mediaType != "application/json" {
-				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
-				return
-			}
+		if req.Method == http.MethodPost && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
+			return
 		}
 	}
 
@@ -558,6 +555,14 @@ func streamableAccepts(values []string) (jsonOK, streamOK bool) {
 		}
 	}
 	return jsonOK, streamOK
+}
+
+func baseMediaType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	return mediaType
 }
 
 // A StreamableServerTransport implements the server side of the MCP streamable
@@ -1671,7 +1676,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		resp.Body.Close()
 		return
 	}
-	if resp.Header.Get("Content-Type") != "text/event-stream" {
+	if baseMediaType(resp.Header.Get("Content-Type")) != "text/event-stream" {
 		// modelcontextprotocol/go-sdk#736: some servers return 200 OK or redirect with
 		// non-SSE content type instead of text/event-stream for the standalone
 		// SSE stream.
@@ -1855,7 +1860,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return nil
 	}
 
-	contentType := strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+	contentType := baseMediaType(resp.Header.Get("Content-Type"))
 	switch contentType {
 	case "application/json":
 		go c.handleJSON(requestSummary, resp)
