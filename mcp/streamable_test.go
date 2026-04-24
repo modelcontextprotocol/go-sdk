@@ -2839,10 +2839,10 @@ func TestStreamableOriginProtection(t *testing.T) {
 		wantStatusCode int
 	}{
 		{
-			name:           "default protection with Origin header",
+			name:           "no protection with Origin header",
 			protection:     nil,
 			requestOrigin:  "https://example.com",
-			wantStatusCode: http.StatusForbidden,
+			wantStatusCode: http.StatusOK,
 		},
 		{
 			name: "custom protection with trusted origin and same Origin",
