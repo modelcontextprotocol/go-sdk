@@ -39,12 +39,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-const (
-	protocolVersionHeader = "Mcp-Protocol-Version"
-	sessionIDHeader       = "Mcp-Session-Id"
-	lastEventIDHeader     = "Last-Event-ID"
-)
-
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
 // sessions, as defined by the [MCP spec].
 //
@@ -284,7 +278,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	sessionID := req.Header.Get(sessionIDHeader)
+	sessionID := req.Header.Get(SessionIDHeader)
 	var sessInfo *sessionInfo
 	if sessionID != "" {
 		h.mu.Lock()
@@ -380,7 +374,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	// This logic matches the typescript SDK.
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
-	protocolVersion := req.Header.Get(protocolVersionHeader)
+	protocolVersion := req.Header.Get(ProtocolVersionHeader)
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
@@ -924,8 +918,8 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 	// By default, we haven't seen a last index. Since indices start at 0, we represent
 	// that by -1. This is incremented just before each event is written.
 	lastIdx := -1
-	if len(req.Header.Values(lastEventIDHeader)) > 0 {
-		eid := req.Header.Get(lastEventIDHeader)
+	if len(req.Header.Values(LastEventIDHeader)) > 0 {
+		eid := req.Header.Get(LastEventIDHeader)
 		var ok bool
 		streamID, lastIdx, ok = parseEventID(eid)
 		if !ok {
@@ -942,7 +936,7 @@ func (c *streamableServerConn) serveGET(w http.ResponseWriter, req *http.Request
 
 	// Read the protocol version from the header. For GET requests, this should
 	// always be present since GET only happens after initialization.
-	protocolVersion := req.Header.Get(protocolVersionHeader)
+	protocolVersion := req.Header.Get(ProtocolVersionHeader)
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
@@ -1095,7 +1089,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 //
 // It returns an HTTP status code and error message.
 func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Request) {
-	if len(req.Header.Values(lastEventIDHeader)) > 0 {
+	if len(req.Header.Values(LastEventIDHeader)) > 0 {
 		http.Error(w, "can't send Last-Event-ID for POST request", http.StatusBadRequest)
 		return
 	}
@@ -1119,7 +1113,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	protocolVersion := req.Header.Get(protocolVersionHeader)
+	protocolVersion := req.Header.Get(ProtocolVersionHeader)
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
@@ -1183,6 +1177,26 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name) after checkRequest
+	// has confirmed the message is structurally valid, so we can safely include
+	// the request ID in the JSON-RPC error response.
+	if !isBatch && len(incoming) == 1 {
+		if err := validateMcpHeaders(req, incoming[0]); err != nil {
+			resp := &jsonrpc.Response{
+				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
+			}
+			if jreq, ok := incoming[0].(*jsonrpc.Request); ok {
+				resp.ID = jreq.ID
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+				w.Write(data)
+			}
+			return
+		}
+	}
+
 	// The prime and close events were added in protocol version 2025-11-25 (SEP-1699).
 	// Use the version from InitializeParams if this is an initialize request,
 	// otherwise use the protocol version header.
@@ -1234,7 +1248,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		w.Header().Set("Connection", "keep-alive")
 	}
 	if c.sessionID != "" && isInitialize {
-		w.Header().Set(sessionIDHeader, c.sessionID)
+		w.Header().Set(SessionIDHeader, c.sessionID)
 	}
 
 	// Set up stream delivery state.
@@ -1783,7 +1797,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		if err := c.setMCPHeaders(req); err != nil {
+		if err := c.setMCPHeaders(req, msg); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
@@ -1827,7 +1841,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
+	if sessionID := resp.Header.Get(SessionIDHeader); sessionID != "" {
 		c.mu.Lock()
 		hadSessionID := c.sessionID
 		if hadSessionID == "" {
@@ -1883,7 +1897,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
+func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1903,11 +1917,14 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 		}
 	}
 	if c.initializedResult != nil {
-		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+		req.Header.Set(ProtocolVersionHeader, c.initializedResult.ProtocolVersion)
 	}
 	if c.sessionID != "" {
-		req.Header.Set(sessionIDHeader, c.sessionID)
+		req.Header.Set(SessionIDHeader, c.sessionID)
 	}
+
+	setStandardHeaders(req, msg)
+
 	return nil
 }
 
@@ -2161,11 +2178,11 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			if err != nil {
 				return nil, err
 			}
-			if err := c.setMCPHeaders(req); err != nil {
+			if err := c.setMCPHeaders(req, nil); err != nil {
 				return nil, err
 			}
 			if lastEventID != "" {
-				req.Header.Set(lastEventIDHeader, lastEventID)
+				req.Header.Set(LastEventIDHeader, lastEventID)
 			}
 			req.Header.Set("Accept", "text/event-stream")
 			resp, err := c.client.Do(req)
@@ -2194,7 +2211,7 @@ func (c *streamableClientConn) Close() error {
 			if err != nil {
 				c.closeErr = err
 			} else {
-				if err := c.setMCPHeaders(req); err != nil {
+				if err := c.setMCPHeaders(req, nil); err != nil {
 					c.closeErr = err
 				} else if _, err := c.client.Do(req); err != nil {
 					c.closeErr = err

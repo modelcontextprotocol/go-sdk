@@ -343,6 +343,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
+	// in the request body, or that required headers are missing or malformed.
+	CodeHeaderMismatch = -32001
 	// CodeResourceNotFound indicates that a requested resource could not be found.
 	CodeResourceNotFound = -32002
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation

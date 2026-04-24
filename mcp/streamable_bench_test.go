@@ -121,7 +121,7 @@ func BenchmarkStreamableServing_BadSessions(b *testing.B) {
 		if got, want := resp.StatusCode, http.StatusBadRequest; got != want {
 			b.Fatalf("POST got status %d, want %d", got, want)
 		}
-		if got := resp.Header.Get("Mcp-Session-Id"); got != "" {
+		if got := resp.Header.Get(mcp.SessionIDHeader); got != "" {
 			b.Fatalf("POST got unexpected session ID")
 		}
 		resp.Body.Close()
