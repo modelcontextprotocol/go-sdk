@@ -14,12 +14,19 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
-	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// notifyCancellationTimeout bounds the cancellation notification we send to
+// the peer when the caller's context is cancelled. The notification is
+// best-effort: a degraded connection (e.g. an OAuth flow that has been
+// abandoned) must not be able to block the caller's return path or
+// re-trigger expensive recovery on its behalf. See issue #882.
+const notifyCancellationTimeout = 5 * time.Second
 
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
@@ -220,8 +227,9 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
-		// Notify the peer of cancellation.
-		err := conn.Notify(xcontext.Detach(ctx), notificationCancelled, &CancelledParams{
+		notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
+		defer cancelNotify()
+		err := conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
 			Reason:    ctx.Err().Error(),
 			RequestID: call.ID().Raw(),
 		})

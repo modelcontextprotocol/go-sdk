@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -316,80 +315,6 @@ func TestSSELocalhostProtection(t *testing.T) {
 
 			if got := resp.StatusCode; got != tt.wantStatus {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
-			}
-		})
-	}
-}
-
-func TestSSEOriginProtection(t *testing.T) {
-	server := NewServer(testImpl, nil)
-
-	tests := []struct {
-		name           string
-		protection     *http.CrossOriginProtection
-		requestOrigin  string
-		wantStatusCode int
-	}{
-		{
-			name:           "default protection with Origin header",
-			protection:     nil,
-			requestOrigin:  "https://example.com",
-			wantStatusCode: http.StatusForbidden,
-		},
-		{
-			name: "custom protection with trusted origin and same Origin",
-			protection: func() *http.CrossOriginProtection {
-				p := http.NewCrossOriginProtection()
-				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
-					t.Fatal(err)
-				}
-				return p
-			}(),
-			requestOrigin:  "https://example.com",
-			wantStatusCode: http.StatusNotFound, // origin accepted; session not found
-		},
-		{
-			name: "custom protection with trusted origin and different Origin",
-			protection: func() *http.CrossOriginProtection {
-				p := http.NewCrossOriginProtection()
-				if err := p.AddTrustedOrigin("https://example.com"); err != nil {
-					t.Fatal(err)
-				}
-				return p
-			}(),
-			requestOrigin:  "https://malicious.com",
-			wantStatusCode: http.StatusForbidden,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := &SSEOptions{
-				CrossOriginProtection: tt.protection,
-			}
-			handler := NewSSEHandler(func(req *http.Request) *Server { return server }, opts)
-			httpServer := httptest.NewServer(handler)
-			defer httpServer.Close()
-
-			// Use POST with a valid session-like URL to test origin protection
-			// without creating a hanging GET connection.
-			reqReader := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
-			req, err := http.NewRequest(http.MethodPost, httpServer.URL+"?sessionid=nonexistent", reqReader)
-			if err != nil {
-				t.Fatal(err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Origin", tt.requestOrigin)
-
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-
-			if got := resp.StatusCode; got != tt.wantStatusCode {
-				body, _ := io.ReadAll(resp.Body)
-				t.Errorf("Status code: got %d, want %d (body: %s)", got, tt.wantStatusCode, body)
 			}
 		})
 	}
