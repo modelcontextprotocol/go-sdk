@@ -1494,7 +1494,6 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	maps.Copy(req.Header, s.headers)
 
-
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Del("Content-Type")
 	}
