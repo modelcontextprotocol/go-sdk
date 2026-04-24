@@ -91,6 +91,12 @@ func addMiddleware(handlerp *MethodHandler, middleware []Middleware) {
 }
 
 func defaultSendingMethodHandler(ctx context.Context, method string, req Request) (Result, error) {
+	// Custom notifications from SendNotification are prefixed with x-notifications/
+	if strings.HasPrefix(method, "x-notifications/") {
+		actualMethod := strings.TrimPrefix(method, "x-notifications/")
+		return nil, req.GetSession().getConn().Notify(ctx, actualMethod, req.GetParams())
+	}
+
 	info, ok := req.GetSession().sendingMethodInfos()[method]
 	if !ok {
 		// This can be called from user code, with an arbitrary value for method.
@@ -244,6 +250,25 @@ const (
 	notification    methodFlags = 1 << iota // method is a notification, not request
 	missingParamsOK                         // params may be missing or null
 )
+
+// customNotificationParams wraps arbitrary payload parameters so they can pass
+// through the SDK middleware as Params while satisfying the internal interface.
+type customNotificationParams struct {
+	payload any
+}
+
+func (c *customNotificationParams) GetMeta() map[string]any { return nil }
+func (c *customNotificationParams) SetMeta(map[string]any)  {}
+func (c *customNotificationParams) isParams()               {}
+
+// MarshalJSON delegates JSON marshaling to the wrapped payload payload.
+// If payload is nil, it marshals to an empty object "{}".
+func (c customNotificationParams) MarshalJSON() ([]byte, error) {
+	if c.payload == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(c.payload)
+}
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)

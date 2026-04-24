@@ -13,6 +13,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
+	"encoding/json"
+	"time"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 type Item struct {
@@ -541,5 +545,76 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestClientSendNotification(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "1.0.0"}, nil)
+	cTrans, sTrans := NewInMemoryTransports()
+	
+	// Create channels to capture notifications
+	notifCh := make(chan *jsonrpc.Request, 1) // Using jsonrpc.Request since decode returns that
+	
+	// Intercept server transport to capture notifications
+	sConn, err := sTrans.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			msg, err := sConn.Read(ctx)
+			if err != nil {
+				return
+			}
+			if req, ok := msg.(*jsonrpc.Request); ok {
+				if req.Method == "initialize" {
+					resp, _ := jsonrpc2.NewResponse(req.ID, InitializeResult{
+						ProtocolVersion: "2024-11-05",
+						ServerInfo: &Implementation{Name: "testServer", Version: "1.0.0"},
+					}, nil)
+					sConn.Write(ctx, resp)
+				} else if req.Method != "notifications/initialized" && !req.IsCall() {
+					notifCh <- req
+				}
+			}
+		}
+	}()
+
+	cs, err := client.Connect(ctx, cTrans, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send a custom notification
+	type myParams struct {
+		Key string `json:"key"`
+		Val int    `json:"val"`
+	}
+	
+	err = cs.SendNotification(ctx, "custom/myNotif", myParams{Key: "hello", Val: 42})
+	if err != nil {
+		t.Fatalf("SendNotification failed: %v", err)
+	}
+
+	// Wait for the notification to be received
+	select {
+	case req := <-notifCh:
+		if req.Method != "custom/myNotif" {
+			t.Errorf("got method %q, want %q", req.Method, "custom/myNotif")
+		}
+		
+		var gotParams myParams
+		if err := json.Unmarshal(req.Params, &gotParams); err != nil {
+			t.Fatalf("failed to unmarshal params: %v", err)
+		}
+		
+		if gotParams.Key != "hello" || gotParams.Val != 42 {
+			t.Errorf("got params %+v, want {Key: hello, Val: 42}", gotParams)
+		}
+	case <-time.After(time.Second * 2):
+		t.Fatal("timeout waiting for notification")
 	}
 }
