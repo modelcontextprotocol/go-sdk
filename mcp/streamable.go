@@ -1177,9 +1177,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Validate MCP standard headers (Mcp-Method, Mcp-Name) after checkRequest
-	// has confirmed the message is structurally valid, so we can safely include
-	// the request ID in the JSON-RPC error response.
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
 	if !isBatch && len(incoming) == 1 {
 		if err := validateMcpHeaders(req, incoming[0]); err != nil {
 			resp := &jsonrpc.Response{

@@ -74,7 +74,7 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
 			return errors.New("missing required Mcp-Method header")
 		}
 		if methodInHeader != msg.Method {
-			return fmt.Errorf("Header mismatch: Mcp-Method header value '%s' does not match body value '%s'", methodInHeader, msg.Method)
+			return fmt.Errorf("header mismatch: Mcp-Method header value '%s' does not match body value '%s'", methodInHeader, msg.Method)
 		}
 
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
@@ -84,7 +84,7 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
 			}
 			if nameInBody, ok := extractName(msg.Method, msg.Params); ok {
 				if nameInHeader != nameInBody {
-					return fmt.Errorf("Header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
+					return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
 				}
 			}
 		}
