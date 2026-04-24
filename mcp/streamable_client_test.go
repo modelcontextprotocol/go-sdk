@@ -1066,7 +1066,7 @@ func TestStreamableClientOAuth_CancelledAuthorize_NoReprompt(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					sessionIDHeader: "123",
+					SessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
