@@ -37,7 +37,7 @@ type DynamicClientRegistrationConfig struct {
 	// https://datatracker.ietf.org/doc/html/rfc7591#section-2.
 	//
 	// If Metadata.ApplicationType is empty, it will be inferred from
-	// Metadata.RedirectURIs. When set will be validated against the inferred type
+	// Metadata.RedirectURIs. When set, it will be validated against the inferred type
 	// and an error will be returned if they conflict.
 	Metadata *oauthex.ClientRegistrationMetadata
 }
