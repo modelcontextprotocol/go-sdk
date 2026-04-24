@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,14 +65,6 @@ type SSEOptions struct {
 	// Only disable this if you understand the security implications.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	DisableLocalhostProtection bool
-
-	// CrossOriginProtection allows to customize cross-origin protection.
-	// The deny handler set in the CrossOriginProtection through SetDenyHandler
-	// is ignored.
-	// If nil, default (zero-value) cross-origin protection will be used.
-	// Use `disablecrossoriginprotection` MCPGODEBUG compatibility parameter
-	// to disable the default protection until v1.7.0.
-	CrossOriginProtection *http.CrossOriginProtection
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -95,10 +88,6 @@ func NewSSEHandler(getServer func(request *http.Request) *Server, opts *SSEOptio
 
 	if opts != nil {
 		s.opts = *opts
-	}
-
-	if s.opts.CrossOriginProtection == nil {
-		s.opts.CrossOriginProtection = &http.CrossOriginProtection{}
 	}
 
 	return s
@@ -212,19 +201,12 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	if disablecrossoriginprotection != "1" {
-		// Verify the 'Origin' header to protect against CSRF attacks.
-		if err := h.opts.CrossOriginProtection.Check(req); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+	// Validate 'Content-Type' header.
+	if req.Method == http.MethodPost {
+		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 			return
-		}
-		// Validate 'Content-Type' header.
-		if req.Method == http.MethodPost {
-			contentType := req.Header.Get("Content-Type")
-			if contentType != "application/json" {
-				http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
-				return
-			}
 		}
 	}
 
