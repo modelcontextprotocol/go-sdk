@@ -1803,12 +1803,13 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		if err := c.setMCPHeaders(req, msg); err != nil {
+		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
+		setStandardHeaders(req, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
@@ -1919,7 +1920,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Message) error {
+func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1944,8 +1945,6 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 	if c.sessionID != "" {
 		req.Header.Set(SessionIDHeader, c.sessionID)
 	}
-
-	setStandardHeaders(req, msg)
 
 	return nil
 }
@@ -2200,7 +2199,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			if err != nil {
 				return nil, err
 			}
-			if err := c.setMCPHeaders(req, nil); err != nil {
+			if err := c.setMCPHeaders(req); err != nil {
 				return nil, err
 			}
 			if lastEventID != "" {
@@ -2233,7 +2232,7 @@ func (c *streamableClientConn) Close() error {
 			if err != nil {
 				c.closeErr = err
 			} else {
-				if err := c.setMCPHeaders(req, nil); err != nil {
+				if err := c.setMCPHeaders(req); err != nil {
 					c.closeErr = err
 				} else if _, err := c.client.Do(req); err != nil {
 					c.closeErr = err
