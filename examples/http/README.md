@@ -15,7 +15,7 @@ The example implements:
 ```bash
 go run . server
 ```
-This starts an MCP server on `http://localhost:8080` (default) that provides a `cityTime` tool.
+This starts an MCP server on `http://localhost:8000` (default) that provides a `cityTime` tool.
 
 To run a client in another terminal:
 

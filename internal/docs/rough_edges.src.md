@@ -58,3 +58,7 @@ v2.
   wrapper) we need to first unmarshal into a `map[string]any` in order to do
   server-side validation of required fields. CallToolParams could have just had
   a map[string]any.
+
+- `StreamableHTTPOptions.CrossOriginProtection` should not have been part of
+  the SDK API. Cross-origin protection is a general HTTP concern, not specific
+  to MCP, and can be applied as standard HTTP middleware.

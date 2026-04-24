@@ -24,7 +24,7 @@ Options listed below will be removed in the 1.6.0 version of the SDK.
 
 - `disablecrossoriginprotection` added. If set to `1`, newly added cross-origin
   protection will be disabled. The default behavior was changed to enable
-  cross-origin protection.
+  cross-origin protection. **Removal of this option was postponed until 1.7.0.**
 
 ### 1.4.0
 
@@ -37,5 +37,6 @@ Options listed below will be removed in the 1.6.0 version of the SDK.
 - `disablelocalhostprotection` added. If set to `1`, newly added DNS rebinding
   protection will be disabled. The default behavior was changed to enable DNS rebinding
   protection. The protection can also be disabled by setting the
-  `DisableLocalhostProtection` field in the `StreamableHTTPOptions` struct to
-  `true`, which is the recommended way to disable the protection long term.
+  `DisableLocalhostProtection` field in the `StreamableHTTPOptions` or
+  `SSEOptions` struct to `true`, which is the recommended way to disable
+  the protection long term. **Removal of this option was postponed until 1.7.0.**
