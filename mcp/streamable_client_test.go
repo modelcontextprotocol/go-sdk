@@ -1017,6 +1017,94 @@ func TestStreamableClientOAuth_401(t *testing.T) {
 	}
 }
 
+// blockingCountingOAuthHandler is an OAuthHandler that blocks inside
+// Authorize until the caller's context is cancelled, then returns a custom
+// error that does NOT wrap context.Canceled. This mirrors real-world OAuth
+// handlers that catch the cancellation internally and surface their own
+// error type. The fix for #882 checks ctx.Err() directly rather than
+// relying on the error from Authorize, so this must still trigger c.fail().
+// It records how many times Authorize is invoked.
+type blockingCountingOAuthHandler struct {
+	mu        sync.Mutex
+	callCount int
+}
+
+func (h *blockingCountingOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return nil, nil
+}
+
+func (h *blockingCountingOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	h.mu.Lock()
+	h.callCount++
+	h.mu.Unlock()
+	// Block until the caller's context is cancelled, mirroring an
+	// interactive OAuth flow that the user has abandoned.
+	<-ctx.Done()
+	// Return a custom error that does not wrap context.Canceled, as a
+	// real-world handler might. The code under test must check ctx.Err()
+	// to detect the cancellation, not this error.
+	return fmt.Errorf("oauth flow interrupted")
+}
+
+func (h *blockingCountingOAuthHandler) Calls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.callCount
+}
+
+// TestStreamableClientOAuth_CancelledAuthorize_NoReprompt is a regression
+// test for #882. When OAuthHandler.Authorize returns a context-cancelled
+// error, the connection must enter a failed state so that the cancellation
+// notification the call layer sends in response to ctx cancellation does
+// not flow back through the same broken auth path and re-invoke Authorize.
+func TestStreamableClientOAuth_CancelledAuthorize_NoReprompt(t *testing.T) {
+	handler := &blockingCountingOAuthHandler{}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: handler,
+	}
+	client := NewClient(testImpl, nil)
+
+	// Use a context with a tight deadline so the cancellation path runs
+	// while the auth flow is in progress.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Connect(ctx, transport, nil)
+	if err == nil {
+		t.Fatal("expected client.Connect to fail")
+	}
+
+	// Give the cancellation Notify path a moment to (try to) run.
+	time.Sleep(50 * time.Millisecond)
+
+	// Authorize should be invoked exactly once. The bug in #882 caused
+	// it to be invoked a second time when the call layer sent the
+	// cancellation notification through the same auth-broken connection.
+	if got := handler.Calls(); got != 1 {
+		t.Errorf("expected Authorize to be called exactly 1 time, got %d", got)
+	}
+}
+
 func TestTokenInfo(t *testing.T) {
 	ctx := context.Background()
 
