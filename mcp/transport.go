@@ -227,17 +227,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
-		// Best-effort notify the peer of cancellation. We deliberately bound
-		// this with a fresh, short-lived context derived from
-		// context.Background() rather than reusing (or merely detaching) the
-		// caller's already-cancelled context. The connection may be in a
-		// degraded state — for example, the original failure may have come
-		// from an OAuth flow whose handler context expired (see #882) — and
-		// reusing that context would either return immediately with an error
-		// or, worse, re-trigger expensive recovery (re-auth) on the caller's
-		// return path. The bounded background context lets the notification
-		// attempt to deliver but never blocks the caller indefinitely.
-		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), notifyCancellationTimeout)
+		notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 		defer cancelNotify()
 		err := conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
 			Reason:    ctx.Err().Error(),
