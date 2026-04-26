@@ -44,32 +44,32 @@ func extractName(method string, params json.RawMessage) (string, bool) {
 	return "", false
 }
 
-func setStandardHeaders(httpReq *http.Request, msg jsonrpc.Message) {
+func setStandardHeaders(header http.Header, msg jsonrpc.Message) {
 	if msg == nil {
 		return
 	}
-	if httpReq.Header.Get(ProtocolVersionHeader) == "" || httpReq.Header.Get(ProtocolVersionHeader) < MinVersionForStandardHeaders {
+	if header.Get(ProtocolVersionHeader) == "" || header.Get(ProtocolVersionHeader) < MinVersionForStandardHeaders {
 		return
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		httpReq.Header.Set(MethodHeader, msg.Method)
+		header.Set(MethodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			httpReq.Header.Set(NameHeader, name)
+			header.Set(NameHeader, name)
 		}
 	}
 }
 
-func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
-	protocolVersion := req.Header.Get(ProtocolVersionHeader)
+func validateMcpHeaders(header http.Header, msg jsonrpc.Message) error {
+	protocolVersion := header.Get(ProtocolVersionHeader)
 	if protocolVersion == "" || protocolVersion < MinVersionForStandardHeaders {
 		return nil
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		methodInHeader := req.Header.Get(MethodHeader)
+		methodInHeader := header.Get(MethodHeader)
 		if methodInHeader == "" {
 			return errors.New("missing required Mcp-Method header")
 		}
@@ -78,7 +78,7 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
 		}
 
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
-			nameInHeader := req.Header.Get(NameHeader)
+			nameInHeader := header.Get(NameHeader)
 			if nameInHeader == "" {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}

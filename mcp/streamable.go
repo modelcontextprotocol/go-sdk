@@ -1187,7 +1187,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
 	if !isBatch && len(incoming) == 1 {
-		if err := validateMcpHeaders(req, incoming[0]); err != nil {
+		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
 			}
@@ -1809,7 +1809,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// and permanently break the connection.
 			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
-		setStandardHeaders(req, msg)
+		setStandardHeaders(req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.

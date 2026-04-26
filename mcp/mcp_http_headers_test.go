@@ -193,20 +193,17 @@ func TestSetStandardHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			httpReq, err := http.NewRequest("POST", "http://localhost/mcp", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			header := http.Header{}
 			if tt.protocolVersion != "" {
-				httpReq.Header.Set(ProtocolVersionHeader, tt.protocolVersion)
+				header.Set(ProtocolVersionHeader, tt.protocolVersion)
 			}
 
-			setStandardHeaders(httpReq, tt.msg)
+			setStandardHeaders(header, tt.msg)
 
-			if got := httpReq.Header.Get(MethodHeader); got != tt.wantMethodHeader {
+			if got := header.Get(MethodHeader); got != tt.wantMethodHeader {
 				t.Errorf("MethodHeader = %q, want %q", got, tt.wantMethodHeader)
 			}
-			if got := httpReq.Header.Get(NameHeader); got != tt.wantNameHeader {
+			if got := header.Get(NameHeader); got != tt.wantNameHeader {
 				t.Errorf("NameHeader = %q, want %q", got, tt.wantNameHeader)
 			}
 		})
@@ -406,21 +403,18 @@ func TestValidateMcpHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			httpReq, err := http.NewRequest("POST", "http://localhost/mcp", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			header := http.Header{}
 			if tt.version != "" {
-				httpReq.Header.Set(ProtocolVersionHeader, tt.version)
+				header.Set(ProtocolVersionHeader, tt.version)
 			}
 			if tt.methodHeader != "" {
-				httpReq.Header.Set(MethodHeader, tt.methodHeader)
+				header.Set(MethodHeader, tt.methodHeader)
 			}
 			if tt.nameHeader != "" {
-				httpReq.Header.Set(NameHeader, tt.nameHeader)
+				header.Set(NameHeader, tt.nameHeader)
 			}
 
-			err = validateMcpHeaders(httpReq, tt.msg)
+			err := validateMcpHeaders(header, tt.msg)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("validateMcpHeaders() = nil, want error containing %q", tt.wantErrContain)
