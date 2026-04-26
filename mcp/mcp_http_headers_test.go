@@ -421,7 +421,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 				httpReq.Header.Set(NameHeader, tt.nameHeader)
 			}
 
-			err = validateMcpHeaders(httpReq, tt.msg)
+			err = validateMcpHeaders(httpReq, tt.msg, nil /*tool*/)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("validateMcpHeaders() = nil, want error containing %q", tt.wantErrContain)

@@ -223,7 +223,7 @@ func filterValidTools(tools []*Tool) []*Tool {
 	return result
 }
 
-func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
+func validateMcpHeaders(req *http.Request, msg jsonrpc.Message, tool *Tool) error {
 	protocolVersion := req.Header.Get(ProtocolVersionHeader)
 	if protocolVersion == "" || protocolVersion < MinVersionForStandardHeaders {
 		return nil
@@ -249,6 +249,58 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message) error {
 					return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
 				}
 			}
+		}
+
+		if msg.Method == "tools/call" && tool != nil {
+			if err := validateParamHeaders(req, msg, tool); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateParamHeaders(req *http.Request, msg *jsonrpc.Request, tool *Tool) error {
+	paramHeaders := extractToolParamHeaders(tool)
+	if len(paramHeaders) == 0 {
+		return nil
+	}
+
+	var raw struct {
+		Arguments map[string]json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(msg.Params, &raw); err != nil {
+		return nil
+	}
+
+	for paramName, headerName := range paramHeaders {
+		fullHeader := ParamHeaderPrefix + headerName
+		headerVal := req.Header.Get(fullHeader)
+		argRaw, argExists := raw.Arguments[paramName]
+		argIsNull := argExists && string(argRaw) == "null"
+
+		if !argExists || argIsNull {
+			if headerVal != "" {
+				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, paramName)
+			}
+			continue
+		}
+
+		if headerVal == "" {
+			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, paramName)
+		}
+
+		bodyVal := unmarshalPrimitive(argRaw)
+		if bodyVal == nil {
+			continue
+		}
+		expected, ok := encodeHeaderValue(bodyVal)
+		if !ok {
+			continue
+		}
+
+		if headerVal != expected {
+			return fmt.Errorf("header mismatch: %s header value '%s' does not match body value", fullHeader, headerVal)
 		}
 	}
 	return nil
