@@ -136,6 +136,22 @@ func extractToolParamHeaders(tool *Tool) map[string]string {
 	return result
 }
 
+func primitiveToString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%g", v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // unmarshalPrimitive unmarshals a JSON value into a Go primitive
 // (string, float64, or bool). Returns nil for non-primitive types.
 func unmarshalPrimitive(raw json.RawMessage) any {
@@ -277,9 +293,8 @@ func validateParamHeaders(req *http.Request, msg *jsonrpc.Request, tool *Tool) e
 		fullHeader := ParamHeaderPrefix + headerName
 		headerVal := req.Header.Get(fullHeader)
 		argRaw, argExists := raw.Arguments[paramName]
-		argIsNull := argExists && string(argRaw) == "null"
 
-		if !argExists || argIsNull {
+		if !argExists || string(argRaw) == "null" {
 			if headerVal != "" {
 				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, paramName)
 			}
@@ -290,16 +305,18 @@ func validateParamHeaders(req *http.Request, msg *jsonrpc.Request, tool *Tool) e
 			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, paramName)
 		}
 
+		decoded, ok := decodeHeaderValue(headerVal)
+		if !ok {
+			return fmt.Errorf("header mismatch: %s header contains invalid Base64 encoding", fullHeader)
+		}
+
 		bodyVal := unmarshalPrimitive(argRaw)
 		if bodyVal == nil {
 			continue
 		}
-		expected, ok := encodeHeaderValue(bodyVal)
-		if !ok {
-			continue
-		}
+		expected := primitiveToString(bodyVal)
 
-		if headerVal != expected {
+		if decoded != expected {
 			return fmt.Errorf("header mismatch: %s header value '%s' does not match body value", fullHeader, headerVal)
 		}
 	}
