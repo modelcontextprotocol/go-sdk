@@ -1785,6 +1785,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		if msg.IsCall() {
 			forCall = msg
 		}
+		if msg.Method == "tools/call" {
+			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok {
+				msg.Extra = tool
+			}
+		}
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
 	default:
