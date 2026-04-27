@@ -325,11 +325,9 @@ type ClientSession struct {
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// toolCache stores tool definitions keyed by name, populated by
-	// ListTools/Tools. Used to look up x-mcp-header annotations when
+	// toolCache stores tool definitions keyed by name.
+	// It is used to look up x-mcp-header annotations when
 	// constructing Mcp-Param-* headers for tools/call requests.
-	// No mutex is required because CallTool cannot be meaningfully called
-	// until ListTools has returned (the caller needs the tool name).
 	toolCache map[string]*Tool
 }
 
@@ -383,10 +381,6 @@ func (cs *ClientSession) cacheTools(tools []*Tool) {
 	for _, tool := range tools {
 		cs.toolCache[tool.Name] = tool
 	}
-}
-
-func (cs *ClientSession) getCachedTool(name string) *Tool {
-	return cs.toolCache[name]
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -1027,7 +1021,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.getCachedTool(params.Name); tool != nil {
+	if tool := cs.toolCache[params.Name]; tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))

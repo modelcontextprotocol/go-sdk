@@ -48,9 +48,7 @@ func encodeHeaderValue(value any) (string, bool) {
 }
 
 // decodeHeaderValue decodes a header value that may be Base64-encoded
-// with the =?base64?...?= wrapper. Returns the decoded string and true
-// on success. Returns "", false if Base64 decoding fails.
-// Non-encoded values are returned as-is.
+// with the =?base64?...?= wrapper.
 func decodeHeaderValue(headerValue string) (string, bool) {
 	if len(headerValue) == 0 {
 		return headerValue, true
@@ -77,9 +75,7 @@ func requiresBase64Encoding(s string) bool {
 	}
 	for _, c := range s {
 		if c < 0x20 || c > 0x7E {
-			if c != '\t' {
-				return true
-			}
+			return true
 		}
 	}
 	return false
