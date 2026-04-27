@@ -1523,6 +1523,17 @@ type StreamableClientTransport struct {
 	//   - You want to avoid maintaining a persistent connection
 	DisableStandaloneSSE bool
 
+	// Headers contains additional HTTP headers to include with every request to
+	// the MCP endpoint. Headers that the transport itself sets (Content-Type,
+	// Accept, Authorization, MCP-Protocol-Version, Mcp-Session-Id) take
+	// precedence over any conflicting entries here.
+	Headers http.Header
+
+	// MaxResponseBytes, if positive, limits the size of response bodies read
+	// from the MCP endpoint for outgoing POST requests. It does not apply to
+	// the standalone SSE stream. A value of zero means no limit.
+	MaxResponseBytes int64
+
 	// OAuthHandler is an optional field that, if provided, will be used to authorize the requests.
 	OAuthHandler auth.OAuthHandler
 
@@ -1605,6 +1616,8 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		cancel:               cancel,
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
+		headers:              t.Headers,
+		maxResponseBytes:     t.MaxResponseBytes,
 		oauthHandler:         t.OAuthHandler,
 	}
 	return conn, nil
@@ -1623,6 +1636,9 @@ type streamableClientConn struct {
 	// disableStandaloneSSE controls whether to disable the standalone SSE stream
 	// for receiving server-to-client notifications when no request is in flight.
 	disableStandaloneSSE bool // from [StreamableClientTransport.DisableStandaloneSSE]
+
+	headers          http.Header // from [StreamableClientTransport.Headers]
+	maxResponseBytes int64       // from [StreamableClientTransport.MaxResponseBytes]
 
 	// oauthHandler is the OAuth handler for the connection.
 	oauthHandler auth.OAuthHandler // from [StreamableClientTransport.OAuthHandler]
@@ -1819,6 +1835,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// and permanently break the connection.
 			err = fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
+		if err == nil && c.maxResponseBytes > 0 {
+			resp.Body = http.MaxBytesReader(nil, resp.Body, c.maxResponseBytes)
+		}
 		return req, resp, err
 	}
 
@@ -1947,7 +1966,11 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
-
+	for k, v := range c.headers {
+		if _, ok := req.Header[k]; !ok {
+			req.Header[k] = v
+		}
+	}
 	return nil
 }
 
