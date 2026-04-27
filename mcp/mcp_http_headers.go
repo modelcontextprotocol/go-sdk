@@ -10,33 +10,34 @@ import (
 	"fmt"
 	"net/http"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const (
-	ProtocolVersionHeader        = "Mcp-Protocol-Version"
-	SessionIDHeader              = "Mcp-Session-Id"
-	LastEventIDHeader            = "Last-Event-ID"
-	MethodHeader                 = "Mcp-Method"
-	NameHeader                   = "Mcp-Name"
-	MinVersionForStandardHeaders = "2026-06-XX"
+	protocolVersionHeader        = "Mcp-Protocol-Version"
+	sessionIDHeader              = "Mcp-Session-Id"
+	lastEventIDHeader            = "Last-Event-ID"
+	methodHeader                 = "Mcp-Method"
+	nameHeader                   = "Mcp-Name"
+	minVersionForStandardHeaders = protocolVersion20260630
 )
 
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
 	case "tools/call":
 		var p CallToolParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.Name, true
 		}
 	case "prompts/get":
 		var p GetPromptParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.Name, true
 		}
 	case "resources/read":
 		var p ReadResourceParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.URI, true
 		}
 	}
@@ -44,32 +45,34 @@ func extractName(method string, params json.RawMessage) (string, bool) {
 	return "", false
 }
 
+// setStandardHeaders populates standard MCP headers.
+// It requires the protocol version header to be set.
 func setStandardHeaders(header http.Header, msg jsonrpc.Message) {
 	if msg == nil {
 		return
 	}
-	if header.Get(ProtocolVersionHeader) == "" || header.Get(ProtocolVersionHeader) < MinVersionForStandardHeaders {
+	if header.Get(protocolVersionHeader) == "" || header.Get(protocolVersionHeader) < minVersionForStandardHeaders {
 		return
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		header.Set(MethodHeader, msg.Method)
+		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			header.Set(NameHeader, name)
+			header.Set(nameHeader, name)
 		}
 	}
 }
 
 func validateMcpHeaders(header http.Header, msg jsonrpc.Message) error {
-	protocolVersion := header.Get(ProtocolVersionHeader)
-	if protocolVersion == "" || protocolVersion < MinVersionForStandardHeaders {
+	protocolVersion := header.Get(protocolVersionHeader)
+	if protocolVersion == "" || protocolVersion < minVersionForStandardHeaders {
 		return nil
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		methodInHeader := header.Get(MethodHeader)
+		methodInHeader := header.Get(methodHeader)
 		if methodInHeader == "" {
 			return errors.New("missing required Mcp-Method header")
 		}
@@ -78,14 +81,16 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message) error {
 		}
 
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
-			nameInHeader := header.Get(NameHeader)
+			nameInHeader := header.Get(nameHeader)
 			if nameInHeader == "" {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
-			if nameInBody, ok := extractName(msg.Method, msg.Params); ok {
-				if nameInHeader != nameInBody {
-					return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
-				}
+			nameInBody, ok := extractName(msg.Method, msg.Params)
+			if !ok {
+				return fmt.Errorf("failed to extract name from parameters for method %q", msg.Method)
+			}
+			if nameInHeader != nameInBody {
+				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
 			}
 		}
 	}

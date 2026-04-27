@@ -198,7 +198,7 @@ func TestStreamableTransports(t *testing.T) {
 			if g := session.ID(); g != sid {
 				t.Errorf("session ID: got %q, want %q", g, sid)
 			}
-			if g, w := lastHeader.Get(ProtocolVersionHeader), latestProtocolVersion; g != w {
+			if g, w := lastHeader.Get(protocolVersionHeader), latestProtocolVersion; g != w {
 				t.Errorf("got protocol version header %q, want %q", g, w)
 			}
 			want := &CallToolResult{
@@ -825,7 +825,7 @@ func TestStreamableServerTransport(t *testing.T) {
 	}
 	initialized20251125 := streamableRequest{
 		method:         "POST",
-		headers:        http.Header{ProtocolVersionHeader: {protocolVersion20251125}},
+		headers:        http.Header{protocolVersionHeader: {protocolVersion20251125}},
 		messages:       []jsonrpc.Message{initializedMsg},
 		wantStatusCode: http.StatusAccepted,
 	}
@@ -1175,7 +1175,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialized20251125,
 				{
 					method:             "POST",
-					headers:            http.Header{ProtocolVersionHeader: {protocolVersion20251125}},
+					headers:            http.Header{protocolVersionHeader: {protocolVersion20251125}},
 					messages:           []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode:     http.StatusOK,
 					wantMessages:       []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
@@ -1195,7 +1195,7 @@ func TestStreamableServerTransport(t *testing.T) {
 				initialized20251125,
 				{
 					method:                "POST",
-					headers:               http.Header{ProtocolVersionHeader: {protocolVersion20251125}},
+					headers:               http.Header{protocolVersionHeader: {protocolVersion20251125}},
 					messages:              []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode:        http.StatusOK,
 					wantMessages:          []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
@@ -1486,7 +1486,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 		return "", 0, nil, fmt.Errorf("creating request: %w", err)
 	}
 	if sessionID != "" {
-		req.Header.Set(SessionIDHeader, sessionID)
+		req.Header.Set(sessionIDHeader, sessionID)
 	}
 	if s.method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
@@ -1504,7 +1504,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	}
 	defer resp.Body.Close()
 
-	newSessionID := resp.Header.Get(SessionIDHeader)
+	newSessionID := resp.Header.Get(sessionIDHeader)
 
 	contentType := baseMediaType(resp.Header.Get("Content-Type"))
 	var respBody []byte
@@ -1781,7 +1781,7 @@ func TestSessionHijackingPrevention(t *testing.T) {
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+userID)
 		if sessionID != "" {
-			req.Header.Set(SessionIDHeader, sessionID)
+			req.Header.Set(sessionIDHeader, sessionID)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1802,7 +1802,7 @@ func TestSessionHijackingPrevention(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("initialize failed with status %d: %s", resp.StatusCode, body)
 	}
-	sessionID := resp.Header.Get(SessionIDHeader)
+	sessionID := resp.Header.Get(sessionIDHeader)
 	if sessionID == "" {
 		t.Fatal("no session ID in response")
 	}
@@ -1886,13 +1886,13 @@ func TestStreamableGET(t *testing.T) {
 		t.Errorf("initialize POST: got status %d, want %d; body:\n%s", got, want, string(body))
 	}
 
-	sessionID := resp.Header.Get(SessionIDHeader)
+	sessionID := resp.Header.Get(sessionIDHeader)
 	if sessionID == "" {
 		t.Fatalf("initialized missing session ID")
 	}
 
 	get2 := newReq("GET", nil)
-	get2.Header.Set(SessionIDHeader, sessionID)
+	get2.Header.Set(sessionIDHeader, sessionID)
 	resp, err = http.DefaultClient.Do(get2)
 	if err != nil {
 		t.Fatal(err)
@@ -1904,7 +1904,7 @@ func TestStreamableGET(t *testing.T) {
 
 	t.Log("Sending final DELETE request to close session and release resources")
 	del := newReq("DELETE", nil)
-	del.Header.Set(SessionIDHeader, sessionID)
+	del.Header.Set(sessionIDHeader, sessionID)
 	resp, err = http.DefaultClient.Do(del)
 	if err != nil {
 		t.Fatal(err)
@@ -1921,7 +1921,7 @@ func TestStreamableGET(t *testing.T) {
 func TestStreamableMcpHeaderValidation(t *testing.T) {
 	// Temporarily register the future version so the handler accepts it.
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), MinVersionForStandardHeaders)
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
@@ -1934,13 +1934,13 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
 	defer handler.closeAll()
 
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: MinVersionForStandardHeaders})
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &ServerCapabilities{
 			Logging: &LoggingCapabilities{},
 			Tools:   &ToolCapabilities{ListChanged: true},
 		},
-		ProtocolVersion: MinVersionForStandardHeaders,
+		ProtocolVersion: minVersionForStandardHeaders,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}, nil)
 
@@ -1954,8 +1954,8 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	initialized := streamableRequest{
 		method: "POST",
 		headers: http.Header{
-			ProtocolVersionHeader: {MinVersionForStandardHeaders},
-			MethodHeader:          {notificationInitialized},
+			protocolVersionHeader: {minVersionForStandardHeaders},
+			methodHeader:          {notificationInitialized},
 		},
 		messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
 		wantStatusCode: http.StatusAccepted,
@@ -1964,61 +1964,56 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	testStreamableHandler(t, handler, []streamableRequest{
 		initialize,
 		initialized,
-		// Correct headers should succeed.
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {MinVersionForStandardHeaders},
-				MethodHeader:          {"tools/call"},
-				NameHeader:            {"my-tool"},
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"my-tool"},
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
 		},
-		// Method mismatch: header says prompts/get, body says tools/call.
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {MinVersionForStandardHeaders},
-				MethodHeader:          {"prompts/get"},
-				NameHeader:            {"my-tool"},
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"prompts/get"},
+				nameHeader:            {"my-tool"},
 			},
 			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
-		// Name mismatch: header says wrong-tool, body says my-tool.
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {MinVersionForStandardHeaders},
-				MethodHeader:          {"tools/call"},
-				NameHeader:            {"wrong-tool"},
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"wrong-tool"},
 			},
 			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Name header value",
 		},
-		// Case-sensitive: TOOLS/CALL != tools/call.
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {MinVersionForStandardHeaders},
-				MethodHeader:          {"TOOLS/CALL"},
-				NameHeader:            {"my-tool"},
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"TOOLS/CALL"},
+				nameHeader:            {"my-tool"},
 			},
 			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
-		// Valid request after errors should still succeed.
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {MinVersionForStandardHeaders},
-				MethodHeader:          {"tools/call"},
-				NameHeader:            {"my-tool"},
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"my-tool"},
 			},
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
@@ -2032,7 +2027,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 // Content-Type application/json, per SEP-2243.
 func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), MinVersionForStandardHeaders)
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
@@ -2048,64 +2043,62 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
-	// Step 1: initialize the session.
-	initBody, _ := jsonrpc2.EncodeMessage(req(1, methodInitialize, &InitializeParams{ProtocolVersion: MinVersionForStandardHeaders}))
-	initHTTPReq, _ := http.NewRequest("POST", httpServer.URL, bytes.NewReader(initBody))
-	initHTTPReq.Header.Set("Content-Type", "application/json")
-	initHTTPReq.Header.Set("Accept", "application/json, text/event-stream")
-	initHTTPReq.Header.Set(MethodHeader, methodInitialize)
-	initResp, err := http.DefaultClient.Do(initHTTPReq)
+	// Use the MCP client with a custom RoundTripper to inject a bad header.
+	var lastResp *http.Response
+	var capturedBody []byte
+
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				req.Header.Set(methodHeader, "wrong-method")
+			}
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && req.Header.Get(methodHeader) == "wrong-method" {
+				lastResp = resp
+				body, _ := io.ReadAll(resp.Body)
+				capturedBody = body
+				resp.Body = io.NopCloser(bytes.NewBuffer(body))
+			}
+			return resp, err
+		}),
+	}
+
+	clientTransport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.ReadAll(initResp.Body)
-	initResp.Body.Close()
-	sessionID := initResp.Header.Get(SessionIDHeader)
+	defer session.Close()
 
-	// Step 2: send initialized notification.
-	initdBody, _ := jsonrpc2.EncodeMessage(req(0, notificationInitialized, &InitializedParams{}))
-	initdHTTPReq, _ := http.NewRequest("POST", httpServer.URL, bytes.NewReader(initdBody))
-	initdHTTPReq.Header.Set("Content-Type", "application/json")
-	initdHTTPReq.Header.Set("Accept", "application/json, text/event-stream")
-	initdHTTPReq.Header.Set(SessionIDHeader, sessionID)
-	initdHTTPReq.Header.Set(ProtocolVersionHeader, MinVersionForStandardHeaders)
-	initdHTTPReq.Header.Set(MethodHeader, notificationInitialized)
-	initdResp, err := http.DefaultClient.Do(initdHTTPReq)
-	if err != nil {
-		t.Fatal(err)
+	_, err = session.CallTool(ctx, &CallToolParams{Name: "my-tool"})
+	// We expect an error because the server should reject it.
+	if err == nil {
+		t.Error("CallTool succeeded unexpectedly")
 	}
-	initdResp.Body.Close()
 
-	// Step 3: send a request with mismatched Mcp-Method header.
-	callBody, _ := jsonrpc2.EncodeMessage(req(2, "tools/call", &CallToolParams{Name: "my-tool"}))
-	callReq, _ := http.NewRequest("POST", httpServer.URL, bytes.NewReader(callBody))
-	callReq.Header.Set("Content-Type", "application/json")
-	callReq.Header.Set("Accept", "application/json, text/event-stream")
-	callReq.Header.Set(SessionIDHeader, sessionID)
-	callReq.Header.Set(ProtocolVersionHeader, MinVersionForStandardHeaders)
-	callReq.Header.Set(MethodHeader, "wrong-method")
-	callReq.Header.Set(NameHeader, "my-tool")
-
-	resp, err := http.DefaultClient.Do(callReq)
-	if err != nil {
-		t.Fatal(err)
+	if lastResp == nil {
+		t.Fatal("no response captured")
 	}
-	defer resp.Body.Close()
 
 	// Verify HTTP status code.
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status code = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	if lastResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", lastResp.StatusCode, http.StatusBadRequest)
 	}
 
 	// Verify Content-Type.
-	ct := baseMediaType(resp.Header.Get("Content-Type"))
+	ct := baseMediaType(lastResp.Header.Get("Content-Type"))
 	if ct != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 
 	// Verify JSON-RPC error body contains error code -32001.
-	body, _ := io.ReadAll(resp.Body)
-	bodyStr := string(body)
+	bodyStr := string(capturedBody)
 	if !strings.Contains(bodyStr, `"code":-32001`) {
 		t.Errorf("response body missing error code -32001:\n%s", bodyStr)
 	}
@@ -2115,7 +2108,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 }
 
 // TestStreamableMcpHeaderVersionGating verifies that header validation
-// is skipped for protocol versions older than MinVersionForStandardHeaders.
+// is skipped for protocol versions older than minVersionForStandardHeaders.
 func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
@@ -2147,7 +2140,7 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 		},
 		{
 			method:         "POST",
-			headers:        http.Header{ProtocolVersionHeader: {protocolVersion20251125}},
+			headers:        http.Header{protocolVersionHeader: {protocolVersion20251125}},
 			messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
 			wantStatusCode: http.StatusAccepted,
 		},
@@ -2156,9 +2149,9 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 		{
 			method: "POST",
 			headers: http.Header{
-				ProtocolVersionHeader: {protocolVersion20251125},
-				MethodHeader:          {"wrong-method"},
-				NameHeader:            {"wrong-name"},
+				protocolVersionHeader: {protocolVersion20251125},
+				methodHeader:          {"wrong-method"},
+				nameHeader:            {"wrong-name"},
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
@@ -2334,7 +2327,7 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 		switch req.Method {
 		case "POST":
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(SessionIDHeader, "test-session")
+			w.Header().Set(sessionIDHeader, "test-session")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}`))
 		case "GET":

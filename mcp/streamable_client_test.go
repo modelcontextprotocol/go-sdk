@@ -69,8 +69,8 @@ func (s *fakeStreamableServer) missingRequests() []streamableRequestKey {
 func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	key := streamableRequestKey{
 		httpMethod:  req.Method,
-		sessionID:   req.Header.Get(SessionIDHeader),
-		lastEventID: req.Header.Get(LastEventIDHeader),
+		sessionID:   req.Header.Get(sessionIDHeader),
+		lastEventID: req.Header.Get(lastEventIDHeader),
 	}
 	var jsonrpcReq *jsonrpc.Request
 	if req.Method == http.MethodPost {
@@ -123,7 +123,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	w.WriteHeader(status)
 	rc.Flush() // flush response headers
 
-	if v := req.Header.Get(ProtocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
+	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
 	w.Write([]byte(body))
@@ -168,7 +168,7 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
@@ -219,7 +219,7 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
@@ -282,7 +282,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json; charset=utf-8", // should ignore the charset
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
@@ -351,7 +351,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
@@ -369,7 +369,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 					{"POST", "123", methodListTools, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body:     jsonBody(t, resp(2, &ListToolsResult{Tools: []*Tool{}}, nil)),
 						optional: true,
@@ -410,7 +410,7 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "text/event-stream",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: "",
 			},
@@ -490,7 +490,7 @@ func TestStreamableClientResumption_Cancelled(t *testing.T) {
 					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
@@ -518,7 +518,7 @@ data: { "jsonrpc": "2.0", "method": "notifications/message", "params": { "level"
 					{"POST", "123", methodListTools, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, resp(3, &ListToolsResult{Tools: []*Tool{}}, nil)),
 					},
@@ -633,7 +633,7 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
@@ -647,7 +647,7 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 					{"POST", "123", methodListTools, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						responseFunc: func(r *jsonrpc.Request) (string, int) {
 							// First call returns transient error, subsequent calls succeed.
@@ -722,7 +722,7 @@ func TestStreamableClientRetryWithoutProgress(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "test-session",
+					sessionIDHeader: "test-session",
 				},
 				body: jsonBody(t, initResp),
 			},
@@ -825,7 +825,7 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 					{"POST", "", methodInitialize, ""}: {
 						header: header{
 							"Content-Type":  "application/json",
-							SessionIDHeader: "123",
+							sessionIDHeader: "123",
 						},
 						body: jsonBody(t, initResp),
 					},
@@ -942,7 +942,7 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
@@ -989,7 +989,7 @@ func TestStreamableClientOAuth_401(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
@@ -1066,7 +1066,7 @@ func TestStreamableClientOAuth_CancelledAuthorize_NoReprompt(t *testing.T) {
 			{"POST", "", methodInitialize, ""}: {
 				header: header{
 					"Content-Type":  "application/json",
-					SessionIDHeader: "123",
+					sessionIDHeader: "123",
 				},
 				body: jsonBody(t, initResp),
 			},
