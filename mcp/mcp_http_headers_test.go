@@ -647,6 +647,78 @@ func TestValidateToolParamHeaders(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "x-mcp-header on nested property inside object",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type":         "string",
+									"x-mcp-header": "Region",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "x-mcp-header on deeply nested property",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"outer": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"inner": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"value": map[string]any{
+											"type":         "string",
+											"x-mcp-header": "Value",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "object property without nested x-mcp-header is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type": "string",
+								},
+							},
+						},
+						"flag": map[string]any{
+							"type":         "boolean",
+							"x-mcp-header": "Flag",
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -689,8 +761,22 @@ func TestFilterValidTools(t *testing.T) {
 		Name:        "plain",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
 	}
+	nestedInvalid := &Tool{
+		Name: "nested-invalid",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"config": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					},
+				},
+			},
+		},
+	}
 
-	result := filterValidTools([]*Tool{valid, invalid, noAnnotation})
+	result := filterValidTools([]*Tool{valid, invalid, noAnnotation, nestedInvalid})
 	if len(result) != 2 {
 		t.Fatalf("filterValidTools returned %d tools, want 2", len(result))
 	}

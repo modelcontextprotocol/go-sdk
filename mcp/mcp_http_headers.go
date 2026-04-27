@@ -23,7 +23,12 @@ const (
 	NameHeader                   = "Mcp-Name"
 	ParamHeaderPrefix            = "Mcp-Param-"
 	MinVersionForStandardHeaders = "2026-06-XX"
+	mcpHeaderExtension           = "x-mcp-header"
 )
+
+// ---------------------------------------------------------------------------
+// Shared helpers (used by both client and server)
+// ---------------------------------------------------------------------------
 
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
@@ -46,6 +51,79 @@ func extractName(method string, params json.RawMessage) (string, bool) {
 
 	return "", false
 }
+
+func extractSchemaProperties(schema any) map[string]any {
+	s, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	props, ok := s["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return props
+}
+
+// extractToolParamHeaders returns a map of parameter name to header name
+// for all properties in the tool's InputSchema that have an x-mcp-header
+// annotation.
+func extractToolParamHeaders(tool *Tool) map[string]string {
+	props := extractSchemaProperties(tool.InputSchema)
+	if props == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for propName, propSchema := range props {
+		ps, ok := propSchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		headerName, ok := ps[mcpHeaderExtension].(string)
+		if !ok || headerName == "" {
+			continue
+		}
+		result[propName] = headerName
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func primitiveToString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%g", v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// unmarshalPrimitive unmarshals a JSON value into a Go primitive
+// (string, float64, or bool). Returns nil for non-primitive types.
+func unmarshalPrimitive(raw json.RawMessage) any {
+	var val any
+	if err := json.Unmarshal(raw, &val); err != nil {
+		return nil
+	}
+	switch val.(type) {
+	case string, float64, bool:
+		return val
+	default:
+		return nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client-side helpers
+// ---------------------------------------------------------------------------
 
 func setStandardHeaders(httpReq *http.Request, msg jsonrpc.Message) {
 	if msg == nil {
@@ -89,7 +167,6 @@ func setParamHeaders(httpReq *http.Request, tool *Tool, params json.RawMessage) 
 		if !ok {
 			continue
 		}
-		// null → omit header per SEP
 		if string(argRaw) == "null" {
 			continue
 		}
@@ -105,76 +182,25 @@ func setParamHeaders(httpReq *http.Request, tool *Tool, params json.RawMessage) 
 	}
 }
 
-// extractToolParamHeaders returns a map of parameter
-// for all properties in the tool's InputSchema that have an x-mcp-header
-// annotation.
-func extractToolParamHeaders(tool *Tool) map[string]string {
-	schema, ok := tool.InputSchema.(map[string]any)
-	if !ok {
-		return nil
-	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	result := make(map[string]string)
-	for propName, propSchema := range props {
-		ps, ok := propSchema.(map[string]any)
-		if !ok {
+// filterValidTools returns only tools that have valid
+// x-mcp-header annotations. Invalid tools are logged and excluded.
+func filterValidTools(tools []*Tool) []*Tool {
+	result := make([]*Tool, 0, len(tools))
+	for _, tool := range tools {
+		if err := validateToolParamHeaders(tool); err != nil {
+			log.Printf("mcp: excluding tool %q from tools/list: %v", tool.Name, err)
 			continue
 		}
-		headerName, ok := ps["x-mcp-header"].(string)
-		if !ok || headerName == "" {
-			continue
-		}
-		result[propName] = headerName
-	}
-	if len(result) == 0 {
-		return nil
+		result = append(result, tool)
 	}
 	return result
-}
-
-func primitiveToString(value any) string {
-	switch v := value.(type) {
-	case string:
-		return v
-	case float64:
-		return fmt.Sprintf("%g", v)
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
-// unmarshalPrimitive unmarshals a JSON value into a Go primitive
-// (string, float64, or bool). Returns nil for non-primitive types.
-func unmarshalPrimitive(raw json.RawMessage) any {
-	var val any
-	if err := json.Unmarshal(raw, &val); err != nil {
-		return nil
-	}
-	switch val.(type) {
-	case string, float64, bool:
-		return val
-	default:
-		return nil
-	}
 }
 
 // validateToolParamHeaders checks that a tool's x-mcp-header annotations
 // are valid.
 func validateToolParamHeaders(tool *Tool) error {
-	schema, ok := tool.InputSchema.(map[string]any)
-	if !ok {
-		return nil
-	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
+	props := extractSchemaProperties(tool.InputSchema)
+	if props == nil {
 		return nil
 	}
 
@@ -184,7 +210,7 @@ func validateToolParamHeaders(tool *Tool) error {
 		if !ok {
 			continue
 		}
-		headerNameRaw, exists := ps["x-mcp-header"]
+		headerNameRaw, exists := ps[mcpHeaderExtension]
 		if !exists {
 			continue
 		}
@@ -206,10 +232,41 @@ func validateToolParamHeaders(tool *Tool) error {
 			return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types, got %q", propName, propType)
 		}
 	}
+
+	for propName, propSchema := range props {
+		ps, ok := propSchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		if err := checkForNestedHeaders(ps, propName); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// A valid HeaderName MUST contain only ASCII characters (excluding space and ':').
+func checkForNestedHeaders(schema map[string]any, path string) error {
+	nestedProps := extractSchemaProperties(schema)
+	if nestedProps == nil {
+		return nil
+	}
+	for propName, propSchema := range nestedProps {
+		ps, ok := propSchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := ps[mcpHeaderExtension]; exists {
+			return fmt.Errorf("property %q: x-mcp-header cannot be applied to nested properties", path+"."+propName)
+		}
+		if err := checkForNestedHeaders(ps, path+"."+propName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateHeaderName checks that a header name contains only valid
+// ASCII characters (excluding space and ':').
 func validateHeaderName(name string) error {
 	for _, c := range name {
 		if c <= 0x20 || c > 0x7E || c == ':' {
@@ -219,19 +276,9 @@ func validateHeaderName(name string) error {
 	return nil
 }
 
-// filterValidTools returns only tools that have valid
-// x-mcp-header annotations. Invalid tools are logged and excluded.
-func filterValidTools(tools []*Tool) []*Tool {
-	result := make([]*Tool, 0, len(tools))
-	for _, tool := range tools {
-		if err := validateToolParamHeaders(tool); err != nil {
-			log.Printf("mcp: excluding tool %q from tools/list: %v", tool.Name, err)
-			continue
-		}
-		result = append(result, tool)
-	}
-	return result
-}
+// ---------------------------------------------------------------------------
+// Server-side helpers
+// ---------------------------------------------------------------------------
 
 func validateMcpHeaders(req *http.Request, msg jsonrpc.Message, tool *Tool) error {
 	protocolVersion := req.Header.Get(ProtocolVersionHeader)

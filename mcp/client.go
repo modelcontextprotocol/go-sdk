@@ -160,6 +160,12 @@ type ClientOptions struct {
 	KeepAlive time.Duration
 }
 
+// toolContextKeyType is the context key type for passing tool definitions
+// from CallTool to the transport layer.
+type toolContextKeyType struct{}
+
+var toolContextKey = toolContextKeyType{}
+
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
 func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState, onClose func()) *ClientSession {
@@ -299,12 +305,6 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 //
 // Call [ClientSession.Close] to close the connection, or await server
 // termination with [ClientSession.Wait].
-// toolContextKeyType is the context key type for passing tool definitions
-// from CallTool to the transport layer.
-type toolContextKeyType struct{}
-
-var toolContextKey = toolContextKeyType{}
-
 type ClientSession struct {
 	// Ensure that onClose is called at most once.
 	// We defensively use an atomic CompareAndSwap rather than a sync.Once, in case the
