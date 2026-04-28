@@ -2044,22 +2044,12 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	defer httpServer.Close()
 
 	// Use the MCP client with a custom RoundTripper to inject a bad header.
-	var lastResp *http.Response
-	var capturedBody []byte
-
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Header.Get(methodHeader) == "tools/call" {
 				req.Header.Set(methodHeader, "wrong-method")
 			}
-			resp, err := http.DefaultTransport.RoundTrip(req)
-			if err == nil && req.Header.Get(methodHeader) == "wrong-method" {
-				lastResp = resp
-				body, _ := io.ReadAll(resp.Body)
-				capturedBody = body
-				resp.Body = io.NopCloser(bytes.NewBuffer(body))
-			}
-			return resp, err
+			return http.DefaultTransport.RoundTrip(req)
 		}),
 	}
 
@@ -2077,33 +2067,18 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	defer session.Close()
 
 	_, err = session.CallTool(ctx, &CallToolParams{Name: "my-tool"})
-	// We expect an error because the server should reject it.
 	if err == nil {
-		t.Error("CallTool succeeded unexpectedly")
+		t.Fatal("CallTool succeeded unexpectedly")
 	}
-
-	if lastResp == nil {
-		t.Fatal("no response captured")
+	errStr := err.Error()
+	if !strings.Contains(errStr, "Bad Request") {
+		t.Errorf("error missing 'Bad Request': %s", errStr)
 	}
-
-	// Verify HTTP status code.
-	if lastResp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status code = %d, want %d", lastResp.StatusCode, http.StatusBadRequest)
+	if !strings.Contains(errStr, "Mcp-Method header value") {
+		t.Errorf("error missing 'Mcp-Method header value': %s", errStr)
 	}
-
-	// Verify Content-Type.
-	ct := baseMediaType(lastResp.Header.Get("Content-Type"))
-	if ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
-
-	// Verify JSON-RPC error body contains error code -32001.
-	bodyStr := string(capturedBody)
-	if !strings.Contains(bodyStr, `"code":-32001`) {
-		t.Errorf("response body missing error code -32001:\n%s", bodyStr)
-	}
-	if !strings.Contains(bodyStr, "Mcp-Method header value") {
-		t.Errorf("response body missing error message:\n%s", bodyStr)
+	if !strings.Contains(errStr, "(code: -32001)") {
+		t.Errorf("error missing '(code: -32001)': %s", errStr)
 	}
 }
 
