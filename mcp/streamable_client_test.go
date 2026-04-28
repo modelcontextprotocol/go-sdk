@@ -1156,3 +1156,103 @@ func TestTokenInfo(t *testing.T) {
 		t.Errorf("got %q, want %q", g, w)
 	}
 }
+
+func TestStreamableClientHeaders(t *testing.T) {
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	got := make(map[string]http.Header) // method -> received headers
+	capture := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			got[r.Method] = r.Header.Clone()
+			mu.Unlock()
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	server := NewServer(testImpl, nil)
+	streamHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(capture(streamHandler))
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint: httpServer.URL,
+		// Mix canonical and non-canonical keys; the non-canonical
+		// "content-type" must not override the transport-set value.
+		Headers: http.Header{
+			"X-Custom":     {"custom-value"},
+			"content-type": {"text/plain"},
+		},
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Errorf("closing session: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, method := range []string{"POST", "GET", "DELETE"} {
+		h, ok := got[method]
+		if !ok {
+			t.Errorf("%s: no request received", method)
+			continue
+		}
+		if g, w := h.Get("X-Custom"), "custom-value"; g != w {
+			t.Errorf("%s: X-Custom = %q, want %q", method, g, w)
+		}
+	}
+	// Headers set by the transport must take precedence even when
+	// the user supplies a non-canonical key. POST is the only method
+	// where the transport sets Content-Type.
+	if g := got["POST"].Values("Content-Type"); len(g) != 1 || g[0] != "application/json" {
+		t.Errorf("POST: Content-Type = %q, want [\"application/json\"]", g)
+	}
+}
+
+func TestStreamableClientMaxResponseBytes(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(testImpl, nil)
+	big := func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: strings.Repeat("a", 10000)}}}, nil, nil
+	}
+	AddTool(server, &Tool{Name: "big", Description: "return big result"}, big)
+
+	streamHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(streamHandler)
+	defer httpServer.Close()
+
+	connect := func(max int64) (*ClientSession, error) {
+		transport := &StreamableClientTransport{
+			Endpoint:         httpServer.URL,
+			MaxResponseBytes: max,
+		}
+		return NewClient(testImpl, nil).Connect(ctx, transport, nil)
+	}
+
+	// A limit large enough for the response should succeed.
+	session, err := connect(1 << 20)
+	if err != nil {
+		t.Fatalf("connect with large limit failed: %v", err)
+	}
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "big"}); err != nil {
+		t.Errorf("CallTool with large limit failed: %v", err)
+	}
+	session.Close()
+
+	// A limit large enough for initialize but smaller than the tool
+	// response should fail the tool call.
+	session, err = connect(2000)
+	if err != nil {
+		t.Fatalf("connect with small limit failed: %v", err)
+	}
+	defer session.Close()
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "big"}); err == nil {
+		t.Error("CallTool with small limit succeeded, want error")
+	}
+}

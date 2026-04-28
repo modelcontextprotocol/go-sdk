@@ -1525,7 +1525,7 @@ type StreamableClientTransport struct {
 
 	// Headers contains additional HTTP headers to include with every request to
 	// the MCP endpoint. Headers that the transport itself sets (Content-Type,
-	// Accept, Authorization, MCP-Protocol-Version, Mcp-Session-Id) take
+	// Accept, Authorization, Mcp-Protocol-Version, Mcp-Session-Id) take
 	// precedence over any conflicting entries here.
 	Headers http.Header
 
@@ -1967,8 +1967,9 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
 	for k, v := range c.headers {
-		if _, ok := req.Header[k]; !ok {
-			req.Header[k] = v
+		ck := http.CanonicalHeaderKey(k)
+		if _, ok := req.Header[ck]; !ok {
+			req.Header[ck] = v
 		}
 	}
 	return nil
