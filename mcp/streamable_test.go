@@ -2044,12 +2044,24 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	defer httpServer.Close()
 
 	// Use the MCP client with a custom RoundTripper to inject a bad header.
+	var toolCallResp *http.Response
+	var toolCallRespBody []byte
+
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			var originalMethodHeader string
 			if req.Header.Get(methodHeader) == "tools/call" {
+				originalMethodHeader = req.Header.Get(methodHeader)
 				req.Header.Set(methodHeader, "wrong-method")
 			}
-			return http.DefaultTransport.RoundTrip(req)
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && originalMethodHeader == "tools/call" {
+				toolCallResp = resp
+				body, _ := io.ReadAll(resp.Body)
+				toolCallRespBody = body
+				resp.Body = io.NopCloser(bytes.NewBuffer(body))
+			}
+			return resp, err
 		}),
 	}
 
@@ -2067,18 +2079,43 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	defer session.Close()
 
 	_, err = session.CallTool(ctx, &CallToolParams{Name: "my-tool"})
+	// We expect an error because the server should reject it.
 	if err == nil {
-		t.Fatal("CallTool succeeded unexpectedly")
+		t.Error("CallTool succeeded unexpectedly")
 	}
-	errStr := err.Error()
-	if !strings.Contains(errStr, "Bad Request") {
-		t.Errorf("error missing 'Bad Request': %s", errStr)
+
+	if toolCallResp == nil {
+		t.Fatal("no response captured")
 	}
-	if !strings.Contains(errStr, "Mcp-Method header value") {
-		t.Errorf("error missing 'Mcp-Method header value': %s", errStr)
+
+	// Verify HTTP status code.
+	if toolCallResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", toolCallResp.StatusCode, http.StatusBadRequest)
 	}
-	if !strings.Contains(errStr, "(code: -32001)") {
-		t.Errorf("error missing '(code: -32001)': %s", errStr)
+
+	// Verify Content-Type.
+	if baseMediaType(toolCallResp.Header.Get("Content-Type")) != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", baseMediaType(toolCallResp.Header.Get("Content-Type")), "application/json")
+	}
+
+	// Verify JSON-RPC error body contains error code -32001.
+	msg, err := jsonrpc2.DecodeMessage(toolCallRespBody)
+	if err != nil {
+		t.Fatalf("failed to decode message: %v", err)
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", msg)
+	}
+	var wireErr *jsonrpc2.WireError
+	if !errors.As(resp.Error, &wireErr) {
+		t.Fatalf("expected *jsonrpc2.WireError, got %T", resp.Error)
+	}
+	if wireErr.Code != -32001 {
+		t.Errorf("wireErr.Code = %d, want -32001", wireErr.Code)
+	}
+	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
+		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
 	}
 }
 

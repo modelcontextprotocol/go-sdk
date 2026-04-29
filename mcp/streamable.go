@@ -2059,21 +2059,6 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if baseMediaType(resp.Header.Get("Content-Type")) == "application/json" {
-			body, err := io.ReadAll(resp.Body)
-			if err == nil {
-				var rpcErrResp struct {
-					Error *jsonrpc2.WireError `json:"error"`
-				}
-				if internaljson.Unmarshal(body, &rpcErrResp) == nil && rpcErrResp.Error != nil {
-					return fmt.Errorf("%s: %v: %s (code: %d)",
-						requestSummary,
-						http.StatusText(resp.StatusCode),
-						rpcErrResp.Error.Message,
-						rpcErrResp.Error.Code)
-				}
-			}
-		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil
