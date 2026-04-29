@@ -39,12 +39,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-const (
-	protocolVersionHeader = "Mcp-Protocol-Version"
-	sessionIDHeader       = "Mcp-Session-Id"
-	lastEventIDHeader     = "Last-Event-ID"
-)
-
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
 // sessions, as defined by the [MCP spec].
 //
@@ -1191,6 +1185,24 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
+	if !isBatch && len(incoming) == 1 {
+		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
+			resp := &jsonrpc.Response{
+				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
+			}
+			if jreq, ok := incoming[0].(*jsonrpc.Request); ok {
+				resp.ID = jreq.ID
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+				w.Write(data)
+			}
+			return
+		}
+	}
+
 	// The prime and close events were added in protocol version 2025-11-25 (SEP-1699).
 	// Use the version from InitializeParams if this is an initialize request,
 	// otherwise use the protocol version header.
@@ -1797,6 +1809,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// and permanently break the connection.
 			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
+		// Keep this after the setMCPHeaders call to ensure that the
+		// protocol version header is set.
+		setStandardHeaders(req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
@@ -1932,6 +1947,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
+
 	return nil
 }
 

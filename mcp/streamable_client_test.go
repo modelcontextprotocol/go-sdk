@@ -70,7 +70,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	key := streamableRequestKey{
 		httpMethod:  req.Method,
 		sessionID:   req.Header.Get(sessionIDHeader),
-		lastEventID: req.Header.Get("Last-Event-ID"), // TODO: extract this to a constant, like sessionIDHeader
+		lastEventID: req.Header.Get(lastEventIDHeader),
 	}
 	var jsonrpcReq *jsonrpc.Request
 	if req.Method == http.MethodPost {
