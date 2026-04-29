@@ -29,6 +29,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
+// clientRequestCtx returns a context that simulates being inside the scope of
+// a client request handler for tests that call server-to-client methods (like
+// CreateMessage, ListRoots, Elicit) directly on a ServerSession.
+func clientRequestCtx(ctx context.Context) context.Context {
+	return context.WithValue(ctx, clientRequestIDKey{}, jsonrpc2.Int64ID(1))
+}
+
 type hiParams struct {
 	Name string
 }
@@ -357,7 +364,7 @@ func TestEndToEnd(t *testing.T) {
 		// ===== roots =====
 		t.Log("Testing roots")
 		{
-			rootRes, err := ss.ListRoots(ctx, &ListRootsParams{})
+			rootRes, err := ss.ListRoots(clientRequestCtx(ctx), &ListRootsParams{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -377,7 +384,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Log("Testing sampling")
 		{
 			// TODO: test that a client that doesn't have the handler returns CodeUnsupportedMethod.
-			res, err := ss.CreateMessage(ctx, &CreateMessageParams{})
+			res, err := ss.CreateMessage(clientRequestCtx(ctx), &CreateMessageParams{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -528,7 +535,7 @@ func TestEndToEnd(t *testing.T) {
 		// ===== elicitation =====
 		t.Log("Testing elicitation")
 		{
-			result, err := ss.Elicit(ctx, &ElicitParams{
+			result, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message: "Please provide information",
 			})
 			if err != nil {
@@ -762,7 +769,7 @@ func TestMiddleware(t *testing.T) {
 	if _, err := cs.ListTools(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ss.ListRoots(ctx, nil); err != nil {
+	if _, err := ss.ListRoots(clientRequestCtx(ctx), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -859,7 +866,7 @@ func TestNoJSONNull(t *testing.T) {
 	if _, err := cs.ListResourceTemplates(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ss.ListRoots(ctx, nil); err != nil {
+	if _, err := ss.ListRoots(clientRequestCtx(ctx), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1019,7 +1026,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 	defer cs.Close()
 
 	// Test that elicitation fails when no handler is provided
-	_, err = ss.Elicit(ctx, &ElicitParams{
+	_, err = ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 		Message: "This should fail",
 		RequestedSchema: &jsonschema.Schema{
 			Type: "object",
@@ -1241,7 +1248,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 
 	for _, tc := range validSchemas {
 		t.Run("valid_"+tc.name, func(t *testing.T) {
-			_, err := ss.Elicit(ctx, &ElicitParams{
+			_, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message:         "Test valid schema: " + tc.name,
 				RequestedSchema: tc.schema,
 			})
@@ -1510,7 +1517,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 
 	for _, tc := range invalidSchemas {
 		t.Run("invalid_"+tc.name, func(t *testing.T) {
-			_, err := ss.Elicit(ctx, &ElicitParams{
+			_, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message:         "Test invalid schema: " + tc.name,
 				RequestedSchema: tc.schema,
 			})
@@ -1597,7 +1604,7 @@ func TestElicitContentValidation(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ss.Elicit(ctx, &ElicitParams{
+			_, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message:         "Test schema: " + tc.name,
 				RequestedSchema: tc.schema,
 			})
@@ -1646,7 +1653,7 @@ func TestElicitationProgressToken(t *testing.T) {
 		t.Errorf("got progress token %v, want %q", token, "test-token")
 	}
 
-	_, err = ss.Elicit(ctx, params)
+	_, err = ss.Elicit(clientRequestCtx(ctx), params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1680,7 +1687,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 
 		// The client should have declared elicitation capability during initialization
 		// We can verify this worked by successfully making an elicitation call
-		result, err := ss.Elicit(ctx, &ElicitParams{
+		result, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 			Message:         "Test capability",
 			RequestedSchema: &jsonschema.Schema{Type: "object"},
 		})
@@ -1716,7 +1723,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		defer cs.Close()
 
 		// Elicitation should fail with UnsupportedMethod
-		_, err = ss.Elicit(ctx, &ElicitParams{
+		_, err = ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 			Message:         "This should fail",
 			RequestedSchema: &jsonschema.Schema{Type: "object"},
 		})
@@ -1810,7 +1817,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := ss.Elicit(ctx, &ElicitParams{
+			res, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message:         "Test schema with defaults: " + tc.name,
 				RequestedSchema: tc.schema,
 			})
@@ -2013,7 +2020,7 @@ func TestSynchronousNotifications(t *testing.T) {
 			}
 
 			time.Sleep(notificationDelay * 2) // Wait for delayed notification.
-			if _, err := ss.CreateMessage(context.Background(), new(CreateMessageParams)); err != nil {
+			if _, err := ss.CreateMessage(clientRequestCtx(context.Background()), new(CreateMessageParams)); err != nil {
 				t.Errorf("CreateMessage failed: %v", err)
 			}
 		}
@@ -2058,6 +2065,140 @@ func TestNoDistributedDeadlock(t *testing.T) {
 		if _, err := cs.CallTool(context.Background(), &CallToolParams{Name: "tool1"}); err != nil {
 			// should not deadlock
 			t.Fatalf("CallTool failed: %v", err)
+		}
+	})
+}
+
+func TestServerToClientRequestScoping(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+
+		server := NewServer(testImpl, nil)
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		client := NewClient(testImpl, &ClientOptions{
+			CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+				return &CreateMessageResult{Content: &TextContent{}}, nil
+			},
+			ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+				return &ElicitResult{Action: "accept"}, nil
+			},
+		})
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Server-to-client requests on a bare context must fail.
+		if _, err := ss.ListRoots(ctx, nil); err == nil {
+			t.Error("ListRoots on bare context: got nil error, want error")
+		}
+		if _, err := ss.CreateMessage(ctx, &CreateMessageParams{}); err == nil {
+			t.Error("CreateMessage on bare context: got nil error, want error")
+		}
+		if _, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{}); err == nil {
+			t.Error("CreateMessageWithTools on bare context: got nil error, want error")
+		}
+		if _, err := ss.Elicit(ctx, &ElicitParams{Message: "test"}); err == nil {
+			t.Error("Elicit on bare context: got nil error, want error")
+		}
+
+		// Ping is exempt from this restriction.
+		if err := ss.Ping(ctx, nil); err != nil {
+			t.Errorf("Ping on bare context: got error %v, want nil", err)
+		}
+
+		// Server-to-client requests from within a tool handler must succeed.
+		var toolErr error
+		AddTool(server, &Tool{Name: "test_scoping"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+			if _, err := req.Session.ListRoots(ctx, nil); err != nil {
+				toolErr = fmt.Errorf("ListRoots in tool handler: %v", err)
+				return &CallToolResult{}, nil, nil
+			}
+			if _, err := req.Session.CreateMessage(ctx, &CreateMessageParams{}); err != nil {
+				toolErr = fmt.Errorf("CreateMessage in tool handler: %v", err)
+				return &CallToolResult{}, nil, nil
+			}
+			if _, err := req.Session.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{}); err != nil {
+				toolErr = fmt.Errorf("CreateMessageWithTools in tool handler: %v", err)
+				return &CallToolResult{}, nil, nil
+			}
+			if _, err := req.Session.Elicit(ctx, &ElicitParams{Message: "test"}); err != nil {
+				toolErr = fmt.Errorf("Elicit in tool handler: %v", err)
+				return &CallToolResult{}, nil, nil
+			}
+			return &CallToolResult{}, nil, nil
+		})
+
+		if _, err := cs.CallTool(ctx, &CallToolParams{Name: "test_scoping"}); err != nil {
+			t.Fatalf("CallTool failed: %v", err)
+		}
+		if toolErr != nil {
+			t.Error(toolErr)
+		}
+
+		// Server-to-client requests from within a resource handler must succeed.
+		var resourceErr error
+		server.AddResource(&Resource{URI: "file:///test_scoping"}, func(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+			if _, err := req.Session.ListRoots(ctx, nil); err != nil {
+				resourceErr = fmt.Errorf("ListRoots in resource handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.CreateMessage(ctx, &CreateMessageParams{}); err != nil {
+				resourceErr = fmt.Errorf("CreateMessage in resource handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{}); err != nil {
+				resourceErr = fmt.Errorf("CreateMessageWithTools in resource handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.Elicit(ctx, &ElicitParams{Message: "test"}); err != nil {
+				resourceErr = fmt.Errorf("Elicit in resource handler: %v", err)
+				return nil, nil
+			}
+			return &ReadResourceResult{Contents: []*ResourceContents{{URI: "file:///test_scoping", Text: "ok"}}}, nil
+		})
+
+		if _, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "file:///test_scoping"}); err != nil {
+			t.Fatalf("ReadResource failed: %v", err)
+		}
+		if resourceErr != nil {
+			t.Error(resourceErr)
+		}
+
+		// Server-to-client requests from within a prompt handler must succeed.
+		var promptErr error
+		server.AddPrompt(&Prompt{Name: "test_scoping"}, func(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+			if _, err := req.Session.ListRoots(ctx, nil); err != nil {
+				promptErr = fmt.Errorf("ListRoots in prompt handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.CreateMessage(ctx, &CreateMessageParams{}); err != nil {
+				promptErr = fmt.Errorf("CreateMessage in prompt handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{}); err != nil {
+				promptErr = fmt.Errorf("CreateMessageWithTools in prompt handler: %v", err)
+				return nil, nil
+			}
+			if _, err := req.Session.Elicit(ctx, &ElicitParams{Message: "test"}); err != nil {
+				promptErr = fmt.Errorf("Elicit in prompt handler: %v", err)
+				return nil, nil
+			}
+			return &GetPromptResult{Messages: []*PromptMessage{}}, nil
+		})
+
+		if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "test_scoping"}); err != nil {
+			t.Fatalf("GetPrompt failed: %v", err)
+		}
+		if promptErr != nil {
+			t.Error(promptErr)
 		}
 	})
 }

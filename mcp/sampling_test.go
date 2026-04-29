@@ -78,7 +78,7 @@ func TestSamplingWithTools_ToolUse(t *testing.T) {
 		},
 		ToolChoice: &ToolChoice{Mode: "auto"},
 	}
-	gotResult, err := ss.CreateMessageWithTools(ctx, params)
+	gotResult, err := ss.CreateMessageWithTools(clientRequestCtx(ctx), params)
 	if err != nil {
 		t.Fatalf("CreateMessageWithTools() error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestSamplingWithTools_ToolResult(t *testing.T) {
 			}},
 		},
 	}
-	_, err = ss.CreateMessage(ctx, params)
+	_, err = ss.CreateMessage(clientRequestCtx(ctx), params)
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
@@ -308,7 +308,7 @@ func TestSamplingWithTools_ToolResultWithError(t *testing.T) {
 			}},
 		},
 	}
-	_, err = ss.CreateMessage(ctx, params)
+	_, err = ss.CreateMessage(clientRequestCtx(ctx), params)
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
@@ -354,7 +354,7 @@ func TestSamplingWithTools_ParallelToolCalls(t *testing.T) {
 	}
 	defer cs.Close()
 
-	gotResult, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{
+	gotResult, err := ss.CreateMessageWithTools(clientRequestCtx(ctx), &CreateMessageWithToolsParams{
 		MaxTokens: 1000,
 		Messages: []*SamplingMessageV2{
 			{Role: "user", Content: []Content{&TextContent{Text: "Weather in SF and NY"}}},
@@ -425,7 +425,7 @@ func TestCreateMessage_MultipleContentError(t *testing.T) {
 	defer cs.Close()
 
 	// Server calls CreateMessage (singular), should get error
-	_, err = ss.CreateMessage(ctx, &CreateMessageParams{
+	_, err = ss.CreateMessage(clientRequestCtx(ctx), &CreateMessageParams{
 		MaxTokens: 100,
 		Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}},
 	})

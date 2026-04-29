@@ -880,29 +880,6 @@ func (c *streamableServerConn) newStream(ctx context.Context, requests map[jsonr
 	}, nil
 }
 
-// We track the incoming request ID inside the handler context using
-// idContextValue, so that notifications and server->client calls that occur in
-// the course of handling incoming requests are correlated with the incoming
-// request that caused them, and can be dispatched as server-sent events to the
-// correct HTTP request.
-//
-// Currently, this is implemented in [ServerSession.handle]. This is not ideal,
-// because it means that a user of the MCP package couldn't implement the
-// streamable transport, as they'd lack this privileged access.
-//
-// If we ever wanted to expose this mechanism, we have a few options:
-//  1. Make ServerSession an interface, and provide an implementation of
-//     ServerSession to handlers that closes over the incoming request ID.
-//  2. Expose a 'HandlerTransport' interface that allows transports to provide
-//     a handler middleware, so that we don't hard-code this behavior in
-//     ServerSession.handle.
-//  3. Add a `func ForRequest(context.Context) jsonrpc.ID` accessor that lets
-//     any transport access the incoming request ID.
-//
-// For now, by giving only the StreamableServerTransport access to the request
-// ID, we avoid having to make this API decision.
-type idContextKey struct{}
-
 // ServeHTTP handles a single HTTP request for the session.
 func (t *StreamableServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if t.connection == nil {
@@ -1382,7 +1359,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		// Otherwise, we check to see if it request was made in the context of an
 		// ongoing request. This may not be the case if the request was made with
 		// an unrelated context.
-		if v := ctx.Value(idContextKey{}); v != nil {
+		if v := ctx.Value(clientRequestIDKey{}); v != nil {
 			relatedRequest = v.(jsonrpc.ID)
 		}
 	}

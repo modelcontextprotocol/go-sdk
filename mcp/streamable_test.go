@@ -98,11 +98,11 @@ func TestStreamableTransports(t *testing.T) {
 				}
 				// Test that we can make sampling requests during tool handling.
 				//
-				// Try this on both the request context and a background context, so
-				// that messages may be delivered on either the POST or GET connection.
+				// server-to-client requests must be made within the
+				// scope of a client request, so only the request context succeeds.
 				for _, test := range []testCase{
 					{"request context", ctx, true},
-					{"background context", context.Background(), true},
+					{"background context", context.Background(), false},
 				} {
 					testSample(test)
 				}
@@ -110,11 +110,12 @@ func TestStreamableTransports(t *testing.T) {
 				// check behavior when the client request has completed.
 				sampleWG.Go(func() {
 					<-sampleDone
-					// Test that sampling requests in the tool context fail outside of
-					// tool handling, but succeed on the background context.
+					// After the tool handler returns, both contexts should fail:
+					// the request context because the request is done, and the
+					// background context because it lacks a client request ID.
 					for _, test := range []testCase{
 						{"request context", ctx, false},
-						{"background context", context.Background(), true},
+						{"background context", context.Background(), false},
 					} {
 						testSample(test)
 					}
@@ -1069,47 +1070,32 @@ func TestStreamableServerTransport(t *testing.T) {
 		},
 		{
 			name: "background",
-			// Enabling replay is necessary here because the standalone "GET" request
-			// is fully asynchronous. Replay is needed to guarantee message delivery.
-			//
-			// TODO(rfindley): this should no longer be necessary.
+			// server-to-client requests (like ListRoots) must be
+			// made within the scope of a client request, so using a background
+			// context is prohibited. Notifications are allowed.
 			replay: true,
 			tool: func(t *testing.T, _ context.Context, req *CallToolRequest) {
-				// Perform operations on a background context, and ensure the client
-				// receives it.
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				defer cancel()
 
 				if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
 					t.Errorf("Notify failed: %v", err)
 				}
-				// TODO(rfindley): finish implementing logging.
-				// if err := ss.LoggingMessage(ctx, &LoggingMessageParams{}); err != nil {
-				// 	t.Errorf("Logging failed: %v", err)
-				// }
-				if _, err := req.Session.ListRoots(ctx, &ListRootsParams{}); err != nil {
-					t.Errorf("ListRoots failed: %v", err)
+				// ListRoots on a background context should fail.
+				if _, err := req.Session.ListRoots(ctx, &ListRootsParams{}); err == nil {
+					t.Errorf("ListRoots on background context: got nil error, want error")
 				}
 			},
 			requests: []streamableRequest{
 				initialize,
 				initialized,
 				{
-					method:    "POST",
-					onRequest: 1,
-					messages: []jsonrpc.Message{
-						resp(1, &ListRootsResult{}, nil),
-					},
-					wantStatusCode: http.StatusAccepted,
-				},
-				{
 					method:         "GET",
 					async:          true,
 					wantStatusCode: http.StatusOK,
-					closeAfter:     2,
+					closeAfter:     1,
 					wantMessages: []jsonrpc.Message{
 						req(0, "notifications/progress", &ProgressNotificationParams{}),
-						req(1, "roots/list", &ListRootsParams{}),
 					},
 				},
 				{
@@ -1131,6 +1117,30 @@ func TestStreamableServerTransport(t *testing.T) {
 				},
 			},
 			wantSessions: 0, // session deleted
+		},
+		{
+			name: "notification in post",
+			tool: func(t *testing.T, ctx context.Context, req *CallToolRequest) {
+				if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{}); err != nil {
+					t.Errorf("Notify failed: %v", err)
+				}
+			},
+			requests: []streamableRequest{
+				initialize,
+				initialized,
+				{
+					method: "POST",
+					messages: []jsonrpc.Message{
+						req(2, "tools/call", &CallToolParams{Name: "tool"}),
+					},
+					wantStatusCode: http.StatusOK,
+					wantMessages: []jsonrpc.Message{
+						req(0, "notifications/progress", &ProgressNotificationParams{}),
+						resp(2, &CallToolResult{Content: []Content{}}, nil),
+					},
+				},
+			},
+			wantSessions: 1,
 		},
 		{
 			name:   "no priming message on old protocol",

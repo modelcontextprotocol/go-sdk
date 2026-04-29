@@ -120,7 +120,7 @@ func TestElicitationURLMode(t *testing.T) {
 			}
 			defer cs.Close()
 
-			result, err := ss.Elicit(ctx, tc.params)
+			result, err := ss.Elicit(clientRequestCtx(ctx), tc.params)
 
 			if tc.wantErrMsg != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErrMsg) {
@@ -170,7 +170,7 @@ func TestElicitationCompleteNotification(t *testing.T) {
 
 		// 1. Server initiates a URL elicitation
 		elicitID := "testElicitationID-123"
-		resp, err := ss.Elicit(ctx, &ElicitParams{
+		resp, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 			Mode:          "url",
 			Message:       "Please complete this form: ",
 			URL:           "https://example.com/form?id=" + elicitID,
@@ -251,7 +251,7 @@ func TestElicitationNoValidationWithoutAccept(t *testing.T) {
 			}
 			defer cs.Close()
 
-			res, err := ss.Elicit(ctx, &ElicitParams{
+			res, err := ss.Elicit(clientRequestCtx(ctx), &ElicitParams{
 				Message:         "Test bug",
 				RequestedSchema: schema,
 			})

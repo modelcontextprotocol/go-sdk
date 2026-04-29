@@ -93,7 +93,7 @@ When the server writes a message, it must be routed to the correct [stream]:
 
 This routing is implemented using:
   - [streamableServerConn.requestStreams] maps request IDs to stream IDs
-  - [idContextKey] is used to store the originating request ID in Context
+  - [clientRequestIDKey] is used to store the originating request ID in Context
   - [streamableServerConn.streams] maps stream IDs to [stream] objects
 
 # Stream Resumption

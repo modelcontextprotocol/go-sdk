@@ -78,24 +78,36 @@ func Example_sampling() {
 		},
 	})
 
-	// Connect the server and client...
+	// Create a server with a tool that uses sampling.
+	// Server-to-client requests like CreateMessage must be made within a
+	// client request handler (e.g. a tool call).
 	ct, st := mcp.NewInMemoryTransports()
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddTool(&mcp.Tool{Name: "sample", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		msg, err := req.Session.CreateMessage(ctx, &mcp.CreateMessageParams{})
+		if err != nil {
+			return nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: msg.Content.(*mcp.TextContent).Text}},
+		}, nil
+	})
 	session, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-
-	msg, err := session.CreateMessage(ctx, &mcp.CreateMessageParams{})
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(msg.Content.(*mcp.TextContent).Text)
+
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "sample"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
 	// Output: would have created a message
 }
 
@@ -107,7 +119,27 @@ func Example_elicitation() {
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 
+	// Create a server with a tool that uses elicitation.
+	// Server-to-client requests like Elicit must be made within a client
+	// request handler (e.g. a tool call).
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddTool(&mcp.Tool{Name: "ask", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
+			Message: "Please provide information",
+			RequestedSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"test": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Content["test"].(string)}},
+		}, nil
+	})
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -119,22 +151,16 @@ func Example_elicitation() {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-	res, err := ss.Elicit(ctx, &mcp.ElicitParams{
-		Message: "This should fail",
-		RequestedSchema: &jsonschema.Schema{
-			Type: "object",
-			Properties: map[string]*jsonschema.Schema{
-				"test": {Type: "string"},
-			},
-		},
-	})
+	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(res.Content["test"])
+
+	toolRes, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "ask"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(toolRes.Content[0].(*mcp.TextContent).Text)
 	// Output: value
 }
 

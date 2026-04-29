@@ -1172,6 +1172,9 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListRoots lists the client roots.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
+	if err := checkClientRequestContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := ss.checkInitialized(methodListRoots); err != nil {
 		return nil, err
 	}
@@ -1184,6 +1187,9 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
 // for tool-enabled sampling.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
+	if err := checkClientRequestContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
@@ -1221,6 +1227,9 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
 // when the request includes tools.
 func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
+	if err := checkClientRequestContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
@@ -1237,6 +1246,9 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 
 // Elicit sends an elicitation request to the client asking for user input.
 func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*ElicitResult, error) {
+	if err := checkClientRequestContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
 	}
@@ -1445,10 +1457,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		jsonrpc2.Async(ctx)
 	}
 
-	// For the streamable transport, we need the request ID to correlate
-	// server->client calls and notifications to the incoming request from which
-	// they originated. See [idContextKey] for details.
-	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// Store the originating client request ID in the context. See
+	// [clientRequestIDKey] for details.
+	ctx = context.WithValue(ctx, clientRequestIDKey{}, req.ID)
 	return handleReceive(ctx, ss, req)
 }
 
@@ -1608,4 +1619,28 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 	}
 	*res.nextCursorPtr() = nextCursor
 	return res, nil
+}
+
+// clientRequestIDKey stores the originating client request ID in the context.
+//
+// This serves two purposes:
+//  1. Transport routing: the streamable HTTP transport uses this to correlate
+//     server-to-client calls and notifications with the incoming request that
+//     caused them, so they can be dispatched on the correct SSE stream.
+//  2. SEP-2260 enforcement: server-to-client requests (roots/list,
+//     sampling/createMessage, elicitation/create) MUST be associated with an
+//     originating client request. Ping is exempt.
+//
+// The value is set in [ServerSession.handle] for every incoming client message.
+type clientRequestIDKey struct{}
+
+// checkClientRequestContext verifies that ctx carries a client request ID,
+// indicating that the call is being made within the scope of handling a client
+// request. Per SEP-2260, server-to-client requests (except ping) must not be
+// sent outside this scope.
+func checkClientRequestContext(ctx context.Context) error {
+	if ctx.Value(clientRequestIDKey{}) == nil {
+		return fmt.Errorf("server-to-client request must be made within the scope of a client request")
+	}
+	return nil
 }
