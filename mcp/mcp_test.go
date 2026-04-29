@@ -2286,6 +2286,8 @@ func TestToolErrorMiddleware(t *testing.T) {
 			if err == nil {
 				if ctr, ok := res.(*CallToolResult); ok {
 					middleErr = ctr.GetError()
+				} else if rctr, ok := res.(*RoundTripCallToolResult); ok && rctr.Complete != nil {
+					middleErr = rctr.Complete.GetError()
 				}
 			}
 			return res, err

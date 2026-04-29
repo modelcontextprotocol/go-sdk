@@ -235,7 +235,7 @@ func (s *Server) RemovePrompts(names ...string) {
 //
 // Most users should use the top-level function [AddTool], which handles all these
 // responsibilities.
-func (s *Server) AddTool(t *Tool, h ToolHandler) {
+func (s *Server) AddRoundTripTool(t *Tool, h RoundTripToolHandler) {
 	if err := validateToolName(t.Name); err != nil {
 		s.opts.Logger.Error(fmt.Sprintf("AddTool: invalid tool name %q: %v", t.Name, err))
 	}
@@ -282,7 +282,20 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	s.changeAndNotify(notificationToolListChanged, func() bool { s.tools.add(st); return true })
 }
 
-func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCache) (*Tool, ToolHandler, error) {
+// AddTool adds a [Tool] to the server using the v1 ToolHandler API.
+// It wraps the provided ToolHandler into a RoundTripToolHandler and calls AddRoundTripTool.
+func (s *Server) AddTool(t *Tool, h ToolHandler) {
+	adapted := func(ctx context.Context, req *CallToolRequest) (*RoundTripCallToolResult, error) {
+		res, err := h(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return &RoundTripCallToolResult{Complete: res}, nil
+	}
+	s.AddRoundTripTool(t, adapted)
+}
+
+func roundTripToolForErr[In, Out any](t *Tool, h RoundTripToolHandlerFor[In, Out], cache *SchemaCache) (*Tool, RoundTripToolHandler, error) {
 	tt := *t
 
 	// Special handling for an "any" input: treat as an empty object.
@@ -312,7 +325,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 	}
 
-	th := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+	th := func(ctx context.Context, req *CallToolRequest) (*RoundTripCallToolResult, error) {
 		var input json.RawMessage
 		if req.Params.Arguments != nil {
 			input = req.Params.Arguments
@@ -350,46 +363,48 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			// For regular errors, embed them in the tool result as per MCP spec
 			var errRes CallToolResult
 			errRes.SetError(err)
-			return &errRes, nil
+			return &RoundTripCallToolResult{Complete: &errRes}, nil
 		}
 
 		if res == nil {
-			res = &CallToolResult{}
+			res = &RoundTripCallToolResult{Complete: &CallToolResult{}}
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
-		var outval any = out
-		if elemZero != nil {
-			// Avoid typed nil, which will serialize as JSON null.
-			// Instead, use the zero value of the unpointered type.
-			var z Out
-			if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
-				outval = elemZero
+		if res.Complete != nil {
+			var outval any = out
+			if elemZero != nil {
+				// Avoid typed nil, which will serialize as JSON null.
+				// Instead, use the zero value of the unpointered type.
+				var z Out
+				if any(out) == any(z) { // zero is only non-nil if Out is a pointer type
+					outval = elemZero
+				}
 			}
-		}
-		if outval != nil {
-			outbytes, err := json.Marshal(outval)
-			if err != nil {
-				return nil, fmt.Errorf("marshaling output: %w", err)
-			}
-			outJSON := json.RawMessage(outbytes)
-			// Validate the output JSON, and apply defaults.
-			//
-			// We validate against the JSON, rather than the output value, as
-			// some types may have custom JSON marshalling (issue #447).
-			outJSON, err = applySchema(outJSON, outputResolved)
-			if err != nil {
-				return nil, fmt.Errorf("validating tool output: %w", err)
-			}
-			res.StructuredContent = outJSON // avoid a second marshal over the wire
+			if outval != nil {
+				outbytes, err := json.Marshal(outval)
+				if err != nil {
+					return nil, fmt.Errorf("marshaling output: %w", err)
+				}
+				outJSON := json.RawMessage(outbytes)
+				// Validate the output JSON, and apply defaults.
+				//
+				// We validate against the JSON, rather than the output value, as
+				// some types may have custom JSON marshalling (issue #447).
+				outJSON, err = applySchema(outJSON, outputResolved)
+				if err != nil {
+					return nil, fmt.Errorf("validating tool output: %w", err)
+				}
+				res.Complete.StructuredContent = outJSON // avoid a second marshal over the wire
 
-			// If the Content field isn't being used, return the serialized JSON in a
-			// TextContent block, as the spec suggests:
-			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
-			if res.Content == nil {
-				res.Content = []Content{&TextContent{
-					Text: string(outJSON),
-				}}
+				// If the Content field isn't being used, return the serialized JSON in a
+				// TextContent block, as the spec suggests:
+				// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+				if res.Complete.Content == nil {
+					res.Complete.Content = []Content{&TextContent{
+						Text: string(outJSON),
+					}}
+				}
 			}
 		}
 		return res, nil
@@ -501,11 +516,27 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 // tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
 // description of this automatic behavior.
 func AddTool[In, Out any](s *Server, t *Tool, h ToolHandlerFor[In, Out]) {
-	tt, hh, err := toolForErr(t, h, s.opts.SchemaCache)
-	if err != nil {
-		panic(fmt.Sprintf("AddTool: tool %q: %v", t.Name, err))
+	adapted := func(ctx context.Context, req *CallToolRequest, in In) (*RoundTripCallToolResult, Out, error) {
+		res, out, err := h(ctx, req, in)
+		if err != nil {
+			var zero Out
+			return nil, zero, err
+		}
+		if res == nil {
+			res = &CallToolResult{}
+		}
+		return &RoundTripCallToolResult{Complete: res}, out, nil
 	}
-	s.AddTool(tt, hh)
+	AddRoundTripTool(s, t, adapted)
+}
+
+// AddRoundTripTool adds a tool and typed MRTR tool handler to the server.
+func AddRoundTripTool[In, Out any](s *Server, t *Tool, h RoundTripToolHandlerFor[In, Out]) {
+	tt, hh, err := roundTripToolForErr(t, h, s.opts.SchemaCache)
+	if err != nil {
+		panic(fmt.Sprintf("AddRoundTripTool: tool %q: %v", t.Name, err))
+	}
+	s.AddRoundTripTool(tt, hh)
 }
 
 // RemoveTools removes the tools with the given names.
@@ -740,7 +771,7 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*RoundTripCallToolResult, error) {
 	s.mu.Lock()
 	st, ok := s.tools.get(req.Params.Name)
 	s.mu.Unlock()
@@ -751,10 +782,8 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil && res.Content == nil {
-		res2 := *res
-		res2.Content = []Content{} // avoid "null"
-		res = &res2
+	if err == nil && res != nil && res.Complete != nil && res.Complete.Content == nil {
+		res.Complete.Content = []Content{} // avoid "null"
 	}
 	return res, err
 }
