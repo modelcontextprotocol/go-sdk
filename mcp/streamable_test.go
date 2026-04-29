@@ -2170,6 +2170,278 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 	})
 }
 
+// TestStreamableParamHeadersClientSetsHeaders verifies that the client sets
+// Mcp-Param-* headers on tool calls when the tool has x-mcp-header annotations.
+func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var capturedHeaders http.Header
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				capturedHeaders = req.Header.Clone()
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	clientTransport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	// ListTools to populate the tool cache (needed for param headers).
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = session.CallTool(ctx, &CallToolParams{
+		Name:      "execute_sql",
+		Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if capturedHeaders == nil {
+		t.Fatal("no tool call headers captured")
+	}
+	if got := capturedHeaders.Get(methodHeader); got != "tools/call" {
+		t.Errorf("Mcp-Method = %q, want %q", got, "tools/call")
+	}
+	if got := capturedHeaders.Get(nameHeader); got != "execute_sql" {
+		t.Errorf("Mcp-Name = %q, want %q", got, "execute_sql")
+	}
+	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
+		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+	if got := capturedHeaders.Get("Mcp-Param-query"); got != "" {
+		t.Errorf("non-annotated param got header: Mcp-Param-query = %q", got)
+	}
+}
+
+// TestStreamableParamHeadersServerValidation verifies that the server
+// validates Mcp-Param-* headers against the body for tools with
+// x-mcp-header annotations.
+func TestStreamableParamHeadersServerValidation(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
+	initResp := resp(1, &InitializeResult{
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
+		},
+		ProtocolVersion: minVersionForStandardHeaders,
+		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
+	}, nil)
+
+	testStreamableHandler(t, handler, []streamableRequest{
+		{
+			method:         "POST",
+			messages:       []jsonrpc.Message{initReq},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{initResp},
+			wantSessionID:  true,
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {notificationInitialized},
+			},
+			messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
+			wantStatusCode: http.StatusAccepted,
+		},
+		// Correct param header should succeed.
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"us-west1"},
+			},
+			messages: []jsonrpc.Message{req(2, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+			})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		// Mismatched param header value should fail.
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"eu-central1"},
+			},
+			messages: []jsonrpc.Message{req(3, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "header mismatch",
+		},
+		// Missing param header when body has the argument should fail.
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"execute_sql"},
+			},
+			messages: []jsonrpc.Message{req(4, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "missing",
+		},
+	})
+}
+
+// TestStreamableFilterValidToolsIntegration verifies that invalid tools
+// (with bad x-mcp-header annotations) are filtered out when the client
+// calls ListTools.
+func TestStreamableFilterValidToolsIntegration(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	noop := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{}, nil
+	}
+
+	// Valid tool with correct x-mcp-header annotation.
+	server.AddTool(&Tool{
+		Name: "valid-tool",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{
+					"type":         "string",
+					"x-mcp-header": "Region",
+				},
+			},
+		},
+	}, noop)
+
+	// Invalid tool: x-mcp-header on an array type.
+	server.AddTool(&Tool{
+		Name: "invalid-tool",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"items": map[string]any{
+					"type":         "array",
+					"x-mcp-header": "Items",
+				},
+			},
+		},
+	}, noop)
+
+	// Tool with no x-mcp-header annotations (always valid).
+	server.AddTool(&Tool{
+		Name:        "plain-tool",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, noop)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	result, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolNames := make([]string, len(result.Tools))
+	for i, tool := range result.Tools {
+		toolNames[i] = tool.Name
+	}
+	sort.Strings(toolNames)
+
+	wantNames := []string{"plain-tool", "valid-tool"}
+	if !slices.Equal(toolNames, wantNames) {
+		t.Errorf("ListTools returned %v, want %v", toolNames, wantNames)
+	}
+}
+
 // TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
 // 405 Method Not Allowed responses MUST include an Allow header.
 func TestStreamable405AllowHeader(t *testing.T) {

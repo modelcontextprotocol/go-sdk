@@ -27,6 +27,10 @@ const (
 	mcpHeaderExtension           = "x-mcp-header"
 )
 
+// ---------------------------------------------------------------------------
+// Shared helpers (used by both client and server)
+// ---------------------------------------------------------------------------
+
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
 	case "tools/call":
@@ -107,7 +111,7 @@ func primitiveToString(value any) string {
 // (string, float64, or bool). Returns nil for non-primitive types.
 func unmarshalPrimitive(raw json.RawMessage) any {
 	var val any
-	if err := json.Unmarshal(raw, &val); err != nil {
+	if err := internaljson.Unmarshal(raw, &val); err != nil {
 		return nil
 	}
 	switch val.(type) {
@@ -117,6 +121,10 @@ func unmarshalPrimitive(raw json.RawMessage) any {
 		return nil
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Client-side helpers
+// ---------------------------------------------------------------------------
 
 // setStandardHeaders populates standard MCP headers.
 // It requires the protocol version header to be set.
@@ -153,7 +161,7 @@ func setParamHeaders(header http.Header, tool *Tool, params json.RawMessage) {
 	var raw struct {
 		Arguments map[string]json.RawMessage `json:"arguments"`
 	}
-	if err := json.Unmarshal(params, &raw); err != nil || raw.Arguments == nil {
+	if err := internaljson.Unmarshal(params, &raw); err != nil || raw.Arguments == nil {
 		return
 	}
 
@@ -271,6 +279,10 @@ func validateHeaderName(name string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Server-side helpers
+// ---------------------------------------------------------------------------
+
 func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) error {
 	protocolVersion := header.Get(protocolVersionHeader)
 	if protocolVersion == "" || protocolVersion < minVersionForStandardHeaders {
@@ -319,7 +331,7 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 	var raw struct {
 		Arguments map[string]json.RawMessage `json:"arguments"`
 	}
-	if err := json.Unmarshal(msg.Params, &raw); err != nil {
+	if err := internaljson.Unmarshal(msg.Params, &raw); err != nil {
 		return nil
 	}
 
