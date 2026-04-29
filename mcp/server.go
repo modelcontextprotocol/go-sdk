@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1084,6 +1085,16 @@ func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p 
 		h(ctx, serverRequestFor(ss, p))
 	}
 	return nil, nil
+}
+
+// Notify sends a notification with an arbitrary custom method name.
+// method MUST start with "notifications/". Returns when the peer has
+// acknowledged the write or the context is cancelled.
+func (ss *ServerSession) Notify(ctx context.Context, method string, params any) error {
+	if !strings.HasPrefix(method, "notifications/") {
+		return fmt.Errorf("Notify: method must start with notifications/, got %q", method)
+	}
+	return ss.getConn().Notify(ctx, method, params)
 }
 
 // NotifyProgress sends a progress notification from the server to the client
