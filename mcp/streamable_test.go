@@ -2057,9 +2057,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 			resp, err := http.DefaultTransport.RoundTrip(req)
 			if err == nil && originalMethodHeader == "tools/call" {
 				toolCallResp = resp
-				body, _ := io.ReadAll(resp.Body)
-				toolCallRespBody = body
-				resp.Body = io.NopCloser(bytes.NewBuffer(body))
+				toolCallRespBody, _ = io.ReadAll(resp.Body)
 			}
 			return resp, err
 		}),
