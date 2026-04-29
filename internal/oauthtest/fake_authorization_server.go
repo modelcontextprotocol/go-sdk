@@ -57,6 +57,15 @@ type JWTBearerConfig struct {
 	ValidAssertions []string
 }
 
+// ClientCredentialsConfig configures support for the client_credentials
+// grant type (RFC 6749 Section 4.4) on a [FakeAuthorizationServer].
+type ClientCredentialsConfig struct {
+	// Enabled controls whether the /token endpoint accepts
+	// grant_type=client_credentials and returns an access token
+	// if client authentication succeeds.
+	Enabled bool
+}
+
 // Config holds configuration for FakeAuthorizationServer.
 type Config struct {
 	// The optional path component of the issuer URL.
@@ -70,6 +79,9 @@ type Config struct {
 	// JWTBearerConfig enables RFC 7523 JWT Bearer grant at the /token endpoint.
 	// If non-nil, the server accepts grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer.
 	JWTBearerConfig *JWTBearerConfig
+	// ClientCredentialsConfig enables RFC 6749 Section 4.4 client credentials
+	// grant at the /token endpoint.
+	ClientCredentialsConfig *ClientCredentialsConfig
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -271,6 +283,8 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 		s.handleAuthorizationCodeGrant(w, r)
 	case "urn:ietf:params:oauth:grant-type:jwt-bearer":
 		s.handleJWTBearerGrant(w, r)
+	case "client_credentials":
+		s.handleClientCredentialsGrant(w, r)
 	default:
 		http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
 	}
@@ -324,6 +338,20 @@ func (s *FakeAuthorizationServer) handleJWTBearerGrant(w http.ResponseWriter, r 
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"access_token": "test_access_token",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	})
+}
+
+func (s *FakeAuthorizationServer) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Request) {
+	if s.config.ClientCredentialsConfig == nil || !s.config.ClientCredentialsConfig.Enabled {
+		http.Error(w, "client_credentials grant not supported", http.StatusBadRequest)
+		return
+	}
+	// Client was already authenticated in handleToken.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": "test_access_token",

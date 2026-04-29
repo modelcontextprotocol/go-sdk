@@ -12,39 +12,36 @@ import (
 	"net/http"
 	"strings"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const (
-	ProtocolVersionHeader        = "Mcp-Protocol-Version"
-	SessionIDHeader              = "Mcp-Session-Id"
-	LastEventIDHeader            = "Last-Event-ID"
-	MethodHeader                 = "Mcp-Method"
-	NameHeader                   = "Mcp-Name"
-	ParamHeaderPrefix            = "Mcp-Param-"
-	MinVersionForStandardHeaders = "2026-06-XX"
+	protocolVersionHeader        = "Mcp-Protocol-Version"
+	sessionIDHeader              = "Mcp-Session-Id"
+	lastEventIDHeader            = "Last-Event-ID"
+	methodHeader                 = "Mcp-Method"
+	nameHeader                   = "Mcp-Name"
+	paramHeaderPrefix            = "Mcp-Param-"
+	minVersionForStandardHeaders = protocolVersion20260630
 	mcpHeaderExtension           = "x-mcp-header"
 )
-
-// ---------------------------------------------------------------------------
-// Shared helpers (used by both client and server)
-// ---------------------------------------------------------------------------
 
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
 	case "tools/call":
 		var p CallToolParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.Name, true
 		}
 	case "prompts/get":
 		var p GetPromptParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.Name, true
 		}
 	case "resources/read":
 		var p ReadResourceParams
-		if err := json.Unmarshal(params, &p); err == nil {
+		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.URI, true
 		}
 	}
@@ -121,27 +118,25 @@ func unmarshalPrimitive(raw json.RawMessage) any {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Client-side helpers
-// ---------------------------------------------------------------------------
-
-func setStandardHeaders(httpReq *http.Request, msg jsonrpc.Message) {
+// setStandardHeaders populates standard MCP headers.
+// It requires the protocol version header to be set.
+func setStandardHeaders(header http.Header, msg jsonrpc.Message) {
 	if msg == nil {
 		return
 	}
-	if httpReq.Header.Get(ProtocolVersionHeader) == "" || httpReq.Header.Get(ProtocolVersionHeader) < MinVersionForStandardHeaders {
+	if header.Get(protocolVersionHeader) == "" || header.Get(protocolVersionHeader) < minVersionForStandardHeaders {
 		return
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		httpReq.Header.Set(MethodHeader, msg.Method)
+		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			httpReq.Header.Set(NameHeader, name)
+			header.Set(nameHeader, name)
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := msg.Extra.(*Tool); ok && tool != nil {
-				setParamHeaders(httpReq, tool, msg.Params)
+				setParamHeaders(header, tool, msg.Params)
 			}
 		}
 	}
@@ -149,7 +144,7 @@ func setStandardHeaders(httpReq *http.Request, msg jsonrpc.Message) {
 
 // setParamHeaders reads x-mcp-header annotations from the tool's InputSchema
 // and sets Mcp-Param-{Name} headers on the HTTP request.
-func setParamHeaders(httpReq *http.Request, tool *Tool, params json.RawMessage) {
+func setParamHeaders(header http.Header, tool *Tool, params json.RawMessage) {
 	paramHeaders := extractToolParamHeaders(tool)
 	if len(paramHeaders) == 0 {
 		return
@@ -178,7 +173,7 @@ func setParamHeaders(httpReq *http.Request, tool *Tool, params json.RawMessage) 
 		if !ok {
 			continue
 		}
-		httpReq.Header.Set(ParamHeaderPrefix+headerName, encoded)
+		header.Set(paramHeaderPrefix+headerName, encoded)
 	}
 }
 
@@ -276,19 +271,15 @@ func validateHeaderName(name string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Server-side helpers
-// ---------------------------------------------------------------------------
-
-func validateMcpHeaders(req *http.Request, msg jsonrpc.Message, tool *Tool) error {
-	protocolVersion := req.Header.Get(ProtocolVersionHeader)
-	if protocolVersion == "" || protocolVersion < MinVersionForStandardHeaders {
+func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) error {
+	protocolVersion := header.Get(protocolVersionHeader)
+	if protocolVersion == "" || protocolVersion < minVersionForStandardHeaders {
 		return nil
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		methodInHeader := req.Header.Get(MethodHeader)
+		methodInHeader := header.Get(methodHeader)
 		if methodInHeader == "" {
 			return errors.New("missing required Mcp-Method header")
 		}
@@ -297,19 +288,21 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message, tool *Tool) erro
 		}
 
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
-			nameInHeader := req.Header.Get(NameHeader)
+			nameInHeader := header.Get(nameHeader)
 			if nameInHeader == "" {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
-			if nameInBody, ok := extractName(msg.Method, msg.Params); ok {
-				if nameInHeader != nameInBody {
-					return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
-				}
+			nameInBody, ok := extractName(msg.Method, msg.Params)
+			if !ok {
+				return fmt.Errorf("failed to extract name from parameters for method %q", msg.Method)
+			}
+			if nameInHeader != nameInBody {
+				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
 			}
 		}
 
 		if msg.Method == "tools/call" && tool != nil {
-			if err := validateParamHeaders(req, msg, tool); err != nil {
+			if err := validateParamHeaders(header, msg, tool); err != nil {
 				return err
 			}
 		}
@@ -317,7 +310,7 @@ func validateMcpHeaders(req *http.Request, msg jsonrpc.Message, tool *Tool) erro
 	return nil
 }
 
-func validateParamHeaders(req *http.Request, msg *jsonrpc.Request, tool *Tool) error {
+func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) error {
 	paramHeaders := extractToolParamHeaders(tool)
 	if len(paramHeaders) == 0 {
 		return nil
@@ -331,8 +324,8 @@ func validateParamHeaders(req *http.Request, msg *jsonrpc.Request, tool *Tool) e
 	}
 
 	for paramName, headerName := range paramHeaders {
-		fullHeader := ParamHeaderPrefix + headerName
-		headerVal := req.Header.Get(fullHeader)
+		fullHeader := paramHeaderPrefix + headerName
+		headerVal := header.Get(fullHeader)
 		argRaw, argExists := raw.Arguments[paramName]
 
 		if !argExists || string(argRaw) == "null" {

@@ -608,6 +608,136 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 }
 
+func TestInferApplicationType(t *testing.T) {
+	tests := []struct {
+		name         string
+		redirectURIs []string
+		want         string
+	}{
+		{
+			name:         "localhost",
+			redirectURIs: []string{"http://localhost:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "127.0.0.1",
+			redirectURIs: []string{"http://127.0.0.1:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "IPv6 loopback",
+			redirectURIs: []string{"http://[::1]:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "custom scheme",
+			redirectURIs: []string{"myapp://callback"},
+			want:         "native",
+		},
+		{
+			name:         "HTTPS remote",
+			redirectURIs: []string{"https://myapp.example.com/callback"},
+			want:         "web",
+		},
+		{
+			name:         "mixed native and web",
+			redirectURIs: []string{"https://myapp.example.com/callback", "http://localhost:8085/callback"},
+			want:         "",
+		},
+		{
+			name:         "multiple remote",
+			redirectURIs: []string{"https://app1.example.com/cb", "https://app2.example.com/cb"},
+			want:         "web",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferApplicationType(tt.redirectURIs)
+			if got != tt.want {
+				t.Errorf("inferApplicationType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplicationTypeInference(t *testing.T) {
+	fetcher := func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+		return nil, nil
+	}
+
+	tests := []struct {
+		name           string
+		redirectURIs   []string
+		initialAppType string
+		wantAppType    string
+		wantErr        bool
+	}{
+		{
+			name:         "inferred as native for localhost",
+			redirectURIs: []string{"http://localhost:8085/callback"},
+			wantAppType:  "native",
+		},
+		{
+			name:         "inferred as web for remote",
+			redirectURIs: []string{"https://example.com/callback"},
+			wantAppType:  "web",
+		},
+		{
+			name:         "mixed native and web URIs sets empty application type",
+			redirectURIs: []string{"https://example.com/callback", "http://localhost:8085/callback"},
+			wantAppType:  "",
+		},
+		{
+			name:           "explicit value matching inference is preserved",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			initialAppType: "native",
+			wantAppType:    "native",
+		},
+		{
+			name:           "explicit value conflicts with inference returns error",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			initialAppType: "web",
+			wantErr:        true,
+		},
+		{
+			name:           "explicit value when inference is ambiguous returns error",
+			redirectURIs:   []string{"https://example.com/callback", "http://localhost:8085/callback"},
+			initialAppType: "web",
+			wantErr:        true,
+		},
+		{
+			name:         "invalid URI returns empty application type",
+			redirectURIs: []string{"http://%/"},
+			wantAppType:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AuthorizationCodeHandlerConfig{
+				DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+					Metadata: &oauthex.ClientRegistrationMetadata{
+						RedirectURIs:    tt.redirectURIs,
+						ApplicationType: tt.initialAppType,
+					},
+				},
+				AuthorizationCodeFetcher: fetcher,
+			}
+			_, err := NewAuthorizationCodeHandler(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			got := cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType
+			if got != tt.wantAppType {
+				t.Errorf("ApplicationType = %q, want %q", got, tt.wantAppType)
+			}
+		})
+	}
+}
+
 // validConfig for test to create an AuthorizationCodeHandler using its constructor.
 // Values that are relevant to the test should be set explicitly.
 func validConfig() *AuthorizationCodeHandlerConfig {

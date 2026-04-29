@@ -129,35 +129,35 @@ func TestSetStandardHeaders(t *testing.T) {
 	}{
 		{
 			name:             "tools/call with future version",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantMethodHeader: "tools/call",
 			wantNameHeader:   "my-tool",
 		},
 		{
 			name:             "prompts/get with future version",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "code_review"})},
 			wantMethodHeader: "prompts/get",
 			wantNameHeader:   "code_review",
 		},
 		{
 			name:             "resources/read with future version",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///info.txt"})},
 			wantMethodHeader: "resources/read",
 			wantNameHeader:   "file:///info.txt",
 		},
 		{
 			name:             "initialize sets method only",
-			protocolVersion:  MinVersionForStandardHeaders,
-			msg:              &jsonrpc.Request{Method: "initialize", Params: mustMarshal(&InitializeParams{ProtocolVersion: MinVersionForStandardHeaders})},
+			protocolVersion:  minVersionForStandardHeaders,
+			msg:              &jsonrpc.Request{Method: "initialize", Params: mustMarshal(&InitializeParams{ProtocolVersion: minVersionForStandardHeaders})},
 			wantMethodHeader: "initialize",
 			wantNameHeader:   "",
 		},
 		{
 			name:             "notification sets method only",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              &jsonrpc.Request{Method: "notifications/initialized"},
 			wantMethodHeader: "notifications/initialized",
 			wantNameHeader:   "",
@@ -178,14 +178,14 @@ func TestSetStandardHeaders(t *testing.T) {
 		},
 		{
 			name:             "nil message is a no-op",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              nil,
 			wantMethodHeader: "",
 			wantNameHeader:   "",
 		},
 		{
 			name:             "response message is ignored",
-			protocolVersion:  MinVersionForStandardHeaders,
+			protocolVersion:  minVersionForStandardHeaders,
 			msg:              &jsonrpc.Response{},
 			wantMethodHeader: "",
 			wantNameHeader:   "",
@@ -194,20 +194,17 @@ func TestSetStandardHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			httpReq, err := http.NewRequest("POST", "http://localhost/mcp", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			header := http.Header{}
 			if tt.protocolVersion != "" {
-				httpReq.Header.Set(ProtocolVersionHeader, tt.protocolVersion)
+				header.Set(protocolVersionHeader, tt.protocolVersion)
 			}
 
-			setStandardHeaders(httpReq, tt.msg)
+			setStandardHeaders(header, tt.msg)
 
-			if got := httpReq.Header.Get(MethodHeader); got != tt.wantMethodHeader {
+			if got := header.Get(methodHeader); got != tt.wantMethodHeader {
 				t.Errorf("MethodHeader = %q, want %q", got, tt.wantMethodHeader)
 			}
-			if got := httpReq.Header.Get(NameHeader); got != tt.wantNameHeader {
+			if got := header.Get(nameHeader); got != tt.wantNameHeader {
 				t.Errorf("NameHeader = %q, want %q", got, tt.wantNameHeader)
 			}
 		})
@@ -215,8 +212,6 @@ func TestSetStandardHeaders(t *testing.T) {
 }
 
 func TestValidateMcpHeaders(t *testing.T) {
-	futureVersion := MinVersionForStandardHeaders
-	oldVersion := protocolVersion20251125
 
 	tests := []struct {
 		name           string
@@ -227,10 +222,9 @@ func TestValidateMcpHeaders(t *testing.T) {
 		wantErr        bool
 		wantErrContain string
 	}{
-		// -- Version gating --
 		{
 			name:    "old version skips validation",
-			version: oldVersion,
+			version: protocolVersion20251125,
 			msg:     &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr: false,
 		},
@@ -240,18 +234,16 @@ func TestValidateMcpHeaders(t *testing.T) {
 			msg:     &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr: false,
 		},
-
-		// -- Missing headers --
 		{
 			name:           "missing Mcp-Method header",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr:        true,
 			wantErrContain: "missing required Mcp-Method header",
 		},
 		{
 			name:           "missing Mcp-Name for tools/call",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "tools/call",
 			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr:        true,
@@ -259,7 +251,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:           "missing Mcp-Name for resources/read",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "resources/read",
 			msg:            &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///info.txt"})},
 			wantErr:        true,
@@ -267,17 +259,15 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:           "missing Mcp-Name for prompts/get",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "prompts/get",
 			msg:            &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "review"})},
 			wantErr:        true,
 			wantErrContain: "missing required Mcp-Name header",
 		},
-
-		// -- Mismatches --
 		{
 			name:           "method mismatch",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "tools/call",
 			msg:            &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "review"})},
 			wantErr:        true,
@@ -285,7 +275,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:           "tool name mismatch",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "tools/call",
 			nameHeader:     "wrong-tool",
 			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "right-tool"})},
@@ -294,7 +284,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:           "resource URI mismatch",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "resources/read",
 			nameHeader:     "file:///wrong.txt",
 			msg:            &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///right.txt"})},
@@ -303,29 +293,25 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:           "prompt name mismatch",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "prompts/get",
 			nameHeader:     "wrong-prompt",
 			msg:            &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "right-prompt"})},
 			wantErr:        true,
 			wantErrContain: "Mcp-Name header value 'wrong-prompt' does not match body value 'right-prompt'",
 		},
-
-		// -- Case sensitivity --
 		{
 			name:           "method value is case-sensitive",
-			version:        futureVersion,
+			version:        minVersionForStandardHeaders,
 			methodHeader:   "TOOLS/CALL",
 			nameHeader:     "my-tool",
 			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr:        true,
 			wantErrContain: "Mcp-Method header value 'TOOLS/CALL' does not match body value 'tools/call'",
 		},
-
-		// -- Valid cases --
 		{
 			name:         "valid tools/call",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "tools/call",
 			nameHeader:   "my-tool",
 			msg:          &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
@@ -333,7 +319,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "valid resources/read",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "resources/read",
 			nameHeader:   "file:///info.txt",
 			msg:          &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///info.txt"})},
@@ -341,7 +327,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "valid prompts/get",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "prompts/get",
 			nameHeader:   "code_review",
 			msg:          &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "code_review"})},
@@ -349,23 +335,21 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "valid initialize (no name needed)",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "initialize",
-			msg:          &jsonrpc.Request{Method: "initialize", Params: mustMarshal(&InitializeParams{ProtocolVersion: MinVersionForStandardHeaders})},
+			msg:          &jsonrpc.Request{Method: "initialize", Params: mustMarshal(&InitializeParams{ProtocolVersion: minVersionForStandardHeaders})},
 			wantErr:      false,
 		},
 		{
 			name:         "valid notification (no name needed)",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "notifications/initialized",
 			msg:          &jsonrpc.Request{Method: "notifications/initialized"},
 			wantErr:      false,
 		},
-
-		// -- Special characters --
 		{
 			name:         "tool name with hyphen",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "tools/call",
 			nameHeader:   "my-tool-name",
 			msg:          &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool-name"})},
@@ -373,7 +357,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "tool name with underscore",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "tools/call",
 			nameHeader:   "my_tool_name",
 			msg:          &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my_tool_name"})},
@@ -381,7 +365,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "resource URI with special chars",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "resources/read",
 			nameHeader:   "file:///path/to/file%20name.txt",
 			msg:          &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///path/to/file%20name.txt"})},
@@ -389,17 +373,15 @@ func TestValidateMcpHeaders(t *testing.T) {
 		},
 		{
 			name:         "resource URI with query string",
-			version:      futureVersion,
+			version:      minVersionForStandardHeaders,
 			methodHeader: "resources/read",
 			nameHeader:   "https://example.com/resource?id=123",
 			msg:          &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "https://example.com/resource?id=123"})},
 			wantErr:      false,
 		},
-
-		// -- Non-request messages --
 		{
 			name:    "response message is ignored",
-			version: futureVersion,
+			version: minVersionForStandardHeaders,
 			msg:     &jsonrpc.Response{},
 			wantErr: false,
 		},
@@ -407,21 +389,18 @@ func TestValidateMcpHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			httpReq, err := http.NewRequest("POST", "http://localhost/mcp", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			header := http.Header{}
 			if tt.version != "" {
-				httpReq.Header.Set(ProtocolVersionHeader, tt.version)
+				header.Set(protocolVersionHeader, tt.version)
 			}
 			if tt.methodHeader != "" {
-				httpReq.Header.Set(MethodHeader, tt.methodHeader)
+				header.Set(methodHeader, tt.methodHeader)
 			}
 			if tt.nameHeader != "" {
-				httpReq.Header.Set(NameHeader, tt.nameHeader)
+				header.Set(nameHeader, tt.nameHeader)
 			}
 
-			err = validateMcpHeaders(httpReq, tt.msg, nil /*tool*/)
+			err := validateMcpHeaders(header, tt.msg, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("validateMcpHeaders() = nil, want error containing %q", tt.wantErrContain)
@@ -902,11 +881,8 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			httpReq, err := http.NewRequest("POST", "http://localhost/mcp", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			httpReq.Header.Set(ProtocolVersionHeader, MinVersionForStandardHeaders)
+			header := http.Header{}
+			header.Set(protocolVersionHeader, minVersionForStandardHeaders)
 
 			msg := &jsonrpc.Request{
 				Method: "tools/call",
@@ -914,20 +890,19 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 				Extra:  tt.tool,
 			}
 
-			setStandardHeaders(httpReq, msg)
+			setStandardHeaders(header, msg)
 
-			if got := httpReq.Header.Get(MethodHeader); got != "tools/call" {
+			if got := header.Get(methodHeader); got != "tools/call" {
 				t.Errorf("MethodHeader = %q, want %q", got, "tools/call")
 			}
 
-			for header, want := range tt.wantHeaders {
-				if got := httpReq.Header.Get(header); got != want {
-					t.Errorf("%s = %q, want %q", header, got, want)
+			for h, want := range tt.wantHeaders {
+				if got := header.Get(h); got != want {
+					t.Errorf("%s = %q, want %q", h, got, want)
 				}
 			}
 
-			// Verify non-annotated params don't get headers
-			if got := httpReq.Header.Get("Mcp-Param-query"); got != "" {
+			if got := header.Get("Mcp-Param-query"); got != "" {
 				t.Errorf("non-annotated param got header: Mcp-Param-query = %q", got)
 			}
 		})
