@@ -30,6 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -1805,56 +1807,27 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
-			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
-			// and permanently break the connection.
-			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+			// Return the request anyway so that the caller (doWithAuth) can use it
+			// to trigger the OAuth Authorize flow if the failure was due to an
+			// expired token.
+			return req, nil, err
 		}
 		// Keep this after the setMCPHeaders call to ensure that the
 		// protocol version header is set.
 		setStandardHeaders(req.Header, msg)
 		resp, err := c.client.Do(req)
-		if err != nil {
-			// Any error from client.Do means the request didn't reach the server.
-			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
-			// and permanently break the connection.
-			err = fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
-		}
+		// Any error from client.Do means the request didn't reach the server.
+		// The caller handles wrapping the error with ErrRejected to ensure the
+		// jsonrpc2 connection isn't permanently broken.
 		return req, resp, err
 	}
 
-	req, resp, err := doRequest()
+	_, resp, err := c.doWithAuth(ctx, requestSummary, doRequest)
 	if err != nil {
-		return err
-	}
-
-	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil {
-		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
-			// If the caller's context was cancelled while we were running the
-			// authorization flow, treat the connection as failed so subsequent
-			// operations on it (e.g. the cancellation notify the call layer
-			// sends in response to ctx cancellation) short-circuit instead of
-			// re-invoking the OAuth handler. Otherwise the user gets prompted
-			// to authorize a request they have already abandoned. See #882.
-			//
-			// We check ctx.Err() rather than the error returned by Authorize,
-			// because the handler is user-implemented and may return an error
-			// that does not wrap context.Canceled (e.g. a custom sentinel or
-			// a fmt.Errorf with %v). The context itself is the authoritative
-			// source for whether the caller abandoned the request.
-			ctxErr := ctx.Err()
-			if errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded) {
-				c.fail(fmt.Errorf("%s: authorization cancelled: %w", requestSummary, err))
-			}
-			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
-			// and permanently break the connection.
-			// Wrap the authorization error as well for client inspection.
-			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
-		}
-		// Retry the request after successful authorization.
-		_, resp, err = doRequest()
-		if err != nil {
-			return err
-		}
+		// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
+		// and permanently break the connection.
+		// Wrap the authorization error as well for client inspection.
+		return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 	}
 
 	if err := c.checkResponse(requestSummary, resp); err != nil {
@@ -2197,18 +2170,23 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			return nil, ctx.Err()
 
 		case <-time.After(delay):
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
-			if err != nil {
-				return nil, err
+			doRequest := func() (*http.Request, *http.Response, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				if err := c.setMCPHeaders(req); err != nil {
+					return req, nil, err
+				}
+				if lastEventID != "" {
+					req.Header.Set(lastEventIDHeader, lastEventID)
+				}
+				req.Header.Set("Accept", "text/event-stream")
+				resp, err := c.client.Do(req)
+				return req, resp, err
 			}
-			if err := c.setMCPHeaders(req); err != nil {
-				return nil, err
-			}
-			if lastEventID != "" {
-				req.Header.Set(lastEventIDHeader, lastEventID)
-			}
-			req.Header.Set("Accept", "text/event-stream")
-			resp, err := c.client.Do(req)
+
+			_, resp, err := c.doWithAuth(ctx, "standalone SSE stream", doRequest)
 			if err != nil {
 				finalErr = err // Store the error and try again.
 				delay = calculateReconnectDelay(attempt + 1)
@@ -2222,6 +2200,51 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 		return nil, fmt.Errorf("connection failed after %d attempts: %w", c.maxRetries, finalErr)
 	}
 	return nil, fmt.Errorf("connection aborted after %d attempts", c.maxRetries)
+}
+
+// doWithAuth executes an HTTP request, automatically handling OAuth2 token retrieval errors
+// and 401/403 HTTP status codes by triggering the OAuthHandler's Authorize flow and retrying.
+//
+// doRequest should construct and send the HTTP request, and return the sent request (which
+// may be needed for authorization), the response (if any), and any error.
+func (c *streamableClientConn) doWithAuth(ctx context.Context, requestSummary string, doRequest func() (*http.Request, *http.Response, error)) (*http.Request, *http.Response, error) {
+	req, resp, err := doRequest()
+
+	if c.oauthHandler == nil || req == nil {
+		return req, resp, err
+	}
+
+	var authResp *http.Response
+	var retrieveErr *oauth2.RetrieveError
+	if err != nil && errors.As(err, &retrieveErr) {
+		authResp = retrieveErr.Response
+	} else if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		authResp = resp
+	} else {
+		return req, resp, err
+	}
+
+	if authErr := c.oauthHandler.Authorize(ctx, req, authResp); authErr != nil {
+		// If the caller's context was cancelled while we were running the
+		// authorization flow, treat the connection as failed so subsequent
+		// operations on it (e.g. the cancellation notify the call layer
+		// sends in response to ctx cancellation) short-circuit instead of
+		// re-invoking the OAuth handler. Otherwise the user gets prompted
+		// to authorize a request they have already abandoned. See #882.
+		//
+		// We check ctx.Err() rather than the error returned by Authorize,
+		// because the handler is user-implemented and may return an error
+		// that does not wrap context.Canceled (e.g. a custom sentinel or
+		// a fmt.Errorf with %v). The context itself is the authoritative
+		// source for whether the caller abandoned the request.
+		ctxErr := ctx.Err()
+		if errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded) {
+			c.fail(fmt.Errorf("%s: authorization cancelled: %w", requestSummary, authErr))
+		}
+		return req, nil, authErr
+	}
+	// Retry
+	return doRequest()
 }
 
 // Close implements the [Connection] interface.
