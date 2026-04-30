@@ -27,7 +27,6 @@ const (
 	mcpHeaderExtension           = "x-mcp-header"
 )
 
-
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
 	case "tools/call":
