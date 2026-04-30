@@ -136,27 +136,30 @@ func setStandardHeaders(header http.Header, msg jsonrpc.Message) {
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := msg.Extra.(*Tool); ok && tool != nil {
-				setParamHeaders(header, tool, msg.Params)
+				for k, v := range extractParamHeaders(tool, msg.Params) {
+					header.Set(k, v)
+				}
 			}
 		}
 	}
 }
 
-// setParamHeaders reads x-mcp-header annotations from the tool's InputSchema
-// and sets Mcp-Param-{Name} headers on the HTTP request.
-func setParamHeaders(header http.Header, tool *Tool, params json.RawMessage) {
+// extractParamHeaders reads x-mcp-header annotations from the tool's InputSchema
+// and returns the Mcp-Param-{Name} headers to be set on the HTTP request.
+func extractParamHeaders(tool *Tool, params json.RawMessage) map[string]string {
 	paramHeaders := extractToolParamHeaders(tool)
 	if len(paramHeaders) == 0 {
-		return
+		return nil
 	}
 
 	var raw struct {
 		Arguments map[string]json.RawMessage `json:"arguments"`
 	}
 	if err := internaljson.Unmarshal(params, &raw); err != nil || raw.Arguments == nil {
-		return
+		return nil
 	}
 
+	res := make(map[string]string)
 	for paramName, headerName := range paramHeaders {
 		argRaw, ok := raw.Arguments[paramName]
 		if !ok {
@@ -173,8 +176,9 @@ func setParamHeaders(header http.Header, tool *Tool, params json.RawMessage) {
 		if !ok {
 			continue
 		}
-		header.Set(paramHeaderPrefix+headerName, encoded)
+		res[paramHeaderPrefix+headerName] = encoded
 	}
+	return res
 }
 
 // filterValidTools returns only tools that have valid
@@ -205,6 +209,9 @@ func validateToolParamHeaders(tool *Tool) error {
 		if !ok {
 			continue
 		}
+		if err := checkForNestedHeaders(ps, propName); err != nil {
+			return err
+		}
 		headerNameRaw, exists := ps[mcpHeaderExtension]
 		if !exists {
 			continue
@@ -225,16 +232,6 @@ func validateToolParamHeaders(tool *Tool) error {
 		propType, _ := ps["type"].(string)
 		if propType != "" && propType != "string" && propType != "number" && propType != "integer" && propType != "boolean" {
 			return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types, got %q", propName, propType)
-		}
-	}
-
-	for propName, propSchema := range props {
-		ps, ok := propSchema.(map[string]any)
-		if !ok {
-			continue
-		}
-		if err := checkForNestedHeaders(ps, propName); err != nil {
-			return err
 		}
 	}
 	return nil
