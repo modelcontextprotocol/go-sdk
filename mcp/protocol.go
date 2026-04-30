@@ -1368,7 +1368,7 @@ type ToolAnnotations struct {
 	// (This property is meaningful only when ReadOnlyHint == false.)
 	//
 	// Default: false
-	IdempotentHint bool `json:"idempotentHint,omitempty"`
+	IdempotentHint bool `json:"idempotentHint"`
 	// If true, this tool may interact with an "open world" of external entities. If
 	// false, the tool's domain of interaction is closed. For example, the world of
 	// a web search tool is open, whereas that of a memory tool is not.
