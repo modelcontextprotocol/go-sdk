@@ -18,13 +18,39 @@
 
 ## `MCPGODEBUG` history
 
+### 1.6.0
+
+Options listed below were added and will be removed in the 1.8.0 version of the SDK.
+
+- `seterroroverwrite` added. If set to `1`, `SetError` will always overwrite
+  `Content` with the error text, restoring the previous behavior. The default
+  behavior was changed to preserve existing `Content` if it has already been
+  populated.
+
+- `enableoriginverification` added. If set to `1`, default (zero-value)
+  cross-origin protection will be applied when
+  `StreamableHTTPOptions.CrossOriginProtection` is nil, restoring the
+  behavior from v1.4.1-v1.5.0. The default behavior was changed to not
+  enable cross-origin protection.
+
+- `disablelocalhostprotection` removal was postponed until 1.8.0, as it is now
+  also used in the SSE transport.
+
+Options below were removed:
+
+- `jsonescaping`, according to plan,
+
+- `disablecrossoriginprotection`, it was replaced by
+  `enableoriginverification` after the default was changed to not enable
+  cross-origin protection.
+
 ### 1.4.1
 
 Options listed below will be removed in the 1.6.0 version of the SDK.
 
 - `disablecrossoriginprotection` added. If set to `1`, newly added cross-origin
   protection will be disabled. The default behavior was changed to enable
-  cross-origin protection. **Removal of this option was postponed until 1.7.0.**
+  cross-origin protection.
 
 ### 1.4.0
 
@@ -39,4 +65,4 @@ Options listed below will be removed in the 1.6.0 version of the SDK.
   protection. The protection can also be disabled by setting the
   `DisableLocalhostProtection` field in the `StreamableHTTPOptions` or
   `SSEOptions` struct to `true`, which is the recommended way to disable
-  the protection long term. **Removal of this option was postponed until 1.7.0.**
+  the protection long term. **Removal of this option was postponed until 1.8.0.**
