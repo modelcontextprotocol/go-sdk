@@ -1378,7 +1378,7 @@ type ToolAnnotations struct {
 	// If true, the tool does not modify its environment.
 	//
 	// Default: false
-	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
+	ReadOnlyHint bool `json:"readOnlyHint"`
 	// A human-readable title for the tool.
 	Title string `json:"title,omitempty"`
 }
