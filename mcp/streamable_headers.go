@@ -27,9 +27,6 @@ const (
 	mcpHeaderExtension           = "x-mcp-header"
 )
 
-// ---------------------------------------------------------------------------
-// Shared helpers (used by both client and server)
-// ---------------------------------------------------------------------------
 
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
@@ -121,10 +118,6 @@ func unmarshalPrimitive(raw json.RawMessage) any {
 		return nil
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Client-side helpers
-// ---------------------------------------------------------------------------
 
 // setStandardHeaders populates standard MCP headers.
 // It requires the protocol version header to be set.
@@ -278,10 +271,6 @@ func validateHeaderName(name string) error {
 	}
 	return nil
 }
-
-// ---------------------------------------------------------------------------
-// Server-side helpers
-// ---------------------------------------------------------------------------
 
 func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) error {
 	protocolVersion := header.Get(protocolVersionHeader)
