@@ -1915,9 +1915,9 @@ func TestStreamableGET(t *testing.T) {
 	}
 }
 
-// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method and
-// Mcp-Name header validation through the full HTTP handler, as specified
-// in SEP-2243.
+// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method,
+// Mcp-Name, and Mcp-Param header validation through the full HTTP handler,
+// as specified in SEP-2243.
 func TestStreamableMcpHeaderValidation(t *testing.T) {
 	// Temporarily register the future version so the handler accepts it.
 	orig := supportedProtocolVersions
@@ -1927,6 +1927,25 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
 		&Tool{Name: "my-tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
 		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
@@ -2018,6 +2037,50 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"us-west1"},
+			},
+			messages: []jsonrpc.Message{req(7, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+			})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"eu-central1"},
+			},
+			messages: []jsonrpc.Message{req(8, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "header mismatch",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"execute_sql"},
+			},
+			messages: []jsonrpc.Message{req(9, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "missing",
 		},
 	})
 }
@@ -2251,115 +2314,6 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
 		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
 	}
-}
-
-// TestStreamableParamHeadersServerValidation verifies that the server
-// validates Mcp-Param-* headers against the body for tools with
-// x-mcp-header annotations.
-func TestStreamableParamHeadersServerValidation(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
-	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
-	server.AddTool(
-		&Tool{
-			Name: "execute_sql",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"region": map[string]any{
-						"type":         "string",
-						"x-mcp-header": "Region",
-					},
-					"query": map[string]any{
-						"type": "string",
-					},
-				},
-			},
-		},
-		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
-			return &CallToolResult{}, nil
-		})
-
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
-	defer handler.closeAll()
-
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
-	initResp := resp(1, &InitializeResult{
-		Capabilities: &ServerCapabilities{
-			Logging: &LoggingCapabilities{},
-			Tools:   &ToolCapabilities{ListChanged: true},
-		},
-		ProtocolVersion: minVersionForStandardHeaders,
-		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
-	}, nil)
-
-	testStreamableHandler(t, handler, []streamableRequest{
-		{
-			method:         "POST",
-			messages:       []jsonrpc.Message{initReq},
-			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{initResp},
-			wantSessionID:  true,
-		},
-		{
-			method: "POST",
-			headers: http.Header{
-				protocolVersionHeader: {minVersionForStandardHeaders},
-				methodHeader:          {notificationInitialized},
-			},
-			messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
-			wantStatusCode: http.StatusAccepted,
-		},
-		// Correct param header should succeed.
-		{
-			method: "POST",
-			headers: http.Header{
-				protocolVersionHeader:        {minVersionForStandardHeaders},
-				methodHeader:                 {"tools/call"},
-				nameHeader:                   {"execute_sql"},
-				paramHeaderPrefix + "Region": {"us-west1"},
-			},
-			messages: []jsonrpc.Message{req(2, "tools/call", &CallToolParams{
-				Name:      "execute_sql",
-				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
-			})},
-			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
-		},
-		// Mismatched param header value should fail.
-		{
-			method: "POST",
-			headers: http.Header{
-				protocolVersionHeader:        {minVersionForStandardHeaders},
-				methodHeader:                 {"tools/call"},
-				nameHeader:                   {"execute_sql"},
-				paramHeaderPrefix + "Region": {"eu-central1"},
-			},
-			messages: []jsonrpc.Message{req(3, "tools/call", &CallToolParams{
-				Name:      "execute_sql",
-				Arguments: map[string]any{"region": "us-west1"},
-			})},
-			wantStatusCode:     http.StatusBadRequest,
-			wantBodyContaining: "header mismatch",
-		},
-		// Missing param header when body has the argument should fail.
-		{
-			method: "POST",
-			headers: http.Header{
-				protocolVersionHeader: {minVersionForStandardHeaders},
-				methodHeader:          {"tools/call"},
-				nameHeader:            {"execute_sql"},
-			},
-			messages: []jsonrpc.Message{req(4, "tools/call", &CallToolParams{
-				Name:      "execute_sql",
-				Arguments: map[string]any{"region": "us-west1"},
-			})},
-			wantStatusCode:     http.StatusBadRequest,
-			wantBodyContaining: "missing",
-		},
-	})
 }
 
 // TestStreamableFilterValidToolsIntegration verifies that invalid tools
