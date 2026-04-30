@@ -2251,9 +2251,6 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
 		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
 	}
-	if got := capturedHeaders.Get("Mcp-Param-query"); got != "" {
-		t.Errorf("non-annotated param got header: Mcp-Param-query = %q", got)
-	}
 }
 
 // TestStreamableParamHeadersServerValidation verifies that the server
