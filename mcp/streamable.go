@@ -235,7 +235,7 @@ func (h *StreamableHTTPHandler) closeAll() {
 // disablelocalhostprotection is a compatibility parameter that allows to disable
 // DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
 // See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.6.0 version of the SDK.
+// The option will be removed in the 1.8.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
 // enableoriginverification is a compatibility parameter that restores the
