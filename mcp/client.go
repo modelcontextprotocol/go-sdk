@@ -160,6 +160,12 @@ type ClientOptions struct {
 	KeepAlive time.Duration
 }
 
+// toolContextKeyType is the context key type for passing tool definitions
+// from CallTool to the transport layer.
+type toolContextKeyType struct{}
+
+var toolContextKey = toolContextKeyType{}
+
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
 func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState, onClose func()) *ClientSession {
@@ -318,6 +324,13 @@ type ClientSession struct {
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
+
+	// toolCacheMu guards toolCache.
+	toolCacheMu sync.RWMutex
+	// toolCache stores tool definitions keyed by name.
+	// It is used to look up x-mcp-header annotations when
+	// constructing Mcp-Param-* headers for tools/call requests.
+	toolCache map[string]*Tool
 }
 
 type clientSessionState struct {
@@ -361,6 +374,23 @@ func (cs *ClientSession) Close() error {
 // Generally, clients should be responsible for closing the connection.
 func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
+}
+
+func (cs *ClientSession) cacheTools(tools []*Tool) {
+	cs.toolCacheMu.Lock()
+	defer cs.toolCacheMu.Unlock()
+	if cs.toolCache == nil {
+		cs.toolCache = make(map[string]*Tool, len(tools))
+	}
+	for _, tool := range tools {
+		cs.toolCache[tool.Name] = tool
+	}
+}
+
+func (cs *ClientSession) getCachedTool(name string) *Tool {
+	cs.toolCacheMu.RLock()
+	defer cs.toolCacheMu.RUnlock()
+	return cs.toolCache[name]
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -981,7 +1011,13 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	return handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	result.Tools = filterValidTools(result.Tools)
+	cs.cacheTools(result.Tools)
+	return result, nil
 }
 
 // CallTool calls the tool with the given parameters.
@@ -994,6 +1030,9 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if params.Arguments == nil {
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
+	}
+	if tool := cs.getCachedTool(params.Name); tool != nil {
+		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }

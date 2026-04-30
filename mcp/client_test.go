@@ -440,6 +440,80 @@ func TestClientCapabilities(t *testing.T) {
 	}
 }
 
+func TestToolCache(t *testing.T) {
+	tool1 := &Tool{Name: "tool1", Description: "first"}
+	tool2 := &Tool{Name: "tool2", Description: "second"}
+	tool1Updated := &Tool{Name: "tool1", Description: "updated"}
+
+	testCases := []struct {
+		name         string
+		cacheBatches [][]*Tool
+		lookup       string
+		want         *Tool
+	}{
+		{
+			name:   "empty cache",
+			lookup: "tool1",
+			want:   nil,
+		},
+		{
+			name:         "single tool found",
+			cacheBatches: [][]*Tool{{tool1}},
+			lookup:       "tool1",
+			want:         tool1,
+		},
+		{
+			name:         "unknown tool",
+			cacheBatches: [][]*Tool{{tool1}},
+			lookup:       "nonexistent",
+			want:         nil,
+		},
+		{
+			name:         "multiple tools single batch",
+			cacheBatches: [][]*Tool{{tool1, tool2}},
+			lookup:       "tool2",
+			want:         tool2,
+		},
+		{
+			name:         "additive first tool retained",
+			cacheBatches: [][]*Tool{{tool1}, {tool2}},
+			lookup:       "tool1",
+			want:         tool1,
+		},
+		{
+			name:         "additive second tool added",
+			cacheBatches: [][]*Tool{{tool1}, {tool2}},
+			lookup:       "tool2",
+			want:         tool2,
+		},
+		{
+			name:         "overwrite existing entry",
+			cacheBatches: [][]*Tool{{tool1}, {tool1Updated}},
+			lookup:       "tool1",
+			want:         tool1Updated,
+		},
+		{
+			name:         "empty batch no-op",
+			cacheBatches: [][]*Tool{{}},
+			lookup:       "tool1",
+			want:         nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := &ClientSession{}
+			for _, batch := range tc.cacheBatches {
+				cs.cacheTools(batch)
+			}
+			got := cs.getCachedTool(tc.lookup)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("getCachedTool(%q) mismatch (-want +got):\n%s", tc.lookup, diff)
+			}
+		})
+	}
+}
+
 func TestClientCapabilitiesOverWire(t *testing.T) {
 	testCases := []struct {
 		name             string
