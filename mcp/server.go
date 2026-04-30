@@ -437,6 +437,9 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err != nil {
 			return zero, err
 		}
+		if internalSchema == nil {
+			return zero, fmt.Errorf("schema is nil for type %v", rt)
+		}
 		*sfield = internalSchema
 
 		resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -464,6 +467,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err := remarshal(*sfield, &internalSchema); err != nil {
 			return zero, err
 		}
+	}
+
+	if internalSchema == nil {
+		return zero, fmt.Errorf("schema is nil for type %v", rt)
 	}
 
 	resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
