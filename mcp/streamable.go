@@ -2236,8 +2236,10 @@ func (c *streamableClientConn) Close() error {
 			} else {
 				if err := c.setMCPHeaders(req); err != nil {
 					c.closeErr = err
-				} else if _, err := c.client.Do(req); err != nil {
+				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err
+				} else {
+					resp.Body.Close()
 				}
 			}
 		}
