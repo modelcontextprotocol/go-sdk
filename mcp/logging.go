@@ -13,6 +13,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Logging levels.
@@ -83,9 +85,9 @@ type LoggingHandler struct {
 	// Ensures that the buffer reset is atomic with the write (see Handle).
 	// A pointer so that clones share the mutex. See
 	// https://github.com/golang/example/blob/master/slog-handler-guide/README.md#getting-the-mutex-right.
-	mu              *sync.Mutex
-	lastMessageSent time.Time // for rate-limiting
-	buf             *bytes.Buffer
+	mu      *sync.Mutex
+	limiter *rate.Limiter // for rate-limiting
+	buf     *bytes.Buffer
 	handler         slog.Handler
 }
 
@@ -118,6 +120,9 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 	}
 	if opts != nil {
 		lh.opts = *opts
+		if opts.MinInterval > 0 {
+			lh.limiter = rate.NewLimiter(rate.Limit(1.0/opts.MinInterval.Seconds()), 1)
+		}
 	}
 	return lh
 }
@@ -157,11 +162,7 @@ func (h *LoggingHandler) Handle(ctx context.Context, r slog.Record) error {
 
 func (h *LoggingHandler) handle(ctx context.Context, r slog.Record) error {
 	// Observe the rate limit.
-	// TODO(jba): use golang.org/x/time/rate.
-	h.mu.Lock()
-	skip := time.Since(h.lastMessageSent) < h.opts.MinInterval
-	h.mu.Unlock()
-	if skip {
+	if h.limiter != nil && !h.limiter.Allow() {
 		return nil
 	}
 
@@ -183,10 +184,6 @@ func (h *LoggingHandler) handle(ctx context.Context, r slog.Record) error {
 	if err != nil {
 		return err
 	}
-
-	h.mu.Lock()
-	h.lastMessageSent = time.Now()
-	h.mu.Unlock()
 
 	params := &LoggingMessageParams{
 		Logger: h.opts.LoggerName,
