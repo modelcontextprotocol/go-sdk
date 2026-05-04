@@ -22,6 +22,11 @@
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.
 
+- `customresnotfounderrcode` added. If set to `1`, `ResourceNotFoundError` will
+  use the custom error code `-32002` instead of the standard `-32602` (Invalid
+  Params), restoring the previous behavior. The default behavior was changed to
+  align with SEP-2164 and the JSON-RPC specification.
+
 - `seterroroverwrite` added. If set to `1`, `SetError` will always overwrite
   `Content` with the error text, restoring the previous behavior. The default
   behavior was changed to preserve existing `Content` if it has already been
