@@ -37,12 +37,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-)
-
-const (
-	protocolVersionHeader = "Mcp-Protocol-Version"
-	sessionIDHeader       = "Mcp-Session-Id"
-	lastEventIDHeader     = "Last-Event-ID"
+	"golang.org/x/oauth2"
 )
 
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
@@ -241,7 +236,7 @@ func (h *StreamableHTTPHandler) closeAll() {
 // disablelocalhostprotection is a compatibility parameter that allows to disable
 // DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
 // See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.6.0 version of the SDK.
+// The option will be removed in the 1.8.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
 // enableoriginverification is a compatibility parameter that restores the
@@ -1191,6 +1186,24 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
+	if !isBatch && len(incoming) == 1 {
+		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
+			resp := &jsonrpc.Response{
+				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
+			}
+			if jreq, ok := incoming[0].(*jsonrpc.Request); ok {
+				resp.ID = jreq.ID
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+				w.Write(data)
+			}
+			return
+		}
+	}
+
 	// The prime and close events were added in protocol version 2025-11-25 (SEP-1699).
 	// Use the version from InitializeParams if this is an initialize request,
 	// otherwise use the protocol version header.
@@ -1791,12 +1804,16 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
+
 		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
+		// Keep this after the setMCPHeaders call to ensure that the
+		// protocol version header is set.
+		setStandardHeaders(req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
@@ -1919,9 +1936,20 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 		if ts != nil {
 			token, err := ts.Token()
 			if err != nil {
-				return err
-			}
-			if token != nil {
+				// If the error is an invalid_grant oauth2.RetrieveError it indicates
+				// that the token source doesn't have valid authorization for the token
+				// endpoint, per RFC 6749 section 5.2. For example, the refresh token
+				// may be expired or invalid.
+				//
+				// In that case, ignore the error, skip setting the Authorization
+				// header, and proceed with the request. Callers that support
+				// authorization flows get a 401/403 response and trigger the
+				// Authorize() flow to refresh their token.
+				var retrieveErr *oauth2.RetrieveError
+				if !errors.As(err, &retrieveErr) || retrieveErr.ErrorCode != "invalid_grant" {
+					return err
+				}
+			} else if token != nil {
 				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 			}
 		}
@@ -1932,6 +1960,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
+
 	return nil
 }
 
@@ -2220,8 +2249,10 @@ func (c *streamableClientConn) Close() error {
 			} else {
 				if err := c.setMCPHeaders(req); err != nil {
 					c.closeErr = err
-				} else if _, err := c.client.Do(req); err != nil {
+				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err
+				} else {
+					resp.Body.Close()
 				}
 			}
 		}

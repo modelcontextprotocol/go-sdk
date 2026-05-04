@@ -1781,7 +1781,7 @@ func TestSessionHijackingPrevention(t *testing.T) {
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+userID)
 		if sessionID != "" {
-			req.Header.Set("Mcp-Session-Id", sessionID)
+			req.Header.Set(sessionIDHeader, sessionID)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1802,7 +1802,7 @@ func TestSessionHijackingPrevention(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("initialize failed with status %d: %s", resp.StatusCode, body)
 	}
-	sessionID := resp.Header.Get("Mcp-Session-Id")
+	sessionID := resp.Header.Get(sessionIDHeader)
 	if sessionID == "" {
 		t.Fatal("no session ID in response")
 	}
@@ -1913,6 +1913,261 @@ func TestStreamableGET(t *testing.T) {
 	if got, want := resp.StatusCode, http.StatusNoContent; got != want {
 		t.Errorf("DELETE with session ID: got status %d, want %d", got, want)
 	}
+}
+
+// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method and
+// Mcp-Name header validation through the full HTTP handler, as specified
+// in SEP-2243.
+func TestStreamableMcpHeaderValidation(t *testing.T) {
+	// Temporarily register the future version so the handler accepts it.
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{Name: "my-tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
+	initResp := resp(1, &InitializeResult{
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
+		},
+		ProtocolVersion: minVersionForStandardHeaders,
+		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
+	}, nil)
+
+	initialize := streamableRequest{
+		method:         "POST",
+		messages:       []jsonrpc.Message{initReq},
+		wantStatusCode: http.StatusOK,
+		wantMessages:   []jsonrpc.Message{initResp},
+		wantSessionID:  true,
+	}
+	initialized := streamableRequest{
+		method: "POST",
+		headers: http.Header{
+			protocolVersionHeader: {minVersionForStandardHeaders},
+			methodHeader:          {notificationInitialized},
+		},
+		messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
+		wantStatusCode: http.StatusAccepted,
+	}
+
+	testStreamableHandler(t, handler, []streamableRequest{
+		initialize,
+		initialized,
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"my-tool"},
+			},
+			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"prompts/get"},
+				nameHeader:            {"my-tool"},
+			},
+			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "Mcp-Method header value",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"wrong-tool"},
+			},
+			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "Mcp-Name header value",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"TOOLS/CALL"},
+				nameHeader:            {"my-tool"},
+			},
+			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "Mcp-Method header value",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"my-tool"},
+			},
+			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+		},
+	})
+}
+
+// TestStreamableMcpHeaderValidationErrorFormat verifies that header
+// validation errors return a JSON-RPC error with code -32001 and
+// Content-Type application/json, per SEP-2243.
+func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{Name: "my-tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	// Use the MCP client with a custom RoundTripper to inject a bad header.
+	var toolCallResp *http.Response
+	var toolCallRespBody []byte
+
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			var originalMethodHeader string
+			if req.Header.Get(methodHeader) == "tools/call" {
+				originalMethodHeader = req.Header.Get(methodHeader)
+				req.Header.Set(methodHeader, "wrong-method")
+			}
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && originalMethodHeader == "tools/call" {
+				toolCallResp = resp
+				toolCallRespBody, _ = io.ReadAll(resp.Body)
+			}
+			return resp, err
+		}),
+	}
+
+	clientTransport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	_, err = session.CallTool(ctx, &CallToolParams{Name: "my-tool"})
+	// We expect an error because the server should reject it.
+	if err == nil {
+		t.Error("CallTool succeeded unexpectedly")
+	}
+
+	if toolCallResp == nil {
+		t.Fatal("no response captured")
+	}
+
+	// Verify HTTP status code.
+	if toolCallResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", toolCallResp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Verify Content-Type.
+	if baseMediaType(toolCallResp.Header.Get("Content-Type")) != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", baseMediaType(toolCallResp.Header.Get("Content-Type")), "application/json")
+	}
+
+	// Verify JSON-RPC error body contains error code -32001.
+	msg, err := jsonrpc2.DecodeMessage(toolCallRespBody)
+	if err != nil {
+		t.Fatalf("failed to decode message: %v", err)
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", msg)
+	}
+	var wireErr *jsonrpc2.WireError
+	if !errors.As(resp.Error, &wireErr) {
+		t.Fatalf("expected *jsonrpc2.WireError, got %T", resp.Error)
+	}
+	if wireErr.Code != -32001 {
+		t.Errorf("wireErr.Code = %d, want -32001", wireErr.Code)
+	}
+	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
+		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
+	}
+}
+
+// TestStreamableMcpHeaderVersionGating verifies that header validation
+// is skipped for protocol versions older than minVersionForStandardHeaders.
+func TestStreamableMcpHeaderVersionGating(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{Name: "my-tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20251125})
+	initResp := resp(1, &InitializeResult{
+		Capabilities: &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+			Tools:   &ToolCapabilities{ListChanged: true},
+		},
+		ProtocolVersion: protocolVersion20251125,
+		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
+	}, nil)
+
+	testStreamableHandler(t, handler, []streamableRequest{
+		{
+			method:         "POST",
+			messages:       []jsonrpc.Message{initReq},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{initResp},
+			wantSessionID:  true,
+		},
+		{
+			method:         "POST",
+			headers:        http.Header{protocolVersionHeader: {protocolVersion20251125}},
+			messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
+			wantStatusCode: http.StatusAccepted,
+		},
+		// Requests with deliberately wrong MCP headers should still succeed
+		// because the protocol version is too old for validation.
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {protocolVersion20251125},
+				methodHeader:          {"wrong-method"},
+				nameHeader:            {"wrong-name"},
+			},
+			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+		},
+	})
 }
 
 // TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
@@ -2082,7 +2337,7 @@ func TestStreamableClientContextPropagation(t *testing.T) {
 		switch req.Method {
 		case "POST":
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Mcp-Session-Id", "test-session")
+			w.Header().Set(sessionIDHeader, "test-session")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}`))
 		case "GET":
