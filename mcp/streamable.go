@@ -37,6 +37,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2"
 )
 
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
@@ -1824,6 +1825,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
+
 		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
@@ -1955,9 +1957,20 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 		if ts != nil {
 			token, err := ts.Token()
 			if err != nil {
-				return err
-			}
-			if token != nil {
+				// If the error is an invalid_grant oauth2.RetrieveError it indicates
+				// that the token source doesn't have valid authorization for the token
+				// endpoint, per RFC 6749 section 5.2. For example, the refresh token
+				// may be expired or invalid.
+				//
+				// In that case, ignore the error, skip setting the Authorization
+				// header, and proceed with the request. Callers that support
+				// authorization flows get a 401/403 response and trigger the
+				// Authorize() flow to refresh their token.
+				var retrieveErr *oauth2.RetrieveError
+				if !errors.As(err, &retrieveErr) || retrieveErr.ErrorCode != "invalid_grant" {
+					return err
+				}
+			} else if token != nil {
 				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 			}
 		}
@@ -2257,8 +2270,10 @@ func (c *streamableClientConn) Close() error {
 			} else {
 				if err := c.setMCPHeaders(req); err != nil {
 					c.closeErr = err
-				} else if _, err := c.client.Do(req); err != nil {
+				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err
+				} else {
+					resp.Body.Close()
 				}
 			}
 		}
