@@ -36,6 +36,7 @@ const (
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
 	latestProtocolVersion   = protocolVersion20251125
+	protocolVersion20260630 = "2026-06-30"
 	protocolVersion20251125 = "2025-11-25"
 	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
@@ -343,6 +344,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
+	// in the request body, or that required headers are missing or malformed.
+	CodeHeaderMismatch = -32001
 	// CodeResourceNotFound indicates that a requested resource could not be found.
 	CodeResourceNotFound = -32002
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation

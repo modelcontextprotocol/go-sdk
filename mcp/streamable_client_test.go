@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,7 +71,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	key := streamableRequestKey{
 		httpMethod:  req.Method,
 		sessionID:   req.Header.Get(sessionIDHeader),
-		lastEventID: req.Header.Get("Last-Event-ID"), // TODO: extract this to a constant, like sessionIDHeader
+		lastEventID: req.Header.Get(lastEventIDHeader),
 	}
 	var jsonrpcReq *jsonrpc.Request
 	if req.Method == http.MethodPost {
@@ -1154,5 +1155,60 @@ func TestTokenInfo(t *testing.T) {
 	}
 	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
 		t.Errorf("got %q, want %q", g, w)
+	}
+}
+
+// errTestAuthorizeFailed is a sentinel error returned by
+// retrieveErrorOAuthHandler.Authorize().
+var errTestAuthorizeFailed = errors.New("authorize intentionally failed for test")
+
+// retrieveErrorOAuthHandler is a mock OAuthHandler that always returns
+// an oauth2.RetrieveError from its TokenSource's Token() method.
+type retrieveErrorOAuthHandler struct{}
+
+func (h *retrieveErrorOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return h, nil
+}
+
+func (h *retrieveErrorOAuthHandler) Token() (*oauth2.Token, error) {
+	return nil, &oauth2.RetrieveError{
+		Response:  &http.Response{StatusCode: http.StatusBadRequest},
+		Body:      []byte("test retrieve error"),
+		ErrorCode: "invalid_grant",
+	}
+}
+
+func (h *retrieveErrorOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	return errTestAuthorizeFailed
+}
+
+// TestStreamableClientOAuth_RetrieveError verifies that an invalid_grant RetrieveError
+// from the OAuth token source correctly skips sending Authorization header and relies on
+// the server's 401 response to trigger the Authorize fallback flow.
+func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
+	ctx := context.Background()
+	oauthHandler := &retrieveErrorOAuthHandler{}
+
+	// Mock MCP server returns 401 Unauthorized to simulate a server rejecting
+	// the request that omitted the Authorization header.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+
+	// Attempt to connect. The Connect call will trigger the initialization request,
+	// which will fail to retrieve the token and proceed without auth header, receive 401,
+	// and invoke Authorize().
+	_, err := client.Connect(ctx, transport, nil)
+
+	// Expect the connection to fail with the sentinel error, not the RetrieveError.
+	if !errors.Is(err, errTestAuthorizeFailed) {
+		t.Fatalf("client.Connect() error = %v, want %v", err, errTestAuthorizeFailed)
 	}
 }
