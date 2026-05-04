@@ -9,7 +9,7 @@ in `2026-06-30` version. It focuses on the following SEPs:
 
 These proposals together define a stateless and sessionless protocol that is largely
 incompatible with its previous version. This poses challenges given our commitment to
-not introducing backwards incompatible changes to the SDK.
+not introduce backwards incompatible API changes to the SDK.
 
 ## Design decisions
 
@@ -22,11 +22,13 @@ support - only servers that will enable it will be able to support the new versi
 This will simplify the implementation and provide opt-in mechanism for the new behavior.
 Such opt-in is needed, because it's not possible to automatically enable the new protocol
 version for all SDK users, especially if they are using functionality that is removed
-in the new version. `Stateless` mode already disallows many features that were removed.
+in it. `Stateless` mode already disallows many such features that are removed.
 Any backwards incompatible behavior changes will be guarded by `MCPGODEBUG` flags
 to give developers more time to adapt.
 
-Note: For v2, it would make sense to rename `ClientSession` to avoid confusion.
+> [!NOTE]
+> Deprecated APIs:
+> For v2, it would make sense to rename `ClientSession` to avoid confusion.
 `ServerSession` should be removed.
 
 ### Keeping the session-based APIs
@@ -53,8 +55,11 @@ we need adjust the way we establish the protocol version and the capabilities of
 #### Protocol version
 
 For the server side, the protocol version will come in each request. It will be used to populate
-`ServerSession.state.InitializeParams` and used for the call duration. Initialize request with
-`2026-06-30` protocol version specified will be rejected.
+`ServerSession.state.InitializeParams` and used for the call duration. An `initialize` request with
+`2026-06-30` protocol version specified will be rejected with `Method not found` (-32601), since the
+initialization handshake does not exist in the new protocol version.
+
+TODO: Consider whether servers should be allowed to limit the protocol versions they advertise as supported.
 
 For client side, the protocol version must be provided in each request. We cannot depend
 on the initialization for provide a negotiated version. Instead, the server returns
@@ -82,7 +87,7 @@ servers. See [Server Capabilities](#server-capabilities) for details.
 #### Server Capabilities
 
 SEP-2575 introduces `server/discover` as a replacement for capability exchange during initialization.
-It returns `supportedVersions`, `capabilities`, `serverInfo`,
+It will return `supportedVersions`, `capabilities`, `serverInfo`,
 and `instructions` — effectively the same information that was in `InitializeResult`, plus
 the list of supported protocol versions.
 
@@ -108,12 +113,25 @@ The handler will be registered with the `missingParamsOK` flag and will be allow
 pre-initialization.
 It will be implemented on `Server` (not `ServerSession`) since it is not session-scoped.
 The handler will use `Server.capabilities()` and `Server.impl` to construct the response.
+The `2026-06-30` protocol version will only be returned as supported if the server runs in
+the `Stateless` mode.
 
-On the client side, `server/discover` will be called during connection establishment to determine the protocol version to be used.
-If the server returns `Method not found`, the client knows the server is pre-`2026-06-30` and should
-fall back to the initialization handshake.
-The capabilities and protocol version from the `server/discover` result will be saved tp `ClientSession.state.InitializeResult`.
-This ensures that existing client code that reads `ClientSession.InitializeResult` will continue to work without changes.
+On the client side, `server/discover` will be called during connection establishment to determine
+the protocol version to be used. The client will send `server/discover` with `2026-06-30` as the
+protocol version in both the `MCP-Protocol-Version` header and the `_meta` payload. The full
+per-request `_meta` fields (`clientInfo`, `clientCapabilities`) will also be included, using the
+values from `ClientOptions`. This means the transport's `setMCPHeaders` must be able to set the
+`MCP-Protocol-Version` header before `initializedResult` is populated.
+
+If the server returns `Method not found` or `UnsupportedProtocolVersionError`, the client knows
+the server is pre-`2026-06-30` and should fall back to the initialization handshake.
+This will result in an additional round-trip for older servers.
+
+The capabilities and protocol version from the `server/discover` result will be saved to
+`ClientSession.state.InitializeResult`, with `ProtocolVersion` set to the latest version from
+`DiscoverResult.SupportedVersions` that the client also supports.
+This ensures that existing client code that reads `ClientSession.InitializeResult` will continue
+to work without changes.
 
 > [!WARNING]
 > Deprecated APIs:
@@ -131,7 +149,7 @@ SEP-2575 moves client capabilities from session-level negotiation to per-request
 On the server side, the stateless session handler will extract these fields from each incoming
 request's `_meta` and populate `ServerSession.state.InitializeParams` with the values for the
 duration of the call. This ensures that existing server code that reads `ServerSession.InitializeParams()`
-continues to work without changes. The extraction will happen in the `ServerSession.handle()` method,
+will continue to work without changes. The extraction will happen in the `ServerSession.handle()` method,
 before dispatching to the registered handler.
 If a server receives a request with missing `_meta` fields, it will return `INVALID_PARAMS`
 (-32602) when operating with `>= 2026-06-30`.
@@ -158,12 +176,31 @@ The standalone SSE stream was used for two purposes:
 1. Server-to-client notifications outside the context of a request (e.g., `notifications/tools/list_changed`)
 2. Server-to-client requests (e.g., `ping`, sampling, elicitation)
 
-Purpose (1) is replaced by a new `subscriptions/listen` RPC method.
-Purpose (2) is replaced by MRTR (see [Changed paradigm for server to client communication](#changed-paradigm-for-server-to-client-communication)).
+Purpose (1) will be replaced by a new `subscriptions/listen` RPC method.
+Purpose (2) will be replaced by MRTR ([SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)).
 
 On the client side, the streamable client transport currently opens a GET SSE stream after
 initialization. For `>= 2026-06-30` protocol versions, this step will be skipped. The client
-will instead use `subscriptions/listen` if it needs to receive server-initiated notifications.
+will instead send `subscriptions/listen` during `Client.Connect()` if any of the following
+`ClientOptions` handlers are configured:
+
+* `ToolListChangedHandler` → subscribes to `toolsListChanged`
+* `PromptListChangedHandler` → subscribes to `promptsListChanged`
+* `ResourceListChangedHandler` → subscribes to `resourcesListChanged`
+* `LoggingMessageHandler` → subscribes with `logLevel`
+
+If none of these handlers are set, no `subscriptions/listen` call will be made during `Connect()`.
+Presence of `ResourceUpdateHandler` will not automatically trigger `subscriptions/listen` during
+`Connect()`, as Resource notifications require URIs to be specified. Instead, each call to
+`ClientSession.Subscribe()` will start a new `subscriptions/listen` stream for the specified
+Resource. Calling `ClientSession.Unsubscribe()` will cancel that stream.
+On the server side, the server will return `Method not found` (-32601) for `resource/subscribe` and
+`resource/unsubscribe` when `>= 2026-06-30`.
+
+> [!WARNING]
+> Deprecated APIs:
+> - `ClientSession.Subscribe`
+> - `ClientSession.Unsubscribe`
 
 ### Ping
 
@@ -190,20 +227,14 @@ For `>= 2026-06-30`:
   For the new protocol version, `Server.Connect()` should skip `startKeepalive` when operating
   in stateless mode.
 
-Removal will be gated by MCPGODEBUG flag `mcpping` defaulting to `mcpping=enabled` (keep the
-method) initially, switching to `mcpping=disabled` to remove it. The keepalive graceful
-degradation (`ErrMethodNotFound` → silently stop) means that even without the flag, clients
-connecting to new servers will work correctly.
-
 > [!WARNING]
 > Deprecated APIs:
 > - `ClientSession.Ping`
 > - `ServerSession.Ping`
 
-
 ### SDK connection establishment flow changes
 
-#### Original flow
+#### Original flow (HTTP)
 
 ```mermaid
 sequenceDiagram
@@ -214,12 +245,12 @@ sequenceDiagram
     c->>s: initialize {"protocolVersion": "2025-11-25"}
     s->>c: initialized
     c->>s: notifications/initialized
-    c->>s: hanging standalone SSE stream
+    c->>s: hanging standalone SSE stream (GET)
     note over c: Client.Connect() finished
     note over c,s: Operation
 ```
 
-#### Updated flow
+#### Updated flow (HTTP)
 
 ```mermaid
 sequenceDiagram
@@ -227,22 +258,58 @@ sequenceDiagram
     participant s as Server SDK
 
     Note over c: Client.Connect()
-    c->>s: server/discover
+    c->>s: server/discover (MCP-Protocol-Version: 2026-06-30)
     
     alt 2026-06-30 version supported
-        s->>c: {supported: ["2026-06-30"]}
+        s->>c: {supportedVersions, capabilities, serverInfo, instructions}
         opt if notification handlers configured
-            c->>s: hanging subscribe/listen
+            c->>s: subscriptions/listen (POST, hanging SSE)
+            s->>c: notifications/subscriptions/acknowledged
         end
         note over c: Client.Connect() finished
         note over c,s: Operation using 2026-06-30 version
     else 2026-06-30 version not supported
-        s->>c: failed or "2026-06-30" not in supported list
+        s->>c: Method not found / UnsupportedProtocolVersionError
         note over c,s: fall back to legacy flow
         c->>s: initialize {"protocolVersion": "2025-11-25"}
         s->>c: initialized
         c->>s: notifications/initialized
-        c->>s: hanging standalone SSE stream
+        c->>s: hanging standalone SSE stream (GET)
         note over c: Client.Connect() finished
         note over c,s: Operation using 2025-11-25 version
     end
+```
+
+#### Updated flow (STDIO)
+
+STDIO follows the same logic as HTTP but without HTTP-specific mechanisms (headers, SSE streams).
+The protocol version is conveyed only via the `_meta` field. The SEP recommends using
+`server/discover` for STDIO to determine the server's version, since there is no per-request
+HTTP error status to detect version mismatches.
+
+```mermaid
+sequenceDiagram
+    participant c as Client SDK
+    participant s as Server SDK
+
+    Note over c: Client.Connect()
+    c->>s: server/discover {_meta: {protocolVersion: "2026-06-30"}}
+    
+    alt 2026-06-30 version supported
+        s->>c: {supportedVersions, capabilities, serverInfo, instructions}
+        opt if notification handlers configured
+            c->>s: subscriptions/listen
+            s->>c: notifications/subscriptions/acknowledged
+        end
+        note over c: Client.Connect() finished
+        note over c,s: Operation using 2026-06-30 version
+    else 2026-06-30 version not supported
+        s->>c: Method not found / UnsupportedProtocolVersionError
+        note over c,s: fall back to legacy flow
+        c->>s: initialize {"protocolVersion": "2025-11-25"}
+        s->>c: initialized
+        c->>s: notifications/initialized
+        note over c: Client.Connect() finished
+        note over c,s: Operation using 2025-11-25 version
+    end
+```
