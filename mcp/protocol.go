@@ -1346,6 +1346,13 @@ type Tool struct {
 	Icons []Icon `json:"icons,omitempty"`
 }
 
+// hintomitempty is a compatibility parameter that restores the pre-1.7.0
+// behavior of [ToolAnnotations] JSON marshaling, where false-valued bare bool
+// fields (ReadOnlyHint, IdempotentHint) were omitted from the output.
+// See the documentation for the mcpgodebug package for instructions on how to
+// enable it.
+var hintomitempty = mcpgodebug.Value("hintomitempty")
+
 // Additional properties describing a Tool to clients.
 //
 // NOTE: all properties in ToolAnnotations are hints. They are not
@@ -1381,6 +1388,31 @@ type ToolAnnotations struct {
 	ReadOnlyHint bool `json:"readOnlyHint"`
 	// A human-readable title for the tool.
 	Title string `json:"title,omitempty"`
+}
+
+// MarshalJSON implements [json.Marshaler] for ToolAnnotations.
+//
+// To restore the previous behavior where false-valued ReadOnlyHint and
+// IdempotentHint were omitted, set MCPGODEBUG=hintomitempty=1.
+func (t ToolAnnotations) MarshalJSON() ([]byte, error) {
+	if hintomitempty == "1" {
+		type compat struct {
+			DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+			IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+			OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+			ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+			Title           string `json:"title,omitempty"`
+		}
+		return json.Marshal(compat{
+			DestructiveHint: t.DestructiveHint,
+			IdempotentHint:  t.IdempotentHint,
+			OpenWorldHint:   t.OpenWorldHint,
+			ReadOnlyHint:    t.ReadOnlyHint,
+			Title:           t.Title,
+		})
+	}
+	type nomethod ToolAnnotations
+	return json.Marshal(nomethod(t))
 }
 
 type ToolListChangedParams struct {
