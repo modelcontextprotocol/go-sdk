@@ -26,7 +26,6 @@ const (
 	nameHeader                   = "Mcp-Name"
 	paramHeaderPrefix            = "Mcp-Param-"
 	minVersionForStandardHeaders = protocolVersion20260630
-	mcpHeaderExtension           = "x-mcp-header"
 	base64Prefix                 = "=?base64?"
 	base64Suffix                 = "?="
 )
