@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"slices"
@@ -601,6 +602,44 @@ func TestAddToolNameValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAddToolNilSchema(t *testing.T) {
+	var nilSchema *jsonschema.Schema
+
+	panicMsg := func(f func()) string {
+		var msg string
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					msg = fmt.Sprintf("%v", r)
+				}
+			}()
+			f()
+		}()
+		return msg
+	}
+
+	// Call s.AddTool directly to exercise the typed-nil checks added to that method.
+	msg := panicMsg(func() {
+		s := NewServer(testImpl, nil)
+		s.AddTool(&Tool{Name: "T", InputSchema: nilSchema}, nil)
+	})
+	if msg == "" {
+		t.Error("typed nil InputSchema: expected panic")
+	} else if !strings.Contains(msg, "input schema is nil") {
+		t.Errorf("typed nil InputSchema: panic message %q does not contain %q", msg, "input schema is nil")
+	}
+
+	msg = panicMsg(func() {
+		s := NewServer(testImpl, nil)
+		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}, OutputSchema: nilSchema}, nil)
+	})
+	if msg == "" {
+		t.Error("typed nil OutputSchema: expected panic")
+	} else if !strings.Contains(msg, "output schema is nil") {
+		t.Errorf("typed nil OutputSchema: panic message %q does not contain %q", msg, "output schema is nil")
 	}
 }
 
