@@ -619,26 +619,36 @@ func TestAddToolNilSchema(t *testing.T) {
   	}
 
 	// Call s.AddTool directly to exercise the typed-nil checks added to that method.
-	msg := panicMsg(func() {
-		s := NewServer(testImpl, nil)
-		s.AddTool(&Tool{Name: "T", InputSchema: nilSchema}, nil)
-	})
-	if msg == "" {
-		t.Error("typed nil InputSchema: expected panic")
-	} else if !strings.Contains(msg, "input schema is nil") {
-		t.Errorf("typed nil InputSchema: panic message %q does not contain %q", msg, "input schema is nil")
+tests := []struct {
+		name        string
+		tool        *Tool
+		wantContain string
+	}{
+		{
+			name:        "typed nil InputSchema",
+			tool:        &Tool{Name: "T", InputSchema: nilSchema},
+			wantContain: "input schema is nil",
+		},
+		{
+			name:        "typed nil OutputSchema",
+			tool:        &Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}, OutputSchema: nilSchema},
+			wantContain: "output schema is nil",
+		},
 	}
-
-	msg = panicMsg(func() {
-		s := NewServer(testImpl, nil)
-		s.AddTool(&Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}, OutputSchema: nilSchema}, nil)
-	})
-	if msg == "" {
-		t.Error("typed nil OutputSchema: expected panic")
-	} else if !strings.Contains(msg, "output schema is nil") {
-		t.Errorf("typed nil OutputSchema: panic message %q does not contain %q", msg, "output schema is nil")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(testImpl, nil)
+			
+			msg := panicMsg(func() {
+				s.AddTool(tc.tool, nil)
+			})
+			if msg == "" {
+				t.Error("expected panic")
+			} else if !strings.Contains(msg, tc.wantContain) {
+				t.Errorf("panic message %q does not contain %q", msg, tc.wantContain)
+			}
+		})
 	}
-}
 
 type schema = jsonschema.Schema
 
