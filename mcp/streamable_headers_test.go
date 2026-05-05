@@ -5,12 +5,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -199,7 +201,7 @@ func TestSetStandardHeaders(t *testing.T) {
 				header.Set(protocolVersionHeader, tt.protocolVersion)
 			}
 
-			setStandardHeaders(header, tt.msg)
+			setStandardHeaders(context.Background(), header, tt.msg)
 
 			if got := header.Get(methodHeader); got != tt.wantMethodHeader {
 				t.Errorf("MethodHeader = %q, want %q", got, tt.wantMethodHeader)
@@ -698,11 +700,81 @@ func TestValidateToolParamHeaders(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "jsonschema.Schema valid x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"region": {
+							Type:  "string",
+							Extra: map[string]any{"x-mcp-header": "Region"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "jsonschema.Schema x-mcp-header on array type",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"items": {
+							Type:  "array",
+							Extra: map[string]any{"x-mcp-header": "Items"},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "jsonschema.Schema nested x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"config": {
+							Type: "object",
+							Properties: map[string]*jsonschema.Schema{
+								"region": {
+									Type:  "string",
+									Extra: map[string]any{"x-mcp-header": "Region"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "json.RawMessage valid x-mcp-header",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`),
+			},
+		},
+		{
+			name: "json.RawMessage x-mcp-header on object type",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"nested":{"type":"object","x-mcp-header":"Nested"}}}`),
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateToolParamHeaders(tt.tool)
+			err := validateParamHeaderAnnotations(tt.tool)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("validateToolParamHeaders() = nil, want error")
@@ -755,12 +827,37 @@ func TestFilterValidTools(t *testing.T) {
 		},
 	}
 
-	result := filterValidTools([]*Tool{valid, invalid, noAnnotation, nestedInvalid})
-	if len(result) != 2 {
-		t.Fatalf("filterValidTools returned %d tools, want 2", len(result))
+	validJsonSchema := &Tool{
+		Name: "valid-jsonschema",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"region": {
+					Type:  "string",
+					Extra: map[string]any{"x-mcp-header": "Region"},
+				},
+			},
+		},
 	}
-	if result[0].Name != "valid" || result[1].Name != "plain" {
-		t.Errorf("filterValidTools returned [%s, %s], want [valid, plain]", result[0].Name, result[1].Name)
+	invalidJsonSchema := &Tool{
+		Name: "invalid-jsonschema",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"items": {
+					Type:  "array",
+					Extra: map[string]any{"x-mcp-header": "Items"},
+				},
+			},
+		},
+	}
+
+	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedInvalid, validJsonSchema, invalidJsonSchema})
+	if len(result) != 3 {
+		t.Fatalf("filterValidTools returned %d tools, want 3", len(result))
+	}
+	if result[0].Name != "valid" || result[1].Name != "plain" || result[2].Name != "valid-jsonschema" {
+		t.Errorf("filterValidTools returned [%s, %s, %s], want [valid, plain, valid-jsonschema]", result[0].Name, result[1].Name, result[2].Name)
 	}
 }
 
@@ -884,13 +981,17 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 			header := http.Header{}
 			header.Set(protocolVersionHeader, minVersionForStandardHeaders)
 
+			ctx := context.Background()
+			if tt.tool != nil {
+				ctx = context.WithValue(ctx, toolContextKey, tt.tool)
+			}
+
 			msg := &jsonrpc.Request{
 				Method: "tools/call",
 				Params: mustMarshal(tt.params),
-				Extra:  tt.tool,
 			}
 
-			setStandardHeaders(header, msg)
+			setStandardHeaders(ctx, header, msg)
 
 			if got := header.Get(methodHeader); got != "tools/call" {
 				t.Errorf("MethodHeader = %q, want %q", got, "tools/call")
@@ -951,11 +1052,49 @@ func TestExtractToolParamHeaders(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "jsonschema.Schema with x-mcp-header in Extra",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"region": {
+							Type:  "string",
+							Extra: map[string]any{"x-mcp-header": "Region"},
+						},
+						"query": {Type: "string"},
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "json.RawMessage with x-mcp-header",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"query":{"type":"string"}}}`),
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "jsonschema.Schema without x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"query": {Type: "string"},
+					},
+				},
+			},
+			want: nil,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractToolParamHeaders(tt.tool)
+			got := extractParamHeaderAnnotations(tt.tool)
 			if tt.want == nil {
 				if got != nil {
 					t.Errorf("extractToolParamHeaders() = %v, want nil", got)
@@ -996,5 +1135,108 @@ func TestUnmarshalPrimitive(t *testing.T) {
 				t.Errorf("unmarshalPrimitive(%s) = %v (%T), want %v (%T)", tt.raw, got, got, tt.want, tt.want)
 			}
 		})
+	}
+}
+
+func TestEncodeHeaderValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  any
+		want   string
+		wantOK bool
+	}{
+		// Strings
+		{"plain ASCII", "us-west1", "us-west1", true},
+		{"empty string", "", "", true},
+		{"string with internal spaces", "us west 1", "us west 1", true},
+		{"string with leading space", " us-west1", "=?base64?IHVzLXdlc3Qx?=", true},
+		{"string with trailing space", "us-west1 ", "=?base64?dXMtd2VzdDEg?=", true},
+		{"string with both spaces", " us-west1 ", "=?base64?IHVzLXdlc3QxIA==?=", true},
+		{"non-ASCII", "日本語", "=?base64?5pel5pys6Kqe?=", true},
+		{"mixed ASCII and non-ASCII", "Hello, 世界", "=?base64?SGVsbG8sIOS4lueVjA==?=", true},
+		{"string with newline", "line1\nline2", "=?base64?bGluZTEKbGluZTI=?=", true},
+		{"string with carriage return", "line1\r\nline2", "=?base64?bGluZTENCmxpbmUy?=", true},
+		{"string with leading tab", "\tindented", "=?base64?CWluZGVudGVk?=", true},
+
+		// Numbers
+		{"integer", float64(42), "42", true},
+		{"float", float64(3.14159), "3.14159", true},
+
+		// Booleans
+		{"true", true, "true", true},
+		{"false", false, "false", true},
+
+		// Unsupported types
+		{"nil", nil, "", false},
+		{"slice", []string{"a"}, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := encodeHeaderValue(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("encodeHeaderValue(%v) ok = %v, want %v", tt.value, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("encodeHeaderValue(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeHeaderValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{"plain value", "us-west1", "us-west1", true},
+		{"empty value", "", "", true},
+		{"valid base64", "=?base64?SGVsbG8=?=", "Hello", true},
+		{"non-ASCII decoded", "=?base64?5pel5pys6Kqe?=", "日本語", true},
+		{"leading space decoded", "=?base64?IHVzLXdlc3Qx?=", " us-west1", true},
+		{"case-insensitive prefix", "=?BASE64?SGVsbG8=?=", "Hello", true},
+		{"invalid base64 chars", "=?base64?SGVs!!!bG8=?=", "", false},
+		// Missing prefix or suffix: treated as literal values, not base64
+		{"missing prefix", "SGVsbG8=", "SGVsbG8=", true},
+		{"missing suffix", "=?base64?SGVsbG8=", "=?base64?SGVsbG8=", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := decodeHeaderValue(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("decodeHeaderValue(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("decodeHeaderValue(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeDecodeRoundTrip(t *testing.T) {
+	values := []string{
+		"us-west1",
+		"",
+		" leading",
+		"trailing ",
+		"Hello, 世界",
+		"line1\nline2",
+		"\ttab",
+	}
+	for _, v := range values {
+		encoded, ok := encodeHeaderValue(v)
+		if !ok {
+			t.Fatalf("encodeHeaderValue(%q) failed", v)
+		}
+		decoded, ok := decodeHeaderValue(encoded)
+		if !ok {
+			t.Fatalf("decodeHeaderValue(%q) failed", encoded)
+		}
+		if decoded != v {
+			t.Errorf("round-trip failed: %q -> %q -> %q", v, encoded, decoded)
+		}
 	}
 }

@@ -1802,11 +1802,6 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		if msg.IsCall() {
 			forCall = msg
 		}
-		if msg.Method == "tools/call" {
-			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok {
-				msg.Extra = tool
-			}
-		}
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
 	default:
@@ -1834,7 +1829,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		// Keep this after the setMCPHeaders call to ensure that the
 		// protocol version header is set.
-		setStandardHeaders(req.Header, msg)
+		setStandardHeaders(ctx, req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.

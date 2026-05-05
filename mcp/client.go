@@ -379,9 +379,7 @@ func (cs *ClientSession) Wait() error {
 func (cs *ClientSession) cacheTools(tools []*Tool) {
 	cs.toolCacheMu.Lock()
 	defer cs.toolCacheMu.Unlock()
-	if cs.toolCache == nil {
-		cs.toolCache = make(map[string]*Tool, len(tools))
-	}
+	cs.toolCache = make(map[string]*Tool, len(tools))
 	for _, tool := range tools {
 		cs.toolCache[tool.Name] = tool
 	}
@@ -1015,7 +1013,7 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 	if err != nil {
 		return nil, err
 	}
-	result.Tools = filterValidTools(result.Tools)
+	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
 	cs.cacheTools(result.Tools)
 	return result, nil
 }

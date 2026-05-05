@@ -475,13 +475,13 @@ func TestToolCache(t *testing.T) {
 			want:         tool2,
 		},
 		{
-			name:         "additive first tool retained",
+			name:         "replace clears old entries",
 			cacheBatches: [][]*Tool{{tool1}, {tool2}},
 			lookup:       "tool1",
-			want:         tool1,
+			want:         nil,
 		},
 		{
-			name:         "additive second tool added",
+			name:         "replace keeps new entries",
 			cacheBatches: [][]*Tool{{tool1}, {tool2}},
 			lookup:       "tool2",
 			want:         tool2,
