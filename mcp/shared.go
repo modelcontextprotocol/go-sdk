@@ -356,7 +356,7 @@ const (
 // CodeResourceNotFound indicates that a requested resource could not be found.
 //
 // By default, the value is -32602 (Invalid Params), as specified in the
-// MCP specification (SEP-2164). To restore the pre-1.6.0 release behavior where the
+// MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
 // error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
 //
 // Deprecated: Use [jsonrpc.CodeInvalidParams] directly. This variable will be
