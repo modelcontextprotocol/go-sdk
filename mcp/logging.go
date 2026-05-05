@@ -121,7 +121,7 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 	if opts != nil {
 		lh.opts = *opts
 		if opts.MinInterval > 0 {
-			lh.limiter = rate.NewLimiter(rate.Limit(1.0/opts.MinInterval.Seconds()), 1)
+			lh.limiter = rate.NewLimiter(rate.Every(opts.MinInterval), 1)
 		}
 	}
 	return lh
