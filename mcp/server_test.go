@@ -608,18 +608,15 @@ func TestAddToolNameValidation(t *testing.T) {
 func TestAddToolNilSchema(t *testing.T) {
 	var nilSchema *jsonschema.Schema
 
-	panicMsg := func(f func()) string {
-		var msg string
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					msg = fmt.Sprintf("%v", r)
-				}
-			}()
-			f()
-		}()
-		return msg
-	}
+  panicMsg := func(f func()) (msg string) {
+  		defer func() {
+  			if r := recover(); r != nil {
+  				msg = fmt.Sprintf("%v", r)
+  			}
+  		}()
+  		f()
+  		return msg
+  	}
 
 	// Call s.AddTool directly to exercise the typed-nil checks added to that method.
 	msg := panicMsg(func() {
