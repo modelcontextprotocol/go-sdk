@@ -88,7 +88,7 @@ type LoggingHandler struct {
 	mu      *sync.Mutex
 	limiter *rate.Limiter // for rate-limiting
 	buf     *bytes.Buffer
-	handler         slog.Handler
+	handler slog.Handler
 }
 
 // ensureLogger returns l if non-nil, otherwise a discard logger.
