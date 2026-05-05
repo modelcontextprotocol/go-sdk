@@ -649,6 +649,7 @@ tests := []struct {
 			}
 		})
 	}
+}
 
 type schema = jsonschema.Schema
 
