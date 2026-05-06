@@ -491,7 +491,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		transport.connection.toolLookup = server.toolLookup
+		transport.connection.toolLookup = server.getServerTool
 		// Capture the user ID from the token info to enable session hijacking
 		// prevention on subsequent requests.
 		var userID string
@@ -670,7 +670,7 @@ type streamableServerConn struct {
 
 	logger *slog.Logger
 
-	toolLookup func(name string) *Tool
+	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -1191,13 +1191,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
 	if !isBatch && len(incoming) == 1 {
-		var tool *Tool
-		if jreq, ok := incoming[0].(*jsonrpc.Request); ok && jreq.Method == "tools/call" && c.toolLookup != nil {
-			if name, ok := extractName(jreq.Method, jreq.Params); ok {
-				tool = c.toolLookup(name)
-			}
-		}
-		if err := validateMcpHeaders(req.Header, incoming[0], tool); err != nil {
+		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
 			}

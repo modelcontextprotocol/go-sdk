@@ -63,9 +63,7 @@ type headerSchemaProperty struct {
 // (*jsonschema.Schema, map[string]any, or json.RawMessage) into a common
 // representation by marshaling to JSON and unmarshaling only the fields we need.
 func unmarshalSchemaProperties(schema any) map[string]headerSchemaProperty {
-	var s struct {
-		Properties map[string]headerSchemaProperty `json:"properties"`
-	}
+	var s headerSchemaProperty
 	if err := remarshal(schema, &s); err != nil {
 		return nil
 	}
@@ -101,10 +99,7 @@ func primitiveToString(value any) string {
 	case float64:
 		return fmt.Sprintf("%g", v)
 	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
+		return fmt.Sprintf("%t", v)
 	default:
 		return fmt.Sprintf("%v", v)
 	}
@@ -179,10 +174,7 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 		if val == nil {
 			continue
 		}
-		encoded, ok := encodeHeaderValue(val)
-		if !ok {
-			continue
-		}
+		encoded := encodeHeaderValue(val)
 		res[paramHeaderPrefix+headerName] = encoded
 	}
 	return res
@@ -262,7 +254,7 @@ func validateHeaderName(name string) error {
 	return nil
 }
 
-func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) error {
+func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func(string) (*serverTool, bool)) error {
 	protocolVersion := header.Get(protocolVersionHeader)
 	if protocolVersion == "" || protocolVersion < minVersionForStandardHeaders {
 		return nil
@@ -278,12 +270,14 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) err
 			return fmt.Errorf("header mismatch: Mcp-Method header value '%s' does not match body value '%s'", methodInHeader, msg.Method)
 		}
 
+		var nameInBody string
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
 			nameInHeader := header.Get(nameHeader)
 			if nameInHeader == "" {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
-			nameInBody, ok := extractName(msg.Method, msg.Params)
+			var ok bool
+			nameInBody, ok = extractName(msg.Method, msg.Params)
 			if !ok {
 				return fmt.Errorf("failed to extract name from parameters for method %q", msg.Method)
 			}
@@ -292,9 +286,11 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, tool *Tool) err
 			}
 		}
 
-		if msg.Method == "tools/call" && tool != nil {
-			if err := validateParamHeaders(header, msg, tool); err != nil {
-				return err
+		if msg.Method == "tools/call" && toolLookup != nil {
+			if st, ok := toolLookup(nameInBody); ok && st != nil {
+				if err := validateParamHeaders(header, msg, st.tool); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -341,6 +337,7 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 		}
 		expected := primitiveToString(bodyVal)
 
+		// TODO: String comparison may not work ideally for numbers
 		if decoded != expected {
 			return fmt.Errorf("header mismatch: %s header value '%s' does not match body value", fullHeader, headerVal)
 		}
@@ -353,29 +350,15 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 //   - string: used as-is if safe ASCII, otherwise Base64 encoded
 //   - number (float64): decimal string representation
 //   - bool: lowercase "true" or "false"
-//   - nil: returns "", false
 //
 // Values that contain non-ASCII characters, control characters, or
 // leading/trailing whitespace are Base64-encoded with the =?base64?...?= wrapper.
-//
-// The second return value is false if the header value's type is not supported.
-func encodeHeaderValue(value any) (string, bool) {
-	var s string
-	switch v := value.(type) {
-	case string:
-		s = v
-	case float64:
-		s = fmt.Sprintf("%g", v)
-	case bool:
-		s = fmt.Sprintf("%t", v)
-	default:
-		return "", false
-	}
-
+func encodeHeaderValue(value any) string {
+	s := primitiveToString(value)
 	if requiresBase64Encoding(s) {
-		return encodeBase64(s), true
+		return encodeBase64(s)
 	}
-	return s, true
+	return s
 }
 
 // decodeHeaderValue decodes a header value that may be Base64-encoded
