@@ -456,6 +456,9 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 2. Attempt to use pre-registered client configuration.
 	preCfg := h.config.PreregisteredClient
 	if preCfg != nil {
+		if preCfg.Issuer != "" && preCfg.Issuer != asm.Issuer {
+			return nil, fmt.Errorf("authorization server issuer %q does not match pre-registered credentials issuer %q", asm.Issuer, preCfg.Issuer)
+		}
 		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported)
 		clientSecret := ""
 		if preCfg.ClientSecretAuth != nil {

@@ -121,6 +121,11 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		}
 	}
 
+	creds := h.config.Credentials
+	if creds.Issuer != "" && creds.Issuer != asm.Issuer {
+		return fmt.Errorf("authorization server issuer %q does not match pre-registered credentials issuer %q", asm.Issuer, creds.Issuer)
+	}
+
 	// Determine scopes: use PRM's scopes_supported if available.
 	scopes := scopesFromChallenges(wwwChallenges)
 	if len(scopes) == 0 && len(prm.ScopesSupported) > 0 {
@@ -128,7 +133,6 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	}
 
 	// Step 3: Exchange client credentials for an access token.
-	creds := h.config.Credentials
 	cfg := &clientcredentials.Config{
 		ClientID:     creds.ClientID,
 		ClientSecret: creds.ClientSecretAuth.ClientSecret,
