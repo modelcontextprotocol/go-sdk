@@ -101,6 +101,9 @@ type AuthorizationCodeHandlerConfig struct {
 	// "refresh_token" in [DynamicClientRegistrationConfig].Metadata.GrantTypes
 	// directly to advertise refresh token support to the Authorization Server.
 	//
+	// When using Client ID Metadata Document, the document hosted at the
+	// Client ID URL should include "refresh_token" in its grant_types.
+	//
 	// See https://modelcontextprotocol.io/seps/2207-oidc-refresh-token-guidance.
 	RequestRefreshToken bool
 
