@@ -1165,18 +1165,11 @@ func TestEncodeHeaderValue(t *testing.T) {
 		// Booleans
 		{"true", true, "true", true},
 		{"false", false, "false", true},
-
-		// Unsupported types
-		{"nil", nil, "", false},
-		{"slice", []string{"a"}, "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := encodeHeaderValue(tt.value)
-			if ok != tt.wantOK {
-				t.Fatalf("encodeHeaderValue(%v) ok = %v, want %v", tt.value, ok, tt.wantOK)
-			}
+			got := encodeHeaderValue(tt.value)
 			if got != tt.want {
 				t.Errorf("encodeHeaderValue(%v) = %q, want %q", tt.value, got, tt.want)
 			}
@@ -1227,10 +1220,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		"\ttab",
 	}
 	for _, v := range values {
-		encoded, ok := encodeHeaderValue(v)
-		if !ok {
-			t.Fatalf("encodeHeaderValue(%q) failed", v)
-		}
+		encoded := encodeHeaderValue(v)
 		decoded, ok := decodeHeaderValue(encoded)
 		if !ok {
 			t.Fatalf("decodeHeaderValue(%q) failed", encoded)

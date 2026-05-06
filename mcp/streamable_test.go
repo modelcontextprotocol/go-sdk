@@ -2316,9 +2316,9 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	}
 }
 
-// TestStreamableFilterValidToolsIntegration verifies that invalid tools
-// (with bad x-mcp-header annotations) are filtered out when the client
-// calls ListTools.
+// TestStreamableFilterValidToolsIntegration verifies that AddTool rejects
+// tools with invalid x-mcp-header annotations at registration time, and
+// that valid tools are returned by ListTools.
 func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
@@ -2343,19 +2343,27 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		},
 	}, noop)
 
-	// Invalid tool: x-mcp-header on an array type.
-	server.AddTool(&Tool{
-		Name: "invalid-tool",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"items": map[string]any{
-					"type":         "array",
-					"x-mcp-header": "Items",
+	// Invalid tool: x-mcp-header on an array type should panic.
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("AddTool with invalid x-mcp-header annotation did not panic")
+			}
+		}()
+		server.AddTool(&Tool{
+			Name: "invalid-tool",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items": map[string]any{
+						"type":         "array",
+						"x-mcp-header": "Items",
+					},
 				},
 			},
-		},
-	}, noop)
+		}, noop)
+	}()
 
 	// Tool with no x-mcp-header annotations (always valid).
 	server.AddTool(&Tool{
