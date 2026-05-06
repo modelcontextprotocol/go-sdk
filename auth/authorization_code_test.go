@@ -148,24 +148,7 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 		},
 		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 			capturedAuthURLs = append(capturedAuthURLs, args.URL)
-			client := &http.Client{
-				CheckRedirect: func(req *http.Request, via []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
-			resp, err := client.Get(args.URL)
-			if err != nil {
-				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
-			}
-			defer resp.Body.Close()
-			location, err := resp.Location()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get location header: %v", err)
-			}
-			return &AuthorizationResult{
-				Code:  location.Query().Get("code"),
-				State: location.Query().Get("state"),
-			}, nil
+			return nil, fmt.Errorf("stop after capturing URL")
 		},
 	})
 	if err != nil {
@@ -181,8 +164,9 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	}
 	resp.Header.Set("WWW-Authenticate",
 		fmt.Sprintf(`Bearer scope="read", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
-	if err := handler.Authorize(context.Background(), req, resp); err != nil {
-		t.Fatalf("First Authorize failed: %v", err)
+	err = handler.Authorize(context.Background(), req, resp)
+	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
+		t.Fatalf("First Authorize expected error containing 'stop after capturing URL', got: %v", err)
 	}
 
 	// Verify first auth URL requested only "read".
@@ -203,8 +187,9 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	}
 	resp2.Header.Set("WWW-Authenticate",
 		fmt.Sprintf(`Bearer error="insufficient_scope", scope="write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
-	if err := handler.Authorize(context.Background(), req2, resp2); err != nil {
-		t.Fatalf("Second Authorize failed: %v", err)
+	err = handler.Authorize(context.Background(), req2, resp2)
+	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
+		t.Fatalf("Second Authorize expected error containing 'stop after capturing URL', got: %v", err)
 	}
 
 	// Verify second auth URL accumulated both scopes.
