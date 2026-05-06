@@ -740,6 +740,16 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
+// toolLookup returns the Tool with the given name, or nil if not found.
+func (s *Server) toolLookup(name string) *Tool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.tools.get(name); ok {
+		return st.tool
+	}
+	return nil
+}
+
 func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 	s.mu.Lock()
 	st, ok := s.tools.get(req.Params.Name)

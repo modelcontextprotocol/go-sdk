@@ -491,14 +491,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
-		transport.connection.toolLookup = func(name string) *Tool {
-			server.mu.Lock()
-			defer server.mu.Unlock()
-			if st, ok := server.tools.get(name); ok {
-				return st.tool
-			}
-			return nil
-		}
+		transport.connection.toolLookup = server.toolLookup
 		// Capture the user ID from the token info to enable session hijacking
 		// prevention on subsequent requests.
 		var userID string
