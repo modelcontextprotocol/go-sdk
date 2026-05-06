@@ -347,13 +347,21 @@ const (
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
 	CodeHeaderMismatch = -32001
-	// CodeResourceNotFound indicates that a requested resource could not be found.
-	CodeResourceNotFound = -32002
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation
 	// before processing the request. The client should execute the elicitation handler
 	// with the elicitations provided in the error data.
 	CodeURLElicitationRequired = -32042
 )
+
+// CodeResourceNotFound indicates that a requested resource could not be found.
+//
+// By default, the value is -32602 (Invalid Params), as specified in the
+// MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
+// error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
+//
+// Deprecated: Use [jsonrpc.CodeInvalidParams] directly. This variable will be
+// removed in a future version.
+var CodeResourceNotFound int64 = jsonrpc.CodeInvalidParams
 
 // URLElicitationRequiredError returns an error indicating that URL elicitation is required
 // before the request can be processed. The elicitations parameter should contain the
