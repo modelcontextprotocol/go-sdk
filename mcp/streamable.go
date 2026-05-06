@@ -1061,7 +1061,23 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	if s.id == "" {
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
+		//
+		// On HTTP/2, headers and body travel as separate frames (HEADERS and
+		// DATA). Reverse proxies (e.g. Envoy, Caddy, net/http/httputil)
+		// commonly buffer the HEADERS frame until they have a DATA frame to
+		// coalesce it with — there is no HTTP/2 equivalent of HTTP/1.1's
+		// Transfer-Encoding: chunked signal that says "this is streaming, send
+		// headers now". Calling Flush() alone is not sufficient: it pushes
+		// the kernel buffer to the proxy, but the proxy still holds the
+		// HEADERS frame.
+		//
+		// Write an SSE comment (lines starting with ":" are ignored by
+		// clients per RFC) so a DATA frame is produced, which forces the
+		// proxy to forward both frames. See:
+		//   https://github.com/golang/go/issues/31125
+		//   https://github.com/caddyserver/caddy/issues/4247
 		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, ": ok\n\n")
 		rc := http.NewResponseController(w)
 		// Ignore returned error as flushing is best-effort.
 		_ = rc.Flush()
