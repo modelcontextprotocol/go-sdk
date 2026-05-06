@@ -18,6 +18,13 @@ type ClientCredentials struct {
 	// This is the most common authentication method for confidential clients.
 	// OPTIONAL. If not provided, the client is treated as a public client.
 	ClientSecretAuth *ClientSecretAuth
+
+	// Issuer is the issuer identifier of the authorization server these
+	// credentials are registered with. Pre-registered credentials are bound
+	// to a specific authorization server; when set, an error is returned if
+	// the discovered authorization server does not match, per SEP-2352.
+	// OPTIONAL.
+	Issuer string
 }
 
 // ClientSecretAuth holds client secret authentication credentials.
