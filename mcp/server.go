@@ -247,6 +247,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
 	if s, ok := t.InputSchema.(*jsonschema.Schema); ok {
+		if s == nil {
+			panic(fmt.Errorf("AddTool %q: input schema is nil", t.Name))
+		}
 		if s.Type != "object" {
 			panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
 		}
@@ -261,6 +264,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	}
 	if t.OutputSchema != nil {
 		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok {
+			if s == nil {
+				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
+			}
 			if s.Type != "object" {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
 			}
@@ -437,6 +443,9 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err != nil {
 			return zero, err
 		}
+		if internalSchema == nil {
+			return zero, fmt.Errorf("schema is nil for type %v", rt)
+		}
 		*sfield = internalSchema
 
 		resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -464,6 +473,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err := remarshal(*sfield, &internalSchema); err != nil {
 			return zero, err
 		}
+	}
+
+	if internalSchema == nil {
+		return zero, fmt.Errorf("schema is nil for type %v", rt)
 	}
 
 	resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
