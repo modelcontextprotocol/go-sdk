@@ -284,13 +284,6 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		scps = prm.ScopesSupported
 	}
 
-	// Accumulate scopes: union previously requested scopes with the newly
-	// challenged scopes so that step-up authorization does not lose
-	// permissions granted in earlier rounds (SEP-2350).
-	h.mu.Lock()
-	scps = unionScopes(h.requestedScopes, scps)
-	h.requestedScopes = scps
-	h.mu.Unlock()
 	// SEP-2207: when the client desires refresh tokens and the Authorization
 	// Server advertises offline_access support, add it to the requested scopes.
 	if h.config.RequestRefreshToken &&
@@ -298,6 +291,14 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		!slices.Contains(scps, "offline_access") {
 		scps = append(scps, "offline_access")
 	}
+
+	// Accumulate scopes: union previously requested scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	h.mu.Lock()
+	scps = unionScopes(h.requestedScopes, scps)
+	h.requestedScopes = scps
+	h.mu.Unlock()
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,

@@ -892,6 +892,19 @@ func TestUnionScopes(t *testing.T) {
 			existing:   []string{"b", "a"},
 			challenged: []string{"c", "a"},
 			want:       []string{"b", "a", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unionScopes(tt.existing, tt.challenged)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestAuthorize_OfflineAccessScope(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -929,9 +942,6 @@ func TestAuthorize_OfflineAccessScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := unionScopes(tt.existing, tt.challenged)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
 			authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
 				ScopesSupported: tt.asScopesSupported,
 				RegistrationConfig: &oauthtest.RegistrationConfig{
