@@ -94,10 +94,6 @@ type FakeAuthorizationServer struct {
 	config  Config
 	clients map[string]ClientInfo
 	codes   map[string]codeInfo
-
-	// LastRegistrationMetadata stores the metadata from the most recent
-	// dynamic client registration request, for test assertions.
-	LastRegistrationMetadata *oauthex.ClientRegistrationMetadata
 }
 
 type codeInfo struct {
@@ -218,7 +214,6 @@ func (s *FakeAuthorizationServer) handleRegister(w http.ResponseWriter, r *http.
 		http.Error(w, "failed to parse request", http.StatusBadRequest)
 		return
 	}
-	s.LastRegistrationMetadata = &metadata
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	clientID := rand.Text()
