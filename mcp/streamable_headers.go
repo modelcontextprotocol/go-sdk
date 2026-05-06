@@ -92,16 +92,16 @@ func extractParamHeaderAnnotations(tool *Tool) map[string]string {
 	return result
 }
 
-func primitiveToString(value any) string {
+func primitiveToString(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
-		return v
+		return v, true
 	case float64:
-		return fmt.Sprintf("%g", v)
+		return fmt.Sprintf("%g", v), true
 	case bool:
-		return fmt.Sprintf("%t", v)
+		return fmt.Sprintf("%t", v), true
 	default:
-		return fmt.Sprintf("%v", v)
+		return "", false
 	}
 }
 
@@ -174,7 +174,10 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 		if val == nil {
 			continue
 		}
-		encoded := encodeHeaderValue(val)
+		encoded, ok := encodeHeaderValue(val)
+		if !ok {
+			continue
+		}
 		res[paramHeaderPrefix+headerName] = encoded
 	}
 	return res
@@ -335,7 +338,10 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 		if bodyVal == nil {
 			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramName)
 		}
-		expected := primitiveToString(bodyVal)
+		expected, ok := primitiveToString(bodyVal)
+		if !ok {
+			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramName)
+		}
 
 		// TODO: String comparison may not work ideally for numbers
 		if decoded != expected {
@@ -353,12 +359,17 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 //
 // Values that contain non-ASCII characters, control characters, or
 // leading/trailing whitespace are Base64-encoded with the =?base64?...?= wrapper.
-func encodeHeaderValue(value any) string {
-	s := primitiveToString(value)
-	if requiresBase64Encoding(s) {
-		return encodeBase64(s)
+//
+// The second return value is false if the value is not a supported primitive type.
+func encodeHeaderValue(value any) (string, bool) {
+	s, ok := primitiveToString(value)
+	if !ok {
+		return "", false
 	}
-	return s
+	if requiresBase64Encoding(s) {
+		return encodeBase64(s), true
+	}
+	return s, true
 }
 
 // decodeHeaderValue decodes a header value that may be Base64-encoded
