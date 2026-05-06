@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -733,6 +735,130 @@ func TestApplicationTypeInference(t *testing.T) {
 			got := cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType
 			if got != tt.wantAppType {
 				t.Errorf("ApplicationType = %q, want %q", got, tt.wantAppType)
+			}
+		})
+	}
+}
+
+func TestAuthorize_OfflineAccessScope(t *testing.T) {
+	tests := []struct {
+		name                string
+		requestRefreshToken bool
+		asScopesSupported   []string
+		challengeScopes     string
+		wantOfflineAccess   bool
+	}{
+		{
+			name:                "AddedWhenASSupportsAndClientRequests",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			wantOfflineAccess:   true,
+		},
+		{
+			name:                "NotAddedWhenClientDoesNotRequest",
+			requestRefreshToken: false,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			wantOfflineAccess:   false,
+		},
+		{
+			name:                "NotAddedWhenASDoesNotSupport",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid"},
+			wantOfflineAccess:   false,
+		},
+		{
+			name:                "NotDuplicatedWhenAlreadyInScopes",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			challengeScopes:     "read offline_access",
+			wantOfflineAccess:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+				ScopesSupported: tt.asScopesSupported,
+				RegistrationConfig: &oauthtest.RegistrationConfig{
+					PreregisteredClients: map[string]oauthtest.ClientInfo{
+						"test_client_id": {
+							Secret:       "test_client_secret",
+							RedirectURIs: []string{"http://localhost:12345/callback"},
+						},
+					},
+				},
+			})
+			authServer.Start(t)
+
+			resourceMux := http.NewServeMux()
+			resourceServer := httptest.NewServer(resourceMux)
+			t.Cleanup(resourceServer.Close)
+			resourceURL := resourceServer.URL + "/resource"
+			resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+				Resource:             resourceURL,
+				AuthorizationServers: []string{authServer.URL()},
+			}))
+
+			var capturedAuthURL string
+			handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+				RedirectURL: "http://localhost:12345/callback",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "test_client_secret",
+					},
+				},
+				RequestRefreshToken: tt.requestRefreshToken,
+				AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+					capturedAuthURL = args.URL
+					return nil, fmt.Errorf("stop after capturing URL")
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+			resp := &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+				Request:    req,
+			}
+			wwwAuth := "Bearer resource_metadata=" + resourceServer.URL + "/.well-known/oauth-protected-resource/resource"
+			if tt.challengeScopes != "" {
+				wwwAuth += fmt.Sprintf(", scope=%q", tt.challengeScopes)
+			}
+			resp.Header.Set("WWW-Authenticate", wwwAuth)
+
+			// Authorize will fail at the fetcher, but we only care about the URL.
+			handler.Authorize(context.Background(), req, resp)
+
+			if capturedAuthURL == "" {
+				t.Fatal("AuthorizationCodeFetcher was not called")
+			}
+			u, err := url.Parse(capturedAuthURL)
+			if err != nil {
+				t.Fatalf("failed to parse captured auth URL: %v", err)
+			}
+			scopes := strings.Fields(u.Query().Get("scope"))
+			hasOfflineAccess := slices.Contains(scopes, "offline_access")
+			if hasOfflineAccess != tt.wantOfflineAccess {
+				t.Errorf("offline_access in scopes = %v, want %v (scopes: %v)", hasOfflineAccess, tt.wantOfflineAccess, scopes)
+			}
+
+			// When offline_access was already present in challenge scopes,
+			// verify it appears exactly once.
+			if tt.wantOfflineAccess {
+				count := 0
+				for _, s := range scopes {
+					if s == "offline_access" {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Errorf("offline_access appears %d times in scopes, want 1", count)
+				}
 			}
 		})
 	}
