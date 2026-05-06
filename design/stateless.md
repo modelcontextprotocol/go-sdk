@@ -3,7 +3,6 @@
 This document discusses the changes needed to fully support protocol changes introduced
 in `2026-06-30` version. It focuses on the following SEPs:
 
-* [SEP-2322: Multi Round-Trip Requests](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 * [SEP-2567: Sessionless MCP via Explicit State Handles](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567)
 * [SEP-2575: Make MCP Stateless](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575)
 
@@ -201,6 +200,7 @@ On the server side, the server will return `Method not found` (-32601) for `reso
 > Deprecated APIs:
 > - `ClientSession.Subscribe`
 > - `ClientSession.Unsubscribe`
+> - `StreamableClientTransport.DisableStandaloneSSE`
 
 ### Ping
 
@@ -231,6 +231,7 @@ For `>= 2026-06-30`:
 > Deprecated APIs:
 > - `ClientSession.Ping`
 > - `ServerSession.Ping`
+> - `ServerOptions.Keepalive`
 
 ### SDK connection establishment flow changes
 
@@ -313,3 +314,83 @@ sequenceDiagram
         note over c,s: Operation using 2025-11-25 version
     end
 ```
+
+## Removing sessions
+
+SEP 2567 removes the concept of sessions from the MCP protocol. Some adjustments will be
+needed to the `Stateless` mode to fully align it with the proposal.
+
+### `MCP-Session-Id` header removal
+
+Server in stateless mode will ignore the `MCP-Session-Id` header in the requests.
+Currently it doesn't reject requests that specify this header, but it reads the
+value and saves it in the transport to be used in other places.
+The `ServerOptions.GetSessionID` will not be called by servers in the stateless
+mode anymore. The `MCP-Session-Id` will also not be set on the response to
+`initialize`, but this is a consequence of removal of the initialization handshake.
+
+These behavior changes are backwards incompatible and will be accompanied by a `MCPGODEBUG` flag.
+
+> [!WARNING]
+> Deprecated APIs:
+> - `ServerOptions.GetSessionID`
+> - `StreamableHTTPOptions.SessionTimeout`
+> - `StreamableServerTransport.SessionID`
+> - `Connection.SessionID`
+> - `ErrSessionMissing`
+> - `ServerSessionState`
+> - `Server.Sessions`
+> - `Session.ID`
+
+### DELETE method returns 405
+
+The `DELETE` will return `405 Method Not Allowed` for all requests to the server in stateless mode.
+This is in line with SEP-2575 that only `POST` requests should be supported. Currently it returns
+`400 Bad Request` if `MCP-Session-Id` header is not provided and `204 No Content` otherwise.
+The change will be protected by the same `MCPGODEBUG` flag as removal of the session related header.
+
+## Removing stream resumability
+
+SEP-2575 removes stream resumability. All related functionality will be deprecated.
+
+For `>= 2026-06-30`, the following behavioral changes will apply:
+
+* **Event IDs on SSE streams**: The server will stop writing event IDs (`id:` fields) to SSE
+  response streams. Currently, event IDs are only written when an `EventStore` is configured
+  (`streamable.go:1456-1458`). For the new protocol version, event IDs will not be written
+  regardless of whether an `EventStore` is provided.
+
+* **EventStore usage**: The server will not call `EventStore.Open`, `EventStore.Append`, or
+  `EventStore.SessionClosed` for `>= 2026-06-30` requests, even if an `EventStore` is configured
+  on the handler. Currently, the `EventStore` is called unconditionally when present
+  (`streamable.go:864-866`, `1446-1448`), including in stateless mode, which leads to
+  wasteful write-then-immediately-cleanup cycles. For the new protocol version, the `EventStore`
+  will be ignored entirely.
+
+* **`Last-Event-ID` on POST requests**: The server currently rejects POST requests that include
+  a `Last-Event-ID` header with `400 Bad Request` (`streamable.go:1100-1101`). This behavior
+  will remain unchanged — `Last-Event-ID` on POST was never valid and will continue to be
+  rejected.
+
+* **Client reconnection**: The client will stop sending `Last-Event-ID` on reconnection
+  attempts (`streamable.go:2207-2208`) and will stop capturing event IDs from SSE streams
+  (`streamable.go:2093-2094`). Reconnection for `subscriptions/listen` streams will still
+  be supported (re-establishing the subscription from scratch), but without `Last-Event-ID`
+  based replay.
+
+* **`CloseSSEStream` callback**: Calling `RequestExtra.CloseSSEStream` will be a no-op for
+  `>= 2026-06-30`. This mechanism (SEP-1699) was designed to trigger client reconnection
+  with `Last-Event-ID` for server-initiated disconnect scenarios. Without resumability, closing
+  the SSE stream is equivalent to cancelling the request, not triggering a reconnection.
+
+> [!WARNING]
+> Deprecated APIs:
+> - `EventStore`
+> - `MemoryEventStore`
+> - `MemoryEventStoreOptions`
+> - `NewMemoryEventStore`
+> - `ErrEventsPurged`
+> - `StreamableHTTPOptions.EventStore`
+> - `StreamableServerTransport.EventStore`
+> - `RequestExtra.CloseSSEStream`
+> - `CloseSSEStreamArgs`
