@@ -91,6 +91,23 @@ type AuthorizationCodeHandlerConfig struct {
 	// See [AuthorizationCodeFetcher] for details.
 	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
+	// RequestRefreshToken indicates that the client intends to use refresh
+	// tokens and is capable of storing them securely.
+	//
+	// When true and the Authorization Server metadata contains "offline_access"
+	// in its scopes_supported, the client adds "offline_access" to the
+	// requested scopes.
+	//
+	// When using Dynamic Client Registration, callers should include
+	// "refresh_token" in [DynamicClientRegistrationConfig].Metadata.GrantTypes
+	// directly to advertise refresh token support to the Authorization Server.
+	//
+	// When using Client ID Metadata Document, the document hosted at the
+	// Client ID URL should include "refresh_token" in its grant_types.
+	//
+	// See https://modelcontextprotocol.io/seps/2207-oidc-refresh-token-guidance.
+	RequestRefreshToken bool
+
 	// Client is an optional HTTP client to use for HTTP requests.
 	// It is used for the following requests:
 	//  - Fetching Protected Resource Metadata
@@ -274,6 +291,13 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	scps = unionScopes(h.requestedScopes, scps)
 	h.requestedScopes = scps
 	h.mu.Unlock()
+	// SEP-2207: when the client desires refresh tokens and the Authorization
+	// Server advertises offline_access support, add it to the requested scopes.
+	if h.config.RequestRefreshToken &&
+		slices.Contains(asm.ScopesSupported, "offline_access") &&
+		!slices.Contains(scps, "offline_access") {
+		scps = append(scps, "offline_access")
+	}
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
