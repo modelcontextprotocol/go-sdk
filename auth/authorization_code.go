@@ -339,15 +339,10 @@ func unionScopes(existing, challenged []string) []string {
 	if len(challenged) == 0 {
 		return existing
 	}
-	seen := make(map[string]struct{}, len(existing))
 	result := make([]string, len(existing), len(existing)+len(challenged))
 	copy(result, existing)
-	for _, s := range existing {
-		seen[s] = struct{}{}
-	}
 	for _, s := range challenged {
-		if _, ok := seen[s]; !ok {
-			seen[s] = struct{}{}
+		if !slices.Contains(result, s) {
 			result = append(result, s)
 		}
 	}
