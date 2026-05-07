@@ -62,3 +62,8 @@ v2.
 - `StreamableHTTPOptions.CrossOriginProtection` should not have been part of
   the SDK API. Cross-origin protection is a general HTTP concern, not specific
   to MCP, and can be applied as standard HTTP middleware.
+
+- `ToolAnnotations` (`mcp/protocol.go`) should have all fields typed as `*bool`
+  for full control to define what is being sent over the wire. Different
+  MCP clients have different requirements, and some of them require all fields
+  to be explicitly set to either `true` or `false`.

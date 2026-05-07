@@ -1194,3 +1194,60 @@ func TestContentUnmarshal(t *testing.T) {
 	var gotpm PromptMessage
 	roundtrip(pm, &gotpm)
 }
+
+func TestToolAnnotations_MarshalJSON(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		in   ToolAnnotations
+		want string
+	}{
+		{
+			name: "ZeroValue",
+			in:   ToolAnnotations{},
+			want: `{"idempotentHint":false,"readOnlyHint":false}`,
+		},
+		{
+			name: "AllFalse",
+			in: ToolAnnotations{
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  false,
+				OpenWorldHint:   boolPtr(false),
+				ReadOnlyHint:    false,
+			},
+			want: `{"destructiveHint":false,"idempotentHint":false,"openWorldHint":false,"readOnlyHint":false}`,
+		},
+		{
+			name: "AllTrue",
+			in: ToolAnnotations{
+				DestructiveHint: boolPtr(true),
+				IdempotentHint:  true,
+				OpenWorldHint:   boolPtr(true),
+				ReadOnlyHint:    true,
+				Title:           "my tool",
+			},
+			want: `{"destructiveHint":true,"idempotentHint":true,"openWorldHint":true,"readOnlyHint":true,"title":"my tool"}`,
+		},
+		{
+			name: "MixedValues",
+			in: ToolAnnotations{
+				ReadOnlyHint: true,
+				Title:        "read tool",
+			},
+			want: `{"idempotentHint":false,"readOnlyHint":true,"title":"read tool"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.in)
+			if err != nil {
+				t.Fatalf("json.Marshal(%v) failed: %v", tt.in, err)
+			}
+			if diff := cmp.Diff(tt.want, string(got)); diff != "" {
+				t.Errorf("json.Marshal() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
