@@ -92,6 +92,8 @@ func extractParamHeaderAnnotations(tool *Tool) map[string]string {
 	return result
 }
 
+// primitiveToString conversion.
+// Returns false in the second return value if the argument is not a primitive value.
 func primitiveToString(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
