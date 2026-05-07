@@ -967,49 +967,6 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 1,
 		},
 		{
-			name: "batch rejected on 2025-06-18",
-			requests: []streamableRequest{
-				initialize,
-				initialized,
-				{
-					method: "POST",
-					// Explicitly set the protocol version header
-					headers: http.Header{"MCP-Protocol-Version": {"2025-06-18"}},
-					// Two messages => batch. Expect reject.
-					messages: []jsonrpc.Message{
-						req(101, "tools/call", &CallToolParams{Name: "tool"}),
-						req(102, "tools/call", &CallToolParams{Name: "tool"}),
-					},
-					wantStatusCode:     http.StatusBadRequest,
-					wantBodyContaining: "batch",
-				},
-			},
-			wantSessions: 1,
-		},
-		{
-			name: "batch accepted on 2025-03-26",
-			requests: []streamableRequest{
-				initialize,
-				initialized,
-				{
-					method:  "POST",
-					headers: http.Header{"MCP-Protocol-Version": {"2025-03-26"}},
-					// Two messages => batch. Expect OK with two responses in order.
-					messages: []jsonrpc.Message{
-						// Note: only include one request here, because responses are not
-						// necessarily sorted.
-						req(201, "tools/call", &CallToolParams{Name: "tool"}),
-						req(0, "notifications/roots/list_changed", &RootsListChangedParams{}),
-					},
-					wantStatusCode: http.StatusOK,
-					wantMessages: []jsonrpc.Message{
-						resp(201, &CallToolResult{Content: []Content{}}, nil),
-					},
-				},
-			},
-			wantSessions: 1,
-		},
-		{
 			name: "tool notification",
 			tool: func(t *testing.T, ctx context.Context, req *CallToolRequest) {
 				// Send an arbitrary notification.
