@@ -916,8 +916,26 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
 }
 
+var clientSendingMethodInfos = map[string]methodInfo{}
+
+func init() {
+	// clientSendingMethodInfos is identical to serverMethodInfos, but tools/call
+	// produces a *CallToolResult, honoring the client's v1 signature, rather than
+	// the server's internal v2 *RoundTripCallToolResult.
+	// This is a temporary workaround to make the tests pass, given that we're not updating the client.
+	for k, v := range serverMethodInfos {
+		if k == methodCallTool {
+			clone := v
+			clone.newResult = func() Result { return &CallToolResult{} }
+			clientSendingMethodInfos[k] = clone
+		} else {
+			clientSendingMethodInfos[k] = v
+		}
+	}
+}
+
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
-	return serverMethodInfos
+	return clientSendingMethodInfos
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {

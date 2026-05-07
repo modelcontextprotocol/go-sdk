@@ -46,6 +46,11 @@ type CallToolParams struct {
 	// Arguments holds the tool arguments. It can hold any value that can be
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
+
+	// MRTR: InputResponses map from server-issued ID to client-fulfilled states.
+	InputResponses map[string]any `json:"inputResponses,omitempty"`
+	// MRTR: RequestState is an opaque token from an earlier IncompleteResult.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // CallToolParamsRaw is passed to tool handlers on the server. Its arguments
@@ -61,6 +66,11 @@ type CallToolParamsRaw struct {
 	// is the responsibility of the tool handler to unmarshal and validate the
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+
+	// MRTR: InputResponses map from server-issued ID to client-fulfilled states.
+	InputResponses map[string]any `json:"inputResponses,omitempty"`
+	// MRTR: RequestState is an opaque token from an earlier IncompleteResult.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // A CallToolResult is the server's response to a tool call.
@@ -162,6 +172,55 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	}
 	*x = CallToolResult(wire.res)
 	return nil
+}
+
+// IncompleteResult corresponds to a CallToolResult structurally
+// when ResultType == "incomplete".
+type IncompleteResult struct {
+	Meta          `json:"_meta,omitempty"`
+	ResultType    string         `json:"result_type"` // Expected to be "incomplete"
+	InputRequests map[string]any `json:"inputRequests,omitempty"`
+	RequestState  string         `json:"requestState,omitempty"`
+}
+
+// RoundTripCallToolResult wraps a standard CallToolResult or an IncompleteResult.
+// Handlers populate exactly one of the fields.
+// This is not the final choice to represent the union type, but some type will be needed for that.
+type RoundTripCallToolResult struct {
+	Complete   *CallToolResult
+	Incomplete *IncompleteResult
+}
+
+func (r *RoundTripCallToolResult) isResult() {}
+
+func (r *RoundTripCallToolResult) GetMeta() map[string]any {
+	if r.Incomplete != nil {
+		return r.Incomplete.GetMeta()
+	}
+	if r.Complete != nil {
+		return r.Complete.GetMeta()
+	}
+	return nil
+}
+
+func (r *RoundTripCallToolResult) SetMeta(m map[string]any) {
+	if r.Incomplete != nil {
+		r.Incomplete.SetMeta(m)
+	} else if r.Complete != nil {
+		r.Complete.SetMeta(m)
+	}
+}
+
+// MarshalJSON safely marshals whichever result branch is taken.
+func (r *RoundTripCallToolResult) MarshalJSON() ([]byte, error) {
+	if r.Incomplete != nil {
+		r.Incomplete.ResultType = "incomplete"
+		return json.Marshal(r.Incomplete)
+	}
+	if r.Complete == nil {
+		return json.Marshal(&CallToolResult{})
+	}
+	return json.Marshal(r.Complete)
 }
 
 func (x *CallToolParams) isParams()              {}
