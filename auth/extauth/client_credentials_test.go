@@ -299,13 +299,12 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 		t.Fatalf("First Authorize failed: %v", err)
 	}
 
-	// Verify handler tracked the requested scopes.
-	handler.mu.Lock()
-	firstScopes := append([]string{}, handler.requestedScopes...)
-	handler.mu.Unlock()
+	// Verify handler tracked the granted scopes keyed by issuer.
+	issuer := authServer.URL()
+	firstScopes := append([]string{}, handler.grantedScopes[issuer]...)
 	wantFirst := []string{"read"}
 	if diff := cmp.Diff(wantFirst, firstScopes); diff != "" {
-		t.Errorf("After first Authorize, requestedScopes mismatch (-want +got):\n%s", diff)
+		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 
 	// Second authorization: 401 with scope="write" (simulating step-up)
@@ -321,12 +320,10 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 	}
 
 	// Verify handler accumulated both scopes.
-	handler.mu.Lock()
-	secondScopes := append([]string{}, handler.requestedScopes...)
-	handler.mu.Unlock()
+	secondScopes := append([]string{}, handler.grantedScopes[issuer]...)
 	wantSecond := []string{"read", "write"}
 	if diff := cmp.Diff(wantSecond, secondScopes); diff != "" {
-		t.Errorf("After second Authorize, requestedScopes mismatch (-want +got):\n%s", diff)
+		t.Errorf("After second Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 }
 

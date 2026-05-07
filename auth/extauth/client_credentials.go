@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -49,8 +48,7 @@ type ClientCredentialsHandler struct {
 	config      *ClientCredentialsHandlerConfig
 	tokenSource oauth2.TokenSource
 
-	mu              sync.Mutex
-	requestedScopes []string
+	grantedScopes map[string][]string
 }
 
 // Compile-time check that ClientCredentialsHandler implements auth.OAuthHandler.
@@ -134,10 +132,7 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously requested scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	h.mu.Lock()
-	scopes = unionScopes(h.requestedScopes, scopes)
-	h.requestedScopes = scopes
-	h.mu.Unlock()
+	scopes = unionScopes(h.grantedScopes[asm.Issuer], scopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	creds := h.config.Credentials
@@ -153,10 +148,22 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	h.tokenSource = cfg.TokenSource(ctxWithClient)
 
 	// Eagerly fetch a token to surface errors immediately.
-	if _, err := h.tokenSource.Token(); err != nil {
+	tok, err := h.tokenSource.Token()
+	if err != nil {
 		h.tokenSource = nil
 		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
+
+	// Per RFC 6749 §5.1, if the token response omits scope, the granted
+	// scopes are identical to what was requested.
+	tokenScopes := scopesFromToken(tok)
+	if len(tokenScopes) == 0 {
+		tokenScopes = scopes
+	}
+	if h.grantedScopes == nil {
+		h.grantedScopes = make(map[string][]string)
+	}
+	h.grantedScopes[asm.Issuer] = unionScopes(h.grantedScopes[asm.Issuer], tokenScopes)
 	return nil
 }
 
@@ -239,6 +246,16 @@ func scopesFromChallenges(cs []oauthex.Challenge) []string {
 		}
 	}
 	return nil
+}
+
+// scopesFromToken extracts the granted scopes from an OAuth2 token response.
+// Per RFC 6749 §5.1, the scope parameter is optional; returns nil if absent.
+func scopesFromToken(token *oauth2.Token) []string {
+	scope, ok := token.Extra("scope").(string)
+	if !ok || scope == "" {
+		return nil
+	}
+	return strings.Fields(scope)
 }
 
 // unionScopes returns the union of existing and challenged scopes,

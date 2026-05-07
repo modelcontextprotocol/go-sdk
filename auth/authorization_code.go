@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -130,8 +129,7 @@ type AuthorizationCodeHandler struct {
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
 
-	mu              sync.Mutex
-	requestedScopes []string
+	grantedScopes map[string][]string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
@@ -279,26 +277,23 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	scps := scopesFromChallenges(wwwChallenges)
-	if len(scps) == 0 && len(prm.ScopesSupported) > 0 {
-		scps = prm.ScopesSupported
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
 	}
 
 	// SEP-2207: when the client desires refresh tokens and the Authorization
 	// Server advertises offline_access support, add it to the requested scopes.
 	if h.config.RequestRefreshToken &&
 		slices.Contains(asm.ScopesSupported, "offline_access") &&
-		!slices.Contains(scps, "offline_access") {
-		scps = append(scps, "offline_access")
+		!slices.Contains(requestedScopes, "offline_access") {
+		requestedScopes = append(requestedScopes, "offline_access")
 	}
 
 	// Accumulate scopes: union previously requested scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	h.mu.Lock()
-	scps = unionScopes(h.requestedScopes, scps)
-	h.requestedScopes = scps
-	h.mu.Unlock()
+	requestedScopes = unionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -310,7 +305,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
-		Scopes:      scps,
+		Scopes:      requestedScopes,
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
@@ -319,7 +314,26 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	if err != nil {
+		return err
+	}
+
+	if h.tokenSource != nil {
+		tok, err := h.tokenSource.Token()
+		if err != nil {
+			return err
+		}
+		if h.grantedScopes == nil {
+			h.grantedScopes = make(map[string][]string)
+		}
+		if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
+			h.grantedScopes[asm.Issuer] = requestedScopes
+		} else {
+			h.grantedScopes[asm.Issuer] = tokenScopes
+		}
+	}
+	return nil
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
@@ -353,6 +367,16 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 		}
 	}
 	return ""
+}
+
+// scopesFromToken extracts the granted scopes from an OAuth2 token response.
+// Per RFC 6749 §3.3, the scope parameter is omitted when all requested scopes are granted.
+func scopesFromToken(token *oauth2.Token) []string {
+	scope, ok := token.Extra("scope").(string)
+	if !ok {
+		return nil
+	}
+	return strings.Fields(scope)
 }
 
 // unionScopes returns the union of existing and challenged scopes,

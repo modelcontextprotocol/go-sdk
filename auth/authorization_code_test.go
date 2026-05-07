@@ -192,13 +192,14 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 		t.Fatalf("Second Authorize expected error containing 'stop after capturing URL', got: %v", err)
 	}
 
-	// Verify second auth URL accumulated both scopes.
+	// Verify second auth URL does NOT include "read" from the first (failed)
+	// attempt: only successfully authorized scopes are accumulated.
 	secondURL, err := url.Parse(capturedAuthURLs[1])
 	if err != nil {
 		t.Fatalf("Failed to parse second auth URL: %v", err)
 	}
-	if got := secondURL.Query().Get("scope"); got != "read write" {
-		t.Errorf("Second auth scope = %q, want %q", got, "read write")
+	if got := secondURL.Query().Get("scope"); got != "write" {
+		t.Errorf("Second auth scope = %q, want %q", got, "write")
 	}
 }
 
