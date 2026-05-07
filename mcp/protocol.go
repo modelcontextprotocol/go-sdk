@@ -756,11 +756,37 @@ func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x)
 func (x *ListPromptsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
 
+// CacheableResult is a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type CacheableResult interface {
+	Result
+	GetTTL() *int
+	GetCacheScope() string
+}
+
+// Cacheable describes a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type Cacheable struct {
+	// A hint from the server indicating how long (in seconds) the
+	// client MAY cache this response before re-fetching.
+	TTL *int `json:"ttl,omitempty"`
+
+	// Indicates the intended scope of the cached response.
+	CacheScope string `json:"cacheScope,omitempty"`
+}
+
+// GetTTL returns the TTL hint.
+func (c Cacheable) GetTTL() *int { return c.TTL }
+
+// GetCacheScope returns the cache scope.
+func (c Cacheable) GetCacheScope() string { return c.CacheScope }
+
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string    `json:"nextCursor,omitempty"`
@@ -789,6 +815,7 @@ type ListResourceTemplatesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor        string              `json:"nextCursor,omitempty"`
@@ -817,6 +844,7 @@ type ListResourcesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string      `json:"nextCursor,omitempty"`
@@ -867,6 +895,7 @@ type ListToolsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string  `json:"nextCursor,omitempty"`
@@ -1097,6 +1126,7 @@ type ReadResourceResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta     `json:"_meta,omitempty"`
+	Cacheable
 	Contents []*ResourceContents `json:"contents"`
 }
 
