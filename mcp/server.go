@@ -280,6 +280,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 			}
 		}
 	}
+	if err := validateParamHeaderAnnotations(t); err != nil {
+		panic(fmt.Errorf("AddTool %q: invalid parameter header annotations: %v", t.Name, err))
+	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
 	// (It's possible a tool was replaced with an identical one, but not worth checking.)
@@ -753,10 +756,15 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+// getServerTool looks up a server tool by name.
+func (s *Server) getServerTool(name string) (*serverTool, bool) {
 	s.mu.Lock()
-	st, ok := s.tools.get(req.Params.Name)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.tools.get(name)
+}
+
+func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+	st, ok := s.getServerTool(req.Params.Name)
 	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,

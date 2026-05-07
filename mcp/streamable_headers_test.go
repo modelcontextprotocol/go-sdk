@@ -5,11 +5,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -198,7 +201,7 @@ func TestSetStandardHeaders(t *testing.T) {
 				header.Set(protocolVersionHeader, tt.protocolVersion)
 			}
 
-			setStandardHeaders(header, tt.msg)
+			setStandardHeaders(context.Background(), header, tt.msg)
 
 			if got := header.Get(methodHeader); got != tt.wantMethodHeader {
 				t.Errorf("MethodHeader = %q, want %q", got, tt.wantMethodHeader)
@@ -399,7 +402,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 				header.Set(nameHeader, tt.nameHeader)
 			}
 
-			err := validateMcpHeaders(header, tt.msg)
+			err := validateMcpHeaders(header, tt.msg, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("validateMcpHeaders() = nil, want error containing %q", tt.wantErrContain)
@@ -411,5 +414,829 @@ func TestValidateMcpHeaders(t *testing.T) {
 				t.Errorf("validateMcpHeaders() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestValidateToolParamHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       *Tool
+		wantErr    bool
+		wantErrSub string
+	}{
+		{
+			name: "valid tool with x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Region",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "tool with no x-mcp-header annotations",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			name: "empty x-mcp-header value",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "non-empty string",
+		},
+		{
+			name: "x-mcp-header with space",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "My Region",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "x-mcp-header with colon",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Region:Primary",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "x-mcp-header with non-ASCII",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Région",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "duplicate header names same case",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"a": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"b": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "duplicate",
+		},
+		{
+			name: "duplicate header names different case",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"a": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"b": map[string]any{"type": "string", "x-mcp-header": "REGION"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "duplicate",
+		},
+		{
+			name: "x-mcp-header on array type",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"items": map[string]any{
+							"type":         "array",
+							"x-mcp-header": "Items",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "x-mcp-header on object type",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"nested": map[string]any{
+							"type":         "object",
+							"x-mcp-header": "Nested",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "x-mcp-header on number type is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{
+							"type":         "number",
+							"x-mcp-header": "Count",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "x-mcp-header on integer type is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{
+							"type":         "integer",
+							"x-mcp-header": "Count",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "x-mcp-header on boolean type is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"flag": map[string]any{
+							"type":         "boolean",
+							"x-mcp-header": "Flag",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "x-mcp-header on nested property inside object",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type":         "string",
+									"x-mcp-header": "Region",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "x-mcp-header on deeply nested property",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"outer": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"inner": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"value": map[string]any{
+											"type":         "string",
+											"x-mcp-header": "Value",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "object property without nested x-mcp-header is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type": "string",
+								},
+							},
+						},
+						"flag": map[string]any{
+							"type":         "boolean",
+							"x-mcp-header": "Flag",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "jsonschema.Schema valid x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"region": {
+							Type:  "string",
+							Extra: map[string]any{"x-mcp-header": "Region"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "jsonschema.Schema x-mcp-header on array type",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"items": {
+							Type:  "array",
+							Extra: map[string]any{"x-mcp-header": "Items"},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "jsonschema.Schema nested x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"config": {
+							Type: "object",
+							Properties: map[string]*jsonschema.Schema{
+								"region": {
+									Type:  "string",
+									Extra: map[string]any{"x-mcp-header": "Region"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "nested",
+		},
+		{
+			name: "json.RawMessage valid x-mcp-header",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`),
+			},
+		},
+		{
+			name: "json.RawMessage x-mcp-header on object type",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"nested":{"type":"object","x-mcp-header":"Nested"}}}`),
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateParamHeaderAnnotations(tt.tool)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("validateToolParamHeaders() = nil, want error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErrSub)
+				}
+			} else if err != nil {
+				t.Errorf("validateToolParamHeaders() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestFilterValidTools(t *testing.T) {
+	valid := &Tool{
+		Name: "valid",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	invalid := &Tool{
+		Name: "invalid",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": ""},
+			},
+		},
+	}
+	noAnnotation := &Tool{
+		Name:        "plain",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
+	}
+	nestedInvalid := &Tool{
+		Name: "nested-invalid",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"config": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					},
+				},
+			},
+		},
+	}
+
+	validJsonSchema := &Tool{
+		Name: "valid-jsonschema",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"region": {
+					Type:  "string",
+					Extra: map[string]any{"x-mcp-header": "Region"},
+				},
+			},
+		},
+	}
+	invalidJsonSchema := &Tool{
+		Name: "invalid-jsonschema",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"items": {
+					Type:  "array",
+					Extra: map[string]any{"x-mcp-header": "Items"},
+				},
+			},
+		},
+	}
+
+	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedInvalid, validJsonSchema, invalidJsonSchema})
+	if len(result) != 3 {
+		t.Fatalf("filterValidTools returned %d tools, want 3", len(result))
+	}
+	if result[0].Name != "valid" || result[1].Name != "plain" || result[2].Name != "valid-jsonschema" {
+		t.Errorf("filterValidTools returned [%s, %s, %s], want [valid, plain, valid-jsonschema]", result[0].Name, result[1].Name, result[2].Name)
+	}
+}
+
+func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
+	toolSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"region": map[string]any{
+				"type":         "string",
+				"x-mcp-header": "Region",
+			},
+			"query": map[string]any{
+				"type": "string",
+			},
+			"priority": map[string]any{
+				"type":         "string",
+				"x-mcp-header": "Priority",
+			},
+		},
+	}
+	tool := &Tool{Name: "execute_sql", InputSchema: toolSchema}
+
+	tests := []struct {
+		name        string
+		tool        *Tool
+		params      any
+		wantHeaders map[string]string
+	}{
+		{
+			name: "sets param headers from arguments",
+			tool: tool,
+			params: &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1", "priority": "high"},
+			},
+			wantHeaders: map[string]string{
+				"Mcp-Param-Region":   "us-west1",
+				"Mcp-Param-Priority": "high",
+			},
+		},
+		{
+			name: "omits header when argument is missing",
+			tool: tool,
+			params: &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"query": "SELECT 1"},
+			},
+			wantHeaders: map[string]string{},
+		},
+		{
+			name: "omits header when argument is null",
+			tool: tool,
+			params: &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": nil, "query": "SELECT 1"},
+			},
+			wantHeaders: map[string]string{},
+		},
+		{
+			name: "encodes non-ASCII value",
+			tool: tool,
+			params: &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "日本", "query": "SELECT 1"},
+			},
+			wantHeaders: map[string]string{
+				"Mcp-Param-Region": "=?base64?5pel5pys?=",
+			},
+		},
+		{
+			name: "handles boolean argument",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"flag": map[string]any{"type": "boolean", "x-mcp-header": "Flag"},
+					},
+				},
+			},
+			params: &CallToolParams{
+				Name:      "test",
+				Arguments: map[string]any{"flag": true},
+			},
+			wantHeaders: map[string]string{
+				"Mcp-Param-Flag": "true",
+			},
+		},
+		{
+			name: "handles number argument",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+					},
+				},
+			},
+			params: &CallToolParams{
+				Name:      "test",
+				Arguments: map[string]any{"count": float64(42)},
+			},
+			wantHeaders: map[string]string{
+				"Mcp-Param-Count": "42",
+			},
+		},
+		{
+			name: "no tool in extra does not add param headers",
+			tool: nil,
+			params: &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			},
+			wantHeaders: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+
+			ctx := context.Background()
+			if tt.tool != nil {
+				ctx = context.WithValue(ctx, toolContextKey, tt.tool)
+			}
+
+			msg := &jsonrpc.Request{
+				Method: "tools/call",
+				Params: mustMarshal(tt.params),
+			}
+
+			setStandardHeaders(ctx, header, msg)
+
+			if got := header.Get(methodHeader); got != "tools/call" {
+				t.Errorf("MethodHeader = %q, want %q", got, "tools/call")
+			}
+
+			for h, want := range tt.wantHeaders {
+				if got := header.Get(h); got != want {
+					t.Errorf("%s = %q, want %q", h, got, want)
+				}
+			}
+
+			if got := header.Get("Mcp-Param-query"); got != "" {
+				t.Errorf("non-annotated param got header: Mcp-Param-query = %q", got)
+			}
+		})
+	}
+}
+
+func TestExtractToolParamHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		tool *Tool
+		want map[string]string
+	}{
+		{
+			name: "extracts x-mcp-header annotations",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region":    map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"query":     map[string]any{"type": "string"},
+						"tenant_id": map[string]any{"type": "string", "x-mcp-header": "TenantId"},
+					},
+				},
+			},
+			want: map[string]string{"region": "Region", "tenant_id": "TenantId"},
+		},
+		{
+			name: "returns nil for tool without properties",
+			tool: &Tool{Name: "test", InputSchema: map[string]any{"type": "object"}},
+			want: nil,
+		},
+		{
+			name: "returns nil for non-map schema",
+			tool: &Tool{Name: "test", InputSchema: "not a map"},
+			want: nil,
+		},
+		{
+			name: "returns nil when no annotations",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"q": map[string]any{"type": "string"}},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "jsonschema.Schema with x-mcp-header in Extra",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"region": {
+							Type:  "string",
+							Extra: map[string]any{"x-mcp-header": "Region"},
+						},
+						"query": {Type: "string"},
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "json.RawMessage with x-mcp-header",
+			tool: &Tool{
+				Name:        "test",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"query":{"type":"string"}}}`),
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "jsonschema.Schema without x-mcp-header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"query": {Type: "string"},
+					},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractParamHeaderAnnotations(tt.tool)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("extractToolParamHeaders() = %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("extractToolParamHeaders() returned %d entries, want %d", len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("extractToolParamHeaders()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestUnmarshalPrimitive(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want any
+	}{
+		{"string", `"hello"`, "hello"},
+		{"number", `42`, float64(42)},
+		{"float", `3.14`, float64(3.14)},
+		{"true", `true`, true},
+		{"false", `false`, false},
+		{"null", `null`, nil},
+		{"array", `[1,2]`, nil},
+		{"object", `{"a":1}`, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unmarshalPrimitive(json.RawMessage(tt.raw))
+			if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", tt.want) {
+				t.Errorf("unmarshalPrimitive(%s) = %v (%T), want %v (%T)", tt.raw, got, got, tt.want, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeHeaderValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  any
+		want   string
+		wantOK bool
+	}{
+		// Strings
+		{"plain ASCII", "us-west1", "us-west1", true},
+		{"empty string", "", "", true},
+		{"string with internal spaces", "us west 1", "us west 1", true},
+		{"string with leading space", " us-west1", "=?base64?IHVzLXdlc3Qx?=", true},
+		{"string with trailing space", "us-west1 ", "=?base64?dXMtd2VzdDEg?=", true},
+		{"string with both spaces", " us-west1 ", "=?base64?IHVzLXdlc3QxIA==?=", true},
+		{"non-ASCII", "日本語", "=?base64?5pel5pys6Kqe?=", true},
+		{"mixed ASCII and non-ASCII", "Hello, 世界", "=?base64?SGVsbG8sIOS4lueVjA==?=", true},
+		{"string with newline", "line1\nline2", "=?base64?bGluZTEKbGluZTI=?=", true},
+		{"string with carriage return", "line1\r\nline2", "=?base64?bGluZTENCmxpbmUy?=", true},
+		{"string with leading tab", "\tindented", "=?base64?CWluZGVudGVk?=", true},
+
+		// Numbers
+		{"integer", float64(42), "42", true},
+		{"float", float64(3.14159), "3.14159", true},
+
+		// Booleans
+		{"true", true, "true", true},
+		{"false", false, "false", true},
+
+		// Unsupported types
+		{"nil", nil, "", false},
+		{"slice", []string{"a"}, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := encodeHeaderValue(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("encodeHeaderValue(%v) ok = %v, want %v", tt.value, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("encodeHeaderValue(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeHeaderValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{"plain value", "us-west1", "us-west1", true},
+		{"empty value", "", "", true},
+		{"valid base64", "=?base64?SGVsbG8=?=", "Hello", true},
+		{"non-ASCII decoded", "=?base64?5pel5pys6Kqe?=", "日本語", true},
+		{"leading space decoded", "=?base64?IHVzLXdlc3Qx?=", " us-west1", true},
+		{"case-insensitive prefix", "=?BASE64?SGVsbG8=?=", "Hello", true},
+		{"invalid base64 chars", "=?base64?SGVs!!!bG8=?=", "", false},
+		// Missing prefix or suffix: treated as literal values, not base64
+		{"missing prefix", "SGVsbG8=", "SGVsbG8=", true},
+		{"missing suffix", "=?base64?SGVsbG8=", "=?base64?SGVsbG8=", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := decodeHeaderValue(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("decodeHeaderValue(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("decodeHeaderValue(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeDecodeRoundTrip(t *testing.T) {
+	values := []string{
+		"us-west1",
+		"",
+		" leading",
+		"trailing ",
+		"Hello, 世界",
+		"line1\nline2",
+		"\ttab",
+	}
+	for _, v := range values {
+		encoded, ok := encodeHeaderValue(v)
+		if !ok {
+			t.Fatalf("encodeHeaderValue(%q) failed", v)
+		}
+		decoded, ok := decodeHeaderValue(encoded)
+		if !ok {
+			t.Fatalf("decodeHeaderValue(%q) failed", encoded)
+		}
+		if decoded != v {
+			t.Errorf("round-trip failed: %q -> %q -> %q", v, encoded, decoded)
+		}
 	}
 }

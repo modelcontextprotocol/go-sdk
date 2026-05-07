@@ -491,6 +491,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
+		transport.connection.toolLookup = server.getServerTool
 		// Capture the user ID from the token info to enable session hijacking
 		// prevention on subsequent requests.
 		var userID string
@@ -668,6 +669,8 @@ type streamableServerConn struct {
 	eventStore   EventStore
 
 	logger *slog.Logger
+
+	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -1186,9 +1189,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
 	if !isBatch && len(incoming) == 1 {
-		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
+		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
 			}
@@ -1813,7 +1816,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		// Keep this after the setMCPHeaders call to ensure that the
 		// protocol version header is set.
-		setStandardHeaders(req.Header, msg)
+		setStandardHeaders(ctx, req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
