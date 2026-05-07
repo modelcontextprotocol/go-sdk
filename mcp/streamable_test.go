@@ -2197,13 +2197,13 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			wantAllow:  "POST",
 		},
 		{
-			// DELETE without session returns 400 Bad Request (not 405)
-			// because DELETE is a valid method, just requires a session ID.
+			// In stateless mode, only POST is supported.
+			// DELETE returns 405, consistent with Allow: POST.
 			name:       "DELETE without session stateless",
 			stateless:  true,
 			method:     "DELETE",
-			wantStatus: http.StatusBadRequest,
-			wantAllow:  "", // No Allow header for 400 responses
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
 		},
 	}
 
