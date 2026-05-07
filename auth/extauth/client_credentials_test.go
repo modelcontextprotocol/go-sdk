@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -253,6 +254,135 @@ func TestClientCredentialsHandler_Authorize(t *testing.T) {
 			t.Fatal("expected non-nil TokenSource")
 		}
 	})
+}
+
+func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		MetadataEndpointConfig: &oauthtest.MetadataEndpointConfig{
+			ServeOAuthInsertedEndpoint: true,
+		},
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test-client": {Secret: "test-secret"},
+			},
+		},
+		ClientCredentialsConfig: &oauthtest.ClientCredentialsConfig{
+			Enabled: true,
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First authorization: 401 with scope="read"
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("WWW-Authenticate", `Bearer scope="read"`)
+	req := httptest.NewRequest("GET", resourceURL, nil)
+	if err := handler.Authorize(t.Context(), req, resp); err != nil {
+		t.Fatalf("First Authorize failed: %v", err)
+	}
+
+	// Verify handler tracked the requested scopes.
+	handler.mu.Lock()
+	firstScopes := append([]string{}, handler.requestedScopes...)
+	handler.mu.Unlock()
+	wantFirst := []string{"read"}
+	if diff := cmp.Diff(wantFirst, firstScopes); diff != "" {
+		t.Errorf("After first Authorize, requestedScopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second authorization: 401 with scope="write" (simulating step-up)
+	resp2 := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp2.Header.Set("WWW-Authenticate", `Bearer scope="write"`)
+	req2 := httptest.NewRequest("GET", resourceURL, nil)
+	if err := handler.Authorize(t.Context(), req2, resp2); err != nil {
+		t.Fatalf("Second Authorize failed: %v", err)
+	}
+
+	// Verify handler accumulated both scopes.
+	handler.mu.Lock()
+	secondScopes := append([]string{}, handler.requestedScopes...)
+	handler.mu.Unlock()
+	wantSecond := []string{"read", "write"}
+	if diff := cmp.Diff(wantSecond, secondScopes); diff != "" {
+		t.Errorf("After second Authorize, requestedScopes mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestUnionScopes(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   []string
+		challenged []string
+		want       []string
+	}{
+		{
+			name:       "both empty",
+			existing:   nil,
+			challenged: nil,
+			want:       nil,
+		},
+		{
+			name:       "existing only",
+			existing:   []string{"read"},
+			challenged: nil,
+			want:       []string{"read"},
+		},
+		{
+			name:       "challenged only",
+			existing:   nil,
+			challenged: []string{"write"},
+			want:       []string{"write"},
+		},
+		{
+			name:       "disjoint scopes",
+			existing:   []string{"read"},
+			challenged: []string{"write"},
+			want:       []string{"read", "write"},
+		},
+		{
+			name:       "overlapping scopes",
+			existing:   []string{"read", "write"},
+			challenged: []string{"write", "admin"},
+			want:       []string{"read", "write", "admin"},
+		},
+		{
+			name:       "identical scopes",
+			existing:   []string{"read", "write"},
+			challenged: []string{"read", "write"},
+			want:       []string{"read", "write"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unionScopes(tt.existing, tt.challenged)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }
 
 func TestSelectTokenAuthMethod(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -47,6 +48,9 @@ type ClientCredentialsHandlerConfig struct {
 type ClientCredentialsHandler struct {
 	config      *ClientCredentialsHandlerConfig
 	tokenSource oauth2.TokenSource
+
+	mu              sync.Mutex
+	requestedScopes []string
 }
 
 // Compile-time check that ClientCredentialsHandler implements auth.OAuthHandler.
@@ -126,6 +130,14 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	if len(scopes) == 0 && len(prm.ScopesSupported) > 0 {
 		scopes = prm.ScopesSupported
 	}
+
+	// Accumulate scopes: union previously requested scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	h.mu.Lock()
+	scopes = unionScopes(h.requestedScopes, scopes)
+	h.requestedScopes = scopes
+	h.mu.Unlock()
 
 	// Step 3: Exchange client credentials for an access token.
 	creds := h.config.Credentials
@@ -227,6 +239,25 @@ func scopesFromChallenges(cs []oauthex.Challenge) []string {
 		}
 	}
 	return nil
+}
+
+// unionScopes returns the union of existing and challenged scopes,
+// preserving order (existing first, then new challenged scopes).
+func unionScopes(existing, challenged []string) []string {
+	if len(existing) == 0 {
+		return challenged
+	}
+	if len(challenged) == 0 {
+		return existing
+	}
+	result := make([]string, len(existing), len(existing)+len(challenged))
+	copy(result, existing)
+	for _, s := range challenged {
+		if !slices.Contains(result, s) {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // selectTokenAuthMethod selects the preferred token endpoint auth method based on

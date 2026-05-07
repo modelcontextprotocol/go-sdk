@@ -113,6 +113,95 @@ func TestAuthorize(t *testing.T) {
 	}
 }
 
+func TestAuthorize_ScopeAccumulation(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	var capturedAuthURLs []string
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test_client_secret",
+			},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			capturedAuthURLs = append(capturedAuthURLs, args.URL)
+			return nil, fmt.Errorf("stop after capturing URL")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	// First authorization: 401 with scope="read"
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer scope="read", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	err = handler.Authorize(context.Background(), req, resp)
+	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
+		t.Fatalf("First Authorize expected error containing 'stop after capturing URL', got: %v", err)
+	}
+
+	// Verify first auth URL requested only "read".
+	firstURL, err := url.Parse(capturedAuthURLs[0])
+	if err != nil {
+		t.Fatalf("Failed to parse first auth URL: %v", err)
+	}
+	if got := firstURL.Query().Get("scope"); got != "read" {
+		t.Errorf("First auth scope = %q, want %q", got, "read")
+	}
+
+	// Second authorization: 403 insufficient_scope with scope="write"
+	req2 := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp2 := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp2.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer error="insufficient_scope", scope="write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	err = handler.Authorize(context.Background(), req2, resp2)
+	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
+		t.Fatalf("Second Authorize expected error containing 'stop after capturing URL', got: %v", err)
+	}
+
+	// Verify second auth URL accumulated both scopes.
+	secondURL, err := url.Parse(capturedAuthURLs[1])
+	if err != nil {
+		t.Fatalf("Failed to parse second auth URL: %v", err)
+	}
+	if got := secondURL.Query().Get("scope"); got != "read write" {
+		t.Errorf("Second auth scope = %q, want %q", got, "read write")
+	}
+}
+
 func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
 	resp := &http.Response{
@@ -735,6 +824,67 @@ func TestApplicationTypeInference(t *testing.T) {
 			got := cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType
 			if got != tt.wantAppType {
 				t.Errorf("ApplicationType = %q, want %q", got, tt.wantAppType)
+			}
+		})
+	}
+}
+
+func TestUnionScopes(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   []string
+		challenged []string
+		want       []string
+	}{
+		{
+			name:       "both empty",
+			existing:   nil,
+			challenged: nil,
+			want:       nil,
+		},
+		{
+			name:       "existing only",
+			existing:   []string{"read"},
+			challenged: nil,
+			want:       []string{"read"},
+		},
+		{
+			name:       "challenged only",
+			existing:   nil,
+			challenged: []string{"write"},
+			want:       []string{"write"},
+		},
+		{
+			name:       "disjoint scopes",
+			existing:   []string{"read"},
+			challenged: []string{"write"},
+			want:       []string{"read", "write"},
+		},
+		{
+			name:       "overlapping scopes",
+			existing:   []string{"read", "write"},
+			challenged: []string{"write", "admin"},
+			want:       []string{"read", "write", "admin"},
+		},
+		{
+			name:       "identical scopes",
+			existing:   []string{"read", "write"},
+			challenged: []string{"read", "write"},
+			want:       []string{"read", "write"},
+		},
+		{
+			name:       "preserves order",
+			existing:   []string{"b", "a"},
+			challenged: []string{"c", "a"},
+			want:       []string{"b", "a", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unionScopes(tt.existing, tt.challenged)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -128,6 +129,9 @@ type AuthorizationCodeHandler struct {
 
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
+
+	mu              sync.Mutex
+	requestedScopes []string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
@@ -288,6 +292,14 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		scps = append(scps, "offline_access")
 	}
 
+	// Accumulate scopes: union previously requested scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	h.mu.Lock()
+	scps = unionScopes(h.requestedScopes, scps)
+	h.requestedScopes = scps
+	h.mu.Unlock()
+
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
 		ClientSecret: resolvedClientConfig.clientSecret,
@@ -341,6 +353,25 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 		}
 	}
 	return ""
+}
+
+// unionScopes returns the union of existing and challenged scopes,
+// preserving order (existing first, then new challenged scopes).
+func unionScopes(existing, challenged []string) []string {
+	if len(existing) == 0 {
+		return challenged
+	}
+	if len(challenged) == 0 {
+		return existing
+	}
+	result := make([]string, len(existing), len(existing)+len(challenged))
+	copy(result, existing)
+	for _, s := range challenged {
+		if !slices.Contains(result, s) {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // getProtectedResourceMetadata returns the protected resource metadata.
