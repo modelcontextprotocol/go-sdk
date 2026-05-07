@@ -51,15 +51,15 @@ var supportedProtocolVersions = []string{
 }
 
 // negotiatedVersion returns the effective protocol version to use, given a
-// client version.
-func negotiatedVersion(clientVersion string) string {
+// client version and the server's supported versions list.
+func negotiatedVersion(clientVersion string, supportedVersions []string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version.
 	//
 	// This handles the case where a new spec version is released, and the SDK
 	// does not support it yet.
-	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return latestProtocolVersion
+	if !slices.Contains(supportedVersions, clientVersion) {
+		return supportedVersions[0]
 	}
 	return clientVersion
 }
