@@ -451,7 +451,7 @@ func (c *ioConn) sessionUpdated(state ServerSessionState) {
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	protocolVersion = negotiatedVersion(protocolVersion)
+	protocolVersion = negotiatedVersion(protocolVersion, supportedProtocolVersions)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()

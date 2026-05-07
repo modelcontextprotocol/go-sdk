@@ -41,8 +41,9 @@ const DefaultPageSize = 1000
 // sessions by using [Server.Run].
 type Server struct {
 	// fixed at creation
-	impl *Implementation
-	opts ServerOptions
+	impl              *Implementation
+	opts              ServerOptions
+	supportedVersions []string
 
 	mu                      sync.Mutex
 	prompts                 *featureSet[*serverPrompt]
@@ -135,6 +136,11 @@ type ServerOptions struct {
 	// trade-offs and usage guidance.
 	SchemaCache *SchemaCache
 
+	// SupportedVersions optionally specifies the list of MCP protocol versions
+	// that this server supports. If empty (the zero value), the default set of
+	// supported versions is used (see supportedProtocolVersions in shared.go).
+	SupportedVersions []string
+
 	// GetSessionID provides the next session ID to use for an incoming request.
 	// If nil, a default randomly generated ID will be used.
 	//
@@ -184,7 +190,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Server{
+	s := &Server{
 		impl:                    impl,
 		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
@@ -196,6 +202,14 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
+
+	if len(opts.SupportedVersions) > 0 {
+		s.supportedVersions = slices.Clone(opts.SupportedVersions)
+	} else {
+		s.supportedVersions = supportedProtocolVersions
+	}
+
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
@@ -1485,7 +1499,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
-		ProtocolVersion: negotiatedVersion(params.ProtocolVersion),
+		ProtocolVersion: negotiatedVersion(params.ProtocolVersion, s.supportedVersions),
 		Capabilities:    s.capabilities(),
 		Instructions:    s.opts.Instructions,
 		ServerInfo:      s.impl,

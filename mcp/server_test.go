@@ -1007,3 +1007,46 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 		})
 	}
 }
+
+func TestServerSupportedVersions(t *testing.T) {
+	customVersions := []string{"2025-11-25", "2025-03-26"}
+
+	t.Run("custom SupportedVersions is set", func(t *testing.T) {
+		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, &ServerOptions{
+			SupportedVersions: customVersions,
+		})
+		if s.supportedVersions == nil {
+			t.Fatal("supportedVersions is nil, want non-nil")
+		}
+		if diff := cmp.Diff(customVersions, s.supportedVersions); diff != "" {
+			t.Errorf("supportedVersions mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("zero value SupportedVersions uses default", func(t *testing.T) {
+		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, nil)
+		if diff := cmp.Diff(supportedProtocolVersions, s.supportedVersions); diff != "" {
+			t.Errorf("supportedVersions mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("negotiatedVersion with custom supported versions", func(t *testing.T) {
+		tests := []struct {
+			clientVersion string
+			want          string
+		}{
+			{"2025-11-25", "2025-11-25"}, // supported, use as-is
+			{"2025-03-26", "2025-03-26"}, // supported, use as-is
+			{"2025-06-18", "2025-11-25"}, // not in custom list, fall back to first
+			{"2024-11-05", "2025-11-25"}, // not in custom list, fall back to first
+		}
+		for _, tc := range tests {
+			t.Run(tc.clientVersion, func(t *testing.T) {
+				got := negotiatedVersion(tc.clientVersion, customVersions)
+				if got != tc.want {
+					t.Errorf("negotiatedVersion(%q, customVersions) = %q, want %q", tc.clientVersion, got, tc.want)
+				}
+			})
+		}
+	})
+}

@@ -387,18 +387,21 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
-	if !slices.Contains(supportedProtocolVersions, protocolVersion) {
-		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
+
+	// Get the server to access its supported versions
+	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewStreamableHTTPHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
+	}
+
+	if !slices.Contains(server.supportedVersions, protocolVersion) {
+		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(server.supportedVersions, ",")), http.StatusBadRequest)
 		return
 	}
 
 	if sessInfo == nil {
-		server := h.getServer(req)
-		if server == nil {
-			// The getServer argument to NewStreamableHTTPHandler returned nil.
-			http.Error(w, "no server available", http.StatusBadRequest)
-			return
-		}
 		if sessionID == "" {
 			// In stateless mode, sessionID may be nonempty even if there's no
 			// existing transport.
