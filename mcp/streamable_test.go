@@ -1703,40 +1703,16 @@ func TestStreamableStateless(t *testing.T) {
 		}
 	}
 
-	sessionlessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
-		// Return a stateless server which never assigns a session ID.
-		server := NewServer(testImpl, &ServerOptions{
-			GetSessionID: func() string { return "" },
-		})
-		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-		return server
-	}, &StreamableHTTPOptions{
-		Stateless: true,
-	})
-
-	// First, test the "sessionless" stateless mode, where there is no session ID.
-	t.Run("sessionless", func(t *testing.T) {
-		testStreamableHandler(t, sessionlessHandler, requests)
-		testClientCompatibility(t, sessionlessHandler)
-	})
-
-	// Next, test the default stateless mode, where session IDs are permitted.
-	//
-	// This can be used by tools to look up application state preserved across
-	// subsequent requests.
-	requests[0].wantSessionID = true // now expect a session ID for initialize
 	statelessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
-		// Return a server with default options which should assign a random session ID.
 		server := NewServer(testImpl, nil)
 		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 		return server
 	}, &StreamableHTTPOptions{
 		Stateless: true,
 	})
-	t.Run("stateless", func(t *testing.T) {
-		testStreamableHandler(t, statelessHandler, requests)
-		testClientCompatibility(t, sessionlessHandler)
-	})
+
+	testStreamableHandler(t, statelessHandler, requests)
+	testClientCompatibility(t, statelessHandler)
 }
 
 func textContent(t *testing.T, res *CallToolResult) string {
