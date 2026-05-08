@@ -189,7 +189,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.Client == nil {
 		config.Client = http.DefaultClient
 	}
-	return &AuthorizationCodeHandler{config: config}, nil
+	return &AuthorizationCodeHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 func isNonRootHTTPSURL(u string) bool {
@@ -579,9 +582,6 @@ func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedS
 	tok, err := h.tokenSource.Token()
 	if err != nil {
 		return err
-	}
-	if h.grantedScopes == nil {
-		h.grantedScopes = make(map[string][]string)
 	}
 	if tokenScopes := ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes

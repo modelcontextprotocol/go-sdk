@@ -69,7 +69,10 @@ func NewClientCredentialsHandler(config *ClientCredentialsHandlerConfig) (*Clien
 	if config.Credentials.ClientSecretAuth == nil {
 		return nil, fmt.Errorf("clientSecretAuth is required for client credentials grant")
 	}
-	return &ClientCredentialsHandler{config: config}, nil
+	return &ClientCredentialsHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 // TokenSource returns the token source for outgoing requests.
@@ -158,9 +161,6 @@ func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedS
 	if err != nil {
 		h.tokenSource = nil
 		return fmt.Errorf("client credentials token request failed: %w", err)
-	}
-	if h.grantedScopes == nil {
-		h.grantedScopes = make(map[string][]string)
 	}
 	if tokenScopes := auth.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
