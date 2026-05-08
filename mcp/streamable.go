@@ -339,6 +339,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		http.Error(w, "failed connection", http.StatusInternalServerError)
 		return
 	}
+	transport.connection.toolLookup = server.getServerTool
 	defer session.Close()
 
 	transport.ServeHTTP(w, req)
@@ -552,12 +553,17 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		},
 	}
 
+	// Pass req.Context() here, to allow middleware to add context values.
+	// The context is detached in the jsonrpc2 library when handling the
+	// long-running stream.
 	session, err := server.Connect(req.Context(), transport, connectOpts)
 	if err != nil {
 		http.Error(w, "failed connection", http.StatusInternalServerError)
 		return
 	}
-
+	transport.connection.toolLookup = server.getServerTool
+	// Capture the user ID from the token info to enable session hijacking
+	// prevention on subsequent requests.
 	var userID string
 	if tokenInfo := auth.TokenInfoFromContext(req.Context()); tokenInfo != nil {
 		userID = tokenInfo.UserID
@@ -717,6 +723,8 @@ type streamableServerConn struct {
 	eventStore   EventStore
 
 	logger *slog.Logger
+
+	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -1120,7 +1128,23 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	if s.id == "" {
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
+		//
+		// On HTTP/2, headers and body travel as separate frames (HEADERS and
+		// DATA). Reverse proxies (e.g. Envoy, Caddy, net/http/httputil)
+		// commonly buffer the HEADERS frame until they have a DATA frame to
+		// coalesce it with — there is no HTTP/2 equivalent of HTTP/1.1's
+		// Transfer-Encoding: chunked signal that says "this is streaming, send
+		// headers now". Calling Flush() alone is not sufficient: it pushes
+		// the kernel buffer to the proxy, but the proxy still holds the
+		// HEADERS frame.
+		//
+		// Write an SSE comment (lines starting with ":" are ignored by
+		// clients per RFC) so a DATA frame is produced, which forces the
+		// proxy to forward both frames. See:
+		//   https://github.com/golang/go/issues/31125
+		//   https://github.com/caddyserver/caddy/issues/4247
 		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, ": ok\n\n")
 		rc := http.NewResponseController(w)
 		// Ignore returned error as flushing is best-effort.
 		_ = rc.Flush()
@@ -1245,9 +1269,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
 	if !isBatch && len(incoming) == 1 {
-		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
+		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
 			}
@@ -1872,7 +1896,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		// Keep this after the setMCPHeaders call to ensure that the
 		// protocol version header is set.
-		setStandardHeaders(req.Header, msg)
+		setStandardHeaders(ctx, req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.

@@ -1915,9 +1915,9 @@ func TestStreamableGET(t *testing.T) {
 	}
 }
 
-// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method and
-// Mcp-Name header validation through the full HTTP handler, as specified
-// in SEP-2243.
+// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method,
+// Mcp-Name, and Mcp-Param header validation through the full HTTP handler,
+// as specified in SEP-2243.
 func TestStreamableMcpHeaderValidation(t *testing.T) {
 	// Temporarily register the future version so the handler accepts it.
 	orig := supportedProtocolVersions
@@ -1927,6 +1927,25 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
 		&Tool{Name: "my-tool", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
 		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
@@ -2018,6 +2037,50 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"us-west1"},
+			},
+			messages: []jsonrpc.Message{req(7, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+			})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"eu-central1"},
+			},
+			messages: []jsonrpc.Message{req(8, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "header mismatch",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"execute_sql"},
+			},
+			messages: []jsonrpc.Message{req(9, "tools/call", &CallToolParams{
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "missing",
 		},
 	})
 }
@@ -2168,6 +2231,174 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
 		},
 	})
+}
+
+// TestStreamableParamHeadersClientSetsHeaders verifies that the client sets
+// Mcp-Param-* headers on tool calls when the tool has x-mcp-header annotations.
+func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var capturedHeaders http.Header
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				capturedHeaders = req.Header.Clone()
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	clientTransport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	// ListTools to populate the tool cache (needed for param headers).
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = session.CallTool(ctx, &CallToolParams{
+		Name:      "execute_sql",
+		Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if capturedHeaders == nil {
+		t.Fatal("no tool call headers captured")
+	}
+	if got := capturedHeaders.Get(methodHeader); got != "tools/call" {
+		t.Errorf("Mcp-Method = %q, want %q", got, "tools/call")
+	}
+	if got := capturedHeaders.Get(nameHeader); got != "execute_sql" {
+		t.Errorf("Mcp-Name = %q, want %q", got, "execute_sql")
+	}
+	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
+		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+}
+
+// TestStreamableFilterValidToolsIntegration verifies that AddTool rejects
+// tools with invalid x-mcp-header annotations at registration time, and
+// that valid tools are returned by ListTools.
+func TestStreamableFilterValidToolsIntegration(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	noop := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{}, nil
+	}
+
+	// Valid tool with correct x-mcp-header annotation.
+	server.AddTool(&Tool{
+		Name: "valid-tool",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{
+					"type":         "string",
+					"x-mcp-header": "Region",
+				},
+			},
+		},
+	}, noop)
+
+	// Invalid tool: x-mcp-header on an array type should panic.
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("AddTool with invalid x-mcp-header annotation did not panic")
+			}
+		}()
+		server.AddTool(&Tool{
+			Name: "invalid-tool",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items": map[string]any{
+						"type":         "array",
+						"x-mcp-header": "Items",
+					},
+				},
+			},
+		}, noop)
+	}()
+
+	// Tool with no x-mcp-header annotations (always valid).
+	server.AddTool(&Tool{
+		Name:        "plain-tool",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, noop)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	result, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolNames := make([]string, len(result.Tools))
+	for i, tool := range result.Tools {
+		toolNames[i] = tool.Name
+	}
+	sort.Strings(toolNames)
+
+	wantNames := []string{"plain-tool", "valid-tool"}
+	if !slices.Equal(toolNames, wantNames) {
+		t.Errorf("ListTools returned %v, want %v", toolNames, wantNames)
+	}
 }
 
 // TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
@@ -2902,5 +3133,101 @@ func TestStreamableOriginProtection(t *testing.T) {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatusCode)
 			}
 		})
+	}
+}
+
+// TestStandaloneSSEEmitsCommentForHTTP2Flush is a regression test for the
+// HTTP/2 reverse-proxy header-buffering bug. The standalone SSE GET stream
+// must emit at least one body byte (an SSE comment) immediately after the
+// response headers. Without a DATA frame, HTTP/2 reverse proxies (Envoy,
+// Caddy, net/http/httputil, etc.) buffer the HEADERS frame indefinitely
+// because they have nothing to coalesce it with — calling Flush() alone is
+// not sufficient.
+//
+// SSE explicitly defines lines starting with ":" as comments that clients
+// ignore, so this is behavior-preserving for the SSE protocol while
+// producing the DATA frame that HTTP/2 proxies need.
+func TestStandaloneSSEEmitsCommentForHTTP2Flush(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Initialize a session so we have a valid Mcp-Session-Id to use on the
+	// standalone SSE GET.
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	// Open the standalone SSE stream.
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getReq.Header.Set("Accept", "text/event-stream")
+	getReq.Header.Set(sessionIDHeader, sessionID)
+
+	resp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET standalone SSE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q; want text/event-stream", got)
+	}
+
+	// Read the first chunk. With the fix, an SSE comment (": ok\n\n") is
+	// written immediately. Without the fix, the body has no bytes to read
+	// until the server pushes an event, which won't happen in this test.
+	type readResult struct {
+		n   int
+		err error
+		buf []byte
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, err := resp.Body.Read(buf)
+		ch <- readResult{n: n, err: err, buf: buf}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil && r.err != io.EOF {
+			t.Fatalf("reading first SSE chunk: %v", r.err)
+		}
+		if r.n == 0 {
+			t.Fatal("first SSE chunk was empty; expected an SSE comment to flush HTTP/2 proxy HEADERS frame")
+		}
+		got := string(r.buf[:r.n])
+		// SSE spec: lines starting with ":" are comments, ignored by clients.
+		// We don't pin the exact comment text; just require the first byte to
+		// be the SSE comment marker so HTTP/2 proxies have a DATA frame.
+		if !strings.HasPrefix(got, ":") {
+			t.Errorf("first SSE chunk = %q; want it to start with %q (SSE comment marker, so HTTP/2 proxies receive a DATA frame and forward HEADERS)", got, ":")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first SSE bytes; the standalone SSE stream must emit a DATA frame immediately so HTTP/2 reverse proxies don't buffer the HEADERS frame")
 	}
 }
