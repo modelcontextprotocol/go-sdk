@@ -574,7 +574,7 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	return nil
 }
 
-// updateGrantedScopes updates the granted scopes based on the token source and requested scopes
+// updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
 func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
 	if h.tokenSource == nil {
 		return nil
