@@ -157,7 +157,8 @@ func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedS
 	}
 	tok, err := h.tokenSource.Token()
 	if err != nil {
-		return err
+		h.tokenSource = nil
+		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
 	if h.grantedScopes == nil {
 		h.grantedScopes = make(map[string][]string)

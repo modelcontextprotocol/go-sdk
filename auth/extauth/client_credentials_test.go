@@ -270,6 +270,16 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 		ClientCredentialsConfig: &oauthtest.ClientCredentialsConfig{
 			Enabled: true,
 		},
+		TokenScopeFunc: func(requestedScope string) string {
+			// Simulate a server that never grants "write".
+			var granted []string
+			for _, s := range strings.Fields(requestedScope) {
+				if s != "write" {
+					granted = append(granted, s)
+				}
+			}
+			return strings.Join(granted, " ")
+		},
 	})
 	authServer.Start(t)
 
@@ -288,42 +298,41 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First authorization: 401 with scope="read"
+	// First authorization: 401 with scope="read write".
+	// The token response will only grant "read" (TokenScopeFunc strips "write").
 	resp := &http.Response{
 		StatusCode: http.StatusUnauthorized,
 		Header:     make(http.Header),
 		Body:       http.NoBody,
 	}
-	resp.Header.Set("WWW-Authenticate", `Bearer scope="read"`)
+	resp.Header.Set("WWW-Authenticate", `Bearer scope="read write"`)
 	req := httptest.NewRequest("GET", resourceURL, nil)
 	if err := handler.Authorize(t.Context(), req, resp); err != nil {
 		t.Fatalf("First Authorize failed: %v", err)
 	}
 
-	// Verify handler tracked the granted scopes keyed by issuer.
+	// Verify only "read" was granted (the token omitted "write").
 	issuer := authServer.URL()
-	firstScopes := append([]string{}, handler.grantedScopes[issuer]...)
-	wantFirst := []string{"read"}
-	if diff := cmp.Diff(wantFirst, firstScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+	if diff := cmp.Diff([]string{"read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 
-	// Second authorization: 401 with scope="write" (simulating step-up)
+	// Second authorization: 401 with scope="admin" (simulating step-up).
+	// Accumulated scopes should be "read" (previously granted) + "admin" (new),
+	// but NOT "write" (requested but never granted).
 	resp2 := &http.Response{
 		StatusCode: http.StatusUnauthorized,
 		Header:     make(http.Header),
 		Body:       http.NoBody,
 	}
-	resp2.Header.Set("WWW-Authenticate", `Bearer scope="write"`)
+	resp2.Header.Set("WWW-Authenticate", `Bearer scope="admin"`)
 	req2 := httptest.NewRequest("GET", resourceURL, nil)
 	if err := handler.Authorize(t.Context(), req2, resp2); err != nil {
 		t.Fatalf("Second Authorize failed: %v", err)
 	}
 
-	// Verify handler accumulated both scopes.
-	secondScopes := append([]string{}, handler.grantedScopes[issuer]...)
-	wantSecond := []string{"read", "write"}
-	if diff := cmp.Diff(wantSecond, secondScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+	// Verify accumulated scopes: "read" (granted) + "admin" (new), no "write".
+	if diff := cmp.Diff([]string{"admin", "read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("After second Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 }

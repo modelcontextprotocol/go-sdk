@@ -124,6 +124,16 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 				},
 			},
 		},
+		TokenScopeFunc: func(requestedScope string) string {
+			// Simulate a server that never grants "write".
+			var granted []string
+			for _, s := range strings.Fields(requestedScope) {
+				if s != "write" {
+					granted = append(granted, s)
+				}
+			}
+			return strings.Join(granted, " ")
+		},
 	})
 	authServer.Start(t)
 
@@ -138,6 +148,11 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	}))
 
 	var capturedAuthURLs []string
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
 		RedirectURL: "http://localhost:12345/callback",
@@ -149,14 +164,27 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 		},
 		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 			capturedAuthURLs = append(capturedAuthURLs, args.URL)
-			return nil, fmt.Errorf("stop after capturing URL")
+			resp, err := noRedirectClient.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			loc, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &AuthorizationResult{
+				Code:  loc.Query().Get("code"),
+				State: loc.Query().Get("state"),
+			}, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
 	}
 
-	// First authorization: 401 with scope="read"
+	// First authorization: 401 with scope="read write".
+	// The token response will only grant "read" (TokenScopeFunc strips "write").
 	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
 	resp := &http.Response{
 		StatusCode: http.StatusUnauthorized,
@@ -164,22 +192,29 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 		Body:       http.NoBody,
 	}
 	resp.Header.Set("WWW-Authenticate",
-		fmt.Sprintf(`Bearer scope="read", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
-	err = handler.Authorize(context.Background(), req, resp)
-	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
-		t.Fatalf("First Authorize expected error containing 'stop after capturing URL', got: %v", err)
+		fmt.Sprintf(`Bearer scope="read write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("First Authorize failed: %v", err)
 	}
 
-	// Verify first auth URL requested only "read".
+	// Verify first auth URL requested "read" and "write".
 	firstURL, err := url.Parse(capturedAuthURLs[0])
 	if err != nil {
 		t.Fatalf("Failed to parse first auth URL: %v", err)
 	}
-	if got := firstURL.Query().Get("scope"); got != "read" {
-		t.Errorf("First auth scope = %q, want %q", got, "read")
+	firstScopes := strings.Fields(firstURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"read", "write"}, firstScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("First auth scopes mismatch (-want +got):\n%s", diff)
 	}
 
-	// Second authorization: 403 insufficient_scope with scope="write"
+	// Verify only "read" was granted (the token omitted "write").
+	issuer := authServer.URL()
+	if diff := cmp.Diff([]string{"read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second authorization: 403 insufficient_scope with scope="admin".
+	// Accumulated scopes should be "read" (previously granted) + "admin" (new).
 	req2 := httptest.NewRequest(http.MethodGet, resourceURL, nil)
 	resp2 := &http.Response{
 		StatusCode: http.StatusForbidden,
@@ -187,20 +222,20 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 		Body:       http.NoBody,
 	}
 	resp2.Header.Set("WWW-Authenticate",
-		fmt.Sprintf(`Bearer error="insufficient_scope", scope="write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
-	err = handler.Authorize(context.Background(), req2, resp2)
-	if err == nil || !strings.Contains(err.Error(), "stop after capturing URL") {
-		t.Fatalf("Second Authorize expected error containing 'stop after capturing URL', got: %v", err)
+		fmt.Sprintf(`Bearer error="insufficient_scope", scope="admin", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req2, resp2); err != nil {
+		t.Fatalf("Second Authorize failed: %v", err)
 	}
 
-	// Verify second auth URL does NOT include "read" from the first (failed)
-	// attempt: only successfully authorized scopes are accumulated.
+	// Verify second auth URL accumulated "read" (granted) + "admin" (challenged),
+	// but NOT "write" (requested but never granted).
 	secondURL, err := url.Parse(capturedAuthURLs[1])
 	if err != nil {
 		t.Fatalf("Failed to parse second auth URL: %v", err)
 	}
-	if got := secondURL.Query().Get("scope"); got != "write" {
-		t.Errorf("Second auth scope = %q, want %q", got, "write")
+	secondScopes := strings.Fields(secondURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"admin", "read"}, secondScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("Second auth scopes mismatch (-want +got):\n%s", diff)
 	}
 }
 
