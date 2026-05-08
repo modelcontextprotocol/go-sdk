@@ -337,61 +337,6 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 	}
 }
 
-func TestUnionScopes(t *testing.T) {
-	tests := []struct {
-		name       string
-		existing   []string
-		challenged []string
-		want       []string
-	}{
-		{
-			name:       "both empty",
-			existing:   nil,
-			challenged: nil,
-			want:       nil,
-		},
-		{
-			name:       "existing only",
-			existing:   []string{"read"},
-			challenged: nil,
-			want:       []string{"read"},
-		},
-		{
-			name:       "challenged only",
-			existing:   nil,
-			challenged: []string{"write"},
-			want:       []string{"write"},
-		},
-		{
-			name:       "disjoint scopes",
-			existing:   []string{"read"},
-			challenged: []string{"write"},
-			want:       []string{"read", "write"},
-		},
-		{
-			name:       "overlapping scopes",
-			existing:   []string{"read", "write"},
-			challenged: []string{"write", "admin"},
-			want:       []string{"read", "write", "admin"},
-		},
-		{
-			name:       "identical scopes",
-			existing:   []string{"read", "write"},
-			challenged: []string{"read", "write"},
-			want:       []string{"read", "write"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := unionScopes(tt.existing, tt.challenged)
-			if diff := cmp.Diff(tt.want, got, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
-				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
 func TestSelectTokenAuthMethod(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -133,7 +132,7 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously requested scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	scopes = unionScopes(h.grantedScopes[asm.Issuer], scopes)
+	scopes = auth.UnionScopes(h.grantedScopes[asm.Issuer], scopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	creds := h.config.Credentials
@@ -163,7 +162,7 @@ func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedS
 	if h.grantedScopes == nil {
 		h.grantedScopes = make(map[string][]string)
 	}
-	if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
+	if tokenScopes := auth.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
@@ -250,27 +249,6 @@ func scopesFromChallenges(cs []oauthex.Challenge) []string {
 		}
 	}
 	return nil
-}
-
-// scopesFromToken extracts the granted scopes from an OAuth2 token response.
-// Per RFC 6749 §5.1, the scope parameter is optional; returns nil if absent.
-func scopesFromToken(token *oauth2.Token) []string {
-	scope, ok := token.Extra("scope").(string)
-	if !ok || scope == "" {
-		return nil
-	}
-	return strings.Fields(scope)
-}
-
-func unionScopes(existing, challenged []string) []string {
-	combined := make(map[string]struct{})
-	for _, s := range existing {
-		combined[s] = struct{}{}
-	}
-	for _, s := range challenged {
-		combined[s] = struct{}{}
-	}
-	return slices.Collect(maps.Keys(combined))
 }
 
 // selectTokenAuthMethod selects the preferred token endpoint auth method based on

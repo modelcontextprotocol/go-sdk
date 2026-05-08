@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -294,7 +293,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously requested scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = unionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	requestedScopes = UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -354,18 +353,6 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 		}
 	}
 	return ""
-}
-
-// unionScopes returns the union of existing and challenged scopes
-func unionScopes(existing, challenged []string) []string {
-	combined := make(map[string]struct{})
-	for _, s := range existing {
-		combined[s] = struct{}{}
-	}
-	for _, s := range challenged {
-		combined[s] = struct{}{}
-	}
-	return slices.Collect(maps.Keys(combined))
 }
 
 // getProtectedResourceMetadata returns the protected resource metadata.
@@ -584,16 +571,6 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	return nil
 }
 
-// scopesFromToken extracts the granted scopes from an OAuth2 token response.
-// Per RFC 6749 §3.3, the scope parameter is omitted when all requested scopes are granted.
-func scopesFromToken(token *oauth2.Token) []string {
-	scope, ok := token.Extra("scope").(string)
-	if !ok {
-		return nil
-	}
-	return strings.Fields(scope)
-}
-
 // updateGrantedScopes updates the granted scopes based on the token source and requested scopes
 func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
 	if h.tokenSource == nil {
@@ -606,7 +583,7 @@ func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedS
 	if h.grantedScopes == nil {
 		h.grantedScopes = make(map[string][]string)
 	}
-	if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
+	if tokenScopes := ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
