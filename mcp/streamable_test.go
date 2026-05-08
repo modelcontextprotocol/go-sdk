@@ -2904,3 +2904,99 @@ func TestStreamableOriginProtection(t *testing.T) {
 		})
 	}
 }
+
+// TestStandaloneSSEEmitsCommentForHTTP2Flush is a regression test for the
+// HTTP/2 reverse-proxy header-buffering bug. The standalone SSE GET stream
+// must emit at least one body byte (an SSE comment) immediately after the
+// response headers. Without a DATA frame, HTTP/2 reverse proxies (Envoy,
+// Caddy, net/http/httputil, etc.) buffer the HEADERS frame indefinitely
+// because they have nothing to coalesce it with — calling Flush() alone is
+// not sufficient.
+//
+// SSE explicitly defines lines starting with ":" as comments that clients
+// ignore, so this is behavior-preserving for the SSE protocol while
+// producing the DATA frame that HTTP/2 proxies need.
+func TestStandaloneSSEEmitsCommentForHTTP2Flush(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Initialize a session so we have a valid Mcp-Session-Id to use on the
+	// standalone SSE GET.
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	// Open the standalone SSE stream.
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getReq.Header.Set("Accept", "text/event-stream")
+	getReq.Header.Set(sessionIDHeader, sessionID)
+
+	resp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET standalone SSE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q; want text/event-stream", got)
+	}
+
+	// Read the first chunk. With the fix, an SSE comment (": ok\n\n") is
+	// written immediately. Without the fix, the body has no bytes to read
+	// until the server pushes an event, which won't happen in this test.
+	type readResult struct {
+		n   int
+		err error
+		buf []byte
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, err := resp.Body.Read(buf)
+		ch <- readResult{n: n, err: err, buf: buf}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil && r.err != io.EOF {
+			t.Fatalf("reading first SSE chunk: %v", r.err)
+		}
+		if r.n == 0 {
+			t.Fatal("first SSE chunk was empty; expected an SSE comment to flush HTTP/2 proxy HEADERS frame")
+		}
+		got := string(r.buf[:r.n])
+		// SSE spec: lines starting with ":" are comments, ignored by clients.
+		// We don't pin the exact comment text; just require the first byte to
+		// be the SSE comment marker so HTTP/2 proxies have a DATA frame.
+		if !strings.HasPrefix(got, ":") {
+			t.Errorf("first SSE chunk = %q; want it to start with %q (SSE comment marker, so HTTP/2 proxies receive a DATA frame and forward HEADERS)", got, ":")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first SSE bytes; the standalone SSE stream must emit a DATA frame immediately so HTTP/2 reverse proxies don't buffer the HEADERS frame")
+	}
+}
