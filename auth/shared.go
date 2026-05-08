@@ -89,7 +89,7 @@ func UnionScopes(existing, challenged []string) []string {
 // Per RFC 6749 §5.1, the scope parameter is optional; returns nil if absent.
 func ScopesFromToken(token *oauth2.Token) []string {
 	scope, ok := token.Extra("scope").(string)
-	if !ok || scope == "" {
+	if !ok {
 		return nil
 	}
 	return strings.Fields(scope)
