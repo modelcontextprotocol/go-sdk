@@ -334,12 +334,12 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	session, err := server.Connect(req.Context(), transport, connectOpts)
+	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 	if err != nil {
+		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 		http.Error(w, "failed connection", http.StatusInternalServerError)
 		return
 	}
-	transport.connection.toolLookup = server.getServerTool
 	defer session.Close()
 
 	transport.ServeHTTP(w, req)
@@ -389,6 +389,15 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 	return &ServerSessionOptions{
 		State: state,
 	}, nil
+}
+
+func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
+	s, err := server.Connect(ctx, transport, opts)
+	if err != nil {
+		return nil, err
+	}
+	transport.connection.toolLookup = server.getServerTool
+	return s, nil
 }
 
 // serveStateful handles requests for stateful servers.
@@ -529,8 +538,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		session, err := server.Connect(req.Context(), transport, connectOpts)
+		session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 		if err != nil {
+			h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
@@ -556,12 +566,12 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// Pass req.Context() here, to allow middleware to add context values.
 	// The context is detached in the jsonrpc2 library when handling the
 	// long-running stream.
-	session, err := server.Connect(req.Context(), transport, connectOpts)
+	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 	if err != nil {
+		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 		http.Error(w, "failed connection", http.StatusInternalServerError)
 		return
 	}
-	transport.connection.toolLookup = server.getServerTool
 	// Capture the user ID from the token info to enable session hijacking
 	// prevention on subsequent requests.
 	var userID string
