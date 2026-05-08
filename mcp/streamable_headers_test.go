@@ -905,7 +905,7 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 				Name:      "execute_sql",
 				Arguments: map[string]any{"query": "SELECT 1"},
 			},
-			wantHeaders: map[string]string{},
+			wantHeaders: nil,
 		},
 		{
 			name: "omits header when argument is null",
@@ -914,7 +914,7 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 				Name:      "execute_sql",
 				Arguments: map[string]any{"region": nil, "query": "SELECT 1"},
 			},
-			wantHeaders: map[string]string{},
+			wantHeaders: nil,
 		},
 		{
 			name: "encodes non-ASCII value",
@@ -972,7 +972,7 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 				Name:      "execute_sql",
 				Arguments: map[string]any{"region": "us-west1"},
 			},
-			wantHeaders: map[string]string{},
+			wantHeaders: nil,
 		},
 	}
 
