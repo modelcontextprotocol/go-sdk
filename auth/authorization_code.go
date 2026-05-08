@@ -290,7 +290,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		requestedScopes = append(requestedScopes, "offline_access")
 	}
 
-	// Accumulate scopes: union previously requested scopes with the newly
+	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
 	requestedScopes = UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
