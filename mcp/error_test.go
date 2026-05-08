@@ -111,6 +111,22 @@ func TestServerErrors(t *testing.T) {
 	}
 }
 
+// TestResourceNotFoundErrorCode verifies ResourceNotFoundError code and
+// CodeResourceNotFound are -32602 (InvalidParams) per SEP-2164.
+func TestResourceNotFoundErrorCode(t *testing.T) {
+	err := ResourceNotFoundError("file:///test.txt")
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("got error type %T, want *jsonrpc.Error", err)
+	}
+	if rpcErr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("got error code %d, want %d (InvalidParams)", rpcErr.Code, jsonrpc.CodeInvalidParams)
+	}
+	if CodeResourceNotFound != jsonrpc.CodeInvalidParams {
+		t.Errorf("CodeResourceNotFound = %d, want %d", CodeResourceNotFound, jsonrpc.CodeInvalidParams)
+	}
+}
+
 // TestInputValidationToolError validates that input validation errors (missing
 // required params, wrong types) are returned as tool results with IsError=true,
 // not as JSON-RPC errors. This allows LLMs to see the error and self-correct.

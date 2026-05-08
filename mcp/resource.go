@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/yosida95/uritemplate/v3"
@@ -37,8 +38,25 @@ type serverResourceTemplate struct {
 // If it cannot find the resource, it should return the result of calling [ResourceNotFoundError].
 type ResourceHandler func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error)
 
+// customresnotfounderrcode is a compatibility parameter that restores the
+// pre-1.7.0 behavior of [ResourceNotFoundError] and [CodeResourceNotFound],
+// where the error code was a custom -32002. See the documentation for the mcpgodebug
+// package for instructions on how to enable it.
+// The option will be removed in the future version of the SDK.
+var customresnotfounderrcode = mcpgodebug.Value("customresnotfounderrcode")
+
+func init() {
+	if customresnotfounderrcode == "1" {
+		CodeResourceNotFound = -32002
+	}
+}
+
 // ResourceNotFoundError returns an error indicating that a resource being read could
 // not be found.
+//
+// By default, the error code is -32602 (Invalid Params), as specified in the
+// MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
+// error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
 func ResourceNotFoundError(uri string) error {
 	return &jsonrpc.Error{
 		Code:    CodeResourceNotFound,

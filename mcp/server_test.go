@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"slices"
@@ -599,6 +600,52 @@ func TestAddToolNameValidation(t *testing.T) {
 				if logOutput != "" {
 					t.Errorf("expected empty log output, got %q", logOutput)
 				}
+			}
+		})
+	}
+}
+
+func TestAddToolNilSchema(t *testing.T) {
+	var nilSchema *jsonschema.Schema
+
+	panicMsg := func(f func()) (msg string) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = fmt.Sprintf("%v", r)
+			}
+		}()
+		f()
+		return msg
+	}
+
+	// Call s.AddTool directly to exercise the typed-nil checks added to that method.
+	tests := []struct {
+		name        string
+		tool        *Tool
+		wantContain string
+	}{
+		{
+			name:        "typed nil InputSchema",
+			tool:        &Tool{Name: "T", InputSchema: nilSchema},
+			wantContain: "input schema is nil",
+		},
+		{
+			name:        "typed nil OutputSchema",
+			tool:        &Tool{Name: "T", InputSchema: &jsonschema.Schema{Type: "object"}, OutputSchema: nilSchema},
+			wantContain: "output schema is nil",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(testImpl, nil)
+
+			msg := panicMsg(func() {
+				s.AddTool(tc.tool, nil)
+			})
+			if msg == "" {
+				t.Error("expected panic")
+			} else if !strings.Contains(msg, tc.wantContain) {
+				t.Errorf("panic message %q does not contain %q", msg, tc.wantContain)
 			}
 		})
 	}

@@ -37,6 +37,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2"
 )
 
 // A StreamableHTTPHandler is an http.Handler that serves streamable MCP
@@ -235,7 +236,7 @@ func (h *StreamableHTTPHandler) closeAll() {
 // disablelocalhostprotection is a compatibility parameter that allows to disable
 // DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
 // See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.6.0 version of the SDK.
+// The option will be removed in the 1.8.0 version of the SDK.
 var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 
 // enableoriginverification is a compatibility parameter that restores the
@@ -490,6 +491,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, "failed connection", http.StatusInternalServerError)
 			return
 		}
+		transport.connection.toolLookup = server.getServerTool
 		// Capture the user ID from the token info to enable session hijacking
 		// prevention on subsequent requests.
 		var userID string
@@ -667,6 +669,8 @@ type streamableServerConn struct {
 	eventStore   EventStore
 
 	logger *slog.Logger
+
+	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
 
@@ -1060,7 +1064,23 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	if s.id == "" {
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
+		//
+		// On HTTP/2, headers and body travel as separate frames (HEADERS and
+		// DATA). Reverse proxies (e.g. Envoy, Caddy, net/http/httputil)
+		// commonly buffer the HEADERS frame until they have a DATA frame to
+		// coalesce it with — there is no HTTP/2 equivalent of HTTP/1.1's
+		// Transfer-Encoding: chunked signal that says "this is streaming, send
+		// headers now". Calling Flush() alone is not sufficient: it pushes
+		// the kernel buffer to the proxy, but the proxy still holds the
+		// HEADERS frame.
+		//
+		// Write an SSE comment (lines starting with ":" are ignored by
+		// clients per RFC) so a DATA frame is produced, which forces the
+		// proxy to forward both frames. See:
+		//   https://github.com/golang/go/issues/31125
+		//   https://github.com/caddyserver/caddy/issues/4247
 		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, ": ok\n\n")
 		rc := http.NewResponseController(w)
 		// Ignore returned error as flushing is best-effort.
 		_ = rc.Flush()
@@ -1185,9 +1205,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Validate MCP standard headers (Mcp-Method, Mcp-Name)
+	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
 	if !isBatch && len(incoming) == 1 {
-		if err := validateMcpHeaders(req.Header, incoming[0]); err != nil {
+		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
 			}
@@ -1803,6 +1823,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
+
 		if err := c.setMCPHeaders(req); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
@@ -1811,7 +1832,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 		// Keep this after the setMCPHeaders call to ensure that the
 		// protocol version header is set.
-		setStandardHeaders(req.Header, msg)
+		setStandardHeaders(ctx, req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
@@ -1934,9 +1955,20 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 		if ts != nil {
 			token, err := ts.Token()
 			if err != nil {
-				return err
-			}
-			if token != nil {
+				// If the error is an invalid_grant oauth2.RetrieveError it indicates
+				// that the token source doesn't have valid authorization for the token
+				// endpoint, per RFC 6749 section 5.2. For example, the refresh token
+				// may be expired or invalid.
+				//
+				// In that case, ignore the error, skip setting the Authorization
+				// header, and proceed with the request. Callers that support
+				// authorization flows get a 401/403 response and trigger the
+				// Authorize() flow to refresh their token.
+				var retrieveErr *oauth2.RetrieveError
+				if !errors.As(err, &retrieveErr) || retrieveErr.ErrorCode != "invalid_grant" {
+					return err
+				}
+			} else if token != nil {
 				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 			}
 		}
@@ -2236,8 +2268,10 @@ func (c *streamableClientConn) Close() error {
 			} else {
 				if err := c.setMCPHeaders(req); err != nil {
 					c.closeErr = err
-				} else if _, err := c.client.Do(req); err != nil {
+				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err
+				} else {
+					resp.Body.Close()
 				}
 			}
 		}

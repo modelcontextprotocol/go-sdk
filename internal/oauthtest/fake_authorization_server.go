@@ -82,6 +82,9 @@ type Config struct {
 	// ClientCredentialsConfig enables RFC 6749 Section 4.4 client credentials
 	// grant at the /token endpoint.
 	ClientCredentialsConfig *ClientCredentialsConfig
+	// ScopesSupported is an optional list of scopes to advertise in the
+	// authorization server metadata.
+	ScopesSupported []string
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -166,6 +169,7 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		AuthorizationEndpoint:             s.URL() + s.config.IssuerPath + "/authorize",
 		TokenEndpoint:                     s.URL() + s.config.IssuerPath + "/token",
 		RegistrationEndpoint:              registrationEndpoint,
+		ScopesSupported:                   s.config.ScopesSupported,
 		ResponseTypesSupported:            []string{"code"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
