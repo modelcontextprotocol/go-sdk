@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -129,6 +130,7 @@ type AuthorizationCodeHandler struct {
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
 
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
 	grantedScopes map[string][]string
 }
 
@@ -296,7 +298,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -583,7 +585,7 @@ func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedS
 	if err != nil {
 		return err
 	}
-	if tokenScopes := ScopesFromToken(tok); tokenScopes == nil {
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes

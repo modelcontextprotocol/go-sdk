@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -48,6 +49,7 @@ type ClientCredentialsHandler struct {
 	config      *ClientCredentialsHandlerConfig
 	tokenSource oauth2.TokenSource
 
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
 	grantedScopes map[string][]string
 }
 
@@ -135,7 +137,7 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = auth.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	creds := h.config.Credentials
@@ -162,7 +164,7 @@ func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedS
 		h.tokenSource = nil
 		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
-	if tokenScopes := auth.ScopesFromToken(tok); tokenScopes == nil {
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
