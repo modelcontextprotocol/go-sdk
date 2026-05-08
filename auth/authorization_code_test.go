@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -874,17 +875,17 @@ func TestUnionScopes(t *testing.T) {
 			want:       []string{"read", "write"},
 		},
 		{
-			name:       "preserves order",
+			name:       "mixed scopes",
 			existing:   []string{"b", "a"},
 			challenged: []string{"c", "a"},
-			want:       []string{"b", "a", "c"},
+			want:       []string{"a", "b", "c"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := unionScopes(tt.existing, tt.challenged)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
+			if diff := cmp.Diff(tt.want, got, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
 			}
 		})

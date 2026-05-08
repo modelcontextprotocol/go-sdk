@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -147,23 +148,25 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	h.tokenSource = cfg.TokenSource(ctxWithClient)
 
-	// Eagerly fetch a token to surface errors immediately.
+	return h.updateGrantedScopes(asm.Issuer, scopes)
+}
+
+func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
 	tok, err := h.tokenSource.Token()
 	if err != nil {
-		h.tokenSource = nil
-		return fmt.Errorf("client credentials token request failed: %w", err)
-	}
-
-	// Per RFC 6749 §5.1, if the token response omits scope, the granted
-	// scopes are identical to what was requested.
-	tokenScopes := scopesFromToken(tok)
-	if len(tokenScopes) == 0 {
-		tokenScopes = scopes
+		return err
 	}
 	if h.grantedScopes == nil {
 		h.grantedScopes = make(map[string][]string)
 	}
-	h.grantedScopes[asm.Issuer] = unionScopes(h.grantedScopes[asm.Issuer], tokenScopes)
+	if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
+	}
 	return nil
 }
 
@@ -258,23 +261,15 @@ func scopesFromToken(token *oauth2.Token) []string {
 	return strings.Fields(scope)
 }
 
-// unionScopes returns the union of existing and challenged scopes,
-// preserving order (existing first, then new challenged scopes).
 func unionScopes(existing, challenged []string) []string {
-	if len(existing) == 0 {
-		return challenged
+	combined := make(map[string]struct{})
+	for _, s := range existing {
+		combined[s] = struct{}{}
 	}
-	if len(challenged) == 0 {
-		return existing
-	}
-	result := make([]string, len(existing), len(existing)+len(challenged))
-	copy(result, existing)
 	for _, s := range challenged {
-		if !slices.Contains(result, s) {
-			result = append(result, s)
-		}
+		combined[s] = struct{}{}
 	}
-	return result
+	return slices.Collect(maps.Keys(combined))
 }
 
 // selectTokenAuthMethod selects the preferred token endpoint auth method based on

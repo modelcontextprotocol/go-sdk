@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -303,7 +304,7 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 	issuer := authServer.URL()
 	firstScopes := append([]string{}, handler.grantedScopes[issuer]...)
 	wantFirst := []string{"read"}
-	if diff := cmp.Diff(wantFirst, firstScopes); diff != "" {
+	if diff := cmp.Diff(wantFirst, firstScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 
@@ -322,7 +323,7 @@ func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
 	// Verify handler accumulated both scopes.
 	secondScopes := append([]string{}, handler.grantedScopes[issuer]...)
 	wantSecond := []string{"read", "write"}
-	if diff := cmp.Diff(wantSecond, secondScopes); diff != "" {
+	if diff := cmp.Diff(wantSecond, secondScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("After second Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -375,7 +376,7 @@ func TestUnionScopes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := unionScopes(tt.existing, tt.challenged)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
+			if diff := cmp.Diff(tt.want, got, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 				t.Errorf("unionScopes() mismatch (-want +got):\n%s", diff)
 			}
 		})

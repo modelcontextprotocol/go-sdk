@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -319,21 +320,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	if h.tokenSource != nil {
-		tok, err := h.tokenSource.Token()
-		if err != nil {
-			return err
-		}
-		if h.grantedScopes == nil {
-			h.grantedScopes = make(map[string][]string)
-		}
-		if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
-			h.grantedScopes[asm.Issuer] = requestedScopes
-		} else {
-			h.grantedScopes[asm.Issuer] = tokenScopes
-		}
-	}
-	return nil
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
@@ -369,33 +356,16 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 	return ""
 }
 
-// scopesFromToken extracts the granted scopes from an OAuth2 token response.
-// Per RFC 6749 §3.3, the scope parameter is omitted when all requested scopes are granted.
-func scopesFromToken(token *oauth2.Token) []string {
-	scope, ok := token.Extra("scope").(string)
-	if !ok {
-		return nil
-	}
-	return strings.Fields(scope)
-}
-
-// unionScopes returns the union of existing and challenged scopes,
-// preserving order (existing first, then new challenged scopes).
+// unionScopes returns the union of existing and challenged scopes
 func unionScopes(existing, challenged []string) []string {
-	if len(existing) == 0 {
-		return challenged
+	combined := make(map[string]struct{})
+	for _, s := range existing {
+		combined[s] = struct{}{}
 	}
-	if len(challenged) == 0 {
-		return existing
-	}
-	result := make([]string, len(existing), len(existing)+len(challenged))
-	copy(result, existing)
 	for _, s := range challenged {
-		if !slices.Contains(result, s) {
-			result = append(result, s)
-		}
+		combined[s] = struct{}{}
 	}
-	return result
+	return slices.Collect(maps.Keys(combined))
 }
 
 // getProtectedResourceMetadata returns the protected resource metadata.
@@ -611,5 +581,35 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	return nil
+}
+
+// scopesFromToken extracts the granted scopes from an OAuth2 token response.
+// Per RFC 6749 §3.3, the scope parameter is omitted when all requested scopes are granted.
+func scopesFromToken(token *oauth2.Token) []string {
+	scope, ok := token.Extra("scope").(string)
+	if !ok {
+		return nil
+	}
+	return strings.Fields(scope)
+}
+
+// updateGrantedScopes updates the granted scopes based on the token source and requested scopes
+func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
+	tok, err := h.tokenSource.Token()
+	if err != nil {
+		return err
+	}
+	if h.grantedScopes == nil {
+		h.grantedScopes = make(map[string][]string)
+	}
+	if tokenScopes := scopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
+	}
 	return nil
 }
