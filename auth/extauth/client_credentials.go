@@ -123,16 +123,16 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		}
 	}
 
-	// Determine scopes: use PRM's scopes_supported if available.
-	scopes := scopesFromChallenges(wwwChallenges)
-	if len(scopes) == 0 && len(prm.ScopesSupported) > 0 {
-		scopes = prm.ScopesSupported
+	// Determine requestedScopes: use PRM's scopes_supported if available.
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
 	}
 
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	scopes = auth.UnionScopes(h.grantedScopes[asm.Issuer], scopes)
+	requestedScopes = auth.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	creds := h.config.Credentials
@@ -140,14 +140,14 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		ClientID:     creds.ClientID,
 		ClientSecret: creds.ClientSecretAuth.ClientSecret,
 		TokenURL:     asm.TokenEndpoint,
-		Scopes:       scopes,
+		Scopes:       requestedScopes,
 		AuthStyle:    selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
 	}
 
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	h.tokenSource = cfg.TokenSource(ctxWithClient)
 
-	return h.updateGrantedScopes(asm.Issuer, scopes)
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
 }
 
 func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
