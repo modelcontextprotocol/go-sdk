@@ -247,6 +247,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
 	if s, ok := t.InputSchema.(*jsonschema.Schema); ok {
+		if s == nil {
+			panic(fmt.Errorf("AddTool %q: input schema is nil", t.Name))
+		}
 		if s.Type != "object" {
 			panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
 		}
@@ -261,6 +264,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	}
 	if t.OutputSchema != nil {
 		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok {
+			if s == nil {
+				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
+			}
 			if s.Type != "object" {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
 			}
@@ -273,6 +279,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
 			}
 		}
+	}
+	if err := validateParamHeaderAnnotations(t); err != nil {
+		panic(fmt.Errorf("AddTool %q: invalid parameter header annotations: %v", t.Name, err))
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -437,6 +446,9 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err != nil {
 			return zero, err
 		}
+		if internalSchema == nil {
+			return zero, fmt.Errorf("schema is nil for type %v", rt)
+		}
 		*sfield = internalSchema
 
 		resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -464,6 +476,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err := remarshal(*sfield, &internalSchema); err != nil {
 			return zero, err
 		}
+	}
+
+	if internalSchema == nil {
+		return zero, fmt.Errorf("schema is nil for type %v", rt)
 	}
 
 	resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -740,10 +756,15 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+// getServerTool looks up a server tool by name.
+func (s *Server) getServerTool(name string) (*serverTool, bool) {
 	s.mu.Lock()
-	st, ok := s.tools.get(req.Params.Name)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.tools.get(name)
+}
+
+func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+	st, ok := s.getServerTool(req.Params.Name)
 	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
