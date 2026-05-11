@@ -158,6 +158,11 @@ type ClientOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// DisableCache disables client-side TTL caching of list and read results
+	// (SEP-2549). When true, every call to ListTools, ListPrompts,
+	// ListResources, ListResourceTemplates, and ReadResource makes a fresh
+	// request to the server regardless of any ttlMs hint.
+	DisableCache bool
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -299,6 +304,69 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	return cs, nil
 }
 
+// methodCache is a per-method TTL cache for list results, as described in
+// SEP-2549. Each entry is keyed by cursor (for paginated list methods) or URI
+// (for resources/read).
+type methodCache[R CacheableResult] struct {
+	mu           sync.Mutex
+	cachedValues map[string]*cacheEntry[R]
+}
+
+type cacheEntry[R any] struct {
+	result     R
+	receivedAt time.Time
+	ttlMs      int
+}
+
+func (e *cacheEntry[R]) isValid() bool {
+	return time.Since(e.receivedAt) < time.Duration(e.ttlMs)*time.Millisecond
+}
+
+func (mc *methodCache[R]) get(key string) (R, bool) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	entry, ok := mc.cachedValues[key]
+	if !ok {
+		var zero R
+		return zero, false
+	}
+	if !entry.isValid() {
+		delete(mc.cachedValues, key)
+		var zero R
+		return zero, false
+	}
+	return entry.result, true
+}
+
+func (mc *methodCache[R]) put(key string, result R) {
+	ttl := result.GetTTLMs()
+	if ttl <= 0 {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if mc.cachedValues == nil {
+		mc.cachedValues = make(map[string]*cacheEntry[R])
+	}
+	mc.cachedValues[key] = &cacheEntry[R]{
+		result:     result,
+		receivedAt: time.Now(),
+		ttlMs:      ttl,
+	}
+}
+
+func (mc *methodCache[R]) invalidate() {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	clear(mc.cachedValues)
+}
+
+func (mc *methodCache[R]) invalidateKey(key string) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	delete(mc.cachedValues, key)
+}
+
 // A ClientSession is a logical connection with an MCP server. Its
 // methods can be used to send requests or notifications to the server. Create
 // a session by calling [Client.Connect].
@@ -321,16 +389,20 @@ type ClientSession struct {
 	// only set synchronously during Client.Connect.
 	state clientSessionState
 
+	// Per-method TTL caches for list results (SEP-2549).
+	toolsCache             methodCache[*ListToolsResult]
+	promptsCache           methodCache[*ListPromptsResult]
+	resourcesCache         methodCache[*ListResourcesResult]
+	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
+	readResourceCache      methodCache[*ReadResourceResult]
+
+	// Per-tool cache for CallTool context injection.
+	toolCacheMu sync.RWMutex
+	toolCache   map[string]*Tool
+
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
-
-	// toolCacheMu guards toolCache.
-	toolCacheMu sync.RWMutex
-	// toolCache stores tool definitions keyed by name.
-	// It is used to look up x-mcp-header annotations when
-	// constructing Mcp-Param-* headers for tools/call requests.
-	toolCache map[string]*Tool
 }
 
 type clientSessionState struct {
@@ -999,7 +1071,22 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListPrompts lists prompts that are currently available on the server.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	if params != nil {
+		if result, ok := cs.promptsCache.get(params.Cursor); ok {
+			return result, nil
+		}
+	}
+	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		if params != nil && params.Cursor != "" {
+			cs.promptsCache.invalidate()
+		}
+		return nil, err
+	}
+	if !cs.client.opts.DisableCache && params != nil {
+		cs.promptsCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // GetPrompt gets a prompt from the server.
@@ -1009,12 +1096,23 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
+	if params != nil {
+		if result, ok := cs.toolsCache.get(params.Cursor); ok {
+			return result, nil
+		}
+	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
+		if params != nil && params.Cursor != "" {
+			cs.toolsCache.invalidate()
+		}
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
 	cs.cacheTools(result.Tools)
+	if !cs.client.opts.DisableCache && params != nil {
+		cs.toolsCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
@@ -1042,17 +1140,56 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	if params != nil {
+		if result, ok := cs.resourcesCache.get(params.Cursor); ok {
+			return result, nil
+		}
+	}
+	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		if params != nil && params.Cursor != "" {
+			cs.resourcesCache.invalidate()
+		}
+		return nil, err
+	}
+	if !cs.client.opts.DisableCache && params != nil {
+		cs.resourcesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	if params != nil {
+		if result, ok := cs.resourceTemplatesCache.get(params.Cursor); ok {
+			return result, nil
+		}
+	}
+	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if !cs.client.opts.DisableCache && params != nil {
+		cs.resourceTemplatesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	if params != nil {
+		if result, ok := cs.readResourceCache.get(params.URI); ok {
+			return result, nil
+		}
+	}
+	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if !cs.client.opts.DisableCache && params != nil {
+		cs.readResourceCache.put(params.URI, result)
+	}
+	return result, nil
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
@@ -1074,6 +1211,9 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.toolsCache.invalidate()
+	}
 	if h := c.opts.ToolListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1081,6 +1221,9 @@ func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChange
 }
 
 func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.promptsCache.invalidate()
+	}
 	if h := c.opts.PromptListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1088,6 +1231,10 @@ func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListCh
 }
 
 func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.resourcesCache.invalidate()
+		cs.resourceTemplatesCache.invalidate()
+	}
 	if h := c.opts.ResourceListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1095,6 +1242,9 @@ func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceLi
 }
 
 func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ResourceUpdatedNotificationRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok && req.Params != nil {
+		cs.readResourceCache.invalidateKey(req.Params.URI)
+	}
 	if h := c.opts.ResourceUpdatedHandler; h != nil {
 		h(ctx, req)
 	}

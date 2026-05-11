@@ -760,23 +760,34 @@ func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
 // client-side caching.
 type CacheableResult interface {
 	Result
-	GetTTL() *int
+	GetTTLMs() int
 	GetCacheScope() string
 }
 
 // Cacheable describes a result that supports a time-to-live (TTL) hint for
 // client-side caching.
 type Cacheable struct {
-	// A hint from the server indicating how long (in seconds) the
-	// client MAY cache this response before re-fetching.
-	TTL *int `json:"ttl,omitempty"`
+	// A hint from the server indicating how long (in milliseconds) the
+	// client MAY cache this response before re-fetching. Semantics are
+	// analogous to HTTP Cache-Control max-age.
+	//
+	// If 0, the response SHOULD be considered immediately stale.
+	// If positive, the client SHOULD consider the result fresh for this
+	// many milliseconds after receiving the response.
+	TTLMs int `json:"ttlMs"`
 
-	// Indicates the intended scope of the cached response.
+	// Indicates the intended scope of the cached response, analogous to
+	// HTTP Cache-Control: public vs Cache-Control: private.
+	//
+	// "public": Any client or intermediary MAY cache and serve the response.
+	// "private": Only the requesting user's client MAY cache the response.
+	//
+	// Defaults to "public" if absent.
 	CacheScope string `json:"cacheScope,omitempty"`
 }
 
-// GetTTL returns the TTL hint.
-func (c Cacheable) GetTTL() *int { return c.TTL }
+// GetTTLMs returns the TTL hint in milliseconds.
+func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 
 // GetCacheScope returns the cache scope.
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
@@ -1125,7 +1136,7 @@ func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 type ReadResourceResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta     `json:"_meta,omitempty"`
+	Meta `json:"_meta,omitempty"`
 	Cacheable
 	Contents []*ResourceContents `json:"contents"`
 }
