@@ -52,6 +52,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	customMethods           map[string]methodInfo
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
 }
@@ -195,6 +196,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
+		customMethods:           make(map[string]methodInfo),
 	}
 }
 
@@ -1422,7 +1424,19 @@ func initializeMethodInfo() methodInfo {
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
 
-func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo { return serverMethodInfos }
+func (s *Server) receivingMethodInfos() map[string]methodInfo {
+	if len(s.customMethods) == 0 {
+		return serverMethodInfos
+	}
+	infos := make(map[string]methodInfo, len(serverMethodInfos)+len(s.customMethods))
+	maps.Copy(infos, serverMethodInfos)
+	maps.Copy(infos, s.customMethods)
+	return infos
+}
+
+func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo {
+	return ss.server.receivingMethodInfos()
+}
 
 func (ss *ServerSession) sendingMethodHandler() MethodHandler {
 	s := ss.server

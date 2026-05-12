@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type Client struct {
 	sessions                []*ClientSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	customSendMethods       map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -64,6 +66,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
+		customSendMethods:       make(map[string]methodInfo),
 	}
 }
 
@@ -945,7 +948,13 @@ var clientMethodInfos = map[string]methodInfo{
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
-	return serverMethodInfos
+	if len(cs.client.customSendMethods) == 0 {
+		return serverMethodInfos
+	}
+	infos := make(map[string]methodInfo, len(serverMethodInfos)+len(cs.client.customSendMethods))
+	maps.Copy(infos, serverMethodInfos)
+	maps.Copy(infos, cs.client.customSendMethods)
+	return infos
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
