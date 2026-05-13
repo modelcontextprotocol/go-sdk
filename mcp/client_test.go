@@ -617,3 +617,42 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 		})
 	}
 }
+
+func TestCallCustomMethod(t *testing.T) {
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+
+	AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
+		return &searchResult{
+			Hits:  []string{"result for " + params.Query},
+			Total: 1,
+		}, nil
+	})
+
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	callSearch := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search")
+
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	result, err := callSearch(ctx, cs, &searchParams{Query: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hits) != 1 || result.Hits[0] != "result for hello" {
+		t.Errorf("unexpected hits: %v", result.Hits)
+	}
+	if result.Total != 1 {
+		t.Errorf("unexpected total: %d", result.Total)
+	}
+}

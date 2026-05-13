@@ -11,6 +11,7 @@ import (
 	"iter"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1225,5 +1226,35 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			}
 			*params.cursorPtr() = *nextCursorVal
 		}
+	}
+}
+
+// AddSendingCustomMethod registers a custom method that the client can send
+// to the server and returns a typed caller function.
+//
+// The returned function calls the custom method through the client's sending
+// middleware chain, with full type safety on both params and result.
+//
+//	callSearch := mcp.AddSendingCustomMethod[*SearchParams, *SearchResult](c, "acme/search")
+//	result, err := callSearch(ctx, cs, &SearchParams{Query: "hello"})
+func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
+	c *Client,
+	method string,
+) func(ctx context.Context, cs *ClientSession, params P) (R, error) {
+	mi := methodInfo{
+		newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		},
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.customSendMethods[method] = mi
+
+	return func(ctx context.Context, cs *ClientSession, params P) (R, error) {
+		return handleSend[R](ctx, method, &ClientRequest[P]{
+			Session: cs,
+			Params:  params,
+		})
 	}
 }
