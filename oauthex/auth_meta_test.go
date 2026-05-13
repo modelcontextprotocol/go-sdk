@@ -50,7 +50,7 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			wantError:      "does not implement PKCE",
 		},
 		{
-			// Bug 953, Metadata may return AuthorizationServers with a trailing slash
+			// ProtectedResourceMetadata may contain AuthorizationServers with a trailing slash (see Issue #953)
 			name:                    "issuer_with_trailing_slash",
 			hasPKCESupport:          true,
 			issuerWithTrailingSlash: true,
