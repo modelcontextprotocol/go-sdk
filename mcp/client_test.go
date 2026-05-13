@@ -617,5 +617,3 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 		})
 	}
 }
-
-
