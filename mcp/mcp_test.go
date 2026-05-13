@@ -2372,3 +2372,72 @@ func TestSetErrorPreservesContent(t *testing.T) {
 }
 
 var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}
+
+func TestCustomMethods(t *testing.T) {
+	type searchParams struct {
+		ParamsBase
+		Query string `json:"query"`
+		Limit int    `json:"limit,omitempty"`
+	}
+
+	type searchResult struct {
+		ResultBase
+		Hits  []string `json:"hits"`
+		Total int      `json:"total"`
+	}
+
+	callCustom := func(ctx context.Context, conn *jsonrpc2.Connection, method string, params, result any) error {
+		return conn.Call(ctx, method, params).Await(ctx, result)
+	}
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+
+	AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
+		hits := []string{"result for " + params.Query}
+		return &searchResult{
+			Hits:  hits,
+			Total: len(hits),
+		}, nil
+	})
+
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	callSearch := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search")
+
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	// Test raw JSON-RPC call
+	var result1 searchResult
+	if err := callCustom(ctx, cs.getConn(), "acme/search", &searchParams{Query: "hello", Limit: 10}, &result1); err != nil {
+		t.Fatal(err)
+	}
+	if len(result1.Hits) != 1 || result1.Hits[0] != "result for hello" {
+		t.Errorf("raw call: unexpected hits: %v", result1.Hits)
+	}
+	if result1.Total != 1 {
+		t.Errorf("raw call: unexpected total: %d", result1.Total)
+	}
+
+	// Test typed caller
+	result2, err := callSearch(ctx, cs, &searchParams{Query: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result2.Hits) != 1 || result2.Hits[0] != "result for hello" {
+		t.Errorf("typed call: unexpected hits: %v", result2.Hits)
+	}
+	if result2.Total != 1 {
+		t.Errorf("typed call: unexpected total: %d", result2.Total)
+	}
+}
