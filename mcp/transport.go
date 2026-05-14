@@ -403,6 +403,14 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				select {
+				case incoming <- msgOrErr{err: fmt.Errorf("panic in reader: %v", r)}:
+				case <-closed:
+				}
+			}
+		}()
 		dec := json.NewDecoder(rwc)
 		for {
 			var raw json.RawMessage
