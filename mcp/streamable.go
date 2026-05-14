@@ -128,12 +128,13 @@ func (i *sessionInfo) stopTimer() {
 type StreamableHTTPOptions struct {
 	// Stateless controls whether the session is 'stateless'.
 	//
-	// A stateless server does not validate the Mcp-Session-Id header, and uses a
+	// A stateless server ignores the Mcp-Session-Id header, and uses a
 	// temporary session with default initialization parameters. Any
 	// server->client request is rejected immediately as there's no way for the
 	// client to respond. Server->Client notifications may reach the client if
 	// they are made in the context of an incoming request, as described in the
 	// documentation for [StreamableServerTransport].
+	// In Stateless mode DELETE requests will return 405 Method Not Allowed.
 	Stateless bool
 
 	// TODO(#148): support session retention (?)
