@@ -14,9 +14,12 @@ not introduce backwards incompatible API changes to the SDK.
 
 ### Stateless mode reuse
 
-On the server side, there already exists a `Stateless` mode that works similarly to
-what the proposals define. We will make it a dependency of the new protocol version
-support - only servers that will enable it will be able to support the new version.
+On the HTTP server side, there already exists a `StreamableHTTPOptions.Stateless` mode that
+works similarly to what the proposals define. We will make it a dependency of the new protocol
+version support for the HTTP transport — only HTTP servers that enable it will be able to
+serve `>= 2026-06-30` requests. For STDIO and other transports, no transport-level option is
+needed; protocol-level behavior is driven by per-request detection (see
+[Per-request protocol detection](#per-request-protocol-detection)).
 
 This will simplify the implementation and provide opt-in mechanism for the new behavior.
 Such opt-in is needed, because it's not possible to automatically enable the new protocol
@@ -38,6 +41,55 @@ Even though SEP-2567 removes the concept of sessions from the protocol, we canno
 these objects. Instead, we will adjust their lifetime of the server side to be per-request
 and attempt to fill the session state on both sides with the most appropriate data available.
 
+### Per-request protocol detection
+
+The presence of `io.modelcontextprotocol/protocolVersion` in a request's `_meta` implicitly
+signals that the request follows the new protocol. No explicit flag is needed at the protocol
+level — `ServerSession.handle()` detects the field and adjusts behavior per-request.
+
+The detection mechanism works as follows:
+
+1. Before the initialization gate, `ServerSession.handle()` performs a lightweight partial
+   unmarshal of `_meta` from the raw `jreq.Params`:
+
+   ```go
+   var meta struct {
+       Meta Meta `json:"_meta"`
+   }
+   internaljson.Unmarshal(jreq.Params, &meta)
+   ```
+
+2. If `io.modelcontextprotocol/protocolVersion` is present in `meta.Meta`, the initialization
+   gate is skipped (the request is allowed regardless of `ServerSession.state.InitializeParams`
+   being `nil`). Required `_meta` fields (`clientInfo`, `clientCapabilities`) are validated.
+
+3. New accessor methods on `ServerRequest[P]` provide typed per-request access:
+
+   ```go
+   func (r *ServerRequest[P]) ProtocolVersion() string
+   func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities
+   func (r *ServerRequest[P]) ClientInfo() *Implementation
+   ```
+
+   These read from `r.Params.GetMeta()` with fallback to `r.Session.InitializeParams()`
+   for old protocol requests. Since validation already happened in `handle()`, the
+   accessors assume data is well-formed and do not return errors.
+
+4. `ServerSession.InitializeParams()` returns `nil` for new-protocol sessions — there is no
+   pre-population of session state. Returning `nil` is a clear signal to callers that they
+   should use the `ServerRequest` accessors instead.
+
+This mechanism is transport-agnostic: it works on HTTP and STDIO identically. A single
+session can serve both old and new protocol requests, with each request handled according
+to its own `_meta`. For HTTP, `StreamableHTTPOptions.Stateless` remains needed for
+transport-level concerns (per-request session lifecycle, HTTP method gating). For STDIO,
+no transport-level option is needed.
+
+The body-peeking and state pre-population in `ephemeralConnectOpts` becomes unnecessary
+for new-protocol requests since `handle()` skips the initialization gate based on `_meta`.
+Pre-population remains for old-protocol requests on stateless HTTP servers (where the
+client skips `initialize` but doesn't send `_meta`).
+
 ## Connection establishment
 
 There are several changes affecting how the connection from the client to the server is established.
@@ -53,21 +105,21 @@ we need adjust the way we establish the protocol version and the capabilities of
 
 #### Protocol version
 
-For the server side, the protocol version will come in each request. It will be used to populate
-`ServerSession.state.InitializeParams` and used for the call duration. An `initialize` request with
-`2026-06-30` protocol version specified will be rejected with `Method not found` (-32601), since the
-initialization handshake does not exist in the new protocol version.
+For the server side, the protocol version will come in each request's `_meta` field
+(`io.modelcontextprotocol/protocolVersion`). It is detected via the partial unmarshal in
+`ServerSession.handle()` (see [Per-request protocol detection](#per-request-protocol-detection))
+and is not stored in session state. Per-request access is provided by the new
+`req.ProtocolVersion()` accessor on `ServerRequest`.
 
-TODO: Consider whether servers should be allowed to limit the protocol versions they advertise as supported.
+An `initialize` request with `2026-06-30` protocol version specified will be rejected with
+`Method not found` (-32601), since the initialization handshake does not exist in the new
+protocol version.
 
 For client side, the protocol version must be provided in each request. We cannot depend
 on the initialization for provide a negotiated version. Instead, the server returns
 `UnsupportedProtocolVersionError` if the version specified by the client is not supported.
-The error also contains a list of `supported` versions. If any of them is supported by the client,
-then one of two things will happen:
-
-* the version will be saved to `ClientSession.state.InitializeResult` and used in subsequent requests if it is `>= 2026-06-30`
-* normal initialization will be performed if it is `< 2026-06-30`
+The exact procedure for the determination of the protocol version is presented in more detail
+in [SDK connection establishment flow changes](#sdk-connection-establishment-flow-changes).
 
 New types in `protocol.go`:
 
@@ -80,12 +132,9 @@ type UnsupportedProtocolVersionData struct {
 }
 ```
 
-The protocol version may also be determined by calling `ServerDiscover` with sufficiently modern
-servers. See [Server Capabilities](#server-capabilities) for details.
-
 #### Server Capabilities
 
-SEP-2575 introduces `server/discover` as a replacement for capability exchange during initialization.
+SEP-2575 introduces `server/discover` as a convenience replacement for capability exchange during initialization.
 It will return `supportedVersions`, `capabilities`, `serverInfo`,
 and `instructions` — effectively the same information that was in `InitializeResult`, plus
 the list of supported protocol versions.
@@ -108,12 +157,35 @@ type DiscoverResult struct {
 }
 ```
 
-The handler will be registered with the `missingParamsOK` flag and will be allowed
-pre-initialization.
-It will be implemented on `Server` (not `ServerSession`) since it is not session-scoped.
-The handler will use `Server.capabilities()` and `Server.impl` to construct the response.
-The `2026-06-30` protocol version will only be returned as supported if the server runs in
-the `Stateless` mode.
+The handler will be registered with the `missingParamsOK` flag and added to the
+pre-initialization allow-list in `ServerSession.handle()` alongside `initialize`, `ping`,
+and `notifications/initialized`. It will be implemented on `Server` (not `ServerSession`)
+since it is not session-scoped. The handler will use `Server.capabilities()` and
+`Server.impl` to construct the response.
+
+To determine which versions to include in `supportedVersions`, the server checks whether
+the transport supports each version via a new exported interface:
+
+```go
+// ProtocolVersionSupporter may be implemented by a Transport to declare which
+// protocol versions it can serve. If a Transport does not implement this
+// interface, all SDK-supported versions are assumed to be supported.
+type ProtocolVersionSupporter interface {
+    SupportsProtocolVersion(version string) bool
+}
+```
+
+`Server.Connect()` checks whether the passed `Transport` implements
+`ProtocolVersionSupporter`. If it does, the result is used to filter the SDK's
+`supportedProtocolVersions` list. The filtered list is stored on the `ServerSession`
+at connection time and used by the `server/discover` handler to build
+`DiscoverResult.SupportedVersions`.
+
+`StreamableServerTransport` implements this interface: it returns `true` for `2026-06-30`
+only when `Stateless` is `true`. STDIO transports (`StdioTransport`, `IOTransport`) and
+`InMemoryTransport` do not need to implement the interface — the default behavior assumes
+they support all SDK versions, which matches their capabilities. Custom transports may
+implement the interface to constrain which versions they advertise.
 
 On the client side, `server/discover` will be called during connection establishment to determine
 the protocol version to be used. The client will send `server/discover` with `2026-06-30` as the
@@ -145,13 +217,34 @@ SEP-2575 moves client capabilities from session-level negotiation to per-request
 * `io.modelcontextprotocol/clientCapabilities` (`ClientCapabilities`, required)
 * `io.modelcontextprotocol/logLevel` (`LoggingLevel`, optional)
 
-On the server side, the stateless session handler will extract these fields from each incoming
-request's `_meta` and populate `ServerSession.state.InitializeParams` with the values for the
-duration of the call. This ensures that existing server code that reads `ServerSession.InitializeParams()`
-will continue to work without changes. The extraction will happen in the `ServerSession.handle()` method,
-before dispatching to the registered handler.
-If a server receives a request with missing `_meta` fields, it will return `INVALID_PARAMS`
-(-32602) when operating with `>= 2026-06-30`.
+On the server side, `ServerSession.handle()` validates that the required `_meta` fields
+(`protocolVersion`, `clientInfo`, `clientCapabilities`) are present for `>= 2026-06-30` requests.
+If a request is missing required `_meta` fields, the server will return `INVALID_PARAMS`
+(-32602).
+
+The fields are not copied into session state. Instead, new accessor methods on
+`ServerRequest[P]` provide typed per-request access:
+
+```go
+func (r *ServerRequest[P]) ProtocolVersion() string
+func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities
+func (r *ServerRequest[P]) ClientInfo() *Implementation
+```
+
+These read from `r.Params.GetMeta()` with fallback to `r.Session.InitializeParams()` for
+old protocol requests. Existing handler code should migrate from the session-level accessor
+to the request-level accessor:
+
+```go
+// Old:
+caps := req.Session.InitializeParams().Capabilities
+// New:
+caps := req.ClientCapabilities()
+```
+
+`ServerSession.InitializeParams()` returns `nil` for new-protocol sessions (no state
+pre-population). For old-protocol sessions, it continues to return the `InitializeParams`
+from the `initialize` handshake.
 
 > [!WARNING]
 > Deprecated APIs:
@@ -217,15 +310,18 @@ Currently, `ping` is used in two ways:
 For `>= 2026-06-30`:
 
 * Sending a `ping` request will return `Method not found` (-32601).
-* `ServerSession.Ping()` will return an error for stateless sessions (already the case:
+* `ServerSession.Ping()` will return an error for stateless HTTP transport (already the case:
   `streamable.go:1367-1369`).
 * `ClientSession.Ping()` will continue to exist for backwards compatibility but will return
   an error if the server doesn't support it (`ErrMethodNotFound` from keepalive is already
   handled gracefully — `shared.go:607-610`).
-* The keepalive mechanism will be disabled for stateless sessions. Currently, keepalive starts
-  even for stateless sessions and races with `defer session.Close()` (`streamable_test.go:366-374`).
-  For the new protocol version, `Server.Connect()` should skip `startKeepalive` when operating
-  in stateless mode.
+* The keepalive mechanism does not need explicit disabling for the new protocol. The existing
+  graceful degradation handles it: when keepalive sends a `ping` and the peer returns
+  `Method not found`, `startKeepalive` stops silently (`shared.go:607-610`). For stateless
+  HTTP sessions, keepalive remains pointless (sessions are ephemeral and the keepalive races
+  with `defer session.Close()`); to surface this misconfiguration, `StreamableHTTPHandler`
+  will log a warning if it receives a `Server` with `KeepAlive` set while operating in
+  `Stateless` mode.
 
 > [!WARNING]
 > Deprecated APIs:
