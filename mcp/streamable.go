@@ -128,13 +128,21 @@ func (i *sessionInfo) stopTimer() {
 type StreamableHTTPOptions struct {
 	// Stateless controls whether the session is 'stateless'.
 	//
-	// A stateless server ignores the Mcp-Session-Id header, and uses a
-	// temporary session with default initialization parameters. Any
+	// A stateless server does not read or set the Mcp-Session-Id header, and
+	// uses a temporary session with default initialization parameters for each
+	// request. [ServerOptions.GetSessionID] is not consulted. Any
 	// server->client request is rejected immediately as there's no way for the
 	// client to respond. Server->Client notifications may reach the client if
 	// they are made in the context of an incoming request, as described in the
 	// documentation for [StreamableServerTransport].
-	// In Stateless mode DELETE requests will return 405 Method Not Allowed.
+	// In Stateless mode, GET and DELETE requests return 405 Method Not Allowed.
+	//
+	// This mode aligns with the sessionless direction of the MCP spec; see
+	// [SEP-2567]. The previous behavior, in which stateless servers still
+	// honored Mcp-Session-Id, can be restored temporarily via the
+	// MCPGODEBUG compatibility parameter "allowsessionsinstateless=1".
+	//
+	// [SEP-2567]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567
 	Stateless bool
 
 	// TODO(#148): support session retention (?)
@@ -1689,11 +1697,13 @@ func init() {
 // Connect implements the [Transport] interface.
 //
 // The resulting [Connection] writes messages via POST requests to the
-// transport URL with the Mcp-Session-Id header set, and reads messages from
-// hanging requests.
+// transport URL, and reads messages from hanging requests. If the server
+// provides a session ID via the Mcp-Session-Id response header, subsequent
+// requests include it; sessionless servers that omit the header are fully
+// supported.
 //
-// When closed, the connection issues a DELETE request to terminate the logical
-// session.
+// When closed, the connection issues a DELETE request to terminate the
+// session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
 	client := t.HTTPClient
 	if client == nil {
@@ -2370,6 +2380,9 @@ func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
 		if errors.Is(c.failure(), ErrSessionMissing) {
 			// If the session is missing, no need to delete it.
+		} else if c.SessionID() == "" {
+			// No session was established (e.g. the server is stateless),
+			// so there is nothing to delete.
 		} else {
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
 			if err != nil {
