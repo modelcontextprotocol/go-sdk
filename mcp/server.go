@@ -1488,9 +1488,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	var duplicate bool
 	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
+		duplicate = state.InitializeParams != nil
+		if !duplicate {
+			state.InitializeParams = params
+		}
 	})
+	if duplicate {
+		ss.server.opts.Logger.Error("duplicate initialize request")
+		return nil, fmt.Errorf("%w: duplicate %q received", jsonrpc2.ErrInvalidRequest, methodInitialize)
+	}
 
 	s := ss.server
 	return &InitializeResult{
