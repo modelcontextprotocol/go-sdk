@@ -128,12 +128,13 @@ func (i *sessionInfo) stopTimer() {
 type StreamableHTTPOptions struct {
 	// Stateless controls whether the session is 'stateless'.
 	//
-	// A stateless server does not validate the Mcp-Session-Id header, and uses a
+	// A stateless server ignores the Mcp-Session-Id header, and uses a
 	// temporary session with default initialization parameters. Any
 	// server->client request is rejected immediately as there's no way for the
 	// client to respond. Server->Client notifications may reach the client if
 	// they are made in the context of an incoming request, as described in the
 	// documentation for [StreamableServerTransport].
+	// In Stateless mode DELETE requests will return 405 Method Not Allowed.
 	Stateless bool
 
 	// TODO(#148): support session retention (?)
@@ -247,6 +248,16 @@ var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 // The option will be removed in the 1.8.0 version of the SDK.
 var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 
+// allowsessionsinstateless is a compatibility parameter that restores the old
+// behavior of reading and using Mcp-Session-Id headers in stateless mode. When
+// set to "1", stateless servers will read the session ID from the request
+// header (or generate one via GetSessionID), set it on response headers, and
+// accept DELETE requests. When unset (the default), stateless servers ignore
+// session IDs entirely and reject DELETE with 405.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.9.0 version of the SDK.
+var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -288,7 +299,17 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 // serveStateless handles requests for stateless servers.
 // Stateless servers only support POST. Each request creates a temporary
 // session that is closed when the request completes.
+//
+// When the allowsessionsinstateless compatibility flag is set, DELETE is also
+// accepted (as a no-op) and session IDs are read from the request header.
 func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.Request) {
+	legacySessions := allowsessionsinstateless == "1"
+
+	if req.Method == http.MethodDelete && legacySessions {
+		h.serveStatelessLegacyDELETE(w, req)
+		return
+	}
+
 	if req.Method != http.MethodPost {
 		// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
 		w.Header().Set("Allow", "POST")
@@ -314,11 +335,12 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	// In stateless mode, the client may provide a session ID for application-
-	// level state correlation. If absent, generate one.
-	sessionID := req.Header.Get(sessionIDHeader)
-	if sessionID == "" {
-		sessionID = server.opts.GetSessionID()
+	var sessionID string
+	if legacySessions {
+		sessionID = req.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			sessionID = server.opts.GetSessionID()
+		}
 	}
 
 	transport := &StreamableServerTransport{
@@ -343,6 +365,19 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	defer session.Close()
 
 	transport.ServeHTTP(w, req)
+}
+
+// serveStatelessLegacyDELETE handles DELETE requests in stateless mode when the
+// allowsessionsinstateless compatibility flag is set. DELETE requires a
+// Mcp-Session-Id header but is otherwise a no-op since stateless servers don't
+// persist sessions.
+func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter, req *http.Request) {
+	sessionID := req.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ephemeralConnectOpts peeks at the request body to determine whether it
