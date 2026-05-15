@@ -143,6 +143,9 @@ type ServerOptions struct {
 	//
 	// As a special case, if GetSessionID returns the empty string, the
 	// Mcp-Session-Id header will not be set.
+	//
+	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
+	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
 }
 

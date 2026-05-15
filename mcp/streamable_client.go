@@ -40,8 +40,12 @@ components:
 
 # Sessions
 
-The client maintains a session with the server, identified by a session ID
-(Mcp-Session-Id header):
+The client optionally maintains a session with the server, identified by a
+session ID (Mcp-Session-Id header). Sessionless servers (those that never
+send Mcp-Session-Id) are fully supported; the client simply omits the
+header from subsequent requests and skips the DELETE on close.
+
+When a session is present:
 
   - Session ID is received from the server after initialization
   - Client includes the session ID in all subsequent requests
@@ -162,6 +166,7 @@ The client must handle two response formats from POST requests:
   - DELETE: Terminate the session
     - Used by [streamableClientConn.Close]
     - Skipped if session is already known to be gone ([ErrSessionMissing])
+      or if no session was established (sessionless server)
 
 # Error Handling
 
@@ -176,7 +181,7 @@ Errors are categorized and handled differently:
    - 404 Not Found: Session terminated by server ([ErrSessionMissing])
    - Message decode errors: Protocol violation
    - Context cancellation: Client closed connection
-   - Mismatched session IDs: Protocol error
+   - Mismatched session IDs: Protocol error (only relevant for servers that use sessions)
 	 - See issue #683: our terminal errors are too strict.
 
 Terminal errors are stored via [streamableClientConn.fail] and returned by
@@ -211,7 +216,7 @@ This header (set by [streamableClientConn.setMCPHeaders]):
 
 State management:
   - [streamableClientConn.incoming]: Buffered channel for received messages
-  - [streamableClientConn.sessionID]: Server-assigned session identifier
+  - [streamableClientConn.sessionID]: Server-assigned session identifier (empty for sessionless servers)
   - [streamableClientConn.initializedResult]: Cached for protocol version header
   - [streamableClientConn.failed]: Channel closed on terminal error
   - [streamableClientConn.done]: Channel closed on graceful shutdown
