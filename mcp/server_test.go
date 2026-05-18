@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -896,8 +895,8 @@ func TestServerRejectsDuplicateInitialize(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatal("second initialize unexpectedly succeeded")
 	}
-	if !errors.Is(resp.Error, jsonrpc2.ErrInvalidRequest) {
-		t.Fatalf("second initialize error = %v, want invalid request", resp.Error)
+	if !strings.Contains(resp.Error.Error(), `duplicate "initialize" received`) {
+		t.Fatalf("second initialize error = %v, want duplicate initialize", resp.Error)
 	}
 
 	got := ss.InitializeParams()

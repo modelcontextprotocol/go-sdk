@@ -1497,7 +1497,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	})
 	if duplicate {
 		ss.server.opts.Logger.Error("duplicate initialize request")
-		return nil, fmt.Errorf("%w: duplicate %q received", jsonrpc2.ErrInvalidRequest, methodInitialize)
+		return nil, fmt.Errorf("duplicate %q received", methodInitialize)
 	}
 
 	s := ss.server
