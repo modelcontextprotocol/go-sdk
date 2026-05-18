@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +34,7 @@ type Client struct {
 	sessions                []*ClientSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	customSendMethods       map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -64,6 +67,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
+		customSendMethods:       make(map[string]methodInfo),
 	}
 }
 
@@ -945,7 +949,13 @@ var clientMethodInfos = map[string]methodInfo{
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
-	return serverMethodInfos
+	if len(cs.client.customSendMethods) == 0 {
+		return serverMethodInfos
+	}
+	infos := make(map[string]methodInfo, len(serverMethodInfos)+len(cs.client.customSendMethods))
+	maps.Copy(infos, serverMethodInfos)
+	maps.Copy(infos, cs.client.customSendMethods)
+	return infos
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
@@ -1216,5 +1226,35 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			}
 			*params.cursorPtr() = *nextCursorVal
 		}
+	}
+}
+
+// AddSendingCustomMethod registers a custom method that the client can send
+// to the server and returns a typed caller function.
+//
+// The returned function calls the custom method through the client's sending
+// middleware chain, with full type safety on both params and result.
+//
+//	callSearch := mcp.AddSendingCustomMethod[*SearchParams, *SearchResult](c, "acme/search")
+//	result, err := callSearch(ctx, cs, &SearchParams{Query: "hello"})
+func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
+	c *Client,
+	method string,
+) func(ctx context.Context, cs *ClientSession, params P) (R, error) {
+	mi := methodInfo{
+		newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		},
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.customSendMethods[method] = mi
+
+	return func(ctx context.Context, cs *ClientSession, params P) (R, error) {
+		return handleSend[R](ctx, method, &ClientRequest[P]{
+			Session: cs,
+			Params:  params,
+		})
 	}
 }

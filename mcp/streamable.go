@@ -439,6 +439,7 @@ func connectStreamable(ctx context.Context, server *Server, transport *Streamabl
 	if err != nil {
 		return nil, err
 	}
+	transport.connection.server = server
 	transport.connection.toolLookup = server.getServerTool
 	return s, nil
 }
@@ -777,6 +778,7 @@ type streamableServerConn struct {
 
 	logger *slog.Logger
 
+	server     *Server
 	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
@@ -1284,7 +1286,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// Preemptively check that this is a valid request, so that we can fail
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
-			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
+			if _, err := checkRequest(jreq, c.server.receivingMethodInfos()); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
