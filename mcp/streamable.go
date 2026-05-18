@@ -2103,6 +2103,11 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 }
 
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.fail(fmt.Errorf("%s: panic in handleJSON: %v", requestSummary, r))
+		}
+	}()
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
@@ -2128,6 +2133,11 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 // stream is complete when we receive its response. Otherwise, this is the
 // standalone stream.
 func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc2.Request) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.fail(fmt.Errorf("%s: panic in handleSSE: %v", requestSummary, r))
+		}
+	}()
 	// Track the last event ID to detect progress.
 	// The retry counter is only reset when progress is made (lastEventID advances).
 	// This prevents infinite retry loops when a server repeatedly terminates

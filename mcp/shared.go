@@ -606,6 +606,11 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 	*cancelPtr = cancel
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("panic in keepalive goroutine", "error", r)
+			}
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 

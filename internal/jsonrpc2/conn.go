@@ -639,6 +639,11 @@ func (c *Connection) handleAsync() {
 		ctx := context.WithValue(req.ctx, asyncKey, releaser)
 		go func() {
 			defer releaser.release(true)
+			defer func() {
+				if r := recover(); r != nil {
+					c.processResult(c.handler, req, nil, fmt.Errorf("%w: panic in handler: %v", ErrInternal, r))
+				}
+			}()
 			result, err := c.handler.Handle(ctx, req.Request)
 			c.processResult(c.handler, req, result, err)
 		}()

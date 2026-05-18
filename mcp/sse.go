@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -420,6 +421,11 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 
 	go func() {
 		defer s.Close() // close the transport when the GET exits
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Default().Error("panic in SSE reader goroutine", "error", r)
+			}
+		}()
 
 		for evt, err := range scanEvents(resp.Body) {
 			if err != nil {
