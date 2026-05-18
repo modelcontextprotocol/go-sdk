@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -145,7 +146,7 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 		}
 		return nil, fmt.Errorf("%v", err) // Do not expose error types.
 	}
-	if asm.Issuer != issuer {
+	if strings.TrimRight(asm.Issuer, "/") != strings.TrimRight(issuer, "/") {
 		// Validate the Issuer field (see RFC 8414, section 3.3).
 		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuer)
 	}
