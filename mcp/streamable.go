@@ -1345,7 +1345,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	protocolVersion := protocolVersionFromContext(req.Context())
+	headerProtocolVersion := protocolVersionFromContext(req.Context())
+	protocolVersion := headerProtocolVersion
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
@@ -1365,6 +1366,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	calls := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
+	var initializeID jsonrpc.ID
 	var initializeProtocolVersion string
 	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
@@ -1385,6 +1387,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			if jreq.Method == methodInitialize {
 				isInitialize = true
+				initializeID = jreq.ID
 				// Extract the protocol version from InitializeParams.
 				var params InitializeParams
 				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
@@ -1466,6 +1469,22 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				}
 			}
 		}
+	}
+
+	if headerProtocolVersion != "" && initializeProtocolVersion != "" && headerProtocolVersion != initializeProtocolVersion {
+		resp := &jsonrpc.Response{
+			ID: initializeID,
+			Error: jsonrpc2.NewError(
+				CodeHeaderMismatch,
+				fmt.Sprintf("header mismatch: %s header value %q does not match body protocolVersion %q", protocolVersionHeader, headerProtocolVersion, initializeProtocolVersion),
+			),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+			w.Write(data)
+		}
+		return
 	}
 
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
