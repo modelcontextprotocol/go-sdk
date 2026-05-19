@@ -62,7 +62,11 @@ type ServerOptions struct {
 	Instructions string
 	// Logger may be set to a non-nil value to enable logging of server activity.
 	Logger *slog.Logger
-	// If non-nil, called when "notifications/initialized" is received.
+	// InitializedHandler, if non-nil, is called when
+	// "notifications/initialized" is received.
+	//
+	// Deprecated: the >= 2026-06-30 protocol removes the initialization
+	// handshake, so this handler is never invoked for new-protocol clients.
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
@@ -1450,13 +1454,33 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	initialized := ss.state.InitializeParams != nil
 	ss.mu.Unlock()
 
+	// Per-request protocol detection (SEP-2575): if the request carries
+	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
+	// follows the new sessionless protocol. The initialization gate is
+	// skipped for such requests, since the new protocol has no `initialize`
+	// handshake; but the other required `_meta` fields must be present.
+	usesNewProtocol, perRequestErr := validateRequestMeta(req)
+	if perRequestErr != nil {
+		return nil, perRequestErr
+	}
+
+	// SEP-2575 removes the initialization handshake. Reject `initialize`
+	// requests that opt into the new protocol via `_meta.protocolVersion`,
+	// per the spec wording: "An `initialize` request with `2026-06-30`
+	// protocol version specified will be rejected with `Method not found`."
+	if req.Method == methodInitialize && usesNewProtocol {
+		ss.server.opts.Logger.Error("initialize is not supported in the new protocol", "method", req.Method)
+		return nil, fmt.Errorf("%w: %q is not supported in the new protocol; use %q instead",
+			jsonrpc2.ErrNotHandled, methodInitialize, "server/discover")
+	}
+
 	// From the spec:
 	// "The client SHOULD NOT send requests other than pings before the server
 	// has responded to the initialize request."
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
 	default:
-		if !initialized {
+		if !initialized && !usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
@@ -1478,6 +1502,12 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 
 // InitializeParams returns the InitializeParams provided during the client's
 // initial connection.
+//
+// Deprecated: with the >= 2026-06-30 protocol, sessions are sessionless and
+// there is no `initialize` handshake. For new-protocol requests this method
+// returns nil; use the per-request accessors [ServerRequest.ProtocolVersion],
+// [ServerRequest.ClientInfo], and [ServerRequest.ClientCapabilities]
+// instead.
 func (ss *ServerSession) InitializeParams() *InitializeParams {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()

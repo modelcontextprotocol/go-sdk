@@ -465,6 +465,62 @@ func setProgressToken(p Params, pt any) {
 	m[progressTokenKey] = pt
 }
 
+// extractRequestMeta performs a lightweight partial unmarshal of the `_meta`
+// field from a JSON-RPC request's raw params. It returns nil if params are
+// missing, malformed, or do not contain a `_meta` object.
+func extractRequestMeta(rawParams json.RawMessage) Meta {
+	if len(rawParams) == 0 {
+		return nil
+	}
+	var meta struct {
+		Meta Meta `json:"_meta"`
+	}
+	if err := internaljson.Unmarshal(rawParams, &meta); err != nil {
+		return nil
+	}
+	return meta.Meta
+}
+
+// validateRequestMeta inspects a JSON-RPC request to detect whether it follows
+// the >= 2026-06-30 protocol via the `_meta` field. If so, it validates that
+// the required `_meta` fields (clientInfo, clientCapabilities) are present.
+//
+// It returns:
+//   - usesNewProtocol: true if `io.modelcontextprotocol/protocolVersion` was
+//     present in `_meta`.
+//   - err: a JSON-RPC error if required `_meta` fields are missing or
+//     malformed for a new-protocol request.
+//
+// Notifications are exempt from `_meta` validation (no clientInfo /
+// clientCapabilities required), since they do not establish protocol state.
+func validateRequestMeta(req *jsonrpc.Request) (usesNewProtocol bool, err error) {
+	meta := extractRequestMeta(req.Params)
+	if meta == nil {
+		return false, nil
+	}
+	if _, ok := meta[MetaKeyProtocolVersion].(string); !ok {
+		return false, nil
+	}
+	// Notifications do not carry full client identity; only RPC calls
+	// following the new protocol must include it.
+	if !req.IsCall() {
+		return true, nil
+	}
+	if _, ok := meta[MetaKeyClientInfo]; !ok {
+		return true, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientInfo),
+		}
+	}
+	if _, ok := meta[MetaKeyClientCapabilities]; !ok {
+		return true, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientCapabilities),
+		}
+	}
+	return true, nil
+}
+
 // A Request is a method request with parameters and additional information, such as the session.
 // Request is implemented by [*ClientRequest] and [*ServerRequest].
 type Request interface {
@@ -524,6 +580,101 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
+
+// ProtocolVersion returns the protocol version negotiated for this request.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams] established during the
+// initialize handshake. Returns "" if neither is available.
+func (r *ServerRequest[P]) ProtocolVersion() string {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := m[MetaKeyProtocolVersion].(string); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ProtocolVersion
+		}
+	}
+	return ""
+}
+
+// ClientInfo returns the [Implementation] identifying the calling client.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams]. Returns nil if neither
+// source provides the field.
+func (r *ServerRequest[P]) ClientInfo() *Implementation {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*Implementation](m, MetaKeyClientInfo); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ClientInfo
+		}
+	}
+	return nil
+}
+
+// ClientCapabilities returns the [ClientCapabilities] of the calling client.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams]. Returns nil if neither
+// source provides the field.
+func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*ClientCapabilities](m, MetaKeyClientCapabilities); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.Capabilities
+		}
+	}
+	return nil
+}
+
+// getRequestMeta returns the raw `_meta` map from the request's params, or
+// nil if the params are absent.
+func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
+	// In practice P is a pointer type implementing Params. Use reflect to
+	// detect a nil pointer without panicking on GetMeta.
+	if v := reflect.ValueOf(r.Params); !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil()) {
+		return nil
+	}
+	return r.Params.GetMeta()
+}
+
+// decodeMetaValue decodes a typed value out of a `_meta` map. Values may
+// arrive either as the typed Go value (when constructed in-process) or as
+// the generic JSON map produced by encoding/json after wire transit. In the
+// latter case, the value is re-encoded and decoded into the target type.
+func decodeMetaValue[T any](m map[string]any, key string) (T, bool) {
+	var zero T
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return zero, false
+	}
+	if v, ok := raw.(T); ok {
+		return v, true
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return zero, false
+	}
+	var v T
+	if err := internaljson.Unmarshal(data, &v); err != nil {
+		return zero, false
+	}
+	return v, true
+}
 
 func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
 	return &ServerRequest[P]{Session: s, Params: p}

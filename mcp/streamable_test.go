@@ -3207,3 +3207,347 @@ func TestStandaloneSSEEmitsCommentForHTTP2Flush(t *testing.T) {
 		t.Fatal("timed out waiting for first SSE bytes; the standalone SSE stream must emit a DATA frame immediately so HTTP/2 reverse proxies don't buffer the HEADERS frame")
 	}
 }
+
+// newProtocolBody builds a raw JSON body for a tools/call request that
+// carries the >= 2026-06-30 per-request _meta fields.
+func newProtocolBody(t *testing.T, toolName string, args any) []byte {
+	t.Helper()
+	rawArgs, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260630,
+				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+				MetaKeyClientCapabilities: map[string]any{"sampling": map[string]any{}},
+			},
+			"name":      toolName,
+			"arguments": json.RawMessage(rawArgs),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestEphemeralConnectOpts_NewProtocol(t *testing.T) {
+	mkReq := func(body []byte) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		return r
+	}
+
+	h := &StreamableHTTPHandler{opts: StreamableHTTPOptions{}}
+
+	t.Run("new-protocol request: no synthetic state", func(t *testing.T) {
+		body := newProtocolBody(t, "x", struct{}{})
+		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !usesNew {
+			t.Errorf("usesNewProtocol = false, want true")
+		}
+		if opts.State.InitializeParams != nil {
+			t.Errorf("InitializeParams = %+v, want nil for new-protocol request", opts.State.InitializeParams)
+		}
+		if opts.State.InitializedParams != nil {
+			t.Errorf("InitializedParams = %+v, want nil for new-protocol request", opts.State.InitializedParams)
+		}
+	})
+
+	t.Run("old-protocol request: synthetic state preserved", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params":  map[string]any{"name": "x", "arguments": map[string]any{}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if usesNew {
+			t.Errorf("usesNewProtocol = true, want false for old-protocol request")
+		}
+		if opts.State.InitializeParams == nil {
+			t.Errorf("InitializeParams = nil, want synthetic value for old-protocol request")
+		}
+		if opts.State.InitializedParams == nil {
+			t.Errorf("InitializedParams = nil, want synthetic value for old-protocol request")
+		}
+	})
+
+	t.Run("initialize request: no synthetic InitializeParams", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  methodInitialize,
+			"params":  map[string]any{"protocolVersion": protocolVersion20250618},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if usesNew {
+			t.Errorf("usesNewProtocol = true, want false")
+		}
+		if opts.State.InitializeParams != nil {
+			t.Errorf("InitializeParams = %+v, want nil (real initialize handler will populate it)", opts.State.InitializeParams)
+		}
+	})
+}
+
+// statelessHandlerCapture builds a stateless server with a single tool whose
+// handler captures everything we want to assert about the per-request view of
+// the session and the new-protocol accessors.
+type statelessHandlerCapture struct {
+	mu                    sync.Mutex
+	sessionInitParams     *InitializeParams
+	reqProtocolVersion    string
+	reqClientInfo         *Implementation
+	reqClientCapabilities *ClientCapabilities
+}
+
+func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
+	capture := &statelessHandlerCapture{}
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures request info"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			capture.mu.Lock()
+			defer capture.mu.Unlock()
+			capture.sessionInitParams = req.Session.InitializeParams()
+			capture.reqProtocolVersion = req.ProtocolVersion()
+			capture.reqClientInfo = req.ClientInfo()
+			capture.reqClientCapabilities = req.ClientCapabilities()
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := newProtocolBody(t, "capture", struct{}{})
+	httpReq, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.sessionInitParams != nil {
+		t.Errorf("Session.InitializeParams() = %+v, want nil for new-protocol session", capture.sessionInitParams)
+	}
+	if got, want := capture.reqProtocolVersion, protocolVersion20260630; got != want {
+		t.Errorf("req.ProtocolVersion() = %q, want %q", got, want)
+	}
+	if capture.reqClientInfo == nil || capture.reqClientInfo.Name != "new-proto-client" {
+		t.Errorf("req.ClientInfo() = %+v, want Name=new-proto-client", capture.reqClientInfo)
+	}
+	if capture.reqClientCapabilities == nil || capture.reqClientCapabilities.Sampling == nil {
+		t.Errorf("req.ClientCapabilities() = %+v, want non-nil Sampling", capture.reqClientCapabilities)
+	}
+}
+
+func TestStreamableStateless_OldProtocolUnchanged(t *testing.T) {
+	// Regression: an old-protocol request to a stateless server must still
+	// observe a non-nil (synthetic) InitializeParams on the session, so
+	// existing handlers and the init gate continue to work.
+	capture := &statelessHandlerCapture{}
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures request info"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			capture.mu.Lock()
+			defer capture.mu.Unlock()
+			capture.sessionInitParams = req.Session.InitializeParams()
+			capture.reqProtocolVersion = req.ProtocolVersion()
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": "capture", "arguments": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	httpReq.Header.Set("MCP-Protocol-Version", protocolVersion20250618)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.sessionInitParams == nil {
+		t.Errorf("Session.InitializeParams() = nil, want synthetic non-nil for old-protocol session")
+	}
+	if got, want := capture.reqProtocolVersion, protocolVersion20250618; got != want {
+		t.Errorf("req.ProtocolVersion() = %q (via synthetic session), want %q from MCP-Protocol-Version header", got, want)
+	}
+}
+
+func TestStreamableStateless_LegacySessionIgnoredForNewProtocol(t *testing.T) {
+	// Under the legacy `allowsessionsinstateless=1` compat flag, stateless
+	// servers normally read Mcp-Session-Id from the request and call
+	// GetSessionID. For new-protocol requests, those legacy behaviors must
+	// be skipped: the session is fully sessionless.
+	prev := allowsessionsinstateless
+	allowsessionsinstateless = "1"
+	t.Cleanup(func() { allowsessionsinstateless = prev })
+
+	var capturedSessionID string
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures session id"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			capturedSessionID = req.Session.ID()
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	getSessionIDCalled := false
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	// Patch the server's GetSessionID to detect whether it was consulted.
+	mcpServer.opts.GetSessionID = func() string {
+		getSessionIDCalled = true
+		return "should-not-be-used"
+	}
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := newProtocolBody(t, "capture", struct{}{})
+	httpReq, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	// Explicitly send a session-ID header that the legacy compat path would
+	// normally honor. For new-protocol requests it must be ignored.
+	httpReq.Header.Set(sessionIDHeader, "legacy-client-supplied-id")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	if capturedSessionID != "" {
+		t.Errorf("Session.ID() = %q, want empty (new-protocol request must ignore Mcp-Session-Id)", capturedSessionID)
+	}
+	if getSessionIDCalled {
+		t.Errorf("server.opts.GetSessionID was consulted for a new-protocol request; want it to be skipped")
+	}
+	if echoed := resp.Header.Get(sessionIDHeader); echoed != "" {
+		t.Errorf("response %s header = %q, want empty for new-protocol request", sessionIDHeader, echoed)
+	}
+}
+
+func TestStreamableStateless_LegacySessionHonoredForOldProtocol(t *testing.T) {
+	// Regression: under `allowsessionsinstateless=1`, an OLD-protocol request
+	// must still see the legacy session-handling behavior (Mcp-Session-Id
+	// honored, GetSessionID consulted) so existing deployments don't break.
+	prev := allowsessionsinstateless
+	allowsessionsinstateless = "1"
+	t.Cleanup(func() { allowsessionsinstateless = prev })
+
+	var capturedSessionID string
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures session id"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			capturedSessionID = req.Session.ID()
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": "capture", "arguments": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	httpReq.Header.Set(sessionIDHeader, "old-protocol-session-id")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	if capturedSessionID != "old-protocol-session-id" {
+		t.Errorf("Session.ID() = %q, want %q (legacy header should be honored for old-protocol requests)", capturedSessionID, "old-protocol-session-id")
+	}
+}

@@ -1630,3 +1630,17 @@ const (
 	notificationToolListChanged     = "notifications/tools/list_changed"
 	methodUnsubscribe               = "resources/unsubscribe"
 )
+
+// Per-request _meta field names for the >= 2026-06-30 protocol version.
+//
+// These keys appear inside a Params._meta map and carry information that
+// previously came from the initialization handshake (SEP-2575).
+const (
+	// MetaKeyProtocolVersion identifies the MCP protocol version that the
+	// request follows.
+	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
+	// MetaKeyClientInfo carries the client's [Implementation].
+	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
+	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+)

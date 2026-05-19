@@ -4,6 +4,333 @@
 
 package mcp
 
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+)
+
+func TestValidateRequestMeta(t *testing.T) {
+	mustParams := func(t *testing.T, v any) json.RawMessage {
+		t.Helper()
+		if v == nil {
+			return nil
+		}
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	tests := []struct {
+		name            string
+		method          string
+		isNotification  bool
+		params          any
+		wantUsesNew     bool
+		wantErrContains string
+	}{
+		{
+			name:        "no params: old protocol",
+			method:      methodListTools,
+			params:      nil,
+			wantUsesNew: false,
+		},
+		{
+			name:        "no _meta: old protocol",
+			method:      methodCallTool,
+			params:      map[string]any{"name": "x"},
+			wantUsesNew: false,
+		},
+		{
+			name:   "_meta without protocolVersion: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{"otherKey": "v"},
+				"name":  "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			name:   "new protocol with all required fields",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
+			name:   "new protocol missing clientInfo",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew:     true,
+			wantErrContains: MetaKeyClientInfo,
+		},
+		{
+			name:   "new protocol missing clientCapabilities",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20260630,
+					MetaKeyClientInfo:      map[string]any{"name": "c", "version": "1"},
+				},
+				"name": "x",
+			},
+			wantUsesNew:     true,
+			wantErrContains: MetaKeyClientCapabilities,
+		},
+		{
+			name:           "notifications exempt from required fields",
+			method:         notificationCancelled,
+			isNotification: true,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20260630,
+				},
+				"requestId": "r1",
+			},
+			wantUsesNew: true,
+		},
+		{
+			name:        "malformed _meta is ignored",
+			method:      methodCallTool,
+			params:      json.RawMessage(`{"_meta": "not an object", "name": "x"}`),
+			wantUsesNew: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw json.RawMessage
+			switch p := tc.params.(type) {
+			case json.RawMessage:
+				raw = p
+			default:
+				raw = mustParams(t, tc.params)
+			}
+			req := &jsonrpc.Request{Method: tc.method, Params: raw}
+			if !tc.isNotification {
+				req.ID = jsonrpc.ID{}
+				// Give the request an ID by parsing one.
+				id, err := jsonrpc.MakeID("test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.ID = id
+			}
+
+			usesNew, err := validateRequestMeta(req)
+			if usesNew != tc.wantUsesNew {
+				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
+			}
+			if tc.wantErrContains == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrContains)
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+			}
+			if jerr.Code != jsonrpc.CodeInvalidParams {
+				t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
+			}
+			if !strings.Contains(jerr.Message, tc.wantErrContains) {
+				t.Errorf("error message %q does not contain %q", jerr.Message, tc.wantErrContains)
+			}
+		})
+	}
+}
+
+func TestServerRequest_PerRequestAccessors(t *testing.T) {
+	// A request carrying the new-protocol _meta fields populates the
+	// accessors with values from _meta.
+	caps := &ClientCapabilities{Sampling: &SamplingCapabilities{}}
+	info := &Implementation{Name: "c", Version: "1"}
+	params := &CallToolParamsRaw{
+		Meta: Meta{
+			MetaKeyProtocolVersion:    protocolVersion20260630,
+			MetaKeyClientInfo:         info,
+			MetaKeyClientCapabilities: caps,
+		},
+		Name: "x",
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{Params: params}
+	if got := req.ProtocolVersion(); got != protocolVersion20260630 {
+		t.Errorf("ProtocolVersion = %q, want %q", got, protocolVersion20260630)
+	}
+	if got := req.ClientInfo(); got == nil || got.Name != "c" {
+		t.Errorf("ClientInfo = %+v, want Name=c", got)
+	}
+	if got := req.ClientCapabilities(); got == nil || got.Sampling == nil {
+		t.Errorf("ClientCapabilities = %+v, want non-nil Sampling", got)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_FromJSON(t *testing.T) {
+	// Values arriving over the wire are JSON maps; the accessors should
+	// re-decode them into typed Go values.
+	raw := json.RawMessage(`{
+		"_meta": {
+			"io.modelcontextprotocol/protocolVersion": "2026-06-30",
+			"io.modelcontextprotocol/clientInfo": {"name": "wire-client", "version": "9"},
+			"io.modelcontextprotocol/clientCapabilities": {"sampling": {}}
+		},
+		"name": "tool"
+	}`)
+	var params CallToolParamsRaw
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatal(err)
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{Params: &params}
+	if got, want := req.ProtocolVersion(), protocolVersion20260630; got != want {
+		t.Errorf("ProtocolVersion = %q, want %q", got, want)
+	}
+	gotInfo := req.ClientInfo()
+	wantInfo := &Implementation{Name: "wire-client", Version: "9"}
+	if diff := cmp.Diff(wantInfo, gotInfo); diff != "" {
+		t.Errorf("ClientInfo mismatch (-want +got):\n%s", diff)
+	}
+	gotCaps := req.ClientCapabilities()
+	if gotCaps == nil || gotCaps.Sampling == nil {
+		t.Errorf("ClientCapabilities = %+v, want non-nil Sampling", gotCaps)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_FallbackToInitializeParams(t *testing.T) {
+	// With no _meta on the request, accessors must fall back to the
+	// session's InitializeParams (the old-protocol path).
+	ss := &ServerSession{}
+	ss.state.InitializeParams = &InitializeParams{
+		ProtocolVersion: protocolVersion20251125,
+		ClientInfo:      &Implementation{Name: "old", Version: "0"},
+		Capabilities:    &ClientCapabilities{Elicitation: &ElicitationCapabilities{}},
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{
+		Session: ss,
+		Params:  &CallToolParamsRaw{Name: "x"},
+	}
+	if got, want := req.ProtocolVersion(), protocolVersion20251125; got != want {
+		t.Errorf("ProtocolVersion fallback = %q, want %q", got, want)
+	}
+	if got := req.ClientInfo(); got == nil || got.Name != "old" {
+		t.Errorf("ClientInfo fallback = %+v, want Name=old", got)
+	}
+	if got := req.ClientCapabilities(); got == nil || got.Elicitation == nil {
+		t.Errorf("ClientCapabilities fallback = %+v, want non-nil Elicitation", got)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
+	// With no _meta and no session, accessors return zero values.
+	req := &ServerRequest[*CallToolParamsRaw]{
+		Params: &CallToolParamsRaw{Name: "x"},
+	}
+	if got := req.ProtocolVersion(); got != "" {
+		t.Errorf("ProtocolVersion = %q, want empty", got)
+	}
+	if got := req.ClientInfo(); got != nil {
+		t.Errorf("ClientInfo = %+v, want nil", got)
+	}
+	if got := req.ClientCapabilities(); got != nil {
+		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
+func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
+	// SEP-2575 removes the initialization handshake. An `initialize` request
+	// that opts into the new protocol via `_meta.protocolVersion` must be
+	// rejected with `Method not found` (-32601).
+	mustParams := func(t *testing.T, v any) json.RawMessage {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	tests := []struct {
+		name       string
+		params     any
+		wantReject bool
+	}{
+		{
+			name: "initialize with new-protocol _meta is rejected",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260630,
+			},
+			wantReject: true,
+		},
+		{
+			name: "initialize without _meta is allowed (old protocol)",
+			params: map[string]any{
+				"protocolVersion": protocolVersion20251125,
+			},
+			wantReject: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: NewServer(testImpl, nil)}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &jsonrpc.Request{
+				ID:     id,
+				Method: methodInitialize,
+				Params: mustParams(t, tc.params),
+			}
+			_, err = ss.handle(context.Background(), req)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatal("expected error rejecting initialize, got nil")
+				}
+				if !errors.Is(err, jsonrpc2.ErrNotHandled) {
+					t.Errorf("error = %v, want it to wrap jsonrpc2.ErrNotHandled (so the wire returns -32601)", err)
+				}
+				if !strings.Contains(err.Error(), "initialize") {
+					t.Errorf("error message %q does not mention %q", err.Error(), "initialize")
+				}
+			} else {
+				// Old-protocol initialize should be dispatched normally; any
+				// error here means the rejection branch fired incorrectly.
+				if err != nil && errors.Is(err, jsonrpc2.ErrNotHandled) {
+					t.Errorf("old-protocol initialize was incorrectly rejected: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // TODO(v0.3.0): rewrite this test.
 // func TestToolValidate(t *testing.T) {
 // 	// Check that the tool returned from NewServerTool properly validates its input schema.

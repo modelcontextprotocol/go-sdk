@@ -343,8 +343,18 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
+	// Peek at the body to determine whether this is a new-protocol request.
+	// New-protocol requests are fully sessionless: even under the legacy
+	// `allowsessionsinstateless` compat flag, we must not read or generate
+	// a session ID for them.
+	connectOpts, usesNewProtocol, err := h.ephemeralConnectOpts(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	var sessionID string
-	if legacySessions {
+	if legacySessions && !usesNewProtocol {
 		sessionID = req.Header.Get(sessionIDHeader)
 		if sessionID == "" {
 			sessionID = server.opts.GetSessionID()
@@ -359,11 +369,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		logger:       h.opts.Logger,
 	}
 
-	connectOpts, err := h.ephemeralConnectOpts(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
@@ -389,10 +394,23 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 }
 
 // ephemeralConnectOpts peeks at the request body to determine whether it
-// contains an initialize or initialized message. If not, default session state
-// is constructed so that the session doesn't reject the request.
+// contains an initialize or initialized message, or whether any of its
+// messages carry the per-request `_meta.protocolVersion` field that signals
+// the >= 2026-06-30 sessionless protocol (SEP-2575).
+//
+// For old-protocol requests, default session state is synthesized so that
+// the session's init gate doesn't reject the request. For new-protocol
+// requests, no state is synthesized: the request carries its identity in
+// `_meta`, and [ServerSession.InitializeParams] returning nil is the
+// migration signal that handlers should read identity via the per-request
+// accessors on [ServerRequest].
+//
 // It is used for both stateless servers and stateful servers with no session ID.
-func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*ServerSessionOptions, error) {
+//
+// The returned usesNewProtocol bool reports whether any request in the body
+// carried `_meta.protocolVersion`. Callers may use it to suppress legacy
+// session-handling behavior (e.g., reading Mcp-Session-Id) for such requests.
+func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
@@ -401,7 +419,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 	var hasInitialize, hasInitialized bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
+		return nil, false, fmt.Errorf("failed to read body")
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -415,23 +433,30 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 				case notificationInitialized:
 					hasInitialized = true
 				}
+				if meta := extractRequestMeta(r.Params); meta != nil {
+					if _, ok := meta[MetaKeyProtocolVersion].(string); ok {
+						usesNewProtocol = true
+					}
+				}
 			}
 		}
 	}
 
 	state := new(ServerSessionState)
-	if !hasInitialize {
+	// Only synthesize fake InitializeParams/InitializedParams for old-protocol
+	// requests.
+	if !hasInitialize && !usesNewProtocol {
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: protocolVersion,
 		}
 	}
-	if !hasInitialized {
+	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
 	state.LogLevel = "info"
 	return &ServerSessionOptions{
 		State: state,
-	}, nil
+	}, usesNewProtocol, nil
 }
 
 func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
@@ -576,7 +601,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// that arrives before a session exists (e.g. initialize or ping) on a
 	// server configured this way.
 	if sessionID == "" {
-		connectOpts, err := h.ephemeralConnectOpts(req)
+		connectOpts, _, err := h.ephemeralConnectOpts(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
