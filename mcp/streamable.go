@@ -343,10 +343,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	// Peek at the body to determine whether this is a new-protocol request.
-	// New-protocol requests are fully sessionless: even under the legacy
-	// `allowsessionsinstateless` compat flag, we must not read or generate
-	// a session ID for them.
 	connectOpts, usesNewProtocol, err := h.ephemeralConnectOpts(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -401,15 +397,12 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 // For old-protocol requests, default session state is synthesized so that
 // the session's init gate doesn't reject the request. For new-protocol
 // requests, no state is synthesized: the request carries its identity in
-// `_meta`, and [ServerSession.InitializeParams] returning nil is the
-// migration signal that handlers should read identity via the per-request
-// accessors on [ServerRequest].
+// `_meta`.
 //
 // It is used for both stateless servers and stateful servers with no session ID.
 //
 // The returned usesNewProtocol bool reports whether any request in the body
-// carried `_meta.protocolVersion`. Callers may use it to suppress legacy
-// session-handling behavior (e.g., reading Mcp-Session-Id) for such requests.
+// carried `_meta.protocolVersion`.
 func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
