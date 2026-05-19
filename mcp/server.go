@@ -62,11 +62,7 @@ type ServerOptions struct {
 	Instructions string
 	// Logger may be set to a non-nil value to enable logging of server activity.
 	Logger *slog.Logger
-	// InitializedHandler, if non-nil, is called when
-	// "notifications/initialized" is received.
-	//
-	// Deprecated: the >= 2026-06-30 protocol removes the initialization
-	// handshake, so this handler is never invoked for new-protocol clients.
+	// If non-nil, called when "notifications/initialized" is received.
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
@@ -1457,8 +1453,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// Per-request protocol detection (SEP-2575): if the request carries
 	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
 	// follows the new sessionless protocol. The initialization gate is
-	// skipped for such requests, since the new protocol has no `initialize`
-	// handshake; but the other required `_meta` fields must be present.
+	// skipped for such requests.
 	usesNewProtocol, perRequestErr := validateRequestMeta(req)
 	if perRequestErr != nil {
 		return nil, perRequestErr
@@ -1470,8 +1465,11 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// protocol version specified will be rejected with `Method not found`."
 	if req.Method == methodInitialize && usesNewProtocol {
 		ss.server.opts.Logger.Error("initialize is not supported in the new protocol", "method", req.Method)
-		return nil, fmt.Errorf("%w: %q is not supported in the new protocol; use %q instead",
-			jsonrpc2.ErrNotHandled, methodInitialize, "server/discover")
+		return nil, &jsonrpc.Error{
+			Code: jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol; use %q instead",
+				methodInitialize, "server/discover"),
+		}
 	}
 
 	// From the spec:

@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -314,21 +313,69 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error rejecting initialize, got nil")
 				}
-				if !errors.Is(err, jsonrpc2.ErrNotHandled) {
-					t.Errorf("error = %v, want it to wrap jsonrpc2.ErrNotHandled (so the wire returns -32601)", err)
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) {
+					t.Fatalf("error type = %T, want *jsonrpc.Error so the wire returns the right code", err)
 				}
-				if !strings.Contains(err.Error(), "initialize") {
-					t.Errorf("error message %q does not mention %q", err.Error(), "initialize")
+				if jerr.Code != jsonrpc.CodeMethodNotFound {
+					t.Errorf("error code = %d, want %d (CodeMethodNotFound = -32601)", jerr.Code, jsonrpc.CodeMethodNotFound)
+				}
+				if !strings.Contains(jerr.Message, "initialize") {
+					t.Errorf("error message %q does not mention %q", jerr.Message, "initialize")
 				}
 			} else {
 				// Old-protocol initialize should be dispatched normally; any
-				// error here means the rejection branch fired incorrectly.
-				if err != nil && errors.Is(err, jsonrpc2.ErrNotHandled) {
+				// CodeMethodNotFound here would mean the rejection branch
+				// fired incorrectly.
+				var jerr *jsonrpc.Error
+				if errors.As(err, &jerr) && jerr.Code == jsonrpc.CodeMethodNotFound {
 					t.Errorf("old-protocol initialize was incorrectly rejected: %v", err)
 				}
 			}
 		})
 	}
+
+	t.Run("rejection error encodes to wire as code -32601", func(t *testing.T) {
+		// Belt-and-braces check that the error type produced by handle()
+		// actually serializes to JSON-RPC code -32601, not a bare 0.
+		ss := &ServerSession{server: NewServer(testImpl, nil)}
+		id, err := jsonrpc.MakeID("test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := &jsonrpc.Request{
+			ID:     id,
+			Method: methodInitialize,
+			Params: mustParams(t, map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260630,
+			}),
+		}
+		_, handleErr := ss.handle(context.Background(), req)
+		if handleErr == nil {
+			t.Fatal("expected rejection error, got nil")
+		}
+		data, encErr := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: id, Error: handleErr.(*jsonrpc.Error)})
+		if encErr != nil {
+			t.Fatal(encErr)
+		}
+		var wire struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if wire.Error.Code != jsonrpc.CodeMethodNotFound {
+			t.Errorf("wire error code = %d, want %d; full response = %s", wire.Error.Code, jsonrpc.CodeMethodNotFound, data)
+		}
+	})
 }
 
 // TODO(v0.3.0): rewrite this test.
