@@ -3236,7 +3236,7 @@ func newProtocolBody(t *testing.T, toolName string, args any) []byte {
 	return body
 }
 
-func TestEphemeralConnectOpts_NewProtocol(t *testing.T) {
+func TestEphemeralConnectOpts(t *testing.T) {
 	mkReq := func(body []byte) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
@@ -3262,7 +3262,7 @@ func TestEphemeralConnectOpts_NewProtocol(t *testing.T) {
 		}
 	})
 
-	t.Run("old-protocol request: synthetic state preserved", func(t *testing.T) {
+	t.Run("old-protocol request: synthetic state populated", func(t *testing.T) {
 		body, err := json.Marshal(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
@@ -3310,6 +3310,62 @@ func TestEphemeralConnectOpts_NewProtocol(t *testing.T) {
 	})
 }
 
+// TestServePOST_NewProtocolHeaderCrossCheck verifies that the SEP-2575
+// header/body cross-check runs inside streamableServerConn.servePOST, which
+// is the single chokepoint reached by every POST regardless of stateful or
+// stateless mode.
+func TestServePOST_NewProtocolHeaderCrossCheck(t *testing.T) {
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	mkReq := func(headerVersion string) *http.Request {
+		body := newProtocolBody(t, "noop", struct{}{})
+		req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if headerVersion != "" {
+			req.Header.Set(protocolVersionHeader, headerVersion)
+		}
+		return req
+	}
+
+	t.Run("mismatched header: 400", func(t *testing.T) {
+		resp, err := http.DefaultClient.Do(mkReq("2025-06-18"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("missing header: 400", func(t *testing.T) {
+		resp, err := http.DefaultClient.Do(mkReq(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, body)
+		}
+	})
+}
+
 // statelessHandlerCapture builds a stateless server with a single tool whose
 // handler captures everything we want to assert about the per-request view of
 // the session and the new-protocol accessors.
@@ -3322,6 +3378,13 @@ type statelessHandlerCapture struct {
 }
 
 func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
+	// SEP-2575: the MCP-Protocol-Version header is mandatory for new-protocol
+	// requests and must be a supported version. The 2026-06-30 version is
+	// not yet in the global list, so register it for the duration of the test.
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
 	capture := &statelessHandlerCapture{}
 	mcpServer := NewServer(testImpl, nil)
 	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures request info"},
@@ -3349,6 +3412,7 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	httpReq.Header.Set(protocolVersionHeader, protocolVersion20260630)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -3373,5 +3437,115 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	}
 	if capture.reqClientCapabilities == nil || capture.reqClientCapabilities.Sampling == nil {
 		t.Errorf("req.ClientCapabilities() = %+v, want non-nil Sampling", capture.reqClientCapabilities)
+	}
+}
+
+// TestStreamableStateful_RejectsNewProtocol verifies that a stateful HTTP
+// server rejects requests carrying _meta.protocolVersion (i.e. >= 2026-06-30
+// requests) with HTTP 400. The new protocol is
+// supported on HTTP only when StreamableHTTPOptions.Stateless=true.
+func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
+	// Make 2026-06-30 a "known" version so that the request reaches servePOST
+	// (otherwise the early header validation at ServeHTTP rejects it).
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// Initialize a legacy session first.
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequest(http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	// Drive the existing session with a new-protocol request whose header and
+	// body agree. The cross-check passes; the stateful-rejection check fires.
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(sessionIDHeader, sessionID)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(string(respBody), "stateless") {
+		t.Errorf("body = %q, want a message mentioning 'stateless'", respBody)
+	}
+}
+
+// TestStreamableStateless_AcceptsNewProtocol is the positive control:
+// confirms that a stateless server still accepts new-protocol requests
+// (the rejection in TestStreamableStateful_RejectsNewProtocol must not
+// fire on Stateless: true).
+func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
 	}
 }
