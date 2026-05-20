@@ -483,7 +483,7 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
 // the >= 2026-06-30 protocol via the `_meta` field.
 // It returns true if `io.modelcontextprotocol/protocolVersion`,
-// `io.modelcontextprotocol/clientInfo` and `io.modelcontextprotocol/clientCapabilities` were present in `_meta`.
+// `io.modelcontextprotocol/clientInfo` and `io.modelcontextprotocol/clientCapabilities` are present in `_meta`.
 func validateRequestMeta(req *jsonrpc.Request) (usesNewProtocol bool, err error) {
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
