@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 type testItem struct {
@@ -1003,6 +1005,187 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 
 			if diff := cmp.Diff(tc.wantCapabilities, initResult.Capabilities); diff != "" {
 				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
+	// SEP-2575 removes the initialization handshake. An `initialize` request
+	// that opts into the new protocol via `_meta.protocolVersion` must be
+	// rejected with `Method not found` (-32601).
+	mustParams := func(t *testing.T, v any) json.RawMessage {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	tests := []struct {
+		name       string
+		params     any
+		wantReject bool
+	}{
+		{
+			name: "initialize with new-protocol _meta is rejected",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260630,
+			},
+			wantReject: true,
+		},
+		{
+			name: "initialize without _meta is allowed (old protocol)",
+			params: map[string]any{
+				"protocolVersion": protocolVersion20251125,
+			},
+			wantReject: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: NewServer(testImpl, nil)}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &jsonrpc.Request{
+				ID:     id,
+				Method: methodInitialize,
+				Params: mustParams(t, tc.params),
+			}
+			_, err = ss.handle(context.Background(), req)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatal("expected error rejecting initialize, got nil")
+				}
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) {
+					t.Fatalf("error type = %T, want *jsonrpc.Error so the wire returns the right code", err)
+				}
+				if jerr.Code != jsonrpc.CodeMethodNotFound {
+					t.Errorf("error code = %d, want %d (CodeMethodNotFound = -32601)", jerr.Code, jsonrpc.CodeMethodNotFound)
+				}
+				if !strings.Contains(jerr.Message, "initialize") {
+					t.Errorf("error message %q does not mention %q", jerr.Message, "initialize")
+				}
+			} else {
+				// Old-protocol initialize should be dispatched normally; any
+				// CodeMethodNotFound here would mean the rejection branch
+				// fired incorrectly.
+				var jerr *jsonrpc.Error
+				if errors.As(err, &jerr) && jerr.Code == jsonrpc.CodeMethodNotFound {
+					t.Errorf("old-protocol initialize was incorrectly rejected: %v", err)
+				}
+			}
+		})
+	}
+
+	t.Run("rejection error encodes to wire as code -32601", func(t *testing.T) {
+		// Belt-and-braces check that the error type produced by handle()
+		// actually serializes to JSON-RPC code -32601, not a bare 0.
+		ss := &ServerSession{server: NewServer(testImpl, nil)}
+		id, err := jsonrpc.MakeID("test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := &jsonrpc.Request{
+			ID:     id,
+			Method: methodInitialize,
+			Params: mustParams(t, map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260630,
+			}),
+		}
+		_, handleErr := ss.handle(context.Background(), req)
+		if handleErr == nil {
+			t.Fatal("expected rejection error, got nil")
+		}
+		data, encErr := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: id, Error: handleErr.(*jsonrpc.Error)})
+		if encErr != nil {
+			t.Fatal(encErr)
+		}
+		var wire struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if wire.Error.Code != jsonrpc.CodeMethodNotFound {
+			t.Errorf("wire error code = %d, want %d; full response = %s", wire.Error.Code, jsonrpc.CodeMethodNotFound, data)
+		}
+	})
+}
+
+// TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol verifies that
+// the methods removed by SEP-2575 (`initialize`, `notifications/initialized`,
+// `ping`) all return Method not found when the request opts into the new
+// protocol via `_meta.protocolVersion`.
+func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
+	mustParams := func(t *testing.T, v any) json.RawMessage {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	newProtoMeta := map[string]any{
+		"_meta": map[string]any{
+			MetaKeyProtocolVersion:    protocolVersion20260630,
+			MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+			MetaKeyClientCapabilities: map[string]any{},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{"initialize", methodInitialize},
+		{"ping", methodPing},
+		{"notifications/initialized", notificationInitialized},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name+" rejected on new protocol", func(t *testing.T) {
+			ss := &ServerSession{server: NewServer(testImpl, nil)}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &jsonrpc.Request{
+				ID:     id,
+				Method: tc.method,
+				Params: mustParams(t, newProtoMeta),
+			}
+			_, err = ss.handle(context.Background(), req)
+			if err == nil {
+				t.Fatalf("method %q on new protocol: got nil error, want CodeMethodNotFound", tc.method)
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("error type = %T, want *jsonrpc.Error", err)
+			}
+			if jerr.Code != jsonrpc.CodeMethodNotFound {
+				t.Errorf("method %q: code = %d, want %d", tc.method, jerr.Code, jsonrpc.CodeMethodNotFound)
+			}
+			if !strings.Contains(jerr.Message, tc.method) {
+				t.Errorf("method %q: message %q does not mention method name", tc.method, jerr.Message)
 			}
 		})
 	}

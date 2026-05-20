@@ -1459,24 +1459,15 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	// SEP-2575 removes the initialization handshake. Reject `initialize`
-	// requests that opt into the new protocol via `_meta.protocolVersion`,
-	// per the spec wording: "An `initialize` request with `2026-06-30`
-	// protocol version specified will be rejected with `Method not found`."
-	if req.Method == methodInitialize && usesNewProtocol {
-		ss.server.opts.Logger.Error("initialize is not supported in the new protocol", "method", req.Method)
-		return nil, &jsonrpc.Error{
-			Code: jsonrpc.CodeMethodNotFound,
-			Message: fmt.Sprintf("%q is not supported in the new protocol; use %q instead",
-				methodInitialize, "server/discover"),
-		}
-	}
-
-	// From the spec:
-	// "The client SHOULD NOT send requests other than pings before the server
-	// has responded to the initialize request."
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
+		if usesNewProtocol {
+			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
+		}
 	default:
 		if !initialized && !usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)

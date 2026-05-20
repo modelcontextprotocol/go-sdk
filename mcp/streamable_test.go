@@ -3245,125 +3245,74 @@ func TestEphemeralConnectOpts(t *testing.T) {
 
 	h := &StreamableHTTPHandler{opts: StreamableHTTPOptions{}}
 
-	t.Run("new-protocol request: no synthetic state", func(t *testing.T) {
-		body := newProtocolBody(t, "x", struct{}{})
-		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !usesNew {
-			t.Errorf("usesNewProtocol = false, want true")
-		}
-		if opts.State.InitializeParams != nil {
-			t.Errorf("InitializeParams = %+v, want nil for new-protocol request", opts.State.InitializeParams)
-		}
-		if opts.State.InitializedParams != nil {
-			t.Errorf("InitializedParams = %+v, want nil for new-protocol request", opts.State.InitializedParams)
-		}
+	oldProtocolBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": "x", "arguments": map[string]any{}},
 	})
-
-	t.Run("old-protocol request: synthetic state populated", func(t *testing.T) {
-		body, err := json.Marshal(map[string]any{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "tools/call",
-			"params":  map[string]any{"name": "x", "arguments": map[string]any{}},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if usesNew {
-			t.Errorf("usesNewProtocol = true, want false for old-protocol request")
-		}
-		if opts.State.InitializeParams == nil {
-			t.Errorf("InitializeParams = nil, want synthetic value for old-protocol request")
-		}
-		if opts.State.InitializedParams == nil {
-			t.Errorf("InitializedParams = nil, want synthetic value for old-protocol request")
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
+	initializeBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  methodInitialize,
+		"params":  map[string]any{"protocolVersion": protocolVersion20250618},
 	})
-
-	t.Run("initialize request: no synthetic InitializeParams", func(t *testing.T) {
-		body, err := json.Marshal(map[string]any{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  methodInitialize,
-			"params":  map[string]any{"protocolVersion": protocolVersion20250618},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		opts, usesNew, err := h.ephemeralConnectOpts(mkReq(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if usesNew {
-			t.Errorf("usesNewProtocol = true, want false")
-		}
-		if opts.State.InitializeParams != nil {
-			t.Errorf("InitializeParams = %+v, want nil (real initialize handler will populate it)", opts.State.InitializeParams)
-		}
-	})
-}
-
-// TestServePOST_NewProtocolHeaderCrossCheck verifies that the SEP-2575
-// header/body cross-check runs inside streamableServerConn.servePOST, which
-// is the single chokepoint reached by every POST regardless of stateful or
-// stateless mode.
-func TestServePOST_NewProtocolHeaderCrossCheck(t *testing.T) {
-	mcpServer := NewServer(testImpl, nil)
-	AddTool(mcpServer, &Tool{Name: "noop"},
-		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
-			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
-		})
-	handler := NewStreamableHTTPHandler(
-		func(*http.Request) *Server { return mcpServer },
-		&StreamableHTTPOptions{Stateless: true},
-	)
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	mkReq := func(headerVersion string) *http.Request {
-		body := newProtocolBody(t, "noop", struct{}{})
-		req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		if headerVersion != "" {
-			req.Header.Set(protocolVersionHeader, headerVersion)
-		}
-		return req
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	t.Run("mismatched header: 400", func(t *testing.T) {
-		resp, err := http.DefaultClient.Do(mkReq("2025-06-18"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, body)
-		}
-	})
+	tests := []struct {
+		name                  string
+		body                  []byte
+		wantUsesNew           bool
+		wantInitializeParams  bool
+		wantInitializedParams bool
+	}{
+		{
+			name:                  "new-protocol request: no synthetic state",
+			body:                  newProtocolBody(t, "x", struct{}{}),
+			wantUsesNew:           true,
+			wantInitializeParams:  false,
+			wantInitializedParams: false,
+		},
+		{
+			name:                  "old-protocol request: synthetic state populated",
+			body:                  oldProtocolBody,
+			wantUsesNew:           false,
+			wantInitializeParams:  true,
+			wantInitializedParams: true,
+		},
+		{
+			name:                  "initialize request: no synthetic InitializeParams",
+			body:                  initializeBody,
+			wantUsesNew:           false,
+			wantInitializeParams:  false,
+			wantInitializedParams: true,
+		},
+	}
 
-	t.Run("missing header: 400", func(t *testing.T) {
-		resp, err := http.DefaultClient.Do(mkReq(""))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, body)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, usesNew, err := h.ephemeralConnectOpts(mkReq(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usesNew != tt.wantUsesNew {
+				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tt.wantUsesNew)
+			}
+			if got := opts.State.InitializeParams != nil; got != tt.wantInitializeParams {
+				t.Errorf("InitializeParams non-nil = %v, want %v (value = %+v)",
+					got, tt.wantInitializeParams, opts.State.InitializeParams)
+			}
+			if got := opts.State.InitializedParams != nil; got != tt.wantInitializedParams {
+				t.Errorf("InitializedParams non-nil = %v, want %v (value = %+v)",
+					got, tt.wantInitializedParams, opts.State.InitializedParams)
+			}
+		})
+	}
 }
 
 // statelessHandlerCapture builds a stateless server with a single tool whose

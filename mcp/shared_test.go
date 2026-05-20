@@ -5,7 +5,6 @@
 package mcp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -255,127 +254,6 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	if got := req.ClientCapabilities(); got != nil {
 		t.Errorf("ClientCapabilities = %+v, want nil", got)
 	}
-}
-
-func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
-	// SEP-2575 removes the initialization handshake. An `initialize` request
-	// that opts into the new protocol via `_meta.protocolVersion` must be
-	// rejected with `Method not found` (-32601).
-	mustParams := func(t *testing.T, v any) json.RawMessage {
-		t.Helper()
-		data, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-
-	tests := []struct {
-		name       string
-		params     any
-		wantReject bool
-	}{
-		{
-			name: "initialize with new-protocol _meta is rejected",
-			params: map[string]any{
-				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
-					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
-					MetaKeyClientCapabilities: map[string]any{},
-				},
-				"protocolVersion": protocolVersion20260630,
-			},
-			wantReject: true,
-		},
-		{
-			name: "initialize without _meta is allowed (old protocol)",
-			params: map[string]any{
-				"protocolVersion": protocolVersion20251125,
-			},
-			wantReject: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ss := &ServerSession{server: NewServer(testImpl, nil)}
-			id, err := jsonrpc.MakeID("test")
-			if err != nil {
-				t.Fatal(err)
-			}
-			req := &jsonrpc.Request{
-				ID:     id,
-				Method: methodInitialize,
-				Params: mustParams(t, tc.params),
-			}
-			_, err = ss.handle(context.Background(), req)
-			if tc.wantReject {
-				if err == nil {
-					t.Fatal("expected error rejecting initialize, got nil")
-				}
-				var jerr *jsonrpc.Error
-				if !errors.As(err, &jerr) {
-					t.Fatalf("error type = %T, want *jsonrpc.Error so the wire returns the right code", err)
-				}
-				if jerr.Code != jsonrpc.CodeMethodNotFound {
-					t.Errorf("error code = %d, want %d (CodeMethodNotFound = -32601)", jerr.Code, jsonrpc.CodeMethodNotFound)
-				}
-				if !strings.Contains(jerr.Message, "initialize") {
-					t.Errorf("error message %q does not mention %q", jerr.Message, "initialize")
-				}
-			} else {
-				// Old-protocol initialize should be dispatched normally; any
-				// CodeMethodNotFound here would mean the rejection branch
-				// fired incorrectly.
-				var jerr *jsonrpc.Error
-				if errors.As(err, &jerr) && jerr.Code == jsonrpc.CodeMethodNotFound {
-					t.Errorf("old-protocol initialize was incorrectly rejected: %v", err)
-				}
-			}
-		})
-	}
-
-	t.Run("rejection error encodes to wire as code -32601", func(t *testing.T) {
-		// Belt-and-braces check that the error type produced by handle()
-		// actually serializes to JSON-RPC code -32601, not a bare 0.
-		ss := &ServerSession{server: NewServer(testImpl, nil)}
-		id, err := jsonrpc.MakeID("test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		req := &jsonrpc.Request{
-			ID:     id,
-			Method: methodInitialize,
-			Params: mustParams(t, map[string]any{
-				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
-					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
-					MetaKeyClientCapabilities: map[string]any{},
-				},
-				"protocolVersion": protocolVersion20260630,
-			}),
-		}
-		_, handleErr := ss.handle(context.Background(), req)
-		if handleErr == nil {
-			t.Fatal("expected rejection error, got nil")
-		}
-		data, encErr := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: id, Error: handleErr.(*jsonrpc.Error)})
-		if encErr != nil {
-			t.Fatal(encErr)
-		}
-		var wire struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(data, &wire); err != nil {
-			t.Fatal(err)
-		}
-		if wire.Error.Code != jsonrpc.CodeMethodNotFound {
-			t.Errorf("wire error code = %d, want %d; full response = %s", wire.Error.Code, jsonrpc.CodeMethodNotFound, data)
-		}
-	})
 }
 
 // TODO(v0.3.0): rewrite this test.
