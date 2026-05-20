@@ -1316,10 +1316,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// SEP-2575: requests carrying `_meta.protocolVersion` require the
 			// Mcp-Protocol-Version HTTP header to be present and to match the
 			// per-request `_meta.protocolVersion` value.
-			//
-			// Per the SDK design doc (design/stateless.md), the new (>=
-			// 2026-06-30) protocol is supported on the HTTP transport only
-			// when [StreamableHTTPOptions.Stateless] is true.
+			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
+			// only when [StreamableHTTPOptions.Stateless] is true.
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				if metaVersion, ok := meta[MetaKeyProtocolVersion].(string); ok {
 					if !c.stateless {
