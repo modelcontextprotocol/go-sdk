@@ -3413,6 +3413,10 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	// >= 2026-06-30 also requires the Mcp-Method and Mcp-Name standard
+	// headers (see streamable_headers.go).
+	httpReq.Header.Set(methodHeader, "tools/call")
+	httpReq.Header.Set(nameHeader, "capture")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
