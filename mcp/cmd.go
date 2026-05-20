@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -88,6 +89,14 @@ func (s *pipeRWC) Close() error {
 		return nil, false
 	}
 	if err, ok := wait(); ok {
+		// The subprocess exited after we closed stdin. A non-zero exit code
+		// is expected here: the server may exit with an error status because
+		// it observed EOF on stdin. This is part of normal graceful shutdown,
+		// not an error in the connection.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil
+		}
 		return err
 	}
 	// Note the condition here: if sending SIGTERM fails, don't wait and just
