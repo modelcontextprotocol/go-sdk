@@ -1295,7 +1295,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
 	var initializeProtocolVersion string
-	headerVersion := req.Header.Get(protocolVersionHeader)
+	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
