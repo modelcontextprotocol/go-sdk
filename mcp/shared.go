@@ -482,7 +482,6 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 
 type validatedMeta struct {
 	usesNewProtocol bool
-	meta            Meta
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
@@ -501,7 +500,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	}
 	// Notifications do not carry full client identity
 	if !req.IsCall() {
-		return &validatedMeta{usesNewProtocol: true, meta: meta}, nil
+		return &validatedMeta{usesNewProtocol: true}, nil
 	}
 	if _, ok := meta[MetaKeyClientInfo]; !ok {
 		return nil, &jsonrpc.Error{
@@ -515,7 +514,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
-	return &validatedMeta{usesNewProtocol: true, meta: meta}, nil
+	return &validatedMeta{usesNewProtocol: true}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.

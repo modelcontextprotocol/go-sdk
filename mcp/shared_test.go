@@ -136,10 +136,6 @@ func TestValidateRequestMeta(t *testing.T) {
 
 			vmeta, err := validateRequestMeta(req)
 			usesNew := vmeta != nil && vmeta.usesNewProtocol
-			if err != nil {
-				meta := extractRequestMeta(req.Params)
-				usesNew = meta != nil && meta[MetaKeyProtocolVersion] != nil
-			}
 			if usesNew != tc.wantUsesNew {
 				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
 			}

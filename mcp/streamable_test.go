@@ -1926,39 +1926,12 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			return &CallToolResult{}, nil
 		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
-	initResp := resp(1, &InitializeResult{
-		Capabilities: &ServerCapabilities{
-			Logging: &LoggingCapabilities{},
-			Tools:   &ToolCapabilities{ListChanged: true},
-		},
-		ProtocolVersion: minVersionForStandardHeaders,
-		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
-	}, nil)
-
-	initialize := streamableRequest{
-		method:         "POST",
-		messages:       []jsonrpc.Message{initReq},
-		wantStatusCode: http.StatusOK,
-		wantMessages:   []jsonrpc.Message{initResp},
-		wantSessionID:  true,
-	}
-	initialized := streamableRequest{
-		method: "POST",
-		headers: http.Header{
-			protocolVersionHeader: {minVersionForStandardHeaders},
-			methodHeader:          {notificationInitialized},
-		},
-		messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
-		wantStatusCode: http.StatusAccepted,
-	}
-
 	testStreamableHandler(t, handler, []streamableRequest{
-		initialize,
-		initialized,
 		{
 			method: "POST",
 			headers: http.Header{
