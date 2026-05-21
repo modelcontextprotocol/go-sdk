@@ -765,6 +765,7 @@ type DiscoverParams struct {
 }
 
 func (x *DiscoverParams) isParams()              {}
+func (x *DiscoverParams) isNil() bool            { return x == nil }
 func (x *DiscoverParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *DiscoverParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
