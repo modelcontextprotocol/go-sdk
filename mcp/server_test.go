@@ -1010,19 +1010,10 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 	}
 }
 
+// SEP-2575 removes the initialization handshake. An `initialize` request
+// that opts into the new protocol via `_meta.protocolVersion` must be
+// rejected with `Method not found` (-32601).
 func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
-	// SEP-2575 removes the initialization handshake. An `initialize` request
-	// that opts into the new protocol via `_meta.protocolVersion` must be
-	// rejected with `Method not found` (-32601).
-	mustParams := func(t *testing.T, v any) json.RawMessage {
-		t.Helper()
-		data, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-
 	tests := []struct {
 		name       string
 		params     any
@@ -1059,7 +1050,7 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 			req := &jsonrpc.Request{
 				ID:     id,
 				Method: methodInitialize,
-				Params: mustParams(t, tc.params),
+				Params: mustMarshal(tc.params),
 			}
 			_, err = ss.handle(context.Background(), req)
 			if tc.wantReject {
@@ -1099,7 +1090,7 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 		req := &jsonrpc.Request{
 			ID:     id,
 			Method: methodInitialize,
-			Params: mustParams(t, map[string]any{
+			Params: mustMarshal(map[string]any{
 				"_meta": map[string]any{
 					MetaKeyProtocolVersion:    protocolVersion20260630,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
@@ -1136,14 +1127,6 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 // `ping`) all return Method not found when the request opts into the new
 // protocol via `_meta.protocolVersion`.
 func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
-	mustParams := func(t *testing.T, v any) json.RawMessage {
-		t.Helper()
-		data, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
 	newProtoMeta := map[string]any{
 		"_meta": map[string]any{
 			MetaKeyProtocolVersion:    protocolVersion20260630,
@@ -1171,7 +1154,7 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 			req := &jsonrpc.Request{
 				ID:     id,
 				Method: tc.method,
-				Params: mustParams(t, newProtoMeta),
+				Params: mustMarshal(newProtoMeta),
 			}
 			_, err = ss.handle(context.Background(), req)
 			if err == nil {

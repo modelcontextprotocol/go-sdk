@@ -3296,7 +3296,16 @@ func TestEphemeralConnectOpts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opts, usesNew, err := h.ephemeralConnectOpts(mkReq(tt.body))
+			req := mkReq(tt.body)
+			var pver string
+			if tt.wantUsesNew {
+				pver = protocolVersion20260630
+			} else {
+				pver = protocolVersion20250326
+			}
+			req.Header.Set(protocolVersionHeader, pver)
+			req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, pver))
+			opts, usesNew, err := h.ephemeralConnectOpts(req)
 			if err != nil {
 				t.Fatal(err)
 			}

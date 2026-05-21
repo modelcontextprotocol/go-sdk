@@ -424,10 +424,8 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 				case notificationInitialized:
 					hasInitialized = true
 				}
-				if meta := extractRequestMeta(r.Params); meta != nil {
-					if _, ok := meta[MetaKeyProtocolVersion].(string); ok {
-						usesNewProtocol = true
-					}
+				if protocolVersion >= protocolVersion20260630 {
+					usesNewProtocol = true
 				}
 			}
 		}
@@ -1318,12 +1316,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// per-request `_meta.protocolVersion` value.
 			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
+			var metaVersion string
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
-				if metaVersion, ok := meta[MetaKeyProtocolVersion].(string); ok {
-					if !c.stateless {
-						http.Error(w, fmt.Sprintf(
-							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-							metaVersion),
+				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
+			}
+			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
+				if !c.stateless {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+						protocolVersion),
 							http.StatusBadRequest)
 						return
 					}
@@ -1343,7 +1344,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 						return
 					}
 				}
-			}
 			// Include metadata for all requests (including notifications).
 			jreq.Extra = &RequestExtra{
 				TokenInfo: tokenInfo,
