@@ -2142,6 +2142,8 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if protocolVersion, ok := req.Context().Value(protocolVersionContextKey{}).(string); ok {
+		req.Header.Set(protocolVersionHeader, protocolVersion)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)

@@ -268,6 +268,29 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	if opts != nil && opts.protocolVersion != "" {
 		protocolVersion = opts.protocolVersion
 	}
+
+	// Per SEP-2575, try the stateless server/discover RPC first. If the server
+	// signals it doesn't support it ("Method not found" or the SEP-2575
+	// UnsupportedProtocolVersionError), fall back to the legacy initialize
+	// handshake. Any other error (transport failure, malformed response, etc.)
+	// is propagated so the caller sees the real cause instead of being
+	// silently downgraded.
+	discRes, fallback, err := c.discover(ctx, cs)
+	if err != nil {
+		_ = cs.Close()
+		return nil, err
+	}
+	if !fallback {
+		cs.state.InitializeResult = discRes
+		if hc, ok := cs.mcpConn.(clientConnection); ok {
+			hc.sessionUpdated(cs.state)
+		}
+		if c.opts.KeepAlive > 0 {
+			cs.startKeepalive(c.opts.KeepAlive)
+		}
+		return cs, nil
+	}
+
 	params := &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		ClientInfo:      c.impl,
@@ -297,6 +320,65 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	return cs, nil
+}
+
+// discover sends a SEP-2575 server/discover request to probe the server for
+// stateless protocol support.
+//
+// The return values have three possible combinations:
+//   - (result, false, nil): discovery succeeded; caller should skip legacy initialization.
+//   - (nil, true, nil):     the server explicitly signaled it doesn't support
+//     discovery (Method not found, or UnsupportedProtocolVersionError, or version mismatch);
+//     caller should fall back to the legacy initialize handshake.
+//   - (nil, false, err):    any other failure (transport error, malformed response, etc.);
+//     caller should propagate the error.
+//
+// The request advertises the latest protocol version supported by this SDK
+// (>= 2026-06-30), along with the client's info and capabilities, via the
+// per-request _meta triple defined by SEP-2575.
+func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, bool, error) {
+	protocolVersion := protocolVersion20260630
+	caps := c.capabilities(protocolVersion)
+	params := &DiscoverParams{
+		Meta: Meta{
+			MetaKeyProtocolVersion:    protocolVersion,
+			MetaKeyClientInfo:         c.impl,
+			MetaKeyClientCapabilities: caps,
+		},
+	}
+	req := &DiscoverRequest{Session: cs, Params: params}
+	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
+	if err != nil {
+		// Only treat the two SEP-2575 "not supported" signals as a fallback
+		// trigger; everything else is a real error.
+		var werr *jsonrpc.Error
+		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
+			return nil, true, nil
+		}
+		if strings.Contains(err.Error(), "Bad Request") {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+
+	// Pick the highest protocol version that both the server and this SDK
+	// support. If there is no overlap, fall back to initialize so version
+	// negotiation can happen via the legacy path.
+	negotiated := ""
+	for _, v := range res.SupportedVersions {
+		if slices.Contains(supportedProtocolVersions, v) && v > negotiated {
+			negotiated = v
+		}
+	}
+	if negotiated == "" {
+		return nil, true, nil
+	}
+	return &InitializeResult{
+		Capabilities:    res.Capabilities,
+		Instructions:    res.Instructions,
+		ProtocolVersion: negotiated,
+		ServerInfo:      res.ServerInfo,
+	}, false, nil
 }
 
 // A ClientSession is a logical connection with an MCP server. Its

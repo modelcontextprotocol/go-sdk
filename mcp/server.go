@@ -745,6 +745,16 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	return prompt.handler(ctx, req)
 }
 
+// discover is the server-side handler for the SEP-2575 "server/discover" RPC.
+//
+// Server-side discovery is not implemented yet (the SDK still uses the legacy
+// initialization handshake for the protocol versions it supports). Returning
+// ErrMethodNotFound here lets the client probe for support and fall back to
+// the initialize handshake when the peer is a pre-2026-06-30 server.
+func (s *Server) discover(context.Context, *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1386,6 +1396,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 // curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
 	methodComplete:               newServerMethodInfo(serverMethod((*Server).complete), 0),
+	methodDiscover:               newServerMethodInfo(serverMethod((*Server).discover), missingParamsOK),
 	methodInitialize:             initializeMethodInfo(),
 	methodPing:                   newServerMethodInfo(serverSessionMethod((*ServerSession).ping), missingParamsOK),
 	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),

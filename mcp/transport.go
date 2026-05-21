@@ -225,7 +225,11 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	err := call.Await(ctx, result)
 	switch {
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+		// Use errors.Join so callers can still inspect the underlying
+		// jsonrpc2 wire error via errors.As (e.g. to distinguish
+		// SEP-2575 UnsupportedProtocolVersionError, which uses the same
+		// JSON-RPC code -32004 as ErrServerClosing).
+		return errors.Join(fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err), err)
 	case ctx.Err() != nil:
 		notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 		defer cancelNotify()

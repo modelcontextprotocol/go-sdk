@@ -105,6 +105,17 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
+	// In new protocol version the protocolVersion is extracted to be set on the outgoing requests headers.
+	if discoverParams, ok := params.(*DiscoverParams); ok {
+		protocolVersion, ok := discoverParams.Meta[MetaKeyProtocolVersion].(string)
+		if !ok {
+			return nil, jsonrpc2.ErrInvalidRequest
+		}
+		ctx = context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
+	} else {
+		injectMeta(req)
+	}
+
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, params)
@@ -203,6 +214,39 @@ func checkRequest(req *jsonrpc.Request, infos map[string]methodInfo) (methodInfo
 		return methodInfo{}, fmt.Errorf("%w: missing required \"params\"", jsonrpc2.ErrInvalidRequest)
 	}
 	return info, nil
+}
+
+// injectMeta populates the SEP-2575 per-request `_meta` triple
+// (protocolVersion, clientInfo, clientCapabilities) on the outgoing request
+// when the negotiated protocol version is >= 2026-06-30. Keys already
+// present in params.Meta are not overwritten.
+func injectMeta(req Request) {
+	cs, ok := req.GetSession().(*ClientSession)
+	if !ok {
+		return
+	}
+	res := cs.state.InitializeResult
+	if res == nil || res.ProtocolVersion < protocolVersion20260630 {
+		return
+	}
+	params := req.GetParams()
+	if params == nil {
+		return
+	}
+	m := params.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyProtocolVersion]; !ok {
+		m[MetaKeyProtocolVersion] = res.ProtocolVersion
+	}
+	if _, ok := m[MetaKeyClientInfo]; !ok {
+		m[MetaKeyClientInfo] = res.ServerInfo
+	}
+	if _, ok := m[MetaKeyClientCapabilities]; !ok {
+		m[MetaKeyClientCapabilities] = res.Capabilities
+	}
+	params.SetMeta(m)
 }
 
 // methodInfo is information about sending and receiving a method.
@@ -344,6 +388,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
+	// SEP-2575 for UnsupportedProtocolVersionError.
+	CodeUnsupportedProtocolVersion = -32004
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
 	CodeHeaderMismatch = -32001
