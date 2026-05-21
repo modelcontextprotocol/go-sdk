@@ -103,6 +103,23 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 
 	resp, ok := s.responses[key]
 	if !ok {
+		if key.jsonrpcMethod == "server/discover" {
+			// Return MethodNotFound to trigger fallback to legacy initialize.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			respErr := &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: `method not found: "server/discover"`,
+			}
+			var id jsonrpc.ID
+			if jsonrpcReq != nil {
+				id = jsonrpcReq.ID
+			}
+			respMsg, _ := jsonrpc2.NewResponse(id, nil, respErr)
+			data, _ := jsonrpc2.EncodeMessage(respMsg)
+			w.Write(data)
+			return
+		}
 		s.t.Errorf("missing response for %v", key)
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return

@@ -767,6 +767,10 @@ func TestMiddleware(t *testing.T) {
 	}
 
 	wantServer := `
+R1 >server/discover
+R2 >server/discover
+R2 <server/discover
+R1 <server/discover
 R1 >initialize
 R2 >initialize
 R2 <initialize
@@ -789,6 +793,10 @@ S1 <roots/list
 	}
 
 	wantClient := `
+S1 >server/discover
+S2 >server/discover
+S2 <server/discover
+S1 <server/discover
 S1 >initialize
 S2 >initialize
 S2 <initialize
