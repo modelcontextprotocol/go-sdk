@@ -343,8 +343,14 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
+	connectOpts, usesNewProtocol, err := h.ephemeralConnectOpts(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	var sessionID string
-	if legacySessions {
+	if legacySessions && !usesNewProtocol {
 		sessionID = req.Header.Get(sessionIDHeader)
 		if sessionID == "" {
 			sessionID = server.opts.GetSessionID()
@@ -359,11 +365,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		logger:       h.opts.Logger,
 	}
 
-	connectOpts, err := h.ephemeralConnectOpts(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
@@ -389,10 +390,17 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 }
 
 // ephemeralConnectOpts peeks at the request body to determine whether it
-// contains an initialize or initialized message. If not, default session state
-// is constructed so that the session doesn't reject the request.
+// contains an initialize or initialized message or whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
+//
+// For old-protocol requests, default session state is synthesized so that
+// the session's init gate doesn't reject the request.
+//
 // It is used for both stateless servers and stateful servers with no session ID.
-func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*ServerSessionOptions, error) {
+//
+// The returned usesNewProtocol bool reports whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
+func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
@@ -401,7 +409,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 	var hasInitialize, hasInitialized bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
+		return nil, false, fmt.Errorf("failed to read body")
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -415,23 +423,28 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 				case notificationInitialized:
 					hasInitialized = true
 				}
+				if protocolVersion >= protocolVersion20260630 {
+					usesNewProtocol = true
+				}
 			}
 		}
 	}
 
 	state := new(ServerSessionState)
-	if !hasInitialize {
+	// Only synthesize fake InitializeParams/InitializedParams for old-protocol
+	// requests.
+	if !hasInitialize && !usesNewProtocol {
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: protocolVersion,
 		}
 	}
-	if !hasInitialized {
+	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
 	state.LogLevel = "info"
 	return &ServerSessionOptions{
 		State: state,
-	}, nil
+	}, usesNewProtocol, nil
 }
 
 func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
@@ -576,7 +589,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// that arrives before a session exists (e.g. initialize or ping) on a
 	// server configured this way.
 	if sessionID == "" {
-		connectOpts, err := h.ephemeralConnectOpts(req)
+		connectOpts, _, err := h.ephemeralConnectOpts(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1279,6 +1292,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
 	var initializeProtocolVersion string
+	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -1294,6 +1308,39 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				var params InitializeParams
 				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
 					initializeProtocolVersion = params.ProtocolVersion
+				}
+			}
+			// SEP-2575: requests carrying `_meta.protocolVersion` require the
+			// Mcp-Protocol-Version HTTP header to be present and to match the
+			// per-request `_meta.protocolVersion` value.
+			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
+			// only when [StreamableHTTPOptions.Stateless] is true.
+			var metaVersion string
+			if meta := extractRequestMeta(jreq.Params); meta != nil {
+				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
+			}
+			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
+				if !c.stateless {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+						protocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion == "" {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header is required for requests carrying %q",
+						protocolVersionHeader, MetaKeyProtocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion != metaVersion {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header %q does not match request %s %q",
+						protocolVersionHeader, headerVersion,
+						MetaKeyProtocolVersion, metaVersion),
+						http.StatusBadRequest)
+					return
 				}
 			}
 			// Include metadata for all requests (including notifications).
