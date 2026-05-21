@@ -15,18 +15,6 @@ import (
 )
 
 func TestValidateRequestMeta(t *testing.T) {
-	mustParams := func(t *testing.T, v any) json.RawMessage {
-		t.Helper()
-		if v == nil {
-			return nil
-		}
-		data, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-
 	tests := []struct {
 		name            string
 		method          string
@@ -79,7 +67,7 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
-			wantUsesNew:     true,
+			wantUsesNew:     false,
 			wantErrContains: MetaKeyClientInfo,
 		},
 		{
@@ -92,7 +80,7 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
-			wantUsesNew:     true,
+			wantUsesNew:     false,
 			wantErrContains: MetaKeyClientCapabilities,
 		},
 		{
@@ -121,7 +109,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			case json.RawMessage:
 				raw = p
 			default:
-				raw = mustParams(t, tc.params)
+				raw = mustMarshal(tc.params)
 			}
 			req := &jsonrpc.Request{Method: tc.method, Params: raw}
 			if !tc.isNotification {
@@ -134,7 +122,8 @@ func TestValidateRequestMeta(t *testing.T) {
 				req.ID = id
 			}
 
-			usesNew, err := validateRequestMeta(req)
+			vmeta, err := validateRequestMeta(req)
+			usesNew := vmeta != nil && vmeta.usesNewProtocol
 			if usesNew != tc.wantUsesNew {
 				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
 			}

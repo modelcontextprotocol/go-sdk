@@ -390,17 +390,16 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 }
 
 // ephemeralConnectOpts peeks at the request body to determine whether it
-// contains an initialize or initialized message, or whether any of its
-// messages carry the per-request `_meta.protocolVersion` field that signals
-// the >= 2026-06-30 sessionless protocol (SEP-2575).
+// contains an initialize or initialized message or whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
 //
 // For old-protocol requests, default session state is synthesized so that
 // the session's init gate doesn't reject the request.
 //
 // It is used for both stateless servers and stateful servers with no session ID.
 //
-// The returned usesNewProtocol bool reports whether any request in the body
-// carried `_meta.protocolVersion`.
+// The returned usesNewProtocol bool reports whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
 func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
@@ -424,10 +423,8 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 				case notificationInitialized:
 					hasInitialized = true
 				}
-				if meta := extractRequestMeta(r.Params); meta != nil {
-					if _, ok := meta[MetaKeyProtocolVersion].(string); ok {
-						usesNewProtocol = true
-					}
+				if protocolVersion >= protocolVersion20260630 {
+					usesNewProtocol = true
 				}
 			}
 		}
@@ -1295,7 +1292,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
 	var initializeProtocolVersion string
-	headerVersion := req.Header.Get(protocolVersionHeader)
+	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -1318,30 +1315,32 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// per-request `_meta.protocolVersion` value.
 			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
+			var metaVersion string
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
-				if metaVersion, ok := meta[MetaKeyProtocolVersion].(string); ok {
-					if !c.stateless {
-						http.Error(w, fmt.Sprintf(
-							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-							metaVersion),
-							http.StatusBadRequest)
-						return
-					}
-					if headerVersion == "" {
-						http.Error(w, fmt.Sprintf(
-							"Bad Request: %s header is required for requests carrying %q",
-							protocolVersionHeader, MetaKeyProtocolVersion),
-							http.StatusBadRequest)
-						return
-					}
-					if headerVersion != metaVersion {
-						http.Error(w, fmt.Sprintf(
-							"Bad Request: %s header %q does not match request %s %q",
-							protocolVersionHeader, headerVersion,
-							MetaKeyProtocolVersion, metaVersion),
-							http.StatusBadRequest)
-						return
-					}
+				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
+			}
+			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
+				if !c.stateless {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+						protocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion == "" {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header is required for requests carrying %q",
+						protocolVersionHeader, MetaKeyProtocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion != metaVersion {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header %q does not match request %s %q",
+						protocolVersionHeader, headerVersion,
+						MetaKeyProtocolVersion, metaVersion),
+						http.StatusBadRequest)
+					return
 				}
 			}
 			// Include metadata for all requests (including notifications).

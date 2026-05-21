@@ -1472,7 +1472,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
-		if usesNewProtocol {
+		if usesNewProtocol.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
 				Code:    jsonrpc.CodeMethodNotFound,
@@ -1480,7 +1480,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !usesNewProtocol {
+		if !initialized && !usesNewProtocol.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
@@ -1502,12 +1502,6 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 
 // InitializeParams returns the InitializeParams provided during the client's
 // initial connection.
-//
-// Deprecated: with the >= 2026-06-30 protocol, sessions are sessionless and
-// there is no `initialize` handshake. For new-protocol requests this method
-// returns nil; use the per-request accessors [ServerRequest.ProtocolVersion],
-// [ServerRequest.ClientInfo], and [ServerRequest.ClientCapabilities]
-// instead.
 func (ss *ServerSession) InitializeParams() *InitializeParams {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()

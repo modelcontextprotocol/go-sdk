@@ -1926,39 +1926,18 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			return &CallToolResult{}, nil
 		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
-	initResp := resp(1, &InitializeResult{
-		Capabilities: &ServerCapabilities{
-			Logging: &LoggingCapabilities{},
-			Tools:   &ToolCapabilities{ListChanged: true},
-		},
-		ProtocolVersion: minVersionForStandardHeaders,
-		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
-	}, nil)
-
-	initialize := streamableRequest{
-		method:         "POST",
-		messages:       []jsonrpc.Message{initReq},
-		wantStatusCode: http.StatusOK,
-		wantMessages:   []jsonrpc.Message{initResp},
-		wantSessionID:  true,
-	}
-	initialized := streamableRequest{
-		method: "POST",
-		headers: http.Header{
-			protocolVersionHeader: {minVersionForStandardHeaders},
-			methodHeader:          {notificationInitialized},
-		},
-		messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
-		wantStatusCode: http.StatusAccepted,
+	testMeta := Meta{
+		MetaKeyProtocolVersion:    minVersionForStandardHeaders,
+		MetaKeyClientInfo:         map[string]any{"name": "testClient", "version": "v1.0.0"},
+		MetaKeyClientCapabilities: map[string]any{},
 	}
 
 	testStreamableHandler(t, handler, []streamableRequest{
-		initialize,
-		initialized,
 		{
 			method: "POST",
 			headers: http.Header{
@@ -1966,7 +1945,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
 		},
@@ -1977,7 +1956,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"prompts/get"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
@@ -1988,7 +1967,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"wrong-tool"},
 			},
-			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Name header value",
 		},
@@ -1999,7 +1978,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"TOOLS/CALL"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
@@ -2010,7 +1989,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
 		},
@@ -2023,6 +2002,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				paramHeaderPrefix + "Region": {"us-west1"},
 			},
 			messages: []jsonrpc.Message{req(7, "tools/call", &CallToolParams{
+				Meta:      testMeta,
 				Name:      "execute_sql",
 				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
 			})},
@@ -2038,6 +2018,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				paramHeaderPrefix + "Region": {"eu-central1"},
 			},
 			messages: []jsonrpc.Message{req(8, "tools/call", &CallToolParams{
+				Meta:      testMeta,
 				Name:      "execute_sql",
 				Arguments: map[string]any{"region": "us-west1"},
 			})},
@@ -2052,6 +2033,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				nameHeader:            {"execute_sql"},
 			},
 			messages: []jsonrpc.Message{req(9, "tools/call", &CallToolParams{
+				Meta:      testMeta,
 				Name:      "execute_sql",
 				Arguments: map[string]any{"region": "us-west1"},
 			})},
@@ -2059,6 +2041,68 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			wantBodyContaining: "missing",
 		},
 	})
+}
+
+// TODO: Remove this once client operations will automatically inject metadata in the requests
+func injectMetaToRequest(req *http.Request) error {
+	if req.Body == nil {
+		return nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return err
+	}
+	req.Body.Close()
+
+	var val any
+	if err := json.Unmarshal(body, &val); err == nil {
+		var method string
+		if m, ok := val.(map[string]any); ok {
+			method, _ = m["method"].(string)
+		} else if list, ok := val.([]any); ok && len(list) > 0 {
+			if m, ok := list[0].(map[string]any); ok {
+				method, _ = m["method"].(string)
+			}
+		}
+
+		if method == "initialize" || method == "notifications/initialized" || strings.HasPrefix(method, "notifications/") {
+			req.Header.Set(protocolVersionHeader, "2025-11-25")
+		} else {
+			req.Header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+
+			var msgs []map[string]any
+			if m, ok := val.(map[string]any); ok {
+				msgs = []map[string]any{m}
+			} else if list, ok := val.([]any); ok {
+				for _, item := range list {
+					if m, ok := item.(map[string]any); ok {
+						msgs = append(msgs, m)
+					}
+				}
+			}
+
+			for _, m := range msgs {
+				params, _ := m["params"].(map[string]any)
+				if params == nil {
+					params = make(map[string]any)
+					m["params"] = params
+				}
+				meta, _ := params["_meta"].(map[string]any)
+				if meta == nil {
+					meta = make(map[string]any)
+					params["_meta"] = meta
+				}
+				meta[MetaKeyProtocolVersion] = minVersionForStandardHeaders
+				meta[MetaKeyClientInfo] = map[string]any{"name": "testClient", "version": "v1.0.0"}
+				meta[MetaKeyClientCapabilities] = map[string]any{}
+			}
+			body, _ = json.Marshal(val)
+		}
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	return nil
 }
 
 // TestStreamableMcpHeaderValidationErrorFormat verifies that header
@@ -2076,7 +2120,9 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 			return &CallToolResult{}, nil
 		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
@@ -2088,6 +2134,9 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
 			var originalMethodHeader string
 			if req.Header.Get(methodHeader) == "tools/call" {
 				originalMethodHeader = req.Header.Get(methodHeader)
@@ -2237,7 +2286,9 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
 		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
@@ -2245,6 +2296,9 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	var capturedHeaders http.Header
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
 			if req.Header.Get(methodHeader) == "tools/call" {
 				capturedHeaders = req.Header.Clone()
 			}
@@ -2347,14 +2401,28 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		InputSchema: &jsonschema.Schema{Type: "object"},
 	}, noop)
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
-	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	session, err := client.Connect(ctx, &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3296,7 +3364,16 @@ func TestEphemeralConnectOpts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opts, usesNew, err := h.ephemeralConnectOpts(mkReq(tt.body))
+			req := mkReq(tt.body)
+			var pver string
+			if tt.wantUsesNew {
+				pver = protocolVersion20260630
+			} else {
+				pver = protocolVersion20250326
+			}
+			req.Header.Set(protocolVersionHeader, pver)
+			req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, pver))
+			opts, usesNew, err := h.ephemeralConnectOpts(req)
 			if err != nil {
 				t.Fatal(err)
 			}

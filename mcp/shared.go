@@ -527,35 +527,41 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 	return meta.Meta
 }
 
+type validatedMeta struct {
+	usesNewProtocol bool
+}
+
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
 // the >= 2026-06-30 protocol via the `_meta` field.
-// It returns true if `io.modelcontextprotocol/protocolVersion`,
-// `io.modelcontextprotocol/clientInfo` and `io.modelcontextprotocol/clientCapabilities` are present in `_meta`.
-func validateRequestMeta(req *jsonrpc.Request) (usesNewProtocol bool, err error) {
+// If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
+// validatedMeta with usesNewProtocol set to false, and a nil error.
+// If the request has a protocolVersion in _meta but is missing required fields
+// (clientInfo or clientCapabilities for call requests), it returns nil and a non-nil error.
+func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
-		return false, nil
+		return &validatedMeta{usesNewProtocol: false}, nil
 	}
 	if _, ok := meta[MetaKeyProtocolVersion].(string); !ok {
-		return false, nil
+		return &validatedMeta{usesNewProtocol: false}, nil
 	}
 	// Notifications do not carry full client identity
 	if !req.IsCall() {
-		return true, nil
+		return &validatedMeta{usesNewProtocol: true}, nil
 	}
 	if _, ok := meta[MetaKeyClientInfo]; !ok {
-		return true, &jsonrpc.Error{
+		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
 			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientInfo),
 		}
 	}
 	if _, ok := meta[MetaKeyClientCapabilities]; !ok {
-		return true, &jsonrpc.Error{
+		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
 			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
-	return true, nil
+	return &validatedMeta{usesNewProtocol: true}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.
@@ -679,9 +685,8 @@ func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
 // getRequestMeta returns the raw `_meta` map from the request's params, or
 // nil if the params are absent.
 func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
-	// In practice P is a pointer type implementing Params. Use reflect to
-	// detect a nil pointer without panicking on GetMeta.
-	if v := reflect.ValueOf(r.Params); !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil()) {
+	// In practice P is a pointer type implementing Params.
+	if any(r.Params) == nil || r.Params.isNil() {
 		return nil
 	}
 	return r.Params.GetMeta()
@@ -724,6 +729,9 @@ type Params interface {
 
 	// isParams discourages implementation of Params outside of this package.
 	isParams()
+
+	// isNil returns true if the underlying value is nil.
+	isNil() bool
 }
 
 // RequestParams is a parameter (input) type for an MCP request.
