@@ -377,7 +377,7 @@ type CompleteParams struct {
 	Ref      *CompleteReference     `json:"ref"`
 }
 
-func (x *CompleteParams) isParams() {}
+func (x *CompleteParams) isParams()   {}
 func (x *CompleteParams) isNil() bool { return x == nil }
 
 type CompletionResultDetails struct {
@@ -994,7 +994,7 @@ type ProgressNotificationParams struct {
 	Total float64 `json:"total,omitempty"`
 }
 
-func (x *ProgressNotificationParams) isParams() {}
+func (x *ProgressNotificationParams) isParams()   {}
 func (x *ProgressNotificationParams) isNil() bool { return x == nil }
 
 // IconTheme specifies the theme an icon is designed for.
@@ -1426,7 +1426,7 @@ type SubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (x *SubscribeParams) isParams() {}
+func (x *SubscribeParams) isParams()   {}
 func (x *SubscribeParams) isNil() bool { return x == nil }
 
 // Sent from the client to request cancellation of resources/updated
@@ -1440,7 +1440,7 @@ type UnsubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (x *UnsubscribeParams) isParams() {}
+func (x *UnsubscribeParams) isParams()   {}
 func (x *UnsubscribeParams) isNil() bool { return x == nil }
 
 // A notification from the server to the client, informing it that a resource
@@ -1454,7 +1454,7 @@ type ResourceUpdatedNotificationParams struct {
 	URI string `json:"uri"`
 }
 
-func (x *ResourceUpdatedNotificationParams) isParams() {}
+func (x *ResourceUpdatedNotificationParams) isParams()   {}
 func (x *ResourceUpdatedNotificationParams) isNil() bool { return x == nil }
 
 // TODO(jba): add CompleteRequest and related types.
@@ -1494,7 +1494,7 @@ type ElicitParams struct {
 	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
-func (x *ElicitParams) isParams() {}
+func (x *ElicitParams) isParams()   {}
 func (x *ElicitParams) isNil() bool { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
@@ -1527,7 +1527,7 @@ type ElicitationCompleteParams struct {
 	ElicitationID string `json:"elicitationId"`
 }
 
-func (x *ElicitationCompleteParams) isParams() {}
+func (x *ElicitationCompleteParams) isParams()   {}
 func (x *ElicitationCompleteParams) isNil() bool { return x == nil }
 
 // An Implementation describes the name and version of an MCP implementation, with an optional
