@@ -1459,6 +1459,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
+	if usesNewProtocol.usesNewProtocol && usesNewProtocol.initializeParams != nil {
+		ss.state.InitializeParams = usesNewProtocol.initializeParams
+	}
+
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
 		if usesNewProtocol.usesNewProtocol {

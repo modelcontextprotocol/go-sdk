@@ -481,40 +481,51 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 }
 
 type validatedMeta struct {
-	usesNewProtocol bool
+	usesNewProtocol  bool
+	initializeParams *InitializeParams
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
 // the >= 2026-06-30 protocol via the `_meta` field.
 // If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
 // validatedMeta with usesNewProtocol set to false, and a nil error.
-// If the request has a protocolVersion in _meta but is missing required fields
-// (clientInfo or clientCapabilities for call requests), it returns nil and a non-nil error.
+// If the request has a protocolVersion in _meta:
+//   - For notifications, it returns usesNewProtocol set to true and a nil initializeParams.
+//   - For call requests, it validates the presence of clientInfo and clientCapabilities in _meta.
+//     If either is missing or invalid, it returns nil and a non-nil error. Otherwise, it returns
+//     usesNewProtocol set to true and the populated initializeParams.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
-		return &validatedMeta{usesNewProtocol: false}, nil
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	if _, ok := meta[MetaKeyProtocolVersion].(string); !ok {
-		return &validatedMeta{usesNewProtocol: false}, nil
+	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
+	if !ok {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	// Notifications do not carry full client identity
 	if !req.IsCall() {
-		return &validatedMeta{usesNewProtocol: true}, nil
+		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
-	if _, ok := meta[MetaKeyClientInfo]; !ok {
+	clientInfo, ok := decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
+	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
-			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientInfo),
+			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientInfo),
 		}
 	}
-	if _, ok := meta[MetaKeyClientCapabilities]; !ok {
+	capabilities, ok := decodeMetaValue[*ClientCapabilities](meta, MetaKeyClientCapabilities)
+	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
-			Message: fmt.Sprintf("missing required _meta field %q", MetaKeyClientCapabilities),
+			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
-	return &validatedMeta{usesNewProtocol: true}, nil
+	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
+		ProtocolVersion: protocolVersion,
+		Capabilities:    capabilities,
+		ClientInfo:      clientInfo,
+	}}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.

@@ -3456,8 +3456,15 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	if capture.sessionInitParams != nil {
-		t.Errorf("Session.InitializeParams() = %+v, want nil for new-protocol session", capture.sessionInitParams)
+	if capture.sessionInitParams == nil {
+		t.Errorf("Session.InitializeParams() is nil, want populated initializeParams for new-protocol session")
+	} else {
+		if got, want := capture.sessionInitParams.ProtocolVersion, protocolVersion20260630; got != want {
+			t.Errorf("Session.InitializeParams().ProtocolVersion = %q, want %q", got, want)
+		}
+		if got, want := capture.sessionInitParams.ClientInfo.Name, "new-proto-client"; got != want {
+			t.Errorf("Session.InitializeParams().ClientInfo.Name = %q, want %q", got, want)
+		}
 	}
 	if got, want := capture.reqProtocolVersion, protocolVersion20260630; got != want {
 		t.Errorf("req.ProtocolVersion() = %q, want %q", got, want)
