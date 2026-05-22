@@ -146,6 +146,151 @@ func TestToolErrorHandling(t *testing.T) {
 	})
 }
 
+// TestCallToolRaw verifies that ClientSession.CallToolRaw returns raw JSON
+// content for both structured and unstructured tool results, normalizes
+// nil/empty arguments to a JSON object, and surfaces tool errors via IsError
+// rather than protocol errors.
+func TestCallToolRaw(t *testing.T) {
+	type echoIn struct {
+		Msg string `json:"msg"`
+	}
+	type echoOut struct {
+		Echo string `json:"echo"`
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "echo"}, func(_ context.Context, _ *CallToolRequest, in echoIn) (*CallToolResult, echoOut, error) {
+		return nil, echoOut{Echo: in.Msg}, nil
+	})
+	AddTool(server, &Tool{Name: "boom"}, func(_ context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		return nil, nil, errors.New("tool failed")
+	})
+
+	ct, st := NewInMemoryTransports()
+	if _, err := server.Connect(context.Background(), st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := NewClient(testImpl, nil).Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	ctx := context.Background()
+
+	t.Run("structured", func(t *testing.T) {
+		got, err := cs.CallToolRaw(ctx, &CallToolParams{
+			Name:      "echo",
+			Arguments: map[string]any{"msg": "hello"},
+		})
+		if err != nil {
+			t.Fatalf("CallToolRaw failed: %v", err)
+		}
+		if got.IsError {
+			t.Errorf("unexpected IsError=true; content=%s", got.Content)
+		}
+		// StructuredContent should contain exactly the bytes the tool produced;
+		// no decode/re-encode should round-trip through Go types.
+		if want := `{"echo":"hello"}`; string(got.StructuredContent) != want {
+			t.Errorf("StructuredContent = %s, want %s", got.StructuredContent, want)
+		}
+		if len(got.Content) == 0 || got.Content[0] != '[' {
+			t.Errorf("Content = %q, want non-empty JSON array", got.Content)
+		}
+	})
+
+	t.Run("raw_arguments", func(t *testing.T) {
+		// Gateway-style use: pass raw JSON bytes through CallToolParams.Arguments
+		// without remarshaling them.
+		got, err := cs.CallToolRaw(ctx, &CallToolParams{
+			Name:      "echo",
+			Arguments: json.RawMessage(`{"msg":"raw"}`),
+		})
+		if err != nil {
+			t.Fatalf("CallToolRaw failed: %v", err)
+		}
+		if want := `{"echo":"raw"}`; string(got.StructuredContent) != want {
+			t.Errorf("StructuredContent = %s, want %s", got.StructuredContent, want)
+		}
+	})
+
+	t.Run("nil_params", func(t *testing.T) {
+		got, err := cs.CallToolRaw(ctx, nil)
+		if err == nil {
+			t.Fatalf("CallToolRaw(nil) succeeded; want error for missing tool name; result=%+v", got)
+		}
+	})
+
+	t.Run("tool_error", func(t *testing.T) {
+		got, err := cs.CallToolRaw(ctx, &CallToolParams{Name: "boom"})
+		if err != nil {
+			t.Fatalf("CallToolRaw failed: %v", err)
+		}
+		if !got.IsError {
+			t.Errorf("IsError = false, want true")
+		}
+	})
+}
+
+// TestCallToolRawPassthrough verifies that a gateway-style use of CallToolRaw
+// can forward upstream tool results without typed Content materialization.
+func TestCallToolRawPassthrough(t *testing.T) {
+	type out struct {
+		N int `json:"n"`
+	}
+	upstream := NewServer(&Implementation{Name: "upstream", Version: "v1"}, nil)
+	AddTool(upstream, &Tool{Name: "n"}, func(_ context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, out, error) {
+		return nil, out{N: 7}, nil
+	})
+
+	uct, ust := NewInMemoryTransports()
+	if _, err := upstream.Connect(context.Background(), ust, nil); err != nil {
+		t.Fatal(err)
+	}
+	upstreamCS, err := NewClient(testImpl, nil).Connect(context.Background(), uct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstreamCS.Close()
+
+	gateway := NewServer(&Implementation{Name: "gateway", Version: "v1"}, nil)
+	gateway.AddTool(&Tool{Name: "n", InputSchema: &jsonschema.Schema{Type: "object"}}, func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		raw, err := upstreamCS.CallToolRaw(ctx, &CallToolParams{
+			Name:      req.Params.Name,
+			Arguments: req.Params.Arguments,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &CallToolResult{
+			Content:           []Content{&TextContent{Text: string(raw.StructuredContent)}},
+			StructuredContent: raw.StructuredContent,
+			IsError:           raw.IsError,
+		}, nil
+	})
+
+	gct, gst := NewInMemoryTransports()
+	if _, err := gateway.Connect(context.Background(), gst, nil); err != nil {
+		t.Fatal(err)
+	}
+	gatewayCS, err := NewClient(testImpl, nil).Connect(context.Background(), gct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gatewayCS.Close()
+
+	got, err := gatewayCS.CallToolRaw(context.Background(), &CallToolParams{Name: "n"})
+	if err != nil {
+		t.Fatalf("CallToolRaw failed: %v", err)
+	}
+	if got.IsError {
+		t.Errorf("IsError = true, want false")
+	}
+	if want := `{"n":7}`; string(got.StructuredContent) != want {
+		t.Errorf("StructuredContent = %s, want %s", got.StructuredContent, want)
+	}
+}
+
 func TestValidateToolName(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		validTests := []struct {

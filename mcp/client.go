@@ -1022,17 +1022,48 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 //
 // The params.Arguments can be any value that marshals into a JSON object.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
+	params = normalizeCallToolParams(params)
+	ctx = cs.toolCallContext(ctx, params.Name)
+	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+}
+
+// CallToolRaw is like [ClientSession.CallTool] but unmarshals the response
+// into a [CallToolResultRaw], leaving Content and StructuredContent as raw
+// JSON bytes. It is intended for proxy and gateway implementations that
+// forward tool calls without paying the cost of decoding and re-encoding
+// large content payloads.
+//
+// Sending middleware registered via [Client.AddSendingMiddleware] does not
+// run for this method; wrap calls explicitly if observability is needed.
+func (cs *ClientSession) CallToolRaw(ctx context.Context, params *CallToolParams) (*CallToolResultRaw, error) {
+	params = normalizeCallToolParams(params)
+	ctx = cs.toolCallContext(ctx, params.Name)
+	result := new(CallToolResultRaw)
+	if err := call(ctx, cs.conn, methodCallTool, Params(params), result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// normalizeCallToolParams returns a non-nil CallToolParams whose Arguments
+// field is safe to send over the wire (tools/call requires a JSON object).
+func normalizeCallToolParams(params *CallToolParams) *CallToolParams {
 	if params == nil {
 		params = new(CallToolParams)
 	}
 	if params.Arguments == nil {
-		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.getCachedTool(params.Name); tool != nil {
-		ctx = context.WithValue(ctx, toolContextKey, tool)
+	return params
+}
+
+// toolCallContext returns a context that carries the cached Tool definition,
+// if any, so that the transport layer can use it (e.g. for header injection).
+func (cs *ClientSession) toolCallContext(ctx context.Context, name string) context.Context {
+	if tool := cs.getCachedTool(name); tool != nil {
+		return context.WithValue(ctx, toolContextKey, tool)
 	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	return ctx
 }
 
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {

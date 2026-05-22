@@ -114,6 +114,25 @@ type CallToolResult struct {
 	err error
 }
 
+// CallToolResultRaw is the raw form of a [CallToolResult], returned by
+// [ClientSession.CallToolRaw]. Its content fields are left as undecoded JSON,
+// so that callers (such as gateways and proxies) can forward the payload
+// without paying the cost of decoding and re-encoding [Content] values.
+type CallToolResultRaw struct {
+	// Meta is reserved by the protocol to allow clients and servers to attach
+	// additional metadata to their responses.
+	Meta `json:"_meta,omitempty"`
+	// Content is the raw JSON content array from the wire.
+	Content json.RawMessage `json:"content"`
+	// StructuredContent is the raw JSON structured content from the wire, if any.
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	// IsError reports whether the tool call ended in an error. See
+	// [CallToolResult.IsError] for the full semantics.
+	IsError bool `json:"isError,omitempty"`
+}
+
+func (*CallToolResultRaw) isResult() {}
+
 // seterroroverwrite is a compatibility parameter that restores the pre-1.6.0
 // behavior of [CallToolResult.SetError], where Content was always overwritten
 // with the error text. See the documentation for the mcpgodebug package for
