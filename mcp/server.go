@@ -1459,7 +1459,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	if validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 		ss.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = validatedMeta.initializeParams
 		})
