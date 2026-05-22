@@ -32,12 +32,6 @@ func TestMatchesResource(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "claim with surrounding whitespace",
-			claims:   []string{"  https://mcp.example.com/  "},
-			resource: "https://mcp.example.com",
-			want:     true,
-		},
-		{
 			name:     "multiple claims, one matches",
 			claims:   []string{"https://other.example.com/", "https://mcp.example.com"},
 			resource: "https://mcp.example.com/",
@@ -64,6 +58,34 @@ func TestMatchesResource(t *testing.T) {
 		{
 			name:     "scheme mismatch is not tolerated",
 			claims:   []string{"http://mcp.example.com/"},
+			resource: "https://mcp.example.com/",
+			want:     false,
+		},
+		// The following document the intentional boundaries: §6.2.3 also
+		// permits scheme/host case folding and default-port elision, but
+		// MatchesResource deliberately does NOT, so two distinct
+		// registered resources cannot collide via these normalizations.
+		{
+			name:     "host case difference is not tolerated",
+			claims:   []string{"https://MCP.example.com/"},
+			resource: "https://mcp.example.com/",
+			want:     false,
+		},
+		{
+			name:     "default-port elision is not tolerated",
+			claims:   []string{"https://mcp.example.com:443/"},
+			resource: "https://mcp.example.com/",
+			want:     false,
+		},
+		{
+			name:     "query string difference is not tolerated",
+			claims:   []string{"https://mcp.example.com/?x=y"},
+			resource: "https://mcp.example.com/",
+			want:     false,
+		},
+		{
+			name:     "surrounding whitespace is not tolerated (malformed claim)",
+			claims:   []string{"  https://mcp.example.com/  "},
 			resource: "https://mcp.example.com/",
 			want:     false,
 		},
