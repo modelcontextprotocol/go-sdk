@@ -109,13 +109,27 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, params)
 	}
-	// Create the result to unmarshal into.
-	// The concrete type of the result is the return type of the receiving function.
-	res := info.newResult()
+	// Create the result to unmarshal into. The concrete type is normally the
+	// return type registered on the receiving function, but a request may
+	// override it (e.g. CallToolRaw decodes into *CallToolResultRaw).
+	var res Result
+	if o, ok := req.(resultOverrider); ok {
+		res = o.newResult()
+	} else {
+		res = info.newResult()
+	}
 	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
 		return nil, err
 	}
 	return res, nil
+}
+
+// resultOverrider lets a Request supply a custom Result destination,
+// bypassing the methodInfo's registered newResult. This enables alternate
+// decode shapes (e.g. raw-bytes variants) without registering a separate
+// JSON-RPC method.
+type resultOverrider interface {
+	newResult() Result
 }
 
 // Helper method to avoid typed nil.

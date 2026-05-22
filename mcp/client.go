@@ -1033,17 +1033,25 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 // forward tool calls without paying the cost of decoding and re-encoding
 // large content payloads.
 //
-// Sending middleware registered via [Client.AddSendingMiddleware] does not
-// run for this method; wrap calls explicitly if observability is needed.
+// Outbound, gateway authors can wrap upstream Content items in [RawContent]
+// to splice their bytes verbatim into a downstream [CallToolResult] without
+// a second marshal.
 func (cs *ClientSession) CallToolRaw(ctx context.Context, params *CallToolParams) (*CallToolResultRaw, error) {
 	params = normalizeCallToolParams(params)
 	ctx = cs.toolCallContext(ctx, params.Name)
-	result := new(CallToolResultRaw)
-	if err := call(ctx, cs.conn, methodCallTool, Params(params), result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	req := &callToolRawRequest{ClientRequest: newClientRequest(cs, params)}
+	return handleSend[*CallToolResultRaw](ctx, methodCallTool, req)
 }
+
+// callToolRawRequest is a ClientRequest variant that decodes the response
+// into *CallToolResultRaw rather than the *CallToolResult registered for
+// tools/call. It implements resultOverrider so the sending dispatcher
+// allocates the correct destination while preserving middleware behavior.
+type callToolRawRequest struct {
+	*ClientRequest[*CallToolParams]
+}
+
+func (*callToolRawRequest) newResult() Result { return new(CallToolResultRaw) }
 
 // normalizeCallToolParams returns a non-nil CallToolParams whose Arguments
 // field is safe to send over the wire (tools/call requires a JSON object).

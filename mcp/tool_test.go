@@ -232,8 +232,92 @@ func TestCallToolRaw(t *testing.T) {
 	})
 }
 
-// TestCallToolRawPassthrough verifies that a gateway-style use of CallToolRaw
-// can forward upstream tool results without typed Content materialization.
+// TestRawContent_MarshalVerbatim verifies that marshaling a []Content
+// composed of *RawContent items reproduces the underlying raw bytes
+// verbatim, enabling gateway-style splicing without typed re-encoding.
+func TestRawContent_MarshalVerbatim(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"text","text":"hello"},{"type":"image","data":"AAA=","mimeType":"image/png"}]`)
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		t.Fatalf("unmarshal items: %v", err)
+	}
+	content := make([]Content, len(items))
+	for i, b := range items {
+		content[i] = &RawContent{Raw: b}
+	}
+
+	got, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshal []Content: %v", err)
+	}
+	if string(got) != string(raw) {
+		t.Errorf("RawContent splice mismatch:\n got = %s\nwant = %s", got, raw)
+	}
+
+	t.Run("nil_raw", func(t *testing.T) {
+		b, err := json.Marshal(&RawContent{})
+		if err != nil {
+			t.Fatalf("marshal empty RawContent: %v", err)
+		}
+		if string(b) != "null" {
+			t.Errorf("empty RawContent = %s, want null", b)
+		}
+	})
+}
+
+// TestCallToolRaw_RunsSendingMiddleware locks in middleware parity between
+// CallTool and CallToolRaw: a sending middleware registered on the client
+// fires exactly once for each call regardless of which method is used.
+func TestCallToolRaw_RunsSendingMiddleware(t *testing.T) {
+	type out struct {
+		N int `json:"n"`
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "n"}, func(_ context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, out, error) {
+		return nil, out{N: 1}, nil
+	})
+
+	ct, st := NewInMemoryTransports()
+	if _, err := server.Connect(context.Background(), st, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int
+	c := NewClient(testImpl, nil)
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodCallTool {
+				calls++
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	if _, err := cs.CallTool(context.Background(), &CallToolParams{Name: "n"}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got, want := calls, 1; got != want {
+		t.Fatalf("after CallTool, middleware fired %d times, want %d", got, want)
+	}
+	if _, err := cs.CallToolRaw(context.Background(), &CallToolParams{Name: "n"}); err != nil {
+		t.Fatalf("CallToolRaw: %v", err)
+	}
+	if got, want := calls, 2; got != want {
+		t.Fatalf("after CallToolRaw, middleware fired %d times, want %d", got, want)
+	}
+}
+
+// TestCallToolRawPassthrough is the canonical "MCP gateway" example: an
+// upstream tool result is forwarded through a gateway server using
+// CallToolRaw inbound and RawContent for outbound splicing, so the
+// downstream client observes byte-identical Content and StructuredContent
+// without any typed re-encoding in the middle.
 func TestCallToolRawPassthrough(t *testing.T) {
 	type out struct {
 		N int `json:"n"`
@@ -253,6 +337,12 @@ func TestCallToolRawPassthrough(t *testing.T) {
 	}
 	defer upstreamCS.Close()
 
+	// Capture what upstream returns so we can assert byte-for-byte passthrough.
+	upstreamRaw, err := upstreamCS.CallToolRaw(context.Background(), &CallToolParams{Name: "n"})
+	if err != nil {
+		t.Fatalf("upstream CallToolRaw: %v", err)
+	}
+
 	gateway := NewServer(&Implementation{Name: "gateway", Version: "v1"}, nil)
 	gateway.AddTool(&Tool{Name: "n", InputSchema: &jsonschema.Schema{Type: "object"}}, func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 		raw, err := upstreamCS.CallToolRaw(ctx, &CallToolParams{
@@ -262,8 +352,20 @@ func TestCallToolRawPassthrough(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
+		// Shallow-parse the Content array once and wrap each item in
+		// RawContent so the outbound marshal splices the bytes verbatim.
+		var items []json.RawMessage
+		if len(raw.Content) > 0 {
+			if err := json.Unmarshal(raw.Content, &items); err != nil {
+				return nil, err
+			}
+		}
+		content := make([]Content, len(items))
+		for i, b := range items {
+			content[i] = &RawContent{Raw: b}
+		}
 		return &CallToolResult{
-			Content:           []Content{&TextContent{Text: string(raw.StructuredContent)}},
+			Content:           content,
 			StructuredContent: raw.StructuredContent,
 			IsError:           raw.IsError,
 		}, nil
@@ -281,13 +383,16 @@ func TestCallToolRawPassthrough(t *testing.T) {
 
 	got, err := gatewayCS.CallToolRaw(context.Background(), &CallToolParams{Name: "n"})
 	if err != nil {
-		t.Fatalf("CallToolRaw failed: %v", err)
+		t.Fatalf("gateway CallToolRaw: %v", err)
 	}
 	if got.IsError {
 		t.Errorf("IsError = true, want false")
 	}
-	if want := `{"n":7}`; string(got.StructuredContent) != want {
-		t.Errorf("StructuredContent = %s, want %s", got.StructuredContent, want)
+	if string(got.StructuredContent) != string(upstreamRaw.StructuredContent) {
+		t.Errorf("StructuredContent mismatch:\n got = %s\nwant = %s", got.StructuredContent, upstreamRaw.StructuredContent)
+	}
+	if string(got.Content) != string(upstreamRaw.Content) {
+		t.Errorf("Content mismatch:\n got = %s\nwant = %s", got.Content, upstreamRaw.Content)
 	}
 }
 

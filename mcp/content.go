@@ -15,10 +15,13 @@ import (
 )
 
 // A Content is a [TextContent], [ImageContent], [AudioContent],
-// [ResourceLink], [EmbeddedResource], [ToolUseContent], or [ToolResultContent].
+// [ResourceLink], [EmbeddedResource], [ToolUseContent], [ToolResultContent],
+// or [RawContent].
 //
 // Note: [ToolUseContent] and [ToolResultContent] are only valid in sampling
 // message contexts (CreateMessageParams/CreateMessageResult).
+//
+// [RawContent] is an outbound-only passthrough type for gateways and proxies.
 type Content interface {
 	MarshalJSON() ([]byte, error)
 	fromWire(*wireContent)
@@ -52,6 +55,24 @@ func (c *TextContent) fromWire(wire *wireContent) {
 	c.Meta = wire.Meta
 	c.Annotations = wire.Annotations
 }
+
+// RawContent is a [Content] backed by pre-encoded JSON bytes. Its MarshalJSON
+// returns Raw verbatim, allowing gateways and proxies to forward upstream
+// tool result content items without typed re-encoding.
+//
+// RawContent is outbound-only; inbound parsing rebuilds typed Content values.
+type RawContent struct {
+	Raw json.RawMessage
+}
+
+func (c *RawContent) MarshalJSON() ([]byte, error) {
+	if len(c.Raw) == 0 {
+		return []byte("null"), nil
+	}
+	return c.Raw, nil
+}
+
+func (c *RawContent) fromWire(*wireContent) {}
 
 // ImageContent contains base64-encoded image data.
 type ImageContent struct {
