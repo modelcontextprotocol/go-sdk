@@ -825,6 +825,97 @@ func TestClientRootCapabilities(t *testing.T) {
 	}
 }
 
+func TestServerRejectsDuplicateInitialize(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+
+	cTransport, sTransport := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, sTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	cConn, err := cTransport.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cConn.Close()
+
+	firstParams := json.RawMessage(`{
+		"protocolVersion": "2025-11-25",
+		"capabilities": {"roots": {"listChanged": true}},
+		"clientInfo": {"name": "first-client", "version": "1.0.0"}
+	}`)
+	firstReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), methodInitialize, firstParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, firstReq); err != nil {
+		t.Fatalf("Write initialize failed: %v", err)
+	}
+	msg, err := cConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read initialize response failed: %v", err)
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected Response, got %T", msg)
+	}
+	if resp.Error != nil {
+		t.Fatalf("initialize failed: %v", resp.Error)
+	}
+
+	initialized, err := jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, initialized); err != nil {
+		t.Fatalf("Write initialized failed: %v", err)
+	}
+
+	secondParams := json.RawMessage(`{
+		"protocolVersion": "2024-11-05",
+		"capabilities": {},
+		"clientInfo": {"name": "second-client", "version": "2.0.0"}
+	}`)
+	secondReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(2), methodInitialize, secondParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, secondReq); err != nil {
+		t.Fatalf("Write duplicate initialize failed: %v", err)
+	}
+	msg, err = cConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read duplicate initialize response failed: %v", err)
+	}
+	resp, ok = msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected Response, got %T", msg)
+	}
+	if resp.Error == nil {
+		t.Fatal("duplicate initialize succeeded")
+	}
+	if !strings.Contains(resp.Error.Error(), "duplicate") {
+		t.Fatalf("duplicate initialize error = %v, want duplicate", resp.Error)
+	}
+
+	params := ss.InitializeParams()
+	if params == nil {
+		t.Fatal("InitializeParams is nil")
+	}
+	if params.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("ProtocolVersion = %q, want first initialize value", params.ProtocolVersion)
+	}
+	if params.ClientInfo == nil || params.ClientInfo.Name != "first-client" {
+		t.Fatalf("ClientInfo = %+v, want first-client", params.ClientInfo)
+	}
+	if params.Capabilities == nil || params.Capabilities.RootsV2 == nil || !params.Capabilities.RootsV2.ListChanged {
+		t.Fatalf("Capabilities.RootsV2 = %+v, want first initialize value", params.Capabilities)
+	}
+}
+
 // TODO: move this to tool_test.go
 func TestToolForSchemas(t *testing.T) {
 	// Validate that toolForErr handles schemas properly.
