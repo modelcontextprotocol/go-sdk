@@ -1322,6 +1322,27 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// If the client sent both a Mcp-Protocol-Version header and an initialize
+	// request with a protocolVersion field, verify they match.
+	if isInitialize && initializeProtocolVersion != "" && protocolVersion != "" && initializeProtocolVersion != protocolVersion {
+		resp := &jsonrpc.Response{
+			Error: jsonrpc2.NewError(CodeHeaderMismatch, fmt.Sprintf("protocol version mismatch: Mcp-Protocol-Version header '%s' does not match body protocolVersion '%s'", protocolVersion, initializeProtocolVersion)),
+		}
+		// Find the initialize request to get its ID.
+		for _, msg := range incoming {
+			if jreq, ok := msg.(*jsonrpc.Request); ok && jreq.Method == methodInitialize {
+				resp.ID = jreq.ID
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+			w.Write(data)
+		}
+		return
+	}
+
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
 	if !isBatch && len(incoming) == 1 {
 		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {

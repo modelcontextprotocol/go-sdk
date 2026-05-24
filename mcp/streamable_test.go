@@ -1256,6 +1256,20 @@ func TestStreamableServerTransport(t *testing.T) {
 			},
 			wantSessions: 0,
 		},
+		{
+			name: "protocol version mismatch",
+			requests: []streamableRequest{
+				{
+					method: "POST",
+					headers: http.Header{protocolVersionHeader: {protocolVersion20251125}},
+					messages: []jsonrpc.Message{req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618})},
+					wantStatusCode: http.StatusBadRequest,
+					wantBodyContaining: "protocol version mismatch",
+					wantSessionID: false,
+				},
+			},
+			wantSessions: 0,
+		},
 	}
 
 	for _, test := range tests {
