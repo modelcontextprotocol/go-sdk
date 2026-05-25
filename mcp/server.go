@@ -1454,14 +1454,20 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
 	// follows the new sessionless protocol. The initialization gate is
 	// skipped for such requests.
-	usesNewProtocol, perRequestErr := validateRequestMeta(req)
+	validatedMeta, perRequestErr := validateRequestMeta(req)
 	if perRequestErr != nil {
 		return nil, perRequestErr
 	}
 
+	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+		ss.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = validatedMeta.initializeParams
+		})
+	}
+
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
-		if usesNewProtocol.usesNewProtocol {
+		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
 				Code:    jsonrpc.CodeMethodNotFound,
@@ -1469,7 +1475,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !usesNewProtocol.usesNewProtocol {
+		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
