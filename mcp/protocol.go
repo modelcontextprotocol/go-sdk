@@ -1403,13 +1403,7 @@ func (t ToolAnnotations) MarshalJSON() ([]byte, error) {
 			ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
 			Title           string `json:"title,omitempty"`
 		}
-		return json.Marshal(compat{
-			DestructiveHint: t.DestructiveHint,
-			IdempotentHint:  t.IdempotentHint,
-			OpenWorldHint:   t.OpenWorldHint,
-			ReadOnlyHint:    t.ReadOnlyHint,
-			Title:           t.Title,
-		})
+		return json.Marshal(compat(t))
 	}
 	type nomethod ToolAnnotations
 	return json.Marshal(nomethod(t))
