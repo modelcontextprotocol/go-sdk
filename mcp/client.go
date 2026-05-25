@@ -157,6 +157,7 @@ type ClientOptions struct {
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
+	// NOTE: The keepalive feature is only available for protocol versions < 2026-06-30
 	KeepAlive time.Duration
 }
 
@@ -278,12 +279,12 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		}
 
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
-		// signals it doesn't support it ("Method not found" or the SEP-2575
-		// UnsupportedProtocolVersionError), fall back to the legacy initialize
-		// handshake. Any other error (transport failure, malformed response, etc.)
-		// is propagated so the caller sees the real cause instead of being
-		// silently downgraded.
+		// signals it doesn't support it, fall back to the legacy initialize
+		// handshake.
 		discRes, fallback, err := c.discover(ctx, cs)
+		if err != nil {
+			return nil, err
+		}
 		if !fallback {
 			cs.state.InitializeResult = discRes
 			if hc, ok := cs.mcpConn.(clientConnection); ok {
@@ -291,10 +292,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			}
 			return cs, nil
 		}
-		if err != nil {
-			return nil, err
-		}
 		// Fallback to the legacy initialize handshake.
+		if s, ok := cs.mcpConn.(protocolVersionSetter); ok {
+			s.setRequestedProtocolVersion("")
+		}
 		protocolVersion = protocolVersion20251125
 	}
 
@@ -362,11 +363,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
 			return nil, true, nil
 		}
-		if strings.Contains(err.Error(), "Bad Request") {
-			return nil, true, nil
-		}
-		_ = cs.Close()
-		return nil, false, err
+		return nil, true, nil
 	}
 
 	// Pick the highest protocol version that both the server and this SDK
