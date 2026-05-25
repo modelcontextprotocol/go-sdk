@@ -85,18 +85,6 @@ type clientConnection interface {
 	sessionUpdated(clientSessionState)
 }
 
-// protocolVersionSetter is an optional capability implemented by client
-// connections that need to know the protocol version advertised on the very
-// first outbound request (the SEP-2575 server/discover RPC) before the
-// handshake completes, so they can populate transport-level metadata such as
-// the Mcp-Protocol-Version HTTP header.
-//
-// Transports without out-of-band version metadata (stdio, in-memory, etc.) do
-// not implement this interface.
-type protocolVersionSetter interface {
-	setRequestedProtocolVersion(string)
-}
-
 // A serverConnection is a Connection that is specific to the MCP server.
 //
 // If server connections implement this interface, they receive information

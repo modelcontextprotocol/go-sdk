@@ -271,16 +271,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	if protocolVersion >= protocolVersion20260630 {
-		// Inform the transport which protocol version we intend to advertise on
-		// the discover request, so it can populate the Mcp-Protocol-Version
-		// header before InitializeResult is available.
-		if s, ok := cs.mcpConn.(protocolVersionSetter); ok {
-			s.setRequestedProtocolVersion(protocolVersion)
-		}
-
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
 		// signals it doesn't support it, fall back to the legacy initialize
 		// handshake.
+		ctx = context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
 		discRes, fallback, err := c.discover(ctx, cs)
 		if err != nil {
 			return nil, err
@@ -293,9 +287,6 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			return cs, nil
 		}
 		// Fallback to the legacy initialize handshake.
-		if s, ok := cs.mcpConn.(protocolVersionSetter); ok {
-			s.setRequestedProtocolVersion("")
-		}
 		protocolVersion = protocolVersion20251125
 	}
 
@@ -340,12 +331,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 //     caller should fall back to the legacy initialize handshake.
 //   - (nil, false, err):    any other failure (transport error, malformed response, etc.);
 //     caller should propagate the error.
-//
-// The request advertises the latest protocol version supported by this SDK
-// (>= 2026-06-30), along with the client's info and capabilities, via the
-// per-request _meta triple defined by SEP-2575.
 func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, bool, error) {
-	protocolVersion := protocolVersion20260630
+	protocolVersion, _ := ctx.Value(protocolVersionContextKey{}).(string)
 	caps := c.capabilities(protocolVersion)
 	params := &DiscoverParams{
 		Meta: Meta{
@@ -357,8 +344,10 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	req := &DiscoverRequest{Session: cs, Params: params}
 	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
 	if err != nil {
-		// Only treat the two SEP-2575 "not supported" signals as a fallback
-		// trigger; everything else is a real error.
+		// According to SEP-2575, only the two signals below (MethodNotFound
+		// and UnsupportedProtocolVersionError) should trigger a fallback. However,
+		// to allow communication between vPost clients and vPre servers, we
+		// trigger fallback for any error.
 		var werr *jsonrpc.Error
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
 			return nil, true, nil

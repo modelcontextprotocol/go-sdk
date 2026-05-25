@@ -1830,10 +1830,9 @@ type streamableClientConn struct {
 	failed   chan struct{} // signal failure
 
 	// Guard the initialization state.
-	mu                       sync.Mutex
-	initializedResult        *InitializeResult
-	requestedProtocolVersion string
-	sessionID                string
+	mu                sync.Mutex
+	initializedResult *InitializeResult
+	sessionID         string
 }
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
@@ -1866,16 +1865,6 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	if !c.disableStandaloneSSE {
 		c.connectStandaloneSSE()
 	}
-}
-
-// setRequestedProtocolVersion records the protocol version that the client
-// will advertise on the SEP-2575 server/discover request. It is used by
-// [streamableClientConn.setMCPHeaders] to populate the Mcp-Protocol-Version
-// header before the handshake completes and initializedResult is set.
-func (c *streamableClientConn) setRequestedProtocolVersion(v string) {
-	c.mu.Lock()
-	c.requestedProtocolVersion = v
-	c.mu.Unlock()
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
@@ -2159,8 +2148,8 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if c.requestedProtocolVersion != "" {
-		req.Header.Set(protocolVersionHeader, c.requestedProtocolVersion)
+	} else if v, ok := req.Context().Value(protocolVersionContextKey{}).(string); ok && v != "" {
+		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
