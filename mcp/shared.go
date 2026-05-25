@@ -233,10 +233,10 @@ func injectMeta(req Request) {
 		m[MetaKeyProtocolVersion] = res.ProtocolVersion
 	}
 	if _, ok := m[MetaKeyClientInfo]; !ok {
-		m[MetaKeyClientInfo] = res.ServerInfo
+		m[MetaKeyClientInfo] = cs.client.impl
 	}
 	if _, ok := m[MetaKeyClientCapabilities]; !ok {
-		m[MetaKeyClientCapabilities] = res.Capabilities
+		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion)
 	}
 	params.SetMeta(m)
 }

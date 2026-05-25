@@ -274,7 +274,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// the discover request, so it can populate the Mcp-Protocol-Version
 		// header before InitializeResult is available.
 		if s, ok := cs.mcpConn.(protocolVersionSetter); ok {
-			s.setRequestedProtocolVersion(protocolVersion20260630)
+			s.setRequestedProtocolVersion(protocolVersion)
 		}
 
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
@@ -290,9 +290,6 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			cs.state.InitializeResult = discRes
 			if hc, ok := cs.mcpConn.(clientConnection); ok {
 				hc.sessionUpdated(cs.state)
-			}
-			if c.opts.KeepAlive > 0 {
-				cs.startKeepalive(c.opts.KeepAlive)
 			}
 			return cs, nil
 		} else {
