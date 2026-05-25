@@ -82,6 +82,12 @@ type Config struct {
 	// ClientCredentialsConfig enables RFC 6749 Section 4.4 client credentials
 	// grant at the /token endpoint.
 	ClientCredentialsConfig *ClientCredentialsConfig
+	// ScopesSupported is an optional list of scopes to advertise in the
+	// authorization server metadata.
+	ScopesSupported []string
+	// TokenScopeFunc, if set, is called with the scope from the authorization
+	// request and returns the scope string to include in the token response.
+	TokenScopeFunc func(requestedScope string) string
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -95,6 +101,7 @@ type FakeAuthorizationServer struct {
 
 type codeInfo struct {
 	CodeChallenge string
+	Scope         string
 }
 
 // NewFakeAuthorizationServer creates a new FakeAuthorizationServer.
@@ -166,6 +173,7 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		AuthorizationEndpoint:             s.URL() + s.config.IssuerPath + "/authorize",
 		TokenEndpoint:                     s.URL() + s.config.IssuerPath + "/token",
 		RegistrationEndpoint:              registrationEndpoint,
+		ScopesSupported:                   s.config.ScopesSupported,
 		ResponseTypesSupported:            []string{"code"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
@@ -255,6 +263,7 @@ func (s *FakeAuthorizationServer) handleAuthorize(w http.ResponseWriter, r *http
 	code := rand.Text()
 	s.codes[code] = codeInfo{
 		CodeChallenge: codeChallenge,
+		Scope:         r.URL.Query().Get("scope"),
 	}
 
 	state := r.URL.Query().Get("state")
@@ -313,12 +322,18 @@ func (s *FakeAuthorizationServer) handleAuthorizationCodeGrant(w http.ResponseWr
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
 		"expires_in":   3600,
-	})
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(codeInfo.Scope); scope != "" {
+			resp["scope"] = scope
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *FakeAuthorizationServer) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request) {
@@ -351,13 +366,18 @@ func (s *FakeAuthorizationServer) handleClientCredentialsGrant(w http.ResponseWr
 		http.Error(w, "client_credentials grant not supported", http.StatusBadRequest)
 		return
 	}
-	// Client was already authenticated in handleToken.
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
 		"expires_in":   3600,
-	})
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(r.Form.Get("scope")); scope != "" {
+			resp["scope"] = scope
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *FakeAuthorizationServer) authenticateClient(r *http.Request) error {

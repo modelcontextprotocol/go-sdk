@@ -27,6 +27,12 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   Params), restoring the previous behavior. The default behavior was changed to
   align with SEP-2164 and the JSON-RPC specification.
 
+- `allowsessionsinstateless` added. If set to `1`, stateless streamable HTTP
+  servers will read the `Mcp-Session-Id` request header (or generate one via
+  `GetSessionID`), set it on response headers, and accept `DELETE` requests,
+  restoring the previous behavior. The default behavior was changed so that
+  stateless servers ignore session IDs entirely and reject `DELETE` with 405.
+
 ### 1.6.0
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -90,6 +91,23 @@ type AuthorizationCodeHandlerConfig struct {
 	// See [AuthorizationCodeFetcher] for details.
 	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
+	// RequestRefreshToken indicates that the client intends to use refresh
+	// tokens and is capable of storing them securely.
+	//
+	// When true and the Authorization Server metadata contains "offline_access"
+	// in its scopes_supported, the client adds "offline_access" to the
+	// requested scopes.
+	//
+	// When using Dynamic Client Registration, callers should include
+	// "refresh_token" in [DynamicClientRegistrationConfig].Metadata.GrantTypes
+	// directly to advertise refresh token support to the Authorization Server.
+	//
+	// When using Client ID Metadata Document, the document hosted at the
+	// Client ID URL should include "refresh_token" in its grant_types.
+	//
+	// See https://modelcontextprotocol.io/seps/2207-oidc-refresh-token-guidance.
+	RequestRefreshToken bool
+
 	// Client is an optional HTTP client to use for HTTP requests.
 	// It is used for the following requests:
 	//  - Fetching Protected Resource Metadata
@@ -111,6 +129,9 @@ type AuthorizationCodeHandler struct {
 
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
+
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
+	grantedScopes map[string][]string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
@@ -170,7 +191,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.Client == nil {
 		config.Client = http.DefaultClient
 	}
-	return &AuthorizationCodeHandler{config: config}, nil
+	return &AuthorizationCodeHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 func isNonRootHTTPSURL(u string) bool {
@@ -258,10 +282,23 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	scps := scopesFromChallenges(wwwChallenges)
-	if len(scps) == 0 && len(prm.ScopesSupported) > 0 {
-		scps = prm.ScopesSupported
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
 	}
+
+	// SEP-2207: when the client desires refresh tokens and the Authorization
+	// Server advertises offline_access support, add it to the requested scopes.
+	if h.config.RequestRefreshToken &&
+		slices.Contains(asm.ScopesSupported, "offline_access") &&
+		!slices.Contains(requestedScopes, "offline_access") {
+		requestedScopes = append(requestedScopes, "offline_access")
+	}
+
+	// Accumulate scopes: union previously granted scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -273,7 +310,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
-		Scopes:      scps,
+		Scopes:      requestedScopes,
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
@@ -282,7 +319,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	if err != nil {
+		return err
+	}
+
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
@@ -531,5 +573,22 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	return nil
+}
+
+// updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
+func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
+	tok, err := h.tokenSource.Token()
+	if err != nil {
+		return err
+	}
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
+	}
 	return nil
 }
