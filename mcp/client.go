@@ -274,8 +274,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
 		// signals it doesn't support it, fall back to the legacy initialize
 		// handshake.
-		ctx = context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
-		discRes, fallback, err := c.discover(ctx, cs)
+		discoverCtx := context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
+		discRes, fallback, err := c.discover(discoverCtx, cs)
 		if err != nil {
 			return nil, err
 		}
