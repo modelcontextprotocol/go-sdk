@@ -284,17 +284,18 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// is propagated so the caller sees the real cause instead of being
 		// silently downgraded.
 		discRes, fallback, err := c.discover(ctx, cs)
-		// The current implementation of the server does not allow to properly define the error cause.
-		// Fallback on the legacy initialization on any type of error.
-		if err == nil && !fallback {
+		if !fallback {
 			cs.state.InitializeResult = discRes
 			if hc, ok := cs.mcpConn.(clientConnection); ok {
 				hc.sessionUpdated(cs.state)
 			}
 			return cs, nil
-		} else {
-			protocolVersion = protocolVersion20251125
 		}
+		if err != nil {
+			return nil, err
+		}
+		// Fallback to the legacy initialize handshake.
+		protocolVersion = protocolVersion20251125
 	}
 
 	params := &InitializeParams{
@@ -361,6 +362,10 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
 			return nil, true, nil
 		}
+		if strings.Contains(err.Error(), "Bad Request") {
+			return nil, true, nil
+		}
+		_ = cs.Close()
 		return nil, false, err
 	}
 
