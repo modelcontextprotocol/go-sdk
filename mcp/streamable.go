@@ -1830,17 +1830,25 @@ type streamableClientConn struct {
 	failed   chan struct{} // signal failure
 
 	// Guard the initialization state.
-	mu                sync.Mutex
-	initializedResult *InitializeResult
-	sessionID         string
+	mu                       sync.Mutex
+	initializedResult        *InitializeResult
+	requestedProtocolVersion string
+	sessionID                string
 }
-
-var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()
+
+	// Under SEP-2575 (protocol version >= 2026-06-30) the standalone HTTP GET
+	// SSE stream is removed; server-to-client notifications instead flow via
+	// the new subscriptions/listen RPC. Only open the standalone SSE stream
+	// for legacy protocol versions.
+	if state.InitializeResult == nil ||
+		state.InitializeResult.ProtocolVersion >= protocolVersion20260630 {
+		return
+	}
 
 	// Start the standalone SSE stream as soon as we have the initialized
 	// result, if continuous listening is enabled.
@@ -1858,6 +1866,16 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	if !c.disableStandaloneSSE {
 		c.connectStandaloneSSE()
 	}
+}
+
+// setRequestedProtocolVersion records the protocol version that the client
+// will advertise on the SEP-2575 server/discover request. It is used by
+// [streamableClientConn.setMCPHeaders] to populate the Mcp-Protocol-Version
+// header before the handshake completes and initializedResult is set.
+func (c *streamableClientConn) setRequestedProtocolVersion(v string) {
+	c.mu.Lock()
+	c.requestedProtocolVersion = v
+	c.mu.Unlock()
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
@@ -2141,8 +2159,8 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if protocolVersion, ok := req.Context().Value(protocolVersionContextKey{}).(string); ok {
-		req.Header.Set(protocolVersionHeader, protocolVersion)
+	} else if c.requestedProtocolVersion != "" {
+		req.Header.Set(protocolVersionHeader, c.requestedProtocolVersion)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)

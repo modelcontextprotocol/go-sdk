@@ -269,26 +269,35 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		protocolVersion = opts.protocolVersion
 	}
 
-	// Per SEP-2575, try the stateless server/discover RPC first. If the server
-	// signals it doesn't support it ("Method not found" or the SEP-2575
-	// UnsupportedProtocolVersionError), fall back to the legacy initialize
-	// handshake. Any other error (transport failure, malformed response, etc.)
-	// is propagated so the caller sees the real cause instead of being
-	// silently downgraded.
-	discRes, fallback, err := c.discover(ctx, cs)
-	if err != nil {
-		_ = cs.Close()
-		return nil, err
-	}
-	if !fallback {
-		cs.state.InitializeResult = discRes
-		if hc, ok := cs.mcpConn.(clientConnection); ok {
-			hc.sessionUpdated(cs.state)
+	if protocolVersion >= protocolVersion20260630 {
+		// Inform the transport which protocol version we intend to advertise on
+		// the discover request, so it can populate the Mcp-Protocol-Version
+		// header before InitializeResult is available.
+		if s, ok := cs.mcpConn.(protocolVersionSetter); ok {
+			s.setRequestedProtocolVersion(protocolVersion20260630)
 		}
-		if c.opts.KeepAlive > 0 {
-			cs.startKeepalive(c.opts.KeepAlive)
+
+		// Per SEP-2575, try the stateless server/discover RPC first. If the server
+		// signals it doesn't support it ("Method not found" or the SEP-2575
+		// UnsupportedProtocolVersionError), fall back to the legacy initialize
+		// handshake. Any other error (transport failure, malformed response, etc.)
+		// is propagated so the caller sees the real cause instead of being
+		// silently downgraded.
+		discRes, fallback, err := c.discover(ctx, cs)
+		// The current implementation of the server does not allow to properly define the error cause.
+		// Fallback on the legacy initialization on any type of error.
+		if err == nil && !fallback {
+			cs.state.InitializeResult = discRes
+			if hc, ok := cs.mcpConn.(clientConnection); ok {
+				hc.sessionUpdated(cs.state)
+			}
+			if c.opts.KeepAlive > 0 {
+				cs.startKeepalive(c.opts.KeepAlive)
+			}
+			return cs, nil
+		} else {
+			protocolVersion = protocolVersion20251125
 		}
-		return cs, nil
 	}
 
 	params := &InitializeParams{
@@ -353,9 +362,6 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		// trigger; everything else is a real error.
 		var werr *jsonrpc.Error
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
-			return nil, true, nil
-		}
-		if strings.Contains(err.Error(), "Bad Request") {
 			return nil, true, nil
 		}
 		return nil, false, err

@@ -105,16 +105,8 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
-	// In new protocol version the protocolVersion is extracted to be set on the outgoing requests headers.
-	if discoverParams, ok := params.(*DiscoverParams); ok {
-		protocolVersion, ok := discoverParams.Meta[MetaKeyProtocolVersion].(string)
-		if !ok {
-			return nil, jsonrpc2.ErrInvalidRequest
-		}
-		ctx = context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
-	} else {
-		injectMeta(req)
-	}
+	// Populate the SEP-2575 per-request _meta triple.
+	injectMeta(req)
 
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
