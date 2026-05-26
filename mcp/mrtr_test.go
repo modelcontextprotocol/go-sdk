@@ -315,6 +315,192 @@ func TestMRTR_ServerMiddleware(t *testing.T) {
 	}
 }
 
+func TestMRTR_GetPrompt_AutoRetry(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddPrompt(&Prompt{Name: "review"}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &GetPromptResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Include sensitive data?"}},
+				RequestState:  "prompt-state",
+			}, nil
+		}
+		return &GetPromptResult{
+			Description: "Code review prompt",
+			Messages:    []*PromptMessage{{Role: "user", Content: &TextContent{Text: "review this code"}}},
+		}, nil
+	})
+
+	conn := mustConnectMRTR(t, srv, &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	res, err := conn.GetPrompt(ctx, &GetPromptParams{Name: "review"})
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after auto-retry, want false")
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("len(res.Messages) = %d, want 1", len(res.Messages))
+	}
+	if got := res.Messages[0].Content.(*TextContent).Text; got != "review this code" {
+		t.Errorf("message text = %q, want %q", got, "review this code")
+	}
+}
+
+func TestMRTR_GetPrompt_ManualRetry(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddPrompt(&Prompt{Name: "review"}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &GetPromptResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Include sensitive data?"}},
+				RequestState:  "prompt-state",
+			}, nil
+		}
+		return &GetPromptResult{
+			Description: "Code review prompt",
+			Messages:    []*PromptMessage{{Role: "user", Content: &TextContent{Text: "review this code"}}},
+		}, nil
+	})
+
+	conn := mustConnectMRTR(t, srv, &ClientOptions{
+		MRTR: &MRTROptions{Disabled: true},
+	})
+
+	res, err := conn.GetPrompt(ctx, &GetPromptParams{Name: "review"})
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	if !res.NeedsInput() {
+		t.Fatal("NeedsInput() = false, want true")
+	}
+	if _, ok := res.InputRequests["confirm"].(*ElicitParams); !ok {
+		t.Fatalf("InputRequests[confirm] type = %T, want *ElicitParams", res.InputRequests["confirm"])
+	}
+
+	res, err = conn.GetPrompt(ctx, &GetPromptParams{
+		Name:           "review",
+		InputResponses: InputResponseMap{"confirm": &ElicitResult{Action: "accept"}},
+		RequestState:   res.RequestState,
+	})
+	if err != nil {
+		t.Fatalf("GetPrompt() follow-up error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after follow-up, want false")
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("len(res.Messages) = %d, want 1", len(res.Messages))
+	}
+}
+
+func TestMRTR_ReadResource_AutoRetry(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddResource(&Resource{URI: "test://data", Name: "data"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &ReadResourceResult{
+				InputRequests: InputRequestMap{"auth": &ElicitParams{Message: "Authenticate?"}},
+				RequestState:  "resource-state",
+			}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://data", Text: "resource data"}},
+		}, nil
+	})
+
+	conn := mustConnectMRTR(t, srv, &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	res, err := conn.ReadResource(ctx, &ReadResourceParams{URI: "test://data"})
+	if err != nil {
+		t.Fatalf("ReadResource() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after auto-retry, want false")
+	}
+	if len(res.Contents) != 1 {
+		t.Fatalf("len(res.Contents) = %d, want 1", len(res.Contents))
+	}
+	if got := res.Contents[0].Text; got != "resource data" {
+		t.Errorf("resource text = %q, want %q", got, "resource data")
+	}
+}
+
+func TestMRTR_ReadResource_ManualRetry(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddResource(&Resource{URI: "test://data", Name: "data"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &ReadResourceResult{
+				InputRequests: InputRequestMap{"auth": &ElicitParams{Message: "Authenticate?"}},
+				RequestState:  "resource-state",
+			}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://data", Text: "resource data"}},
+		}, nil
+	})
+
+	conn := mustConnectMRTR(t, srv, &ClientOptions{
+		MRTR: &MRTROptions{Disabled: true},
+	})
+
+	res, err := conn.ReadResource(ctx, &ReadResourceParams{URI: "test://data"})
+	if err != nil {
+		t.Fatalf("ReadResource() error = %v", err)
+	}
+	if !res.NeedsInput() {
+		t.Fatal("NeedsInput() = false, want true")
+	}
+	if _, ok := res.InputRequests["auth"].(*ElicitParams); !ok {
+		t.Fatalf("InputRequests[auth] type = %T, want *ElicitParams", res.InputRequests["auth"])
+	}
+
+	res, err = conn.ReadResource(ctx, &ReadResourceParams{
+		URI:            "test://data",
+		InputResponses: InputResponseMap{"auth": &ElicitResult{Action: "accept"}},
+		RequestState:   res.RequestState,
+	})
+	if err != nil {
+		t.Fatalf("ReadResource() follow-up error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after follow-up, want false")
+	}
+	if len(res.Contents) != 1 {
+		t.Fatalf("len(res.Contents) = %d, want 1", len(res.Contents))
+	}
+}
+
 func mustConnectMRTR(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
 	t.Helper()
 	st, ct := NewInMemoryTransports()
