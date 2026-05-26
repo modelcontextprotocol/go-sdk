@@ -747,15 +747,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
 //
-// Server-side discovery is not implemented yet; this stub returns
-// ErrMethodNotFound so that vPost-capable clients fall back to the legacy
-// initialize handshake when probing a pre-2026-06-30 server.
-//
-// The corresponding entry in [serverMethodInfos] is also required by the
-// client-side dispatch path: [ClientSession.sendingMethodInfos] returns
-// [serverMethodInfos], so removing this registration causes
-// handleSend[*DiscoverResult] to fail with ErrNotHandled before any HTTP
-// request goes out.
+// TODO: Complete implementation.
 func (s *Server) discover(context.Context, *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
 	return nil, jsonrpc2.ErrMethodNotFound
 }
