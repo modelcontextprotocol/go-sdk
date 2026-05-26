@@ -6,18 +6,20 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
-type deployResult struct {
-	Deployed bool   `json:"deployed"`
-	Reason   string `json:"reason,omitempty"`
-}
-
 func TestMRTR_ManualRetry(t *testing.T) {
+	type deployResult struct {
+		Deployed bool   `json:"deployed"`
+		Reason   string `json:"reason,omitempty"`
+	}
+
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -94,43 +96,107 @@ func TestMRTR_AutoRetry(t *testing.T) {
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
-	ctx := context.Background()
-
-	srv := NewServer(testImpl, nil)
-	AddTool(srv, &Tool{Name: "deploy"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, *deployResult, error) {
-		if len(req.Params.InputResponses) == 0 {
-			return &CallToolResult{
-				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Deploy to production?"}},
-				RequestState:  "deployment-123",
-			}, nil, nil
-		}
-		resp, ok := req.Params.InputResponses["confirm"]
-		if !ok {
-			return nil, nil, nil
-		}
-		elicitResult := resp.(*ElicitResult)
-		if elicitResult == nil || elicitResult.Action != "accept" {
-			return &CallToolResult{}, &deployResult{Deployed: false, Reason: "cancelled"}, nil
-		}
-		return &CallToolResult{}, &deployResult{Deployed: true}, nil
-	})
-
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
-		ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
-			return &ElicitResult{Action: "accept", Content: map[string]any{"ok": true}}, nil
+	tests := []struct {
+		name          string
+		inputRequests InputRequestMap
+		wantResult    map[string]any
+	}{
+		{
+			name: "elicit",
+			inputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "Deploy?"},
+			},
+			wantResult: map[string]any{"ids": []any{"confirm"}},
 		},
-	})
-
-	res, err := conn.CallTool(ctx, &CallToolParams{Name: "deploy"})
-	if err != nil {
-		t.Fatalf("CallTool() error = %v", err)
+		{
+			name: "createMessage",
+			inputRequests: InputRequestMap{
+				"summarize": &CreateMessageParams{
+					Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "summarize"}}},
+					MaxTokens: 100,
+				},
+			},
+			wantResult: map[string]any{"ids": []any{"summarize"}},
+		},
+		{
+			name: "listRoots",
+			inputRequests: InputRequestMap{
+				"roots": &ListRootsParams{},
+			},
+			wantResult: map[string]any{"ids": []any{"roots"}},
+		},
+		{
+			name: "all three",
+			inputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "OK?"},
+				"draft": &CreateMessageParams{
+					Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "write"}}},
+					MaxTokens: 50,
+				},
+				"roots": &ListRootsParams{},
+			},
+			wantResult: map[string]any{"ids": []any{"confirm", "draft", "roots"}},
+		},
 	}
-	if res.NeedsInput() {
-		t.Fatal("NeedsInput() = true after auto-retry, want false")
-	}
 
-	if diff := cmp.Diff(map[string]any{"deployed": true}, res.StructuredContent, ctrCmpOpts...); diff != "" {
-		t.Errorf("result mismatch (-want +got):\n%s", diff)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			srv := NewServer(testImpl, nil)
+			inputRequests := tt.inputRequests
+			AddTool(srv, &Tool{Name: "act"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
+				if len(req.Params.InputResponses) == 0 {
+					return &CallToolResult{
+						InputRequests: inputRequests,
+						RequestState:  "state-1",
+					}, nil, nil
+				}
+				// Collect the IDs of fulfilled responses.
+				var ids []string
+				for id := range req.Params.InputResponses {
+					ids = append(ids, id)
+				}
+				slices.Sort(ids)
+				return &CallToolResult{}, map[string]any{"ids": ids}, nil
+			})
+
+			conn := mustConnectMRTR(t, srv, &ClientOptions{
+				ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
+					return &ElicitResult{Action: "accept"}, nil
+				},
+				CreateMessageHandler: func(_ context.Context, req *CreateMessageRequest) (*CreateMessageResult, error) {
+					return &CreateMessageResult{
+						Model:   "test-model",
+						Role:    "assistant",
+						Content: &TextContent{Text: "response"},
+					}, nil
+				},
+			})
+			conn.client.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+
+			res, err := conn.CallTool(ctx, &CallToolParams{Name: "act"})
+			if err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			if res.NeedsInput() {
+				t.Fatal("NeedsInput() = true after auto-retry, want false")
+			}
+
+			// Sort the expected IDs for stable comparison.
+			if wantIDs, ok := tt.wantResult["ids"].([]any); ok {
+				slices.SortFunc(wantIDs, func(a, b any) int {
+					if a.(string) < b.(string) {
+						return -1
+					}
+					return 1
+				})
+			}
+
+			if diff := cmp.Diff(tt.wantResult, res.StructuredContent, ctrCmpOpts...); diff != "" {
+				t.Errorf("result mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -159,6 +225,93 @@ func TestMRTR_MaxRetries(t *testing.T) {
 	_, err := conn.CallTool(ctx, &CallToolParams{Name: "loop"})
 	if err == nil {
 		t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+	}
+}
+
+func TestMRTR_ServerMiddleware(t *testing.T) {
+	// mrtrToolHandler returns a ToolHandler (plain, non-generic) that requests
+	// the given inputRequests on the first call and returns the fulfilled
+	// response IDs on the second.
+	mrtrToolHandler := func(inputRequests InputRequestMap) ToolHandler {
+		return func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			if len(req.Params.InputResponses) == 0 {
+				return &CallToolResult{
+					InputRequests: inputRequests,
+					RequestState:  "state-1",
+				}, nil
+			}
+			var ids []string
+			for id := range req.Params.InputResponses {
+				ids = append(ids, id)
+			}
+			slices.Sort(ids)
+			content := &TextContent{Text: fmt.Sprintf("%v", ids)}
+			return &CallToolResult{Content: []Content{content}}, nil
+		}
+	}
+
+	tests := []struct {
+		name          string
+		inputRequests InputRequestMap
+		wantText      string
+	}{
+		{
+			name: "elicit via ToolHandler",
+			inputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "Sure?"},
+			},
+			wantText: "[confirm]",
+		},
+		{
+			name: "elicit and listRoots via ToolHandler",
+			inputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "OK?"},
+				"roots":   &ListRootsParams{},
+			},
+			wantText: "[confirm roots]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			srv := NewServer(testImpl, nil)
+			srv.AddTool(
+				&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+				mrtrToolHandler(tt.inputRequests),
+			)
+
+			// Connect with an OLD protocol version where MRTR is not supported.
+			// The server middleware should handle it transparently.
+			st, ct := NewInMemoryTransports()
+			ss, err := srv.Connect(t.Context(), st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect() error = %v", err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+
+			c := NewClient(testImpl, &ClientOptions{
+				MRTR: &MRTROptions{Disabled: true},
+				ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
+					return &ElicitResult{Action: "accept"}, nil
+				},
+			})
+			c.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+			cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{})
+			if err != nil {
+				t.Fatalf("client.Connect() error = %v", err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+			if err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			if got := res.Content[0].(*TextContent).Text; got != tt.wantText {
+				t.Errorf("result text = %q, want %q", got, tt.wantText)
+			}
+		})
 	}
 }
 

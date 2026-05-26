@@ -80,12 +80,13 @@ mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, in MyIn
   return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, myOut, nil
 })
 ```
-An incomplete result should be converted to an error response when communicating with an older client. This is a reasonable default for server implementers to not branch by protocol version in their code.
+The SDK validates at runtime that a handler does not return both content and `InputRequests` — doing so logs a warning and returns a `CodeInternalError` JSON-RPC error.
 
-An unexported middleware is installed in the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. `ClientOptions` will be extended with configuration knobs:
+An unexported receiving middleware is installed on the server for backward compatibility with older clients. When a handler returns `InputRequests` and the connected client uses a protocol version that does not support MRTR, the middleware fulfills the requests by calling `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the client directly and reinvokes the handler once with the collected `InputResponses`. If any of these calls fail, the entire request fails. Input requests are fulfilled concurrently. This lets server developers write protocol-version-independent code.
+
+An unexported sending middleware is installed on the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. `ClientOptions` is extended with configuration knobs:
 ```go
 type MRTROptions struct {
-  ...
   MaxRetries int
   Disabled   bool
 }
@@ -94,24 +95,25 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
 })
 ```
 
-Alternatively, clients have an option to disable it and write a retry loop manually:
+Alternatively, clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
 ```go
 client := mcp.NewClient(impl, &mcp.ClientOptions{MRTR: &mcp.MRTROptions{Disabled: true}})
 result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "my-tool"})
-if result.InputRequests != nil { ... }
+if result.NeedsInput() { ... }
 ```
 
-This is error-prone because according to the SEP an empty map can be returned for load-shedding purposes. `NeedsInput` function can be provided, but nothing would force users to use it. 
+`NeedsInput()` checks the unexported `resultType` field rather than `InputRequests`, correctly handling the load-shedding case where the server returns `input_required` with an empty map.
 
 **Pros**
 
 This is arguably the simplest and the most transparent approach which is also closest to the spec.
 What gets explicitly set on the server can be observed on the wire and on the client. 
-The opt-out middleware follows the principle of the least surprise for app developers. If client method handlers were provided they will continue to be invoked regardless of the protocol version in use. The `Disabled` option lets "power-users" build any custom handling logic. 
+The opt-out client middleware follows the principle of the least surprise for app developers. If client method handlers were provided they will continue to be invoked regardless of the protocol version in use. The `Disabled` option lets "power-users" build any custom handling logic.
+The server middleware makes handler code protocol-version-independent — the same handler works for both old and new clients.
 
 **Cons**
 
-The biggest downside of the proposal is that server developers can construct incorrect responses and this will only be validated at runtime.
+The biggest downside of the proposal is that server developers can construct incorrect responses (both content and input requests) and this will only be validated at runtime.
 
 ## Alternatives considered
 
@@ -263,35 +265,7 @@ This would change semantics of `*Handler` fields - depending on the protocol ver
 
 ---
 
-### Protocol version bridging
+### Server API protocol version bridging
 
-When a handler returns an input-required result to an old client the SDK could bridge by invoking `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the `ServerSession` and re-invoking the handler with the collected `inputResponses`:
-```go
-func mrtrBridgeMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
-  return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-    res, err := next(ctx, method, req)
-    if err != nil || !needsInput(res) || isNewProtocol(req) {
-      return res, err
-    }
-    // Fulfill input requests via server-initiated calls, inject inputResponses into the request, 
-    // re-invoke the handler.
-  }
-}
-```
-
-Or even more radically: instead of making `ServerSession.Elicit`, `CreateMessage`, and `ListRoots` return errors for newer clients, we could convert these invocations into MRTR wire format transparently: suspend the handler, return `input_required`, and resume when the client retries with `inputResponses`:
-```go
-mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, in MyIn) (*mcp.CallToolResult, MyOut, error) {
-  result, err := req.Session.Elicit(ctx, &mcp.ElicitParams{Message: "Deploy to production?"})
-  if err != nil {
-    return nil, zero, err
-  }
-  if result.Action != "accept" {
-    return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "cancelled"}}}, zero, nil
-  }
-  return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "deployed"}}}, myOut, nil
-})
-```
-
-Such bridging would contradict the design goal of MRTR — servers shouldn't hold resources between round trips, and it should be possible for a retry to arrive on any server instance in a multi-server deployment.
+Converting `ServerSession.Elicit`/`CreateMessage`/`ListRoots` calls into MRTR wire format transparently (suspend the handler, return `input_required`, resume on retry). Rejected because of a significant implementation effort and the fact that it contradicts the design goal of MRTR where servers shouldn't hold resources between round trips, and it should be possible for a retry to arrive on any server instance in a multi-server deployment.
 

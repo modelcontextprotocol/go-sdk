@@ -66,7 +66,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
 	if opts.MRTR == nil || !opts.MRTR.Disabled {
-		c.AddSendingMiddleware(mrtrMiddleware(c))
+		c.AddSendingMiddleware(clientMRTRMiddleware(c))
 	}
 	return c
 }

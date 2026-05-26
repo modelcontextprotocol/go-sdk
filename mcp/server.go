@@ -187,7 +187,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Server{
+	s := &Server{
 		impl:                    impl,
 		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
@@ -199,6 +199,8 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
+	s.AddReceivingMiddleware(serverMRTRMiddleware())
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
