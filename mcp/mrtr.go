@@ -33,7 +33,6 @@ type MRTROptions struct {
 type mrtrResult interface {
 	setResultType(ResultType)
 	inputRequests() map[string]InputRequest
-	setInputRequest(k string, v InputRequest)
 	hasContent() bool
 }
 
@@ -41,7 +40,7 @@ func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) er
 	hasInputRequests := res.inputRequests() != nil
 
 	if hasInputRequests && res.hasContent() {
-		logger.Warn("handler returned both content and inputRequests; inputRequests takes precedence")
+		logger.Warn("handler returned both content and inputRequests")
 		return &jsonrpc.Error{
 			Code:    jsonrpc.CodeInternalError,
 			Message: "server bug: result has both content and inputRequests",
@@ -56,7 +55,7 @@ func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) er
 	case supportsMRTR:
 		res.setResultType(ResultTypeComplete)
 	}
-	// For older clients the resultType is left unset. The serverMRTRMiddleware fulfills the 
+	// For older clients the resultType is left unset. The serverMRTRMiddleware fulfills the
 	// requests by calling the client directly and retries the handler.
 	return nil
 }
@@ -110,7 +109,7 @@ func clientMRTRMiddleware(c *Client) Middleware {
 // serverMRTRMiddleware is a receiving middleware for servers that transparently
 // handles MRTR for clients on older protocol versions. When a handler returns
 // InputRequests and the client does not support MRTR, the middleware fulfills
-// the requests by calling the client reinvokes the handler once with the responses.
+// the requests by calling the client directly and reinvokes the handler once with the responses.
 func serverMRTRMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
@@ -186,7 +185,7 @@ func fulfillServerInputRequests(ctx context.Context, ss *ServerSession, requests
 	wg.Wait()
 	close(results)
 
-	responses := make(InputResponseMap, len(results))
+	responses := make(InputResponseMap, len(requests))
 	for r := range results {
 		if r.err != nil {
 			return nil, fmt.Errorf("MRTR: fulfilling input request %q: %w", r.id, r.err)
@@ -210,19 +209,25 @@ func fulfillServerInputRequest(ctx context.Context, ss *ServerSession, ir InputR
 }
 
 func mrtrInputRequests(res Result) InputRequestMap {
+	if res == nil {
+		return nil
+	}
 	switch r := res.(type) {
 	case *CallToolResult:
-		if r.NeedsInput() {
-			return r.InputRequests
+		if r == nil || !r.NeedsInput() {
+			return nil
 		}
+		return r.InputRequests
 	case *GetPromptResult:
-		if r.NeedsInput() {
-			return r.InputRequests
+		if r == nil || !r.NeedsInput() {
+			return nil
 		}
+		return r.InputRequests
 	case *ReadResourceResult:
-		if r.NeedsInput() {
-			return r.InputRequests
+		if r == nil || !r.NeedsInput() {
+			return nil
 		}
+		return r.InputRequests
 	}
 	return nil
 }
@@ -273,7 +278,7 @@ func fulfillInputRequests(ctx context.Context, cs *ClientSession, requests Input
 	wg.Wait()
 	close(results)
 
-	responses := make(InputResponseMap, len(results))
+	responses := make(InputResponseMap, len(requests))
 	for r := range results {
 		if r.err != nil {
 			return nil, fmt.Errorf("MRTR: fulfilling input request %q: %w", r.id, r.err)
@@ -297,40 +302,34 @@ func fulfillInputRequest(ctx context.Context, cs *ClientSession, ir InputRequest
 }
 
 func fulfillCreateMessage(ctx context.Context, cs *ClientSession, p *CreateMessageParams) (*CreateMessageResult, error) {
-	if cs.client.opts.CreateMessageHandler != nil {
-		return cs.client.opts.CreateMessageHandler(ctx, &CreateMessageRequest{Session: cs, Params: p})
+	var msgs []*SamplingMessageV2
+	for _, m := range p.Messages {
+		msgs = append(msgs, &SamplingMessageV2{Content: []Content{m.Content}, Role: m.Role})
 	}
-	if cs.client.opts.CreateMessageWithToolsHandler != nil {
-		var msgs []*SamplingMessageV2
-		for _, m := range p.Messages {
-			msgs = append(msgs, &SamplingMessageV2{Content: []Content{m.Content}, Role: m.Role})
-		}
-		wtp := &CreateMessageWithToolsParams{
-			Meta:             p.Meta,
-			IncludeContext:   p.IncludeContext,
-			MaxTokens:        p.MaxTokens,
-			Messages:         msgs,
-			Metadata:         p.Metadata,
-			ModelPreferences: p.ModelPreferences,
-			StopSequences:    p.StopSequences,
-			SystemPrompt:     p.SystemPrompt,
-			Temperature:      p.Temperature,
-		}
-		result, err := cs.client.opts.CreateMessageWithToolsHandler(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: wtp})
-		if err != nil {
-			return nil, err
-		}
-		var content Content
-		if len(result.Content) > 0 {
-			content = result.Content[0]
-		}
-		return &CreateMessageResult{
-			Meta:       result.Meta,
-			Content:    content,
-			Model:      result.Model,
-			Role:       result.Role,
-			StopReason: result.StopReason,
-		}, nil
+	wtp := &CreateMessageWithToolsParams{
+		Meta:             p.Meta,
+		IncludeContext:   p.IncludeContext,
+		MaxTokens:        p.MaxTokens,
+		Messages:         msgs,
+		Metadata:         p.Metadata,
+		ModelPreferences: p.ModelPreferences,
+		StopSequences:    p.StopSequences,
+		SystemPrompt:     p.SystemPrompt,
+		Temperature:      p.Temperature,
 	}
-	return nil, fmt.Errorf("client does not support CreateMessage")
+	result, err := cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: wtp})
+	if err != nil {
+		return nil, err
+	}
+	var content Content
+	if len(result.Content) > 0 {
+		content = result.Content[0]
+	}
+	return &CreateMessageResult{
+		Meta:       result.Meta,
+		Content:    content,
+		Model:      result.Model,
+		Role:       result.Role,
+		StopReason: result.StopReason,
+	}, nil
 }

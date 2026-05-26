@@ -106,7 +106,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 // InputResponse is a sealed interface for results that a client sends back
 // when fulfilling an MRTR input request. Implementations are [*ElicitResult],
 // [*CreateMessageResult], and [*ListRootsResult].
-type InputResponse interface{ isInputResult() }
+type InputResponse interface{ isInputResponse() }
 
 // InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
 // values. It is used in params types when retrying a call after an
@@ -771,8 +771,8 @@ type CreateMessageResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
-func (*CreateMessageResult) isResult()      {}
-func (*CreateMessageResult) isInputResult() {}
+func (*CreateMessageResult) isResult()        {}
+func (*CreateMessageResult) isInputResponse() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
 	var wire struct {
@@ -912,10 +912,9 @@ type GetPromptResult struct {
 
 func (*GetPromptResult) isResult() {}
 
-func (r *GetPromptResult) setResultType(rt ResultType)              { r.resultType = rt }
-func (r *GetPromptResult) inputRequests() map[string]InputRequest   { return r.InputRequests }
-func (r *GetPromptResult) setInputRequest(k string, v InputRequest) { r.inputRequests()[k] = v }
-func (r *GetPromptResult) hasContent() bool                         { return len(r.Messages) > 0 }
+func (r *GetPromptResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *GetPromptResult) inputRequests() map[string]InputRequest { return r.InputRequests }
+func (r *GetPromptResult) hasContent() bool                       { return len(r.Messages) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
@@ -1122,8 +1121,8 @@ type ListRootsResult struct {
 	Roots []*Root `json:"roots"`
 }
 
-func (*ListRootsResult) isResult()      {}
-func (*ListRootsResult) isInputResult() {}
+func (*ListRootsResult) isResult()        {}
+func (*ListRootsResult) isInputResponse() {}
 
 type ListToolsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -1397,10 +1396,9 @@ type ReadResourceResult struct {
 
 func (*ReadResourceResult) isResult() {}
 
-func (r *ReadResourceResult) setResultType(rt ResultType)              { r.resultType = rt }
-func (r *ReadResourceResult) inputRequests() map[string]InputRequest   { return r.InputRequests }
-func (r *ReadResourceResult) setInputRequest(k string, v InputRequest) { r.inputRequests()[k] = v }
-func (r *ReadResourceResult) hasContent() bool                         { return len(r.Contents) > 0 }
+func (r *ReadResourceResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *ReadResourceResult) inputRequests() map[string]InputRequest { return r.InputRequests }
+func (r *ReadResourceResult) hasContent() bool                       { return len(r.Contents) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
@@ -1842,8 +1840,8 @@ type ElicitResult struct {
 	Content map[string]any `json:"content,omitempty"`
 }
 
-func (*ElicitResult) isResult()      {}
-func (*ElicitResult) isInputResult() {}
+func (*ElicitResult) isResult()        {}
+func (*ElicitResult) isInputResponse() {}
 
 // ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
 type ElicitationCompleteParams struct {
