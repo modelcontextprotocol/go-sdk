@@ -177,6 +177,7 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 			return &AuthorizationResult{
 				Code:  loc.Query().Get("code"),
 				State: loc.Query().Get("state"),
+				Iss:   loc.Query().Get("iss"),
 			}, nil
 		},
 	})
