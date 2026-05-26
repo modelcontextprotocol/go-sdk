@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/sync/errgroup"
 )
 
 const defaultMRTRMaxRetries = 3
@@ -37,6 +38,9 @@ type mrtrResult interface {
 }
 
 func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) error {
+	if res == nil {
+		return nil
+	}
 	hasInputRequests := res.inputRequests() != nil
 
 	if hasInputRequests && res.hasContent() {
@@ -169,28 +173,23 @@ func serverMRTRInputRequests(res Result) InputRequestMap {
 }
 
 func fulfillServerInputRequests(ctx context.Context, ss *ServerSession, requests InputRequestMap) (InputResponseMap, error) {
-	type result struct {
-		id   string
-		resp InputResponse
-		err  error
-	}
-	results := make(chan result, len(requests))
-	var wg sync.WaitGroup
+	g, ctx := errgroup.WithContext(ctx)
+	var mu sync.Mutex
+	responses := make(InputResponseMap, len(requests))
 	for id, ir := range requests {
-		wg.Go(func() {
+		g.Go(func() error {
 			resp, err := fulfillServerInputRequest(ctx, ss, ir)
-			results <- result{id, resp, err}
+			if err != nil {
+				return fmt.Errorf("fulfilling input request %q: %w", id, err)
+			}
+			mu.Lock()
+			responses[id] = resp
+			mu.Unlock()
+			return nil
 		})
 	}
-	wg.Wait()
-	close(results)
-
-	responses := make(InputResponseMap, len(requests))
-	for r := range results {
-		if r.err != nil {
-			return nil, fmt.Errorf("MRTR: fulfilling input request %q: %w", r.id, r.err)
-		}
-		responses[r.id] = r.resp
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("MRTR: %w", err)
 	}
 	return responses, nil
 }
@@ -200,11 +199,31 @@ func fulfillServerInputRequest(ctx context.Context, ss *ServerSession, ir InputR
 	case *ElicitParams:
 		return ss.Elicit(ctx, p)
 	case *CreateMessageParams:
-		return ss.CreateMessage(ctx, p)
+		return ss.CreateMessageWithTools(ctx, createMessageParamsToWithTools(p))
+	case *CreateMessageWithToolsParams:
+		return ss.CreateMessageWithTools(ctx, p)
 	case *ListRootsParams:
 		return ss.ListRoots(ctx, p)
 	default:
 		return nil, fmt.Errorf("unknown input request type: %T", ir)
+	}
+}
+
+func createMessageParamsToWithTools(p *CreateMessageParams) *CreateMessageWithToolsParams {
+	var msgs []*SamplingMessageV2
+	for _, m := range p.Messages {
+		msgs = append(msgs, &SamplingMessageV2{Content: []Content{m.Content}, Role: m.Role})
+	}
+	return &CreateMessageWithToolsParams{
+		Meta:             p.Meta,
+		IncludeContext:   p.IncludeContext,
+		MaxTokens:        p.MaxTokens,
+		Messages:         msgs,
+		Metadata:         p.Metadata,
+		ModelPreferences: p.ModelPreferences,
+		StopSequences:    p.StopSequences,
+		SystemPrompt:     p.SystemPrompt,
+		Temperature:      p.Temperature,
 	}
 }
 
@@ -262,28 +281,23 @@ func setMRTRRetryParams(req Request, responses InputResponseMap, state string) {
 }
 
 func fulfillInputRequests(ctx context.Context, cs *ClientSession, requests InputRequestMap) (InputResponseMap, error) {
-	type result struct {
-		id   string
-		resp InputResponse
-		err  error
-	}
-	results := make(chan result, len(requests))
-	var wg sync.WaitGroup
+	g, ctx := errgroup.WithContext(ctx)
+	var mu sync.Mutex
+	responses := make(InputResponseMap, len(requests))
 	for id, ir := range requests {
-		wg.Go(func() {
+		g.Go(func() error {
 			resp, err := fulfillInputRequest(ctx, cs, ir)
-			results <- result{id, resp, err}
+			if err != nil {
+				return fmt.Errorf("fulfilling input request %q: %w", id, err)
+			}
+			mu.Lock()
+			responses[id] = resp
+			mu.Unlock()
+			return nil
 		})
 	}
-	wg.Wait()
-	close(results)
-
-	responses := make(InputResponseMap, len(requests))
-	for r := range results {
-		if r.err != nil {
-			return nil, fmt.Errorf("MRTR: fulfilling input request %q: %w", r.id, r.err)
-		}
-		responses[r.id] = r.resp
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("MRTR: %w", err)
 	}
 	return responses, nil
 }
@@ -293,43 +307,12 @@ func fulfillInputRequest(ctx context.Context, cs *ClientSession, ir InputRequest
 	case *ElicitParams:
 		return cs.client.elicit(ctx, newClientRequest(cs, p))
 	case *CreateMessageParams:
-		return fulfillCreateMessage(ctx, cs, p)
+		return cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: createMessageParamsToWithTools(p)})
+	case *CreateMessageWithToolsParams:
+		return cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: p})
 	case *ListRootsParams:
 		return cs.client.listRoots(ctx, newClientRequest(cs, p))
 	default:
 		return nil, fmt.Errorf("unknown input request type: %T", ir)
 	}
-}
-
-func fulfillCreateMessage(ctx context.Context, cs *ClientSession, p *CreateMessageParams) (*CreateMessageResult, error) {
-	var msgs []*SamplingMessageV2
-	for _, m := range p.Messages {
-		msgs = append(msgs, &SamplingMessageV2{Content: []Content{m.Content}, Role: m.Role})
-	}
-	wtp := &CreateMessageWithToolsParams{
-		Meta:             p.Meta,
-		IncludeContext:   p.IncludeContext,
-		MaxTokens:        p.MaxTokens,
-		Messages:         msgs,
-		Metadata:         p.Metadata,
-		ModelPreferences: p.ModelPreferences,
-		StopSequences:    p.StopSequences,
-		SystemPrompt:     p.SystemPrompt,
-		Temperature:      p.Temperature,
-	}
-	result, err := cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: wtp})
-	if err != nil {
-		return nil, err
-	}
-	var content Content
-	if len(result.Content) > 0 {
-		content = result.Content[0]
-	}
-	return &CreateMessageResult{
-		Meta:       result.Meta,
-		Content:    content,
-		Model:      result.Model,
-		Role:       result.Role,
-		StopReason: result.StopReason,
-	}, nil
 }

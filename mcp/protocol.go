@@ -46,7 +46,7 @@ func (m InputRequestMap) MarshalJSON() ([]byte, error) {
 		switch v.(type) {
 		case *ElicitParams:
 			return methodElicit, nil
-		case *CreateMessageParams:
+		case *CreateMessageParams, *CreateMessageWithToolsParams:
 			return methodCreateMessage, nil
 		case *ListRootsParams:
 			return methodListRoots, nil
@@ -84,7 +84,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 			}
 			result[k] = &p
 		case methodCreateMessage:
-			var p CreateMessageParams
+			var p CreateMessageWithToolsParams
 			if err := json.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
@@ -122,7 +122,7 @@ func (m InputResponseMap) MarshalJSON() ([]byte, error) {
 		switch v.(type) {
 		case *ElicitResult:
 			return methodElicit, nil
-		case *CreateMessageResult:
+		case *CreateMessageResult, *CreateMessageWithToolsResult:
 			return methodCreateMessage, nil
 		case *ListRootsResult:
 			return methodListRoots, nil
@@ -160,7 +160,7 @@ func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
 			}
 			result[k] = &p
 		case methodCreateMessage:
-			var p CreateMessageResult
+			var p CreateMessageWithToolsResult
 			if err := json.Unmarshal(raw.Result, &p); err != nil {
 				return err
 			}
@@ -172,7 +172,7 @@ func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
 			}
 			result[k] = &p
 		default:
-			return fmt.Errorf("unsupported InputRequest method: %q", raw.Method)
+			return fmt.Errorf("unsupported InputResponse method: %q", raw.Method)
 		}
 	}
 	*m = result
@@ -345,9 +345,8 @@ func (r *CallToolResult) GetError() error {
 
 func (*CallToolResult) isResult() {}
 
-func (r *CallToolResult) setResultType(rt ResultType)              { r.resultType = rt }
-func (r *CallToolResult) inputRequests() map[string]InputRequest   { return r.InputRequests }
-func (r *CallToolResult) setInputRequest(k string, v InputRequest) { r.InputRequests[k] = v }
+func (r *CallToolResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *CallToolResult) inputRequests() map[string]InputRequest { return r.InputRequests }
 func (r *CallToolResult) hasContent() bool {
 	return len(r.Content) > 0 || r.StructuredContent != nil
 }
@@ -672,6 +671,7 @@ type CreateMessageWithToolsParams struct {
 }
 
 func (x *CreateMessageWithToolsParams) isParams()              {}
+func (x *CreateMessageWithToolsParams) isInputRequest()        {}
 func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -817,7 +817,8 @@ var createMessageWithToolsResultAllow = map[string]bool{
 	"tool_use": true,
 }
 
-func (*CreateMessageWithToolsResult) isResult() {}
+func (*CreateMessageWithToolsResult) isResult()        {}
+func (*CreateMessageWithToolsResult) isInputResponse() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
 // marshaled as a single object for compatibility with pre-2025-11-25
