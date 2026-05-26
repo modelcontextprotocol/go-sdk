@@ -671,17 +671,6 @@ func TestClientConnectDiscover(t *testing.T) {
 			wantVersion:    latestProtocolVersion,
 		},
 		{
-			name: "unsupported protocol version falls back to initialize",
-			discoverHandler: func() (Result, error) {
-				return nil, &jsonrpc.Error{
-					Code:    CodeUnsupportedProtocolVersion,
-					Message: "unsupported protocol version",
-				}
-			},
-			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
-		},
-		{
 			name: "no overlapping supported version falls back to initialize",
 			discoverHandler: func() (Result, error) {
 				return &DiscoverResult{

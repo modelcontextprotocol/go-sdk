@@ -222,7 +222,7 @@ func injectRequestMeta(req Request) {
 		return
 	}
 	params := req.GetParams()
-	if params == nil {
+	if params == nil || params.isNil() {
 		return
 	}
 	m := params.GetMeta()
