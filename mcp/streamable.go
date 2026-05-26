@@ -266,6 +266,18 @@ var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 // The option will be removed in the 1.9.0 version of the SDK.
 var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 
+// writeJSONRPCError writes a JSON-RPC error response with the given HTTP
+// status code, request ID (may be a zero ID for errors that occur before the
+// request body has been parsed), and JSON-RPC error.
+func writeJSONRPCError(w http.ResponseWriter, status int, id jsonrpc.ID, jerr *jsonrpc.Error) {
+	resp := &jsonrpc.Response{ID: id, Error: jerr}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+		w.Write(data)
+	}
+}
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -292,6 +304,18 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
 	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) {
+		if protocolVersion >= protocolVersion20260630 {
+			data, _ := json.Marshal(UnsupportedProtocolVersionData{
+				Supported: supportedProtocolVersions,
+				Requested: protocolVersion,
+			})
+			writeJSONRPCError(w, http.StatusBadRequest, jsonrpc.ID{}, &jsonrpc.Error{
+				Code:    CodeUnsupportedProtocolVersion,
+				Message: "unsupported protocol version",
+				Data:    data,
+			})
+			return
+		}
 		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
 		return
 	}
@@ -780,6 +804,16 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		return nil, err
 	}
 	return t.connection, nil
+}
+
+// The streamable HTTP transport supports every legacy SDK protocol version,
+// but the SEP-2575 >= 2026-06-30 protocol is only supported when the
+// transport is configured as stateless.
+func (t *StreamableServerTransport) SupportsProtocolVersion(version string) bool {
+	if version >= protocolVersion20260630 {
+		return t.Stateless && slices.Contains(supportedProtocolVersions, version)
+	}
+	return slices.Contains(supportedProtocolVersions, version)
 }
 
 type streamableServerConn struct {
@@ -1299,6 +1333,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
 			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
+				if headerVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) {
+					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
+						Code:    jsonrpc.CodeMethodNotFound,
+						Message: err.Error(),
+					})
+					return
+				}
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -1320,7 +1361,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
-				if !c.stateless {
+				// server/discover is exempt from the stateful
+				// rejection as it should learn about the supported protocols from the
+				// DiscoverResult response.
+				if !c.stateless && jreq.Method != methodDiscover {
 					http.Error(w, fmt.Sprintf(
 						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
 						protocolVersion),

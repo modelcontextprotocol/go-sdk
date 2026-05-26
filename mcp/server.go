@@ -747,17 +747,38 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
 //
-// Server-side discovery is not implemented yet; this stub returns
-// ErrMethodNotFound so that vPost-capable clients fall back to the legacy
-// initialize handshake when probing a pre-2026-06-30 server.
-//
-// The corresponding entry in [serverMethodInfos] is also required by the
-// client-side dispatch path: [ClientSession.sendingMethodInfos] returns
-// [serverMethodInfos], so removing this registration causes
-// handleSend[*DiscoverResult] to fail with ErrNotHandled before any HTTP
-// request goes out.
-func (s *Server) discover(context.Context, *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+// It returns the protocol versions supported by the underlying transport,
+// the server's capabilities, the server's identity, and the server's
+// instructions, allowing clients to negotiate without performing the legacy
+// initialize handshake.
+func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	versions := req.Session.supportedVersions
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	}
+	return &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		ServerInfo:        s.impl,
+		Instructions:      s.opts.Instructions,
+	}, nil
+}
+
+// filterSupportedVersions returns the subset of [supportedProtocolVersions]
+// that the Transport can serve. If t does not implement [ProtocolVersionSupporter], every
+// SDK-supported version is included.
+func filterSupportedVersions(t Transport) []string {
+	pvs, ok := t.(ProtocolVersionSupporter)
+	if !ok {
+		return slices.Clone(supportedProtocolVersions)
+	}
+	out := make([]string, 0, len(supportedProtocolVersions))
+	for _, v := range supportedProtocolVersions {
+		if pvs.SupportsProtocolVersion(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
@@ -1071,6 +1092,11 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		return nil, err
 	}
 
+	// Compute the protocol versions this session can serve, filtered by the
+	// transport's capabilities (if it implements [ProtocolVersionSupporter]).
+	// The list is consumed by the SEP-2575 server/discover handler.
+	ss.supportedVersions = filterSupportedVersions(t)
+
 	// Start keepalive before returning the session to avoid race conditions with Close.
 	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
 	if s.opts.KeepAlive > 0 {
@@ -1154,6 +1180,12 @@ type ServerSession struct {
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
 	keepaliveCancel context.CancelFunc
+
+	// supportedVersions is the subset of [supportedProtocolVersions] that the
+	// transport can actually serve, computed once at connection time from
+	// [ProtocolVersionSupporter] (if implemented by the transport) and used by
+	// the SEP-2575 server/discover handler.
+	supportedVersions []string
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1482,12 +1514,19 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
 				Code:    jsonrpc.CodeMethodNotFound,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
+		}
+	case methodDiscover:
+		if !validatedMeta.usesNewProtocol {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the legacy protocol", req.Method),
 			}
 		}
 	default:
