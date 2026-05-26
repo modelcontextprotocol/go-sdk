@@ -358,18 +358,22 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		return nil, false, err
 	}
 
-	// Pick the highest protocol version that both the server and this SDK
-	// support. If there is no overlap, fall back to initialize so version
-	// negotiation can happen via the legacy path.
-	negotiated := ""
-	for _, v := range res.SupportedVersions {
-		if slices.Contains(supportedProtocolVersions, v) && v > negotiated {
+	// Pick the highest protocol version that both the server and this SDK support.
+	// Since supportedProtocolVersions is defined in descending order (newest to oldest),
+	// the first match we find is the highest supported version.
+	var negotiated string
+	for _, v := range supportedProtocolVersions {
+		if slices.Contains(res.SupportedVersions, v) {
 			negotiated = v
+			break
 		}
 	}
 	if negotiated == "" {
+		// If there is no overlap, fall back to initialize so version
+		// negotiation can happen via the legacy path.
 		return nil, true, nil
 	}
+
 	return &InitializeResult{
 		Capabilities:    res.Capabilities,
 		Instructions:    res.Instructions,
