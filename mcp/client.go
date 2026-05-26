@@ -345,14 +345,17 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
 	if err != nil {
 		// According to SEP-2575, only the two signals below (MethodNotFound
-		// and UnsupportedProtocolVersionError) should trigger a fallback. However,
-		// to allow communication between vPost clients and vPre servers, we
-		// trigger fallback for any error.
+		// and UnsupportedProtocolVersionError) should trigger a fallback.
+		// However, to allow communication between vPost clients and vPre servers,
+		// we trigger fallback for "Bad Request" errors too.
 		var werr *jsonrpc.Error
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
 			return nil, true, nil
 		}
-		return nil, true, nil
+		if strings.Contains(err.Error(), "Bad Request") {
+			return nil, true, nil
+		}
+		return nil, false, err
 	}
 
 	// Pick the highest protocol version that both the server and this SDK

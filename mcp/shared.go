@@ -106,7 +106,7 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		params = initParams.toV2()
 	}
 	// Populate the SEP-2575 per-request _meta triple.
-	injectMeta(req)
+	injectRequestMeta(req)
 
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
@@ -208,11 +208,11 @@ func checkRequest(req *jsonrpc.Request, infos map[string]methodInfo) (methodInfo
 	return info, nil
 }
 
-// injectMeta populates the SEP-2575 per-request `_meta` triple
+// injectRequestMeta populates the SEP-2575 per-request `_meta` triple
 // (protocolVersion, clientInfo, clientCapabilities) on the outgoing request
 // when the negotiated protocol version is >= 2026-06-30. Keys already
 // present in params.Meta are not overwritten.
-func injectMeta(req Request) {
+func injectRequestMeta(req Request) {
 	cs, ok := req.GetSession().(*ClientSession)
 	if !ok {
 		return
