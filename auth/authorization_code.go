@@ -2,8 +2,6 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package auth
 
 import (
@@ -11,26 +9,17 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
-
-// ClientSecretAuthConfig is used to configure client authentication using client_secret.
-// Authentication method will be selected based on the authorization server's supported methods,
-// according to the following preference order:
-//  1. client_secret_post
-//  2. client_secret_basic
-type ClientSecretAuthConfig struct {
-	// ClientID is the client ID to be used for client authentication.
-	ClientID string
-	// ClientSecret is the client secret to be used for client authentication.
-	ClientSecret string
-}
 
 // ClientIDMetadataDocumentConfig is used to configure the Client ID Metadata Document
 // based client registration per
@@ -42,19 +31,15 @@ type ClientIDMetadataDocumentConfig struct {
 	URL string
 }
 
-// PreregisteredClientConfig is used to configure a pre-registered client per
-// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#preregistration.
-// Currently only "client_secret_basic" and "client_secret_post" authentication methods are supported.
-type PreregisteredClientConfig struct {
-	// ClientSecretAuthConfig is the client_secret based configuration to be used for client authentication.
-	ClientSecretAuthConfig *ClientSecretAuthConfig
-}
-
 // DynamicClientRegistrationConfig is used to configure dynamic client registration per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration.
 type DynamicClientRegistrationConfig struct {
 	// Metadata to be used in dynamic client registration request as per
 	// https://datatracker.ietf.org/doc/html/rfc7591#section-2.
+	//
+	// If Metadata.ApplicationType is empty, it will be inferred from
+	// Metadata.RedirectURIs. When set, it will be validated against the inferred type
+	// and an error will be returned if they conflict.
 	Metadata *oauthex.ClientRegistrationMetadata
 }
 
@@ -73,11 +58,17 @@ type AuthorizationResult struct {
 	Iss string
 }
 
-// AuthorizationArgs is the input to [AuthorizationCodeHandlerConfig].AuthorizationCodeFetcher.
+// AuthorizationArgs is the input to [AuthorizationCodeFetcher].
 type AuthorizationArgs struct {
 	// Authorization URL to be opened in a browser for the user to start the authorization process.
 	URL string
 }
+
+// AuthorizationCodeFetcher is called to initiate the OAuth authorization flow.
+// It is responsible for directing the user to the authorization URL (e.g., opening
+// in a browser) and returning the authorization code and state once the Authorization
+// Server redirects back to the configured RedirectURL.
+type AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
 
 // AuthorizationCodeHandlerConfig is the configuration for [AuthorizationCodeHandler].
 type AuthorizationCodeHandlerConfig struct {
@@ -88,7 +79,7 @@ type AuthorizationCodeHandlerConfig struct {
 	//  3. Dynamic Client Registration
 	// At least one method must be configured.
 	ClientIDMetadataDocumentConfig  *ClientIDMetadataDocumentConfig
-	PreregisteredClientConfig       *PreregisteredClientConfig
+	PreregisteredClient             *oauthex.ClientCredentials
 	DynamicClientRegistrationConfig *DynamicClientRegistrationConfig
 
 	// RedirectURL is a required URL to redirect to after authorization.
@@ -103,10 +94,25 @@ type AuthorizationCodeHandlerConfig struct {
 	RedirectURL string
 
 	// AuthorizationCodeFetcher is a required function called to initiate the authorization flow.
-	// It is responsible for opening the URL in a browser for the user to start the authorization process.
-	// It should return the authorization code and state once the Authorization Server
-	// redirects back to the RedirectURL.
-	AuthorizationCodeFetcher func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error)
+	// See [AuthorizationCodeFetcher] for details.
+	AuthorizationCodeFetcher AuthorizationCodeFetcher
+
+	// RequestRefreshToken indicates that the client intends to use refresh
+	// tokens and is capable of storing them securely.
+	//
+	// When true and the Authorization Server metadata contains "offline_access"
+	// in its scopes_supported, the client adds "offline_access" to the
+	// requested scopes.
+	//
+	// When using Dynamic Client Registration, callers should include
+	// "refresh_token" in [DynamicClientRegistrationConfig].Metadata.GrantTypes
+	// directly to advertise refresh token support to the Authorization Server.
+	//
+	// When using Client ID Metadata Document, the document hosted at the
+	// Client ID URL should include "refresh_token" in its grant_types.
+	//
+	// See https://modelcontextprotocol.io/seps/2207-oidc-refresh-token-guidance.
+	RequestRefreshToken bool
 
 	// Client is an optional HTTP client to use for HTTP requests.
 	// It is used for the following requests:
@@ -129,11 +135,12 @@ type AuthorizationCodeHandler struct {
 
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
+
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
+	grantedScopes map[string][]string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
-
-func (h *AuthorizationCodeHandler) isOAuthHandler() {}
 
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	return h.tokenSource, nil
@@ -147,7 +154,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		return nil, errors.New("config must be provided")
 	}
 	if config.ClientIDMetadataDocumentConfig == nil &&
-		config.PreregisteredClientConfig == nil &&
+		config.PreregisteredClient == nil &&
 		config.DynamicClientRegistrationConfig == nil {
 		return nil, errors.New("at least one client registration configuration must be provided")
 	}
@@ -157,19 +164,15 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
 		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
 	}
-	preCfg := config.PreregisteredClientConfig
-	if preCfg != nil {
-		if preCfg.ClientSecretAuthConfig == nil {
-			return nil, errors.New("ClientSecretAuthConfig is required for pre-registered client")
-		}
-		if preCfg.ClientSecretAuthConfig.ClientID == "" || preCfg.ClientSecretAuthConfig.ClientSecret == "" {
-			return nil, fmt.Errorf("pre-registered client ID or secret is empty")
+	if config.PreregisteredClient != nil {
+		if err := config.PreregisteredClient.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid PreregisteredClient configuration: %w", err)
 		}
 	}
 	dCfg := config.DynamicClientRegistrationConfig
 	if dCfg != nil {
 		if dCfg.Metadata == nil {
-			return nil, errors.New("Metadata is required for dynamic client registration")
+			return nil, errors.New("dynamic client registration requires non-nil Metadata")
 		}
 		if len(dCfg.Metadata.RedirectURIs) == 0 {
 			return nil, errors.New("Metadata.RedirectURIs is required for dynamic client registration")
@@ -178,6 +181,12 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			config.RedirectURL = dCfg.Metadata.RedirectURIs[0]
 		} else if !slices.Contains(dCfg.Metadata.RedirectURIs, config.RedirectURL) {
 			return nil, fmt.Errorf("RedirectURL %q is not in the list of allowed redirect URIs for dynamic client registration", config.RedirectURL)
+		}
+		applicationType := inferApplicationType(dCfg.Metadata.RedirectURIs)
+		if dCfg.Metadata.ApplicationType == "" {
+			dCfg.Metadata.ApplicationType = applicationType
+		} else if dCfg.Metadata.ApplicationType != applicationType {
+			return nil, fmt.Errorf("application type %q conflicts with the application type inferred from redirect URIs", dCfg.Metadata.ApplicationType)
 		}
 	}
 	if config.RedirectURL == "" {
@@ -188,7 +197,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.Client == nil {
 		config.Client = http.DefaultClient
 	}
-	return &AuthorizationCodeHandler{config: config}, nil
+	return &AuthorizationCodeHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 func isNonRootHTTPSURL(u string) bool {
@@ -199,11 +211,42 @@ func isNonRootHTTPSURL(u string) bool {
 	return pu.Scheme == "https" && pu.Path != ""
 }
 
+// inferApplicationType returns an application type based on the redirect URIs.
+func inferApplicationType(redirectURIs []string) string {
+	hasNative := false
+	hasWeb := false
+	for _, uri := range redirectURIs {
+		u, err := url.Parse(uri)
+		if err != nil {
+			return ""
+		}
+		switch u.Scheme {
+		case "http", "https":
+			if util.IsLoopback(u.Hostname()) {
+				hasNative = true
+			} else {
+				hasWeb = true
+			}
+		default:
+			hasNative = true
+		}
+	}
+
+	if hasNative && hasWeb {
+		return ""
+	}
+	if hasNative {
+		return "native"
+	}
+	return "web"
+}
+
 // Authorize performs the authorization flow.
 // It is designed to perform the whole Authorization Code Grant flow.
 // On success, [AuthorizationCodeHandler.TokenSource] will return a token source with the fetched token.
 func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	defer resp.Body.Close()
+	defer io.Copy(io.Discard, resp.Body)
 
 	wwwChallenges, err := oauthex.ParseWWWAuthenticate(resp.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
 	if err != nil {
@@ -224,9 +267,20 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	asm, err := h.getAuthServerMetadata(ctx, prm)
+	asm, err := GetAuthServerMetadata(ctx, prm.AuthorizationServers[0], h.config.Client)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get authorization server metadata: %w", err)
+	}
+	if asm == nil {
+		// Fallback to 2025-03-26 spec: predefined endpoints.
+		// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
+		authServerURL := prm.AuthorizationServers[0]
+		asm = &oauthex.AuthServerMeta{
+			Issuer:                authServerURL,
+			AuthorizationEndpoint: authServerURL + "/authorize",
+			TokenEndpoint:         authServerURL + "/token",
+			RegistrationEndpoint:  authServerURL + "/register",
+		}
 	}
 
 	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
@@ -234,10 +288,23 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	scps := scopesFromChallenges(wwwChallenges)
-	if len(scps) == 0 && len(prm.ScopesSupported) > 0 {
-		scps = prm.ScopesSupported
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
 	}
+
+	// SEP-2207: when the client desires refresh tokens and the Authorization
+	// Server advertises offline_access support, add it to the requested scopes.
+	if h.config.RequestRefreshToken &&
+		slices.Contains(asm.ScopesSupported, "offline_access") &&
+		!slices.Contains(requestedScopes, "offline_access") {
+		requestedScopes = append(requestedScopes, "offline_access")
+	}
+
+	// Accumulate scopes: union previously granted scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -249,7 +316,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
-		Scopes:      scps,
+		Scopes:      requestedScopes,
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
@@ -261,7 +328,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	if err != nil {
+		return err
+	}
+
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
@@ -301,17 +373,14 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 // If no metadata was found or the fetched metadata fails security checks,
 // it returns an error.
 func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, mcpServerURL string) (*oauthex.ProtectedResourceMetadata, error) {
-	var errs []error
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
 	for _, url := range protectedResourceMetadataURLs(resourceMetadataURLFromChallenges(wwwChallenges), mcpServerURL) {
 		prm, err := oauthex.GetProtectedResourceMetadata(ctx, url.URL, url.Resource, h.config.Client)
 		if err != nil {
-			errs = append(errs, err)
 			continue
 		}
 		if prm == nil {
-			errs = append(errs, fmt.Errorf("protected resource metadata is nil"))
 			continue
 		}
 		if len(prm.AuthorizationServers) == 0 {
@@ -371,70 +440,6 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 		URL:      mu.String(),
 		Resource: ru.String(),
 	})
-	return urls
-}
-
-// getAuthServerMetadata returns the authorization server metadata.
-// The provided Protected Resource Metadata must not be nil and must contain
-// at least one authorization server.
-// It returns an error if the metadata request fails with non-4xx HTTP status code
-// or the fetched metadata fails security checks.
-// If no metadata was found, it returns a minimal set of endpoints
-// as a fallback to 2025-03-26 spec.
-func (h *AuthorizationCodeHandler) getAuthServerMetadata(ctx context.Context, prm *oauthex.ProtectedResourceMetadata) (*oauthex.AuthServerMeta, error) {
-	authServerURL := prm.AuthorizationServers[0]
-	for _, u := range authorizationServerMetadataURLs(authServerURL) {
-		asm, err := oauthex.GetAuthServerMeta(ctx, u, authServerURL, h.config.Client)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get authorization server metadata: %w", err)
-		}
-		if asm != nil {
-			return asm, nil
-		}
-	}
-
-	// Fallback to 2025-03-26 spec: predefined endpoints.
-	// https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery
-	asm := &oauthex.AuthServerMeta{
-		Issuer:                authServerURL,
-		AuthorizationEndpoint: authServerURL + "/authorize",
-		TokenEndpoint:         authServerURL + "/token",
-		RegistrationEndpoint:  authServerURL + "/register",
-	}
-	return asm, nil
-}
-
-// authorizationServerMetadataURLs returns a list of URLs to try when looking for
-// authorization server metadata as mandated by the MCP specification:
-// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery.
-func authorizationServerMetadataURLs(issuerURL string) []string {
-	var urls []string
-
-	baseURL, err := url.Parse(issuerURL)
-	if err != nil {
-		return nil
-	}
-
-	if baseURL.Path == "" {
-		// "OAuth 2.0 Authorization Server Metadata".
-		baseURL.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, baseURL.String())
-		// "OpenID Connect Discovery 1.0".
-		baseURL.Path = "/.well-known/openid-configuration"
-		urls = append(urls, baseURL.String())
-		return urls
-	}
-
-	originalPath := baseURL.Path
-	// "OAuth 2.0 Authorization Server Metadata with path insertion".
-	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path insertion".
-	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
-	urls = append(urls, baseURL.String())
-	// "OpenID Connect Discovery 1.0 with path appending".
-	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
-	urls = append(urls, baseURL.String())
 	return urls
 }
 
@@ -500,13 +505,17 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 		}, nil
 	}
 	// 2. Attempt to use pre-registered client configuration.
-	pCfg := h.config.PreregisteredClientConfig
-	if pCfg != nil {
+	preCfg := h.config.PreregisteredClient
+	if preCfg != nil {
 		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported)
+		clientSecret := ""
+		if preCfg.ClientSecretAuth != nil {
+			clientSecret = preCfg.ClientSecretAuth.ClientSecret
+		}
 		return &resolvedClientConfig{
 			registrationType: registrationTypePreregistered,
-			clientID:         pCfg.ClientSecretAuthConfig.ClientID,
-			clientSecret:     pCfg.ClientSecretAuthConfig.ClientSecret,
+			clientID:         preCfg.ClientID,
+			clientSecret:     clientSecret,
 			authStyle:        authStyle,
 		}, nil
 	}
@@ -594,5 +603,22 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	return nil
+}
+
+// updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
+func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
+	tok, err := h.tokenSource.Token()
+	if err != nil {
+		return err
+	}
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
+	}
 	return nil
 }

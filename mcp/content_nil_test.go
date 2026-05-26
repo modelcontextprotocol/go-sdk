@@ -22,8 +22,8 @@ func TestContentUnmarshalNil(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string
-		content interface{}
-		want    interface{}
+		content any
+		want    any
 	}{
 		{
 			name:    "CallToolResult nil Content",
@@ -83,7 +83,7 @@ func TestContentUnmarshalNilWithDifferentTypes(t *testing.T) {
 	tests := []struct {
 		name        string
 		json        string
-		content     interface{}
+		content     any
 		expectError bool
 	}{
 		{
@@ -145,7 +145,7 @@ func TestContentUnmarshalNilWithEmptyContent(t *testing.T) {
 	tests := []struct {
 		name        string
 		json        string
-		content     interface{}
+		content     any
 		expectError bool
 	}{
 		{
@@ -186,7 +186,7 @@ func TestContentUnmarshalNilWithInvalidContent(t *testing.T) {
 	tests := []struct {
 		name        string
 		json        string
-		content     interface{}
+		content     any
 		expectError bool
 	}{
 		{

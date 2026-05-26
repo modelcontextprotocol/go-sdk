@@ -143,6 +143,9 @@ type ServerOptions struct {
 	//
 	// As a special case, if GetSessionID returns the empty string, the
 	// Mcp-Session-Id header will not be set.
+	//
+	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
+	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
 }
 
@@ -247,6 +250,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 		panic(fmt.Errorf("AddTool %q: missing input schema", t.Name))
 	}
 	if s, ok := t.InputSchema.(*jsonschema.Schema); ok {
+		if s == nil {
+			panic(fmt.Errorf("AddTool %q: input schema is nil", t.Name))
+		}
 		if s.Type != "object" {
 			panic(fmt.Errorf(`AddTool %q: input schema must have type "object"`, t.Name))
 		}
@@ -261,6 +267,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 	}
 	if t.OutputSchema != nil {
 		if s, ok := t.OutputSchema.(*jsonschema.Schema); ok {
+			if s == nil {
+				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
+			}
 			if s.Type != "object" {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
 			}
@@ -273,6 +282,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
 			}
 		}
+	}
+	if err := validateParamHeaderAnnotations(t); err != nil {
+		panic(fmt.Errorf("AddTool %q: invalid parameter header annotations: %v", t.Name, err))
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -321,15 +333,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		var err error
 		input, err = applySchema(input, inputResolved)
 		if err != nil {
-			// TODO(#450): should this be considered a tool error? (and similar below)
-			return nil, fmt.Errorf("%w: validating \"arguments\": %v", jsonrpc2.ErrInvalidParams, err)
+			var errRes CallToolResult
+			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
+			return &errRes, nil
 		}
 
 		// Unmarshal and validate args.
 		var in In
 		if input != nil {
 			if err := internaljson.Unmarshal(input, &in); err != nil {
-				return nil, fmt.Errorf("%w: %v", jsonrpc2.ErrInvalidParams, err)
+				var errRes CallToolResult
+				errRes.SetError(err)
+				return &errRes, nil
 			}
 		}
 
@@ -434,6 +449,9 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err != nil {
 			return zero, err
 		}
+		if internalSchema == nil {
+			return zero, fmt.Errorf("schema is nil for type %v", rt)
+		}
 		*sfield = internalSchema
 
 		resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -461,6 +479,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 		if err := remarshal(*sfield, &internalSchema); err != nil {
 			return zero, err
 		}
+	}
+
+	if internalSchema == nil {
+		return zero, fmt.Errorf("schema is nil for type %v", rt)
 	}
 
 	resolved, err := internalSchema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
@@ -737,10 +759,15 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+// getServerTool looks up a server tool by name.
+func (s *Server) getServerTool(name string) (*serverTool, bool) {
 	s.mu.Lock()
-	st, ok := s.tools.get(req.Params.Name)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.tools.get(name)
+}
+
+func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+	st, ok := s.getServerTool(req.Params.Name)
 	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
@@ -1023,11 +1050,18 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 	}
 
 	s.opts.Logger.Info("server connecting")
-	ss, err := connect(ctx, t, s, state, onClose)
+	ss, err := connect(ctx, t, s, state, onClose, s.opts.Logger)
 	if err != nil {
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
 	}
+
+	// Start keepalive before returning the session to avoid race conditions with Close.
+	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
+	if s.opts.KeepAlive > 0 {
+		ss.startKeepalive(ss.server.opts.KeepAlive)
+	}
+
 	return ss, nil
 }
 
@@ -1054,9 +1088,6 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if wasInitd {
 		ss.server.opts.Logger.Error("duplicate initialized notification")
 		return nil, fmt.Errorf("duplicate %q received", notificationInitialized)
-	}
-	if ss.server.opts.KeepAlive > 0 {
-		ss.startKeepalive(ss.server.opts.KeepAlive)
 	}
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
@@ -1107,7 +1138,7 @@ type ServerSession struct {
 	server          *Server
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
-	keepaliveCancel context.CancelFunc // TODO: theory around why keepaliveCancel need not be guarded
+	keepaliveCancel context.CancelFunc
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1293,7 +1324,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	}
 	err = resolved.ApplyDefaults(&res.Content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply schema defalts to elicitation result: %v", err)
+		return nil, fmt.Errorf("failed to apply schema defaults to elicitation result: %v", err)
 	}
 
 	return res, nil
@@ -1419,13 +1450,32 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	initialized := ss.state.InitializeParams != nil
 	ss.mu.Unlock()
 
-	// From the spec:
-	// "The client SHOULD NOT send requests other than pings before the server
-	// has responded to the initialize request."
+	// Per-request protocol detection (SEP-2575): if the request carries
+	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
+	// follows the new sessionless protocol. The initialization gate is
+	// skipped for such requests.
+	validatedMeta, perRequestErr := validateRequestMeta(req)
+	if perRequestErr != nil {
+		return nil, perRequestErr
+	}
+
+	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+		ss.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = validatedMeta.initializeParams
+		})
+	}
+
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
+		if validatedMeta.usesNewProtocol {
+			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
+		}
 	default:
-		if !initialized {
+		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
@@ -1457,9 +1507,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	var wasInit bool
 	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
+		wasInit = state.InitializeParams != nil
+		if !wasInit {
+			state.InitializeParams = params
+		}
 	})
+	if wasInit {
+		ss.server.opts.Logger.Error("duplicate initialize request")
+		return nil, fmt.Errorf("duplicate %q received", methodInitialize)
+	}
 
 	s := ss.server
 	return &InitializeResult{
@@ -1501,7 +1559,8 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 func (ss *ServerSession) Close() error {
 	if ss.keepaliveCancel != nil {
 		// Note: keepaliveCancel access is safe without a mutex because:
-		// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+		// 1. keepaliveCancel is only written once during Server.Connect (through startKeepalive),
+		//    which happens before any code that may call Close from another goroutine
 		// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
 		// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly
@@ -1523,7 +1582,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel)
+	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

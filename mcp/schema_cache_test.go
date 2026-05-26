@@ -194,7 +194,7 @@ func TestAddToolWithSharedCache(t *testing.T) {
 	}
 
 	// Simulate stateless server pattern: new server per request, shared cache.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		s := NewServer(&Implementation{Name: "test", Version: "1.0"}, &ServerOptions{
 			SchemaCache: cache,
 		})

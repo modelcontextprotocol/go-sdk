@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (
@@ -67,6 +65,30 @@ func TestRegisterClient(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{"client_id":"test-client-id","client_secret":"test-client-secret","client_name":"Test App"}`))
+			},
+			clientMeta:   &ClientRegistrationMetadata{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},
+			wantClientID: "test-client-id",
+		},
+		{
+			name: "Success with 200",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" {
+					t.Errorf("Expected POST, got %s", r.Method)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var receivedMeta ClientRegistrationMetadata
+				if err := json.Unmarshal(body, &receivedMeta); err != nil {
+					t.Fatalf("Failed to unmarshal request body: %v", err)
+				}
+				if receivedMeta.ClientName != "Test App" {
+					t.Errorf("Expected ClientName 'Test App', got '%s'", receivedMeta.ClientName)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(`{"client_id":"test-client-id","client_secret":"test-client-secret","client_name":"Test App"}`))
 			},
 			clientMeta:   &ClientRegistrationMetadata{ClientName: "Test App", RedirectURIs: []string{"http://localhost/cb"}},

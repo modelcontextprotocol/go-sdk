@@ -61,7 +61,7 @@ type DeleteEntitiesArgs struct {
 
 // DeleteObservationsArgs defines the delete observations tool parameters.
 type DeleteObservationsArgs struct {
-	Deletions []Observation `json:"deletions" mcp:"obeservations to delete"`
+	Deletions []Observation `json:"deletions" mcp:"observations to delete"`
 }
 
 // DeleteRelationsArgs defines the delete relations tool parameters.

@@ -323,7 +323,7 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 	// Before closing the stream, wait for all messages to be processed.
 	synctest.Wait()
 	if err != nil {
-		t.Fatalf("reading server messages failedd: %v", err)
+		t.Fatalf("reading server messages failed: %v", err)
 	}
 	if extra != nil {
 		t.Fatalf("got extra response: %v", extra)

@@ -2,8 +2,6 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthtest
 
 import (
@@ -52,6 +50,23 @@ type RegistrationConfig struct {
 	DynamicClientRegistrationEnabled bool
 }
 
+// JWTBearerConfig configures support for the JWT Bearer grant type (RFC 7523)
+// on a [FakeAuthorizationServer].
+type JWTBearerConfig struct {
+	// ValidAssertions is the set of assertion values that are accepted.
+	// If empty, any non-empty assertion is accepted.
+	ValidAssertions []string
+}
+
+// ClientCredentialsConfig configures support for the client_credentials
+// grant type (RFC 6749 Section 4.4) on a [FakeAuthorizationServer].
+type ClientCredentialsConfig struct {
+	// Enabled controls whether the /token endpoint accepts
+	// grant_type=client_credentials and returns an access token
+	// if client authentication succeeds.
+	Enabled bool
+}
+
 // Config holds configuration for FakeAuthorizationServer.
 type Config struct {
 	// The optional path component of the issuer URL.
@@ -62,6 +77,18 @@ type Config struct {
 	MetadataEndpointConfig *MetadataEndpointConfig
 	// Configuration for client registration.
 	RegistrationConfig *RegistrationConfig
+	// JWTBearerConfig enables RFC 7523 JWT Bearer grant at the /token endpoint.
+	// If non-nil, the server accepts grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer.
+	JWTBearerConfig *JWTBearerConfig
+	// ClientCredentialsConfig enables RFC 6749 Section 4.4 client credentials
+	// grant at the /token endpoint.
+	ClientCredentialsConfig *ClientCredentialsConfig
+	// ScopesSupported is an optional list of scopes to advertise in the
+	// authorization server metadata.
+	ScopesSupported []string
+	// TokenScopeFunc, if set, is called with the scope from the authorization
+	// request and returns the scope string to include in the token response.
+	TokenScopeFunc func(requestedScope string) string
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -75,6 +102,7 @@ type FakeAuthorizationServer struct {
 
 type codeInfo struct {
 	CodeChallenge string
+	Scope         string
 }
 
 // NewFakeAuthorizationServer creates a new FakeAuthorizationServer.
@@ -146,6 +174,7 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		AuthorizationEndpoint:             s.URL() + s.config.IssuerPath + "/authorize",
 		TokenEndpoint:                     s.URL() + s.config.IssuerPath + "/token",
 		RegistrationEndpoint:              registrationEndpoint,
+		ScopesSupported:                   s.config.ScopesSupported,
 		ResponseTypesSupported:            []string{"code"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
@@ -237,6 +266,7 @@ func (s *FakeAuthorizationServer) handleAuthorize(w http.ResponseWriter, r *http
 	code := rand.Text()
 	s.codes[code] = codeInfo{
 		CodeChallenge: codeChallenge,
+		Scope:         r.URL.Query().Get("scope"),
 	}
 
 	state := r.URL.Query().Get("state")
@@ -259,10 +289,21 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if r.Form.Get("grant_type") != "authorization_code" {
-		http.Error(w, "invalid grant_type", http.StatusBadRequest)
-		return
+
+	grantType := r.Form.Get("grant_type")
+	switch grantType {
+	case "authorization_code":
+		s.handleAuthorizationCodeGrant(w, r)
+	case "urn:ietf:params:oauth:grant-type:jwt-bearer":
+		s.handleJWTBearerGrant(w, r)
+	case "client_credentials":
+		s.handleClientCredentialsGrant(w, r)
+	default:
+		http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
 	}
+}
+
+func (s *FakeAuthorizationServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
 	code := r.Form.Get("code")
 	if code == "" {
 		http.Error(w, "missing code", http.StatusBadRequest)
@@ -285,12 +326,62 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	resp := map[string]any{
+		"access_token": "test_access_token",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(codeInfo.Scope); scope != "" {
+			resp["scope"] = scope
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *FakeAuthorizationServer) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request) {
+	if s.config.JWTBearerConfig == nil {
+		http.Error(w, "JWT bearer grant not supported", http.StatusBadRequest)
+		return
+	}
+	assertion := r.Form.Get("assertion")
+	if assertion == "" {
+		http.Error(w, "missing assertion", http.StatusBadRequest)
+		return
+	}
+	if len(s.config.JWTBearerConfig.ValidAssertions) > 0 {
+		if !slices.Contains(s.config.JWTBearerConfig.ValidAssertions, assertion) {
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
 		"expires_in":   3600,
 	})
+}
+
+func (s *FakeAuthorizationServer) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Request) {
+	if s.config.ClientCredentialsConfig == nil || !s.config.ClientCredentialsConfig.Enabled {
+		http.Error(w, "client_credentials grant not supported", http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{
+		"access_token": "test_access_token",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(r.Form.Get("scope")); scope != "" {
+			resp["scope"] = scope
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *FakeAuthorizationServer) authenticateClient(r *http.Request) error {

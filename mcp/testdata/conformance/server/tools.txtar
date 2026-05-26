@@ -222,9 +222,14 @@ inc
 {
 	"jsonrpc": "2.0",
 	"id": 8,
-	"error": {
-		"code": -32602,
-		"message": "invalid params: validating \"arguments\": validating root: required: missing properties: [\"In\"]"
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "validating \"arguments\": validating root: required: missing properties: [\"In\"]"
+			}
+		],
+		"isError": true
 	}
 }
 {
@@ -245,9 +250,14 @@ inc
 {
 	"jsonrpc": "2.0",
 	"id": 10,
-	"error": {
-		"code": -32602,
-		"message": "invalid params: validating \"arguments\": validating root: required: missing properties: [\"Name\"]"
+	"result": {
+		"content": [
+			{
+				"type": "text",
+				"text": "validating \"arguments\": validating root: required: missing properties: [\"Name\"]"
+			}
+		],
+		"isError": true
 	}
 }
 {

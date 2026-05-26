@@ -1,4 +1,4 @@
- # Backwards compatibility and MCPGODEBUG
+# Backwards compatibility and MCPGODEBUG
 
  According to our compatibility promise, we can't break backward compatibility
  of the SDK API. However, sometimes we need to change the behavior of the SDK
@@ -16,6 +16,53 @@
  ```
 
 ## `MCPGODEBUG` history
+
+### 1.7.0
+
+Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+
+- `customresnotfounderrcode` added. If set to `1`, `ResourceNotFoundError` will
+  use the custom error code `-32002` instead of the standard `-32602` (Invalid
+  Params), restoring the previous behavior. The default behavior was changed to
+  align with SEP-2164 and the JSON-RPC specification.
+
+- `hintomitempty` added. If set to `1`, `ToolAnnotations` JSON marshaling
+  will omit `ReadOnlyHint` and `IdempotentHint` when their value is `false`,
+  restoring the previous behavior. The default behavior was changed to always
+  serialize these fields, since their Go types are bare `bool` (not `*bool`)
+  and omitting `false` made it indistinguishable from unset.
+  
+- `allowsessionsinstateless` added. If set to `1`, stateless streamable HTTP
+  servers will read the `Mcp-Session-Id` request header (or generate one via
+  `GetSessionID`), set it on response headers, and accept `DELETE` requests,
+  restoring the previous behavior. The default behavior was changed so that
+  stateless servers ignore session IDs entirely and reject `DELETE` with 405.
+
+### 1.6.0
+
+Options listed below were added and will be removed in the 1.8.0 version of the SDK.
+
+- `seterroroverwrite` added. If set to `1`, `SetError` will always overwrite
+  `Content` with the error text, restoring the previous behavior. The default
+  behavior was changed to preserve existing `Content` if it has already been
+  populated.
+
+- `enableoriginverification` added. If set to `1`, default (zero-value)
+  cross-origin protection will be applied when
+  `StreamableHTTPOptions.CrossOriginProtection` is nil, restoring the
+  behavior from v1.4.1-v1.5.0. The default behavior was changed to not
+  enable cross-origin protection.
+
+- `disablelocalhostprotection` removal was postponed until 1.8.0, as it is now
+  also used in the SSE transport.
+
+Options below were removed:
+
+- `jsonescaping`, according to plan,
+
+- `disablecrossoriginprotection`, it was replaced by
+  `enableoriginverification` after the default was changed to not enable
+  cross-origin protection.
 
 ### 1.4.1
 
@@ -36,5 +83,6 @@ Options listed below will be removed in the 1.6.0 version of the SDK.
 - `disablelocalhostprotection` added. If set to `1`, newly added DNS rebinding
   protection will be disabled. The default behavior was changed to enable DNS rebinding
   protection. The protection can also be disabled by setting the
-  `DisableLocalhostProtection` field in the `StreamableHTTPOptions` struct to
-  `true`, which is the recommended way to disable the protection long term.
+  `DisableLocalhostProtection` field in the `StreamableHTTPOptions` or
+  `SSEOptions` struct to `true`, which is the recommended way to disable
+  the protection long term. **Removal of this option was postponed until 1.8.0.**

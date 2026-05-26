@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (
@@ -240,7 +238,7 @@ func TestGetAuthServerMetaRejectsDangerousURLs(t *testing.T) {
 }
 
 // TestGetProtectedResourceMetadataRejectsDangerousURLs tests that
-// GetProtectedResourceMetadataFromID rejects metadata with dangerous authorization server URLs.
+// GetProtectedResourceMetadata rejects metadata with dangerous authorization server URLs.
 func TestGetProtectedResourceMetadataRejectsDangerousURLs(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serverURL := "https://" + r.Host
@@ -254,12 +252,13 @@ func TestGetProtectedResourceMetadataRejectsDangerousURLs(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	_, err := GetProtectedResourceMetadataFromID(ctx, server.URL, server.Client())
+	metadataURL := server.URL + "/.well-known/oauth-protected-resource"
+	_, err := GetProtectedResourceMetadata(ctx, metadataURL, server.URL, server.Client())
 	if err == nil {
-		t.Fatal("GetProtectedResourceMetadataFromID(): got nil error, want error")
+		t.Fatal("GetProtectedResourceMetadata(): got nil error, want error")
 	}
 	if !strings.Contains(err.Error(), "disallowed scheme") {
-		t.Errorf("GetProtectedResourceMetadataFromID(): got error %v, want error containing \"disallowed scheme\"", err)
+		t.Errorf("GetProtectedResourceMetadata(): got error %v, want error containing \"disallowed scheme\"", err)
 	}
 }
 

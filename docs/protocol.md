@@ -13,7 +13,7 @@
 1. [Security](#security)
 	1. [Confused Deputy](#confused-deputy)
 	1. [Token Passthrough](#token-passthrough)
-	1. [Server-Side Request Forgery (SSRF)](#server-side-request-forgery-(ssrf))
+	1. [Server-Side Request Forgery](#server-side-request-forgery)
 	1. [Session Hijacking](#session-hijacking)
 	1. [Issuer Mix-Up](#issuer-mix-up)
 1. [Utilities](#utilities)
@@ -219,8 +219,8 @@ to see the logical session
 > modelcontextprotocol/modelcontextprotocol#1372, or
 > modelcontextprotocol/modelcontextprotocol#1442 for potential refinements.
 
-_See [examples/server/distributed](../examples/server/distributed/main.go) for
-an example using statless mode to implement a server distributed across
+_See [examples/server/distributed](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/distributed/main.go) for
+an example using stateless mode to implement a server distributed across
 multiple processes._
 
 ### Custom transports
@@ -231,7 +231,7 @@ by implementing the
 [`Transport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Transport)
 interface: a logical bidirectional stream of JSON-RPC messages.
 
-_Full example: [examples/server/custom-transport](../examples/server/custom-transport/main.go)._
+_Full example: [examples/server/custom-transport](https://github.com/modelcontextprotocol/go-sdk/blob/main//examples/server/custom-transport/main.go)._
 
 ### Concurrency
 
@@ -265,7 +265,7 @@ and invokes the
  passed to `RequireBearerToken` to parse the token and perform validation.
 The middleware function checks expiration and scopes (if they are provided in
 [`RequireBearerTokenOptions.Scopes`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.Scopes)), so the
-`TokenVerifer` doesn't have to.
+`TokenVerifier` doesn't have to.
 If [`RequireBearerTokenOptions.ResourceMetadataURL`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerTokenOptions.ResourceMetadataURL) is set and verification fails, 
 the middleware function sets the WWW-Authenticate header as required by the [Protected Resource
 Metadata spec](https://datatracker.ietf.org/doc/html/rfc9728).
@@ -307,11 +307,6 @@ For more sophisticated CORS policies, wrap the handler with a CORS middleware li
 The  [_auth middleware example_](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/server/auth-middleware) shows how to implement authorization for both JWT tokens and API keys.
 
 ### Client
-
-> [!IMPORTANT]
-> Client-side OAuth support is currently experimental and requires the `mcp_go_client_oauth` build tag to compile.
-> API changes may still be made, based on developer feedback. The build tag will be removed in `v1.5.0`, which
-> is planned to be released by the end of March 2026.
 
 Client-side authorization is supported via the
 [`StreamableClientTransport.OAuthHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#StreamableClientTransport.OAuthHandler)
@@ -357,8 +352,77 @@ client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, 
 session, err := client.Connect(ctx, transport, nil)
 ```
 
-The `auth.AuthorizationCodeHandler` automatically manages token refreshing
-and step-up authentication (when the server returns `insufficient_scope` error).
+The `auth.AuthorizationCodeHandler` automatically manages token refreshing (if the server provides a refresh token) and step-up authentication (when the server returns `insufficient_scope` error).
+
+#### Enterprise Managed Authorization (SEP-990)
+
+For enterprise SSO scenarios where users authenticate with an enterprise Identity Provider (IdP),
+the SDK provides
+[`extauth.EnterpriseHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth/extauth#EnterpriseHandler),
+an implementation of `OAuthHandler` that automates the Enterprise Managed Authorization flow:
+
+1. **OIDC Login**: User authenticates with enterprise IdP → ID Token
+2. **Token Exchange** (RFC 8693): ID Token → ID-JAG at IdP
+3. **JWT Bearer Grant** (RFC 7523): ID-JAG → Access Token at MCP Server
+
+To use enterprise managed authorization, create an `EnterpriseHandler` and assign it to your transport:
+
+```go
+// Create ID token fetcher using OIDC login
+idTokenFetcher := func(ctx context.Context) (*oauth2.Token, error) {
+    oidcConfig := &extauth.OIDCLoginConfig{
+        IssuerURL: "https://company.okta.com",
+        Credentials: &oauthex.ClientCredentials{
+            ClientID: "idp-client-id",
+            ClientSecretAuth: &oauthex.ClientSecretAuth{
+                ClientSecret: "idp-client-secret",
+            },
+        },
+        RedirectURL: "http://localhost:3142",
+        Scopes:      []string{"openid", "profile", "email"},
+    }
+
+    tokens, err := extauth.PerformOIDCLogin(ctx, oidcConfig, authCodeFetcher)
+    if err != nil {
+        return nil, err
+    }
+
+    return tokens, nil
+}
+
+// Create Enterprise Handler
+enterpriseHandler, err := extauth.NewEnterpriseHandler(&extauth.EnterpriseHandlerConfig{
+    IdPIssuerURL: "https://company.okta.com",
+    IdPCredentials: &oauthex.ClientCredentials{
+        ClientID: "idp-client-id",
+        ClientSecretAuth: &oauthex.ClientSecretAuth{
+            ClientSecret: "idp-client-secret",
+        },
+    },
+    MCPAuthServerURL: "https://auth.mcpserver.example",
+    MCPResourceURI:   "https://mcp.mcpserver.example",
+    MCPCredentials: &oauthex.ClientCredentials{
+        ClientID: "mcp-client-id",
+        ClientSecretAuth: &oauthex.ClientSecretAuth{
+            ClientSecret: "mcp-client-secret",
+        },
+    },
+    MCPScopes:      []string{"read", "write"},
+    IDTokenFetcher: idTokenFetcher,
+})
+
+// Use with transport
+transport := &mcp.StreamableClientTransport{
+    Endpoint:     "https://example.com/mcp",
+    OAuthHandler: enterpriseHandler,
+}
+client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+session, err := client.Connect(ctx, transport, nil)
+```
+
+The `EnterpriseHandler` automatically manages the token exchange flow. Note that it intentionally does not support refresh tokens - when an access token expires, the entire authorization flow is repeated to ensure enterprise policies are consistently enforced.
+
+For a complete working example, see [examples/auth/enterprise](https://github.com/modelcontextprotocol/go-sdk/tree/main/examples/auth/enterprise).
 
 ## Security
 
@@ -382,7 +446,7 @@ of tokens and is the responsibility of the
 provided to 
 [`RequireBearerToken`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth#RequireBearerToken).
 
-### Server-Side Request Forgery (SSRF)
+### Server-Side Request Forgery
 
 The [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-3) are as follows:
 
@@ -593,3 +657,4 @@ func Example_progress() {
 	// frobbing widgets 2/2
 }
 ```
+

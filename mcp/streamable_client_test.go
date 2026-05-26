@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +18,10 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"golang.org/x/oauth2"
 )
 
 type streamableRequestKey struct {
@@ -68,7 +71,7 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	key := streamableRequestKey{
 		httpMethod:  req.Method,
 		sessionID:   req.Header.Get(sessionIDHeader),
-		lastEventID: req.Header.Get("Last-Event-ID"), // TODO: extract this to a constant, like sessionIDHeader
+		lastEventID: req.Header.Get(lastEventIDHeader),
 	}
 	var jsonrpcReq *jsonrpc.Request
 	if req.Method == http.MethodPost {
@@ -117,14 +120,15 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	for k, v := range resp.header {
 		w.Header().Set(k, v)
 	}
+	rc := http.NewResponseController(w)
 	w.WriteHeader(status)
-	w.(http.Flusher).Flush() // flush response headers
+	rc.Flush() // flush response headers
 
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
 	w.Write([]byte(body))
-	w.(http.Flusher).Flush() // flush response
+	rc.Flush() // flush response
 
 	if resp.done != nil {
 		<-resp.done
@@ -261,6 +265,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 		contentType         string
 	}{
 		{http.StatusOK, "", "text/event-stream"},
+		{http.StatusOK, "", "text/event-stream; charset=utf-8"},
 		{http.StatusMethodNotAllowed, "", "text/event-stream"},
 		//// The client error status code is not treated as an error in non-strict
 		//// mode.
@@ -271,7 +276,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(fmt.Sprintf("status=%d", test.status), func(t *testing.T) {
+		t.Run(fmt.Sprintf("status=%d content_type=%q", test.status, test.contentType), func(t *testing.T) {
 			fake := &fakeStreamableServer{
 				t: t,
 				responses: fakeResponses{
@@ -906,5 +911,304 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type mockOAuthHandler struct {
+	token           *oauth2.Token
+	authorizeErr    error
+	authorizeCalled bool
+}
+
+func (h *mockOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	if h.token == nil {
+		return nil, nil
+	}
+	return oauth2.StaticTokenSource(h.token), nil
+}
+
+func (h *mockOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	h.authorizeCalled = true
+	return h.authorizeErr
+}
+
+func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
+	ctx := context.Background()
+	token := &oauth2.Token{AccessToken: "test-token"}
+	oauthHandler := &mockOAuthHandler{token: token}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+			{"GET", "123", "", ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+			},
+			{"DELETE", "123", "", ""}: {},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test-token" {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	session.Close()
+}
+
+func TestStreamableClientOAuth_401(t *testing.T) {
+	ctx := context.Background()
+	oauthHandler := &mockOAuthHandler{token: nil}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		// Accept any token.
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+	_, err := client.Connect(ctx, transport, nil)
+	if err == nil || !strings.Contains(err.Error(), "Unauthorized") {
+		t.Fatalf("client.Connect() error does not contain 'Unauthorized': %v", err)
+	}
+
+	if !oauthHandler.authorizeCalled {
+		t.Errorf("expected Authorize to be called")
+	}
+}
+
+// blockingCountingOAuthHandler is an OAuthHandler that blocks inside
+// Authorize until the caller's context is cancelled, then returns a custom
+// error that does NOT wrap context.Canceled. This mirrors real-world OAuth
+// handlers that catch the cancellation internally and surface their own
+// error type. The fix for #882 checks ctx.Err() directly rather than
+// relying on the error from Authorize, so this must still trigger c.fail().
+// It records how many times Authorize is invoked.
+type blockingCountingOAuthHandler struct {
+	mu        sync.Mutex
+	callCount int
+}
+
+func (h *blockingCountingOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return nil, nil
+}
+
+func (h *blockingCountingOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	h.mu.Lock()
+	h.callCount++
+	h.mu.Unlock()
+	// Block until the caller's context is cancelled, mirroring an
+	// interactive OAuth flow that the user has abandoned.
+	<-ctx.Done()
+	// Return a custom error that does not wrap context.Canceled, as a
+	// real-world handler might. The code under test must check ctx.Err()
+	// to detect the cancellation, not this error.
+	return fmt.Errorf("oauth flow interrupted")
+}
+
+func (h *blockingCountingOAuthHandler) Calls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.callCount
+}
+
+// TestStreamableClientOAuth_CancelledAuthorize_NoReprompt is a regression
+// test for #882. When OAuthHandler.Authorize returns a context-cancelled
+// error, the connection must enter a failed state so that the cancellation
+// notification the call layer sends in response to ctx cancellation does
+// not flow back through the same broken auth path and re-invoke Authorize.
+func TestStreamableClientOAuth_CancelledAuthorize_NoReprompt(t *testing.T) {
+	handler := &blockingCountingOAuthHandler{}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+		},
+	}
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(fake))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: handler,
+	}
+	client := NewClient(testImpl, nil)
+
+	// Use a context with a tight deadline so the cancellation path runs
+	// while the auth flow is in progress.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Connect(ctx, transport, nil)
+	if err == nil {
+		t.Fatal("expected client.Connect to fail")
+	}
+
+	// Give the cancellation Notify path a moment to (try to) run.
+	time.Sleep(50 * time.Millisecond)
+
+	// Authorize should be invoked exactly once. The bug in #882 caused
+	// it to be invoked a second time when the call layer sent the
+	// cancellation notification through the same auth-broken connection.
+	if got := handler.Calls(); got != 1 {
+		t.Errorf("expected Authorize to be called exactly 1 time, got %d", got)
+	}
+}
+
+func TestTokenInfo(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a server with a tool that returns TokenInfo.
+	tokenInfo := func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("%v", req.Extra.TokenInfo)}}}, nil, nil
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "tokenInfo", Description: "return token info"}, tokenInfo)
+
+	streamHandler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test-token" {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{
+			Scopes: []string{"scope"},
+			// Expiration is far, far in the future.
+			Expiration: time.Date(5000, 1, 2, 3, 4, 5, 0, time.UTC),
+		}, nil
+	}
+	handler := auth.RequireBearerToken(verifier, nil)(streamHandler)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: &mockOAuthHandler{token: &oauth2.Token{AccessToken: "test-token"}},
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &CallToolParams{Name: "tokenInfo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("missing content")
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok {
+		t.Fatal("not TextContent")
+	}
+	if g, w := tc.Text, "&{[scope] 5000-01-02 03:04:05 +0000 UTC  map[]}"; g != w {
+		t.Errorf("got %q, want %q", g, w)
+	}
+}
+
+// errTestAuthorizeFailed is a sentinel error returned by
+// retrieveErrorOAuthHandler.Authorize().
+var errTestAuthorizeFailed = errors.New("authorize intentionally failed for test")
+
+// retrieveErrorOAuthHandler is a mock OAuthHandler that always returns
+// an oauth2.RetrieveError from its TokenSource's Token() method.
+type retrieveErrorOAuthHandler struct{}
+
+func (h *retrieveErrorOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return h, nil
+}
+
+func (h *retrieveErrorOAuthHandler) Token() (*oauth2.Token, error) {
+	return nil, &oauth2.RetrieveError{
+		Response:  &http.Response{StatusCode: http.StatusBadRequest},
+		Body:      []byte("test retrieve error"),
+		ErrorCode: "invalid_grant",
+	}
+}
+
+func (h *retrieveErrorOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	return errTestAuthorizeFailed
+}
+
+// TestStreamableClientOAuth_RetrieveError verifies that an invalid_grant RetrieveError
+// from the OAuth token source correctly skips sending Authorization header and relies on
+// the server's 401 response to trigger the Authorize fallback flow.
+func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
+	ctx := context.Background()
+	oauthHandler := &retrieveErrorOAuthHandler{}
+
+	// Mock MCP server returns 401 Unauthorized to simulate a server rejecting
+	// the request that omitted the Authorization header.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+
+	// Attempt to connect. The Connect call will trigger the initialization request,
+	// which will fail to retrieve the token and proceed without auth header, receive 401,
+	// and invoke Authorize().
+	_, err := client.Connect(ctx, transport, nil)
+
+	// Expect the connection to fail with the sentinel error, not the RetrieveError.
+	if !errors.Is(err, errTestAuthorizeFailed) {
+		t.Fatalf("client.Connect() error = %v, want %v", err, errTestAuthorizeFailed)
 	}
 }

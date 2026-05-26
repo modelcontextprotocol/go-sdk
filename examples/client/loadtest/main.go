@@ -69,9 +69,7 @@ func main() {
 	// Run the test.
 	var wg sync.WaitGroup
 	for range *workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 			cs, err := client.Connect(parentCtx, &mcp.StreamableClientTransport{Endpoint: args[0]}, nil)
 			if err != nil {
@@ -108,7 +106,7 @@ func main() {
 					}
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	stop() // restore the interrupt signal

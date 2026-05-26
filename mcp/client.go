@@ -160,6 +160,12 @@ type ClientOptions struct {
 	KeepAlive time.Duration
 }
 
+// toolContextKeyType is the context key type for passing tool definitions
+// from CallTool to the transport layer.
+type toolContextKeyType struct{}
+
+var toolContextKey = toolContextKeyType{}
+
 // bind implements the binder[*ClientSession] interface, so that Clients can
 // be connected using [connect].
 func (c *Client) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *clientSessionState, onClose func()) *ClientSession {
@@ -253,7 +259,7 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 // server, calls or notifications will return an error wrapping
 // [ErrConnectionClosed].
 func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOptions) (cs *ClientSession, err error) {
-	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil)
+	cs, err = connect(ctx, t, c, (*clientSessionState)(nil), nil, c.opts.Logger)
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +324,13 @@ type ClientSession struct {
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
+
+	// toolCacheMu guards toolCache.
+	toolCacheMu sync.RWMutex
+	// toolCache stores tool definitions keyed by name.
+	// It is used to look up x-mcp-header annotations when
+	// constructing Mcp-Param-* headers for tools/call requests.
+	toolCache map[string]*Tool
 }
 
 type clientSessionState struct {
@@ -340,7 +353,8 @@ func (cs *ClientSession) ID() string {
 // Close is idempotent and concurrency safe.
 func (cs *ClientSession) Close() error {
 	// Note: keepaliveCancel access is safe without a mutex because:
-	// 1. keepaliveCancel is only written once during startKeepalive (happens-before all Close calls)
+	// 1. keepaliveCancel is only written once during Client.Connect (through startKeepalive),
+	//    which happens before any code that may call Close from another goroutine
 	// 2. context.CancelFunc is safe to call multiple times and from multiple goroutines
 	// 3. The keepalive goroutine calls Close on ping failure, but this is safe since
 	//    Close is idempotent and conn.Close() handles concurrent calls correctly
@@ -360,6 +374,21 @@ func (cs *ClientSession) Close() error {
 // Generally, clients should be responsible for closing the connection.
 func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
+}
+
+func (cs *ClientSession) cacheTools(tools []*Tool) {
+	cs.toolCacheMu.Lock()
+	defer cs.toolCacheMu.Unlock()
+	cs.toolCache = make(map[string]*Tool, len(tools))
+	for _, tool := range tools {
+		cs.toolCache[tool.Name] = tool
+	}
+}
+
+func (cs *ClientSession) getCachedTool(name string) *Tool {
+	cs.toolCacheMu.RLock()
+	defer cs.toolCacheMu.RUnlock()
+	return cs.toolCache[name]
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -404,7 +433,7 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel)
+	startKeepalive(cs, interval, &cs.keepaliveCancel, cs.client.opts.Logger)
 }
 
 // AddRoots adds the given roots to the client,
@@ -641,7 +670,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 			}
 			err = resolved.ApplyDefaults(&res.Content)
 			if err != nil {
-				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("failed to apply schema defalts to elicitation result: %v", err)}
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("failed to apply schema defaults to elicitation result: %v", err)}
 			}
 		}
 		return res, nil
@@ -980,7 +1009,13 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	return handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
+	cs.cacheTools(result.Tools)
+	return result, nil
 }
 
 // CallTool calls the tool with the given parameters.
@@ -993,6 +1028,9 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if params.Arguments == nil {
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
+	}
+	if tool := cs.getCachedTool(params.Name); tool != nil {
+		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }

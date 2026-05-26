@@ -10,6 +10,7 @@
 //go:generate weave -o ../../docs/troubleshooting.md ./troubleshooting.src.md
 //go:generate weave -o ../../docs/rough_edges.md ./rough_edges.src.md
 //go:generate weave -o ../../docs/mcpgodebug.md ./mcpgodebug.src.md
+//go:generate weave -o ../../docs/quick_start.md ./quick_start.src.md
 
 // The doc package generates the documentation at /doc, via go:generate.
 //

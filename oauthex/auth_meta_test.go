@@ -2,8 +2,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package oauthex
 
 import (
@@ -37,9 +35,10 @@ func TestAuthMetaParse(t *testing.T) {
 func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
-		name           string
-		hasPKCESupport bool
-		wantError      string
+		name                    string
+		hasPKCESupport          bool
+		wantError               string
+		issuerWithTrailingSlash bool
 	}{
 		{
 			name:           "server_with_pkce_support",
@@ -49,6 +48,12 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			name:           "server_without_pkce_support",
 			hasPKCESupport: false,
 			wantError:      "does not implement PKCE",
+		},
+		{
+			// ProtectedResourceMetadata may contain AuthorizationServers with a trailing slash (see Issue #953)
+			name:                    "issuer_with_trailing_slash",
+			hasPKCESupport:          true,
+			issuerWithTrailingSlash: true,
 		},
 	}
 
@@ -87,6 +92,9 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			u, _ := url.Parse(ts.URL)
 			issuer := "https://localhost:" + u.Port()
 			metadataURL := issuer + "/.well-known/oauth-authorization-server"
+			if tt.issuerWithTrailingSlash {
+				issuer += "/"
+			}
 
 			// The fake server presents a cert for example.com; set ServerName accordingly.
 			httpClient := ts.Client()

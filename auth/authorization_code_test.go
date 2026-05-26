@@ -2,8 +2,6 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-//go:build mcp_go_client_oauth
-
 package auth
 
 import (
@@ -12,10 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -46,9 +47,9 @@ func TestAuthorize(t *testing.T) {
 
 	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
 		RedirectURL: "http://localhost:12345/callback",
-		PreregisteredClientConfig: &PreregisteredClientConfig{
-			ClientSecretAuthConfig: &ClientSecretAuthConfig{
-				ClientID:     "test_client_id",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
 				ClientSecret: "test_client_secret",
 			},
 		},
@@ -114,6 +115,131 @@ func TestAuthorize(t *testing.T) {
 	}
 }
 
+func TestAuthorize_ScopeAccumulation(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+		TokenScopeFunc: func(requestedScope string) string {
+			// Simulate a server that never grants "write".
+			var granted []string
+			for _, s := range strings.Fields(requestedScope) {
+				if s != "write" {
+					granted = append(granted, s)
+				}
+			}
+			return strings.Join(granted, " ")
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	var capturedAuthURLs []string
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test_client_secret",
+			},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			capturedAuthURLs = append(capturedAuthURLs, args.URL)
+			resp, err := noRedirectClient.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			loc, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &AuthorizationResult{
+				Code:  loc.Query().Get("code"),
+				State: loc.Query().Get("state"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	// First authorization: 401 with scope="read write".
+	// The token response will only grant "read" (TokenScopeFunc strips "write").
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer scope="read write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("First Authorize failed: %v", err)
+	}
+
+	// Verify first auth URL requested "read" and "write".
+	firstURL, err := url.Parse(capturedAuthURLs[0])
+	if err != nil {
+		t.Fatalf("Failed to parse first auth URL: %v", err)
+	}
+	firstScopes := strings.Fields(firstURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"read", "write"}, firstScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("First auth scopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Verify only "read" was granted (the token omitted "write").
+	issuer := authServer.URL()
+	if diff := cmp.Diff([]string{"read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second authorization: 403 insufficient_scope with scope="admin".
+	// Accumulated scopes should be "read" (previously granted) + "admin" (new).
+	req2 := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp2 := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp2.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer error="insufficient_scope", scope="admin", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req2, resp2); err != nil {
+		t.Fatalf("Second Authorize failed: %v", err)
+	}
+
+	// Verify second auth URL accumulated "read" (granted) + "admin" (challenged),
+	// but NOT "write" (requested but never granted).
+	secondURL, err := url.Parse(capturedAuthURLs[1])
+	if err != nil {
+		t.Fatalf("Failed to parse second auth URL: %v", err)
+	}
+	secondScopes := strings.Fields(secondURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"admin", "read"}, secondScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("Second auth scopes mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
 	resp := &http.Response{
@@ -155,9 +281,9 @@ func TestNewAuthorizationCodeHandler_Success(t *testing.T) {
 		{
 			name: "PreregisteredClientConfig",
 			config: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "test_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "test_client_secret",
 					},
 				},
@@ -224,7 +350,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
 				cfg.ClientIDMetadataDocumentConfig = nil
-				cfg.PreregisteredClientConfig = nil
+				cfg.PreregisteredClient = nil
 				cfg.DynamicClientRegistrationConfig = nil
 				return cfg
 			},
@@ -257,7 +383,7 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_MissingSecretConfig",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{}
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{}
 				return cfg
 			},
 		},
@@ -265,8 +391,9 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptyID",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "secret",
 					},
 				}
@@ -277,9 +404,10 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 			name: "InvalidPreregistered_EmptySecret",
 			config: func() *AuthorizationCodeHandlerConfig {
 				cfg := validConfig()
-				cfg.PreregisteredClientConfig = &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID: "test_client_id",
+				cfg.PreregisteredClient = &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "",
 					},
 				}
 				return cfg
@@ -439,90 +567,6 @@ func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetadata(t *testing.T) {
-	handler, err := NewAuthorizationCodeHandler(validConfig())
-	if err != nil {
-		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
-	}
-
-	tests := []struct {
-		name           string
-		issuerPath     string
-		endpointConfig *oauthtest.MetadataEndpointConfig
-	}{
-		{
-			name:       "OAuthEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Root",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OAuthEndpoint_Path",
-			issuerPath: "/oauth",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOAuthInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDInsertedEndpoint: true,
-			},
-		},
-		{
-			name:       "OpenIDAppendedEndpoint_Path",
-			issuerPath: "/openid",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				ServeOpenIDAppendedEndpoint: true,
-			},
-		},
-		{
-			name:       "NoMetadata",
-			issuerPath: "",
-			endpointConfig: &oauthtest.MetadataEndpointConfig{
-				// All metadata endpoints disabled.
-				ServeOAuthInsertedEndpoint:  false,
-				ServeOpenIDInsertedEndpoint: false,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
-				IssuerPath:             tt.issuerPath,
-				MetadataEndpointConfig: tt.endpointConfig,
-			})
-			s.Start(t)
-			issuerURL := s.URL() + tt.issuerPath
-			prm := &oauthex.ProtectedResourceMetadata{
-				Resource:             "https://example.com/resource",
-				AuthorizationServers: []string{issuerURL},
-			}
-
-			got, err := handler.getAuthServerMetadata(t.Context(), prm)
-			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
-			}
-			if got == nil {
-				t.Fatal("getAuthServerMetadata() got nil, want metadata")
-			}
-			if got.Issuer != issuerURL {
-				t.Errorf("getAuthServerMetadata() issuer = %q, want %q", got.Issuer, issuerURL)
-			}
-		})
-	}
-}
-
 func TestSelectTokenAuthMethod(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -588,9 +632,9 @@ func TestHandleRegistration(t *testing.T) {
 				},
 			},
 			handlerConfig: &AuthorizationCodeHandlerConfig{
-				PreregisteredClientConfig: &PreregisteredClientConfig{
-					ClientSecretAuthConfig: &ClientSecretAuthConfig{
-						ClientID:     "pre_client_id",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
 						ClientSecret: "pre_client_secret",
 					},
 				},
@@ -623,11 +667,9 @@ func TestHandleRegistration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAuthorizationCodeHandler() error = %v, want nil", err)
 			}
-			asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-				AuthorizationServers: []string{s.URL()},
-			})
+			asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 			if err != nil {
-				t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+				t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
 			}
 			got, err := handler.handleRegistration(t.Context(), asm)
 			if err != nil {
@@ -673,11 +715,9 @@ func TestDynamicRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
 	}
-	asm, err := handler.getAuthServerMetadata(t.Context(), &oauthex.ProtectedResourceMetadata{
-		AuthorizationServers: []string{s.URL()},
-	})
+	asm, err := GetAuthServerMetadata(t.Context(), s.URL(), http.DefaultClient)
 	if err != nil {
-		t.Fatalf("getAuthServerMetadata() error = %v, want nil", err)
+		t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
 	}
 	got, err := handler.handleRegistration(t.Context(), asm)
 	if err != nil {
@@ -745,6 +785,260 @@ func TestValidateIssuerResponse(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Fatalf("validateIssuerResponse() unexpected error = %v", err)
+			}
+		})
+	}
+}
+
+func TestInferApplicationType(t *testing.T) {
+	tests := []struct {
+		name         string
+		redirectURIs []string
+		want         string
+	}{
+		{
+			name:         "localhost",
+			redirectURIs: []string{"http://localhost:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "127.0.0.1",
+			redirectURIs: []string{"http://127.0.0.1:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "IPv6 loopback",
+			redirectURIs: []string{"http://[::1]:8085/callback"},
+			want:         "native",
+		},
+		{
+			name:         "custom scheme",
+			redirectURIs: []string{"myapp://callback"},
+			want:         "native",
+		},
+		{
+			name:         "HTTPS remote",
+			redirectURIs: []string{"https://myapp.example.com/callback"},
+			want:         "web",
+		},
+		{
+			name:         "mixed native and web",
+			redirectURIs: []string{"https://myapp.example.com/callback", "http://localhost:8085/callback"},
+			want:         "",
+		},
+		{
+			name:         "multiple remote",
+			redirectURIs: []string{"https://app1.example.com/cb", "https://app2.example.com/cb"},
+			want:         "web",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferApplicationType(tt.redirectURIs)
+			if got != tt.want {
+				t.Errorf("inferApplicationType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplicationTypeInference(t *testing.T) {
+	fetcher := func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+		return nil, nil
+	}
+
+	tests := []struct {
+		name           string
+		redirectURIs   []string
+		initialAppType string
+		wantAppType    string
+		wantErr        bool
+	}{
+		{
+			name:         "inferred as native for localhost",
+			redirectURIs: []string{"http://localhost:8085/callback"},
+			wantAppType:  "native",
+		},
+		{
+			name:         "inferred as web for remote",
+			redirectURIs: []string{"https://example.com/callback"},
+			wantAppType:  "web",
+		},
+		{
+			name:         "mixed native and web URIs sets empty application type",
+			redirectURIs: []string{"https://example.com/callback", "http://localhost:8085/callback"},
+			wantAppType:  "",
+		},
+		{
+			name:           "explicit value matching inference is preserved",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			initialAppType: "native",
+			wantAppType:    "native",
+		},
+		{
+			name:           "explicit value conflicts with inference returns error",
+			redirectURIs:   []string{"http://localhost:8085/callback"},
+			initialAppType: "web",
+			wantErr:        true,
+		},
+		{
+			name:           "explicit value when inference is ambiguous returns error",
+			redirectURIs:   []string{"https://example.com/callback", "http://localhost:8085/callback"},
+			initialAppType: "web",
+			wantErr:        true,
+		},
+		{
+			name:         "invalid URI returns empty application type",
+			redirectURIs: []string{"http://%/"},
+			wantAppType:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AuthorizationCodeHandlerConfig{
+				DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+					Metadata: &oauthex.ClientRegistrationMetadata{
+						RedirectURIs:    tt.redirectURIs,
+						ApplicationType: tt.initialAppType,
+					},
+				},
+				AuthorizationCodeFetcher: fetcher,
+			}
+			_, err := NewAuthorizationCodeHandler(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			got := cfg.DynamicClientRegistrationConfig.Metadata.ApplicationType
+			if got != tt.wantAppType {
+				t.Errorf("ApplicationType = %q, want %q", got, tt.wantAppType)
+			}
+		})
+	}
+}
+
+func TestAuthorize_OfflineAccessScope(t *testing.T) {
+	tests := []struct {
+		name                string
+		requestRefreshToken bool
+		asScopesSupported   []string
+		challengeScopes     string
+		wantOfflineAccess   bool
+	}{
+		{
+			name:                "AddedWhenASSupportsAndClientRequests",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			wantOfflineAccess:   true,
+		},
+		{
+			name:                "NotAddedWhenClientDoesNotRequest",
+			requestRefreshToken: false,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			wantOfflineAccess:   false,
+		},
+		{
+			name:                "NotAddedWhenASDoesNotSupport",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid"},
+			wantOfflineAccess:   false,
+		},
+		{
+			name:                "NotDuplicatedWhenAlreadyInScopes",
+			requestRefreshToken: true,
+			asScopesSupported:   []string{"openid", "offline_access"},
+			challengeScopes:     "read offline_access",
+			wantOfflineAccess:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+				ScopesSupported: tt.asScopesSupported,
+				RegistrationConfig: &oauthtest.RegistrationConfig{
+					PreregisteredClients: map[string]oauthtest.ClientInfo{
+						"test_client_id": {
+							Secret:       "test_client_secret",
+							RedirectURIs: []string{"http://localhost:12345/callback"},
+						},
+					},
+				},
+			})
+			authServer.Start(t)
+
+			resourceMux := http.NewServeMux()
+			resourceServer := httptest.NewServer(resourceMux)
+			t.Cleanup(resourceServer.Close)
+			resourceURL := resourceServer.URL + "/resource"
+			resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+				Resource:             resourceURL,
+				AuthorizationServers: []string{authServer.URL()},
+			}))
+
+			var capturedAuthURL string
+			handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+				RedirectURL: "http://localhost:12345/callback",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "test_client_secret",
+					},
+				},
+				RequestRefreshToken: tt.requestRefreshToken,
+				AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+					capturedAuthURL = args.URL
+					return nil, fmt.Errorf("stop after capturing URL")
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+			resp := &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+				Request:    req,
+			}
+			wwwAuth := "Bearer resource_metadata=" + resourceServer.URL + "/.well-known/oauth-protected-resource/resource"
+			if tt.challengeScopes != "" {
+				wwwAuth += fmt.Sprintf(", scope=%q", tt.challengeScopes)
+			}
+			resp.Header.Set("WWW-Authenticate", wwwAuth)
+
+			// Authorize will fail at the fetcher, but we only care about the URL.
+			handler.Authorize(context.Background(), req, resp)
+
+			if capturedAuthURL == "" {
+				t.Fatal("AuthorizationCodeFetcher was not called")
+			}
+			u, err := url.Parse(capturedAuthURL)
+			if err != nil {
+				t.Fatalf("failed to parse captured auth URL: %v", err)
+			}
+			scopes := strings.Fields(u.Query().Get("scope"))
+			hasOfflineAccess := slices.Contains(scopes, "offline_access")
+			if hasOfflineAccess != tt.wantOfflineAccess {
+				t.Errorf("offline_access in scopes = %v, want %v (scopes: %v)", hasOfflineAccess, tt.wantOfflineAccess, scopes)
+			}
+
+			// When offline_access was already present in challenge scopes,
+			// verify it appears exactly once.
+			if tt.wantOfflineAccess {
+				count := 0
+				for _, s := range scopes {
+					if s == "offline_access" {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Errorf("offline_access appears %d times in scopes, want 1", count)
+				}
 			}
 		})
 	}

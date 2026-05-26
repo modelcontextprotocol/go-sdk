@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -676,13 +677,11 @@ func TestServerClosing(t *testing.T) {
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		if err := cs.Wait(); err != nil {
 			t.Errorf("server connection failed: %v", err)
 		}
-		wg.Done()
-	}()
+	})
 	if _, err := cs.CallTool(ctx, &CallToolParams{
 		Name:      "greet",
 		Arguments: map[string]any{"Name": "user"},
@@ -930,6 +929,61 @@ func TestKeepAlive(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("call failed after keepalive: %v", err)
+		}
+		if len(result.Content) == 0 {
+			t.Fatal("expected content in result")
+		}
+		if textContent, ok := result.Content[0].(*TextContent); !ok || textContent.Text != "hi user" {
+			t.Fatalf("unexpected result: %v", result.Content[0])
+		}
+	})
+}
+
+func TestKeepAliveMethodNotFound(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+
+		ct, st := NewInMemoryTransports()
+
+		// Server that rejects ping with method-not-found, simulating a
+		// server that does not implement the optional ping method.
+		s := NewServer(testImpl, nil)
+		AddTool(s, greetTool(), sayHi)
+		s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+			return func(ctx context.Context, method string, req Request) (Result, error) {
+				if method == "ping" {
+					return nil, jsonrpc2.ErrMethodNotFound
+				}
+				return next(ctx, method, req)
+			}
+		})
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		clientOpts := &ClientOptions{
+			KeepAlive: 50 * time.Millisecond,
+		}
+		c := NewClient(testImpl, clientOpts)
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Advance past several keepalive cycles.
+		time.Sleep(200 * time.Millisecond)
+
+		// The session should still be alive despite the server not
+		// supporting ping.
+		result, err := cs.CallTool(ctx, &CallToolParams{
+			Name:      "greet",
+			Arguments: map[string]any{"Name": "user"},
+		})
+		if err != nil {
+			t.Fatalf("call failed after keepalive with method-not-found: %v", err)
 		}
 		if len(result.Content) == 0 {
 			t.Fatal("expected content in result")
@@ -1819,6 +1873,52 @@ func TestKeepAliveFailure(t *testing.T) {
 	})
 }
 
+// TestKeepAliveFailure_Logged verifies that a keepalive ping failure is
+// reported via the configured slog.Logger instead of being silently dropped.
+// Regression test for #218.
+func TestKeepAliveFailure_Logged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+
+		ct, st := NewInMemoryTransports()
+
+		// Server without keepalive.
+		s := NewServer(testImpl, nil)
+		AddTool(s, greetTool(), sayHi)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Client with a short keepalive and a logger that writes to a
+		// buffer so we can assert on its output.
+		var buf bytes.Buffer
+		clientOpts := &ClientOptions{
+			KeepAlive: 50 * time.Millisecond,
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+		}
+		c := NewClient(testImpl, clientOpts)
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		synctest.Wait()
+
+		// Trigger a ping failure by closing the server side.
+		ss.Close()
+
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+
+		got := buf.String() // slog serializes Write calls internally
+		if !strings.Contains(got, "keepalive ping failed") {
+			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		}
+	})
+}
+
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
@@ -2227,6 +2327,47 @@ func TestToolErrorMiddleware(t *testing.T) {
 	}
 	if middleErr != errTestFailure {
 		t.Errorf("middleware got err %v, want errTestFailure", middleErr)
+	}
+}
+
+func TestSetErrorPreservesContent(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		content     []Content
+		err         error
+		wantContent string
+	}{
+		{
+			name:        "nil content",
+			err:         errors.New("internal failure"),
+			wantContent: "internal failure",
+		},
+		{
+			name:        "empty slice content",
+			content:     []Content{},
+			err:         errors.New("internal failure"),
+			wantContent: "internal failure",
+		},
+		{
+			name:        "existing content preserved",
+			content:     []Content{&TextContent{Text: "user-friendly msg"}},
+			err:         errors.New("db timeout"),
+			wantContent: "user-friendly msg",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := CallToolResult{Content: tt.content}
+			res.SetError(tt.err)
+			if !res.IsError {
+				t.Fatal("want IsError=true")
+			}
+			if got := res.Content[0].(*TextContent).Text; got != tt.wantContent {
+				t.Errorf("Content text = %q, want %q", got, tt.wantContent)
+			}
+			if got := res.GetError(); got != tt.err {
+				t.Errorf("GetError() = %v, want %v", got, tt.err)
+			}
+		})
 	}
 }
 
