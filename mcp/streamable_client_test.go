@@ -1290,7 +1290,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1513,7 +1513,7 @@ func TestStreamableClientConnect_DiscoverPropagatesOtherErrors(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 	if err == nil {
 		_ = session.Close()
 		t.Fatal("Connect succeeded; want propagated error")

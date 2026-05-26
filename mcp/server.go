@@ -1475,12 +1475,6 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
-		ss.updateState(func(state *ServerSessionState) {
-			state.InitializeParams = validatedMeta.initializeParams
-		})
-	}
-
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
 		if validatedMeta.usesNewProtocol {
@@ -1490,10 +1484,19 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
 			}
 		}
+	case methodDiscover:
+		// In case of methodDiscover call the state.initializeParams is populated
+		// within the discover handle function to make sure the method is supported
+		// when the user is probing a pre-2026-06-30 server.
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		}
+		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+			ss.updateState(func(state *ServerSessionState) {
+				state.InitializeParams = validatedMeta.initializeParams
+			})
 		}
 	}
 

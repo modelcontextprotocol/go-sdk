@@ -814,7 +814,7 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 			return nil, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
