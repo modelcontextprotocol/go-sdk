@@ -2043,6 +2043,68 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 	})
 }
 
+// TODO: Remove this once client operations will automatically inject metadata in the requests
+func injectMetaToRequest(req *http.Request) error {
+	if req.Body == nil {
+		return nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return err
+	}
+	req.Body.Close()
+
+	var val any
+	if err := json.Unmarshal(body, &val); err == nil {
+		var method string
+		if m, ok := val.(map[string]any); ok {
+			method, _ = m["method"].(string)
+		} else if list, ok := val.([]any); ok && len(list) > 0 {
+			if m, ok := list[0].(map[string]any); ok {
+				method, _ = m["method"].(string)
+			}
+		}
+
+		if method == "initialize" || method == "notifications/initialized" || strings.HasPrefix(method, "notifications/") {
+			req.Header.Set(protocolVersionHeader, "2025-11-25")
+		} else {
+			req.Header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+
+			var msgs []map[string]any
+			if m, ok := val.(map[string]any); ok {
+				msgs = []map[string]any{m}
+			} else if list, ok := val.([]any); ok {
+				for _, item := range list {
+					if m, ok := item.(map[string]any); ok {
+						msgs = append(msgs, m)
+					}
+				}
+			}
+
+			for _, m := range msgs {
+				params, _ := m["params"].(map[string]any)
+				if params == nil {
+					params = make(map[string]any)
+					m["params"] = params
+				}
+				meta, _ := params["_meta"].(map[string]any)
+				if meta == nil {
+					meta = make(map[string]any)
+					params["_meta"] = meta
+				}
+				meta[MetaKeyProtocolVersion] = minVersionForStandardHeaders
+				meta[MetaKeyClientInfo] = map[string]any{"name": "testClient", "version": "v1.0.0"}
+				meta[MetaKeyClientCapabilities] = map[string]any{}
+			}
+			body, _ = json.Marshal(val)
+		}
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	return nil
+}
+
 // TestStreamableMcpHeaderValidationErrorFormat verifies that header
 // validation errors return a JSON-RPC error with code -32001 and
 // Content-Type application/json, per SEP-2243.
@@ -2080,6 +2142,9 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
 			var originalMethodHeader string
 			if req.Header.Get(methodHeader) == "tools/call" {
 				originalMethodHeader = req.Header.Get(methodHeader)
@@ -2247,6 +2312,9 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	var capturedHeaders http.Header
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
 			if req.Header.Get(methodHeader) == "tools/call" {
 				capturedHeaders = req.Header.Clone()
 			}
@@ -2355,13 +2423,31 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
+	// once Server.discover returns a real DiscoverResult instead of
+	// MethodNotFound. See comment on discoverInterceptor for details.
+	wrapped := discoverInterceptor(t, handler,
+		[]string{minVersionForStandardHeaders},
+		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
+		&Implementation{Name: "testServer", Version: "v1.0.0"},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
 	defer httpServer.Close()
+
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
 	session, err := client.Connect(ctx, &StreamableClientTransport{
-		Endpoint: httpServer.URL,
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
 	}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)

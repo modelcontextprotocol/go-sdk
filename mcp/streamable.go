@@ -1315,6 +1315,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// per-request `_meta.protocolVersion` value.
 			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
+			//
+			// TODO: this validation can be moved within validateMcpHeaders.
 			var metaVersion string
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)

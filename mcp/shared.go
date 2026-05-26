@@ -542,7 +542,8 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	if !ok {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	// Notifications do not carry full client identity
+	// Notifications do not carry full client identity. In new protocol, only cancel notification
+	// is allowed in STDIO.
 	if !req.IsCall() {
 		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
