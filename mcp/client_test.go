@@ -736,7 +736,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			defer ss.Close()
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, ct, nil)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 			if tc.wantConnectErr {
 				if err == nil {
 					_ = cs.Close()
