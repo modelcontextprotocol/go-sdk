@@ -52,6 +52,7 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	customMethods           map[string]methodInfo
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
 	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
 }
@@ -198,6 +199,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
+		customMethods:           make(map[string]methodInfo),
 	}
 }
 
@@ -1425,7 +1427,19 @@ func initializeMethodInfo() methodInfo {
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
 
-func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo { return serverMethodInfos }
+func (s *Server) receivingMethodInfos() map[string]methodInfo {
+	if len(s.customMethods) == 0 {
+		return serverMethodInfos
+	}
+	infos := make(map[string]methodInfo, len(serverMethodInfos)+len(s.customMethods))
+	maps.Copy(infos, serverMethodInfos)
+	maps.Copy(infos, s.customMethods)
+	return infos
+}
+
+func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo {
+	return ss.server.receivingMethodInfos()
+}
 
 func (ss *ServerSession) sendingMethodHandler() MethodHandler {
 	s := ss.server
@@ -1659,4 +1673,45 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 	}
 	*res.nextCursorPtr() = nextCursor
 	return res, nil
+}
+
+// AddReceivingCustomMethod registers a handler for a custom (non-standard)
+// JSON-RPC method on the server.
+//
+// When a client sends a request with the given method name, the params will be
+// unmarshaled into P, the handler will be called, and the returned R will be
+// marshaled as the JSON-RPC result.
+//
+// Custom methods go through the server's middleware chain just like standard
+// MCP methods (tools/call, prompts/list, etc.).
+//
+// P and R must implement [Params] and [Result] respectively, which is most
+// easily done by embedding [ParamsBase] and [ResultBase]:
+//
+//	type SearchParams struct {
+//	    mcp.ParamsBase
+//	    Query string `json:"query"`
+//	}
+//
+//	type SearchResult struct {
+//	    mcp.ResultBase
+//	    Hits []string `json:"hits"`
+//	}
+//
+//	mcp.AddReceivingCustomMethod(server, "acme/search",
+//	    func(ctx context.Context, ss *mcp.ServerSession, params *SearchParams) (*SearchResult, error) {
+//	        return &SearchResult{Hits: []string{"result"}}, nil
+//	    })
+func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
+	s *Server,
+	method string,
+	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
+) {
+	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.customMethods[method] = newServerMethodInfo(typed, missingParamsOK)
 }
