@@ -66,6 +66,11 @@ func init() {
 		"auth/token-endpoint-auth-basic",
 		"auth/token-endpoint-auth-post",
 		"auth/token-endpoint-auth-none",
+		"auth/iss-supported",
+		"auth/iss-not-advertised",
+		"auth/iss-supported-missing",
+		"auth/iss-wrong-issuer",
+		"auth/iss-unexpected",
 	}
 	for _, scenario := range authScenarios {
 		registerScenario(scenario, runAuthClient)
@@ -232,6 +237,7 @@ func fetchAuthorizationCodeAndState(ctx context.Context, args *auth.Authorizatio
 	return &auth.AuthorizationResult{
 		Code:  locURL.Query().Get("code"),
 		State: locURL.Query().Get("state"),
+		Iss:   locURL.Query().Get("iss"),
 	}, nil
 }
 
