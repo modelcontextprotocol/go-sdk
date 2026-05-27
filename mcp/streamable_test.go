@@ -1703,40 +1703,16 @@ func TestStreamableStateless(t *testing.T) {
 		}
 	}
 
-	sessionlessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
-		// Return a stateless server which never assigns a session ID.
-		server := NewServer(testImpl, &ServerOptions{
-			GetSessionID: func() string { return "" },
-		})
-		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
-		return server
-	}, &StreamableHTTPOptions{
-		Stateless: true,
-	})
-
-	// First, test the "sessionless" stateless mode, where there is no session ID.
-	t.Run("sessionless", func(t *testing.T) {
-		testStreamableHandler(t, sessionlessHandler, requests)
-		testClientCompatibility(t, sessionlessHandler)
-	})
-
-	// Next, test the default stateless mode, where session IDs are permitted.
-	//
-	// This can be used by tools to look up application state preserved across
-	// subsequent requests.
-	requests[0].wantSessionID = true // now expect a session ID for initialize
 	statelessHandler := NewStreamableHTTPHandler(func(*http.Request) *Server {
-		// Return a server with default options which should assign a random session ID.
 		server := NewServer(testImpl, nil)
 		AddTool(server, &Tool{Name: "greet", Description: "say hi"}, sayHi)
 		return server
 	}, &StreamableHTTPOptions{
 		Stateless: true,
 	})
-	t.Run("stateless", func(t *testing.T) {
-		testStreamableHandler(t, statelessHandler, requests)
-		testClientCompatibility(t, sessionlessHandler)
-	})
+
+	testStreamableHandler(t, statelessHandler, requests)
+	testClientCompatibility(t, statelessHandler)
 }
 
 func textContent(t *testing.T, res *CallToolResult) string {
@@ -1915,9 +1891,9 @@ func TestStreamableGET(t *testing.T) {
 	}
 }
 
-// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method and
-// Mcp-Name header validation through the full HTTP handler, as specified
-// in SEP-2243.
+// TestStreamableMcpHeaderValidation tests the server-side Mcp-Method,
+// Mcp-Name, and Mcp-Param header validation through the full HTTP handler,
+// as specified in SEP-2243.
 func TestStreamableMcpHeaderValidation(t *testing.T) {
 	// Temporarily register the future version so the handler accepts it.
 	orig := supportedProtocolVersions
@@ -1930,40 +1906,38 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 			return &CallToolResult{}, nil
 		})
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: minVersionForStandardHeaders})
-	initResp := resp(1, &InitializeResult{
-		Capabilities: &ServerCapabilities{
-			Logging: &LoggingCapabilities{},
-			Tools:   &ToolCapabilities{ListChanged: true},
-		},
-		ProtocolVersion: minVersionForStandardHeaders,
-		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
-	}, nil)
-
-	initialize := streamableRequest{
-		method:         "POST",
-		messages:       []jsonrpc.Message{initReq},
-		wantStatusCode: http.StatusOK,
-		wantMessages:   []jsonrpc.Message{initResp},
-		wantSessionID:  true,
-	}
-	initialized := streamableRequest{
-		method: "POST",
-		headers: http.Header{
-			protocolVersionHeader: {minVersionForStandardHeaders},
-			methodHeader:          {notificationInitialized},
-		},
-		messages:       []jsonrpc.Message{req(0, notificationInitialized, &InitializedParams{})},
-		wantStatusCode: http.StatusAccepted,
+	testMeta := Meta{
+		MetaKeyProtocolVersion:    minVersionForStandardHeaders,
+		MetaKeyClientInfo:         map[string]any{"name": "testClient", "version": "v1.0.0"},
+		MetaKeyClientCapabilities: map[string]any{},
 	}
 
 	testStreamableHandler(t, handler, []streamableRequest{
-		initialize,
-		initialized,
 		{
 			method: "POST",
 			headers: http.Header{
@@ -1971,7 +1945,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
 		},
@@ -1982,7 +1956,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"prompts/get"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(3, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
@@ -1993,7 +1967,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"wrong-tool"},
 			},
-			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(4, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Name header value",
 		},
@@ -2004,7 +1978,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"TOOLS/CALL"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:           []jsonrpc.Message{req(5, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "Mcp-Method header value",
 		},
@@ -2015,11 +1989,120 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				methodHeader:          {"tools/call"},
 				nameHeader:            {"my-tool"},
 			},
-			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Name: "my-tool"})},
+			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
 			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
 		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"us-west1"},
+			},
+			messages: []jsonrpc.Message{req(7, "tools/call", &CallToolParams{
+				Meta:      testMeta,
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+			})},
+			wantStatusCode: http.StatusOK,
+			wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader:        {minVersionForStandardHeaders},
+				methodHeader:                 {"tools/call"},
+				nameHeader:                   {"execute_sql"},
+				paramHeaderPrefix + "Region": {"eu-central1"},
+			},
+			messages: []jsonrpc.Message{req(8, "tools/call", &CallToolParams{
+				Meta:      testMeta,
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "header mismatch",
+		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+				methodHeader:          {"tools/call"},
+				nameHeader:            {"execute_sql"},
+			},
+			messages: []jsonrpc.Message{req(9, "tools/call", &CallToolParams{
+				Meta:      testMeta,
+				Name:      "execute_sql",
+				Arguments: map[string]any{"region": "us-west1"},
+			})},
+			wantStatusCode:     http.StatusBadRequest,
+			wantBodyContaining: "missing",
+		},
 	})
+}
+
+// TODO: Remove this once client operations will automatically inject metadata in the requests
+func injectMetaToRequest(req *http.Request) error {
+	if req.Body == nil {
+		return nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return err
+	}
+	req.Body.Close()
+
+	var val any
+	if err := json.Unmarshal(body, &val); err == nil {
+		var method string
+		if m, ok := val.(map[string]any); ok {
+			method, _ = m["method"].(string)
+		} else if list, ok := val.([]any); ok && len(list) > 0 {
+			if m, ok := list[0].(map[string]any); ok {
+				method, _ = m["method"].(string)
+			}
+		}
+
+		if method == "initialize" || method == "notifications/initialized" || strings.HasPrefix(method, "notifications/") {
+			req.Header.Set(protocolVersionHeader, "2025-11-25")
+		} else {
+			req.Header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+
+			var msgs []map[string]any
+			if m, ok := val.(map[string]any); ok {
+				msgs = []map[string]any{m}
+			} else if list, ok := val.([]any); ok {
+				for _, item := range list {
+					if m, ok := item.(map[string]any); ok {
+						msgs = append(msgs, m)
+					}
+				}
+			}
+
+			for _, m := range msgs {
+				params, _ := m["params"].(map[string]any)
+				if params == nil {
+					params = make(map[string]any)
+					m["params"] = params
+				}
+				meta, _ := params["_meta"].(map[string]any)
+				if meta == nil {
+					meta = make(map[string]any)
+					params["_meta"] = meta
+				}
+				meta[MetaKeyProtocolVersion] = minVersionForStandardHeaders
+				meta[MetaKeyClientInfo] = map[string]any{"name": "testClient", "version": "v1.0.0"}
+				meta[MetaKeyClientCapabilities] = map[string]any{}
+			}
+			body, _ = json.Marshal(val)
+		}
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	return nil
 }
 
 // TestStreamableMcpHeaderValidationErrorFormat verifies that header
@@ -2037,7 +2120,9 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 			return &CallToolResult{}, nil
 		})
 
-	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, nil)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
 	defer handler.closeAll()
 
 	httpServer := httptest.NewServer(mustNotPanic(t, handler))
@@ -2049,6 +2134,9 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 
 	customClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
 			var originalMethodHeader string
 			if req.Header.Get(methodHeader) == "tools/call" {
 				originalMethodHeader = req.Header.Get(methodHeader)
@@ -2170,6 +2258,193 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 	})
 }
 
+// TestStreamableParamHeadersClientSetsHeaders verifies that the client sets
+// Mcp-Param-* headers on tool calls when the tool has x-mcp-header annotations.
+func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "execute_sql",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+					"query": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var capturedHeaders http.Header
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
+			if req.Header.Get(methodHeader) == "tools/call" {
+				capturedHeaders = req.Header.Clone()
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	clientTransport := &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	// ListTools to populate the tool cache (needed for param headers).
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = session.CallTool(ctx, &CallToolParams{
+		Name:      "execute_sql",
+		Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if capturedHeaders == nil {
+		t.Fatal("no tool call headers captured")
+	}
+	if got := capturedHeaders.Get(methodHeader); got != "tools/call" {
+		t.Errorf("Mcp-Method = %q, want %q", got, "tools/call")
+	}
+	if got := capturedHeaders.Get(nameHeader); got != "execute_sql" {
+		t.Errorf("Mcp-Name = %q, want %q", got, "execute_sql")
+	}
+	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
+		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+}
+
+// TestStreamableFilterValidToolsIntegration verifies that AddTool rejects
+// tools with invalid x-mcp-header annotations at registration time, and
+// that valid tools are returned by ListTools.
+func TestStreamableFilterValidToolsIntegration(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	noop := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{}, nil
+	}
+
+	// Valid tool with correct x-mcp-header annotation.
+	server.AddTool(&Tool{
+		Name: "valid-tool",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{
+					"type":         "string",
+					"x-mcp-header": "Region",
+				},
+			},
+		},
+	}, noop)
+
+	// Invalid tool: x-mcp-header on an array type should panic.
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("AddTool with invalid x-mcp-header annotation did not panic")
+			}
+		}()
+		server.AddTool(&Tool{
+			Name: "invalid-tool",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items": map[string]any{
+						"type":         "array",
+						"x-mcp-header": "Items",
+					},
+				},
+			},
+		}, noop)
+	}()
+
+	// Tool with no x-mcp-header annotations (always valid).
+	server.AddTool(&Tool{
+		Name:        "plain-tool",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, noop)
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := injectMetaToRequest(req); err != nil {
+				return nil, err
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	result, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolNames := make([]string, len(result.Tools))
+	for i, tool := range result.Tools {
+		toolNames[i] = tool.Name
+	}
+	sort.Strings(toolNames)
+
+	wantNames := []string{"plain-tool", "valid-tool"}
+	if !slices.Equal(toolNames, wantNames) {
+		t.Errorf("ListTools returned %v, want %v", toolNames, wantNames)
+	}
+}
+
 // TestStreamable405AllowHeader verifies RFC 9110 §15.5.6 compliance:
 // 405 Method Not Allowed responses MUST include an Allow header.
 func TestStreamable405AllowHeader(t *testing.T) {
@@ -2197,13 +2472,13 @@ func TestStreamable405AllowHeader(t *testing.T) {
 			wantAllow:  "POST",
 		},
 		{
-			// DELETE without session returns 400 Bad Request (not 405)
-			// because DELETE is a valid method, just requires a session ID.
+			// In stateless mode, only POST is supported.
+			// DELETE returns 405, consistent with Allow: POST.
 			name:       "DELETE without session stateless",
 			stateless:  true,
 			method:     "DELETE",
-			wantStatus: http.StatusBadRequest,
-			wantAllow:  "", // No Allow header for 400 responses
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
 		},
 	}
 
@@ -2902,5 +3177,412 @@ func TestStreamableOriginProtection(t *testing.T) {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatusCode)
 			}
 		})
+	}
+}
+
+// TestStandaloneSSEEmitsCommentForHTTP2Flush is a regression test for the
+// HTTP/2 reverse-proxy header-buffering bug. The standalone SSE GET stream
+// must emit at least one body byte (an SSE comment) immediately after the
+// response headers. Without a DATA frame, HTTP/2 reverse proxies (Envoy,
+// Caddy, net/http/httputil, etc.) buffer the HEADERS frame indefinitely
+// because they have nothing to coalesce it with — calling Flush() alone is
+// not sufficient.
+//
+// SSE explicitly defines lines starting with ":" as comments that clients
+// ignore, so this is behavior-preserving for the SSE protocol while
+// producing the DATA frame that HTTP/2 proxies need.
+func TestStandaloneSSEEmitsCommentForHTTP2Flush(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Initialize a session so we have a valid Mcp-Session-Id to use on the
+	// standalone SSE GET.
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	// Open the standalone SSE stream.
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getReq.Header.Set("Accept", "text/event-stream")
+	getReq.Header.Set(sessionIDHeader, sessionID)
+
+	resp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET standalone SSE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q; want text/event-stream", got)
+	}
+
+	// Read the first chunk. With the fix, an SSE comment (": ok\n\n") is
+	// written immediately. Without the fix, the body has no bytes to read
+	// until the server pushes an event, which won't happen in this test.
+	type readResult struct {
+		n   int
+		err error
+		buf []byte
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, err := resp.Body.Read(buf)
+		ch <- readResult{n: n, err: err, buf: buf}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil && r.err != io.EOF {
+			t.Fatalf("reading first SSE chunk: %v", r.err)
+		}
+		if r.n == 0 {
+			t.Fatal("first SSE chunk was empty; expected an SSE comment to flush HTTP/2 proxy HEADERS frame")
+		}
+		got := string(r.buf[:r.n])
+		// SSE spec: lines starting with ":" are comments, ignored by clients.
+		// We don't pin the exact comment text; just require the first byte to
+		// be the SSE comment marker so HTTP/2 proxies have a DATA frame.
+		if !strings.HasPrefix(got, ":") {
+			t.Errorf("first SSE chunk = %q; want it to start with %q (SSE comment marker, so HTTP/2 proxies receive a DATA frame and forward HEADERS)", got, ":")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first SSE bytes; the standalone SSE stream must emit a DATA frame immediately so HTTP/2 reverse proxies don't buffer the HEADERS frame")
+	}
+}
+
+// newProtocolBody builds a raw JSON body for a tools/call request that
+// carries the >= 2026-06-30 per-request _meta fields.
+func newProtocolBody(t *testing.T, toolName string, args any) []byte {
+	t.Helper()
+	rawArgs, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260630,
+				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+				MetaKeyClientCapabilities: map[string]any{"sampling": map[string]any{}},
+			},
+			"name":      toolName,
+			"arguments": json.RawMessage(rawArgs),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestEphemeralConnectOpts(t *testing.T) {
+	mkReq := func(body []byte) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		return r
+	}
+
+	h := &StreamableHTTPHandler{opts: StreamableHTTPOptions{}}
+
+	oldProtocolBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": "x", "arguments": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initializeBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  methodInitialize,
+		"params":  map[string]any{"protocolVersion": protocolVersion20250618},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name                  string
+		body                  []byte
+		wantUsesNew           bool
+		wantInitializeParams  bool
+		wantInitializedParams bool
+	}{
+		{
+			name:                  "new-protocol request: no synthetic state",
+			body:                  newProtocolBody(t, "x", struct{}{}),
+			wantUsesNew:           true,
+			wantInitializeParams:  false,
+			wantInitializedParams: false,
+		},
+		{
+			name:                  "old-protocol request: synthetic state populated",
+			body:                  oldProtocolBody,
+			wantUsesNew:           false,
+			wantInitializeParams:  true,
+			wantInitializedParams: true,
+		},
+		{
+			name:                  "initialize request: no synthetic InitializeParams",
+			body:                  initializeBody,
+			wantUsesNew:           false,
+			wantInitializeParams:  false,
+			wantInitializedParams: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mkReq(tt.body)
+			var pver string
+			if tt.wantUsesNew {
+				pver = protocolVersion20260630
+			} else {
+				pver = protocolVersion20250326
+			}
+			req.Header.Set(protocolVersionHeader, pver)
+			req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, pver))
+			opts, usesNew, err := h.ephemeralConnectOpts(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usesNew != tt.wantUsesNew {
+				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tt.wantUsesNew)
+			}
+			if got := opts.State.InitializeParams != nil; got != tt.wantInitializeParams {
+				t.Errorf("InitializeParams non-nil = %v, want %v (value = %+v)",
+					got, tt.wantInitializeParams, opts.State.InitializeParams)
+			}
+			if got := opts.State.InitializedParams != nil; got != tt.wantInitializedParams {
+				t.Errorf("InitializedParams non-nil = %v, want %v (value = %+v)",
+					got, tt.wantInitializedParams, opts.State.InitializedParams)
+			}
+		})
+	}
+}
+
+// statelessHandlerCapture builds a stateless server with a single tool whose
+// handler captures everything we want to assert about the per-request view of
+// the session and the new-protocol accessors.
+type statelessHandlerCapture struct {
+	mu                    sync.Mutex
+	sessionInitParams     *InitializeParams
+	reqProtocolVersion    string
+	reqClientInfo         *Implementation
+	reqClientCapabilities *ClientCapabilities
+}
+
+func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
+	// SEP-2575: the MCP-Protocol-Version header is mandatory for new-protocol
+	// requests and must be a supported version. The 2026-06-30 version is
+	// not yet in the global list, so register it for the duration of the test.
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	capture := &statelessHandlerCapture{}
+	mcpServer := NewServer(testImpl, nil)
+	AddTool(mcpServer, &Tool{Name: "capture", Description: "captures request info"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			capture.mu.Lock()
+			defer capture.mu.Unlock()
+			capture.sessionInitParams = req.Session.InitializeParams()
+			capture.reqProtocolVersion = req.ProtocolVersion()
+			capture.reqClientInfo = req.ClientInfo()
+			capture.reqClientCapabilities = req.ClientCapabilities()
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return mcpServer },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := newProtocolBody(t, "capture", struct{}{})
+	httpReq, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	httpReq.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	// >= 2026-06-30 also requires the Mcp-Method and Mcp-Name standard
+	// headers (see streamable_headers.go).
+	httpReq.Header.Set(methodHeader, "tools/call")
+	httpReq.Header.Set(nameHeader, "capture")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.sessionInitParams == nil {
+		t.Errorf("Session.InitializeParams() is nil, want populated initializeParams for new-protocol session")
+	} else {
+		if got, want := capture.sessionInitParams.ProtocolVersion, protocolVersion20260630; got != want {
+			t.Errorf("Session.InitializeParams().ProtocolVersion = %q, want %q", got, want)
+		}
+		if got, want := capture.sessionInitParams.ClientInfo.Name, "new-proto-client"; got != want {
+			t.Errorf("Session.InitializeParams().ClientInfo.Name = %q, want %q", got, want)
+		}
+	}
+	if got, want := capture.reqProtocolVersion, protocolVersion20260630; got != want {
+		t.Errorf("req.ProtocolVersion() = %q, want %q", got, want)
+	}
+	if capture.reqClientInfo == nil || capture.reqClientInfo.Name != "new-proto-client" {
+		t.Errorf("req.ClientInfo() = %+v, want Name=new-proto-client", capture.reqClientInfo)
+	}
+	if capture.reqClientCapabilities == nil || capture.reqClientCapabilities.Sampling == nil {
+		t.Errorf("req.ClientCapabilities() = %+v, want non-nil Sampling", capture.reqClientCapabilities)
+	}
+}
+
+// TestStreamableStateful_RejectsNewProtocol verifies that a stateful HTTP
+// server rejects requests carrying _meta.protocolVersion (i.e. >= 2026-06-30
+// requests) with HTTP 400. The new protocol is
+// supported on HTTP only when StreamableHTTPOptions.Stateless=true.
+func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
+	// Make 2026-06-30 a "known" version so that the request reaches servePOST
+	// (otherwise the early header validation at ServeHTTP rejects it).
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	// Initialize a legacy session first.
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequest(http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	// Drive the existing session with a new-protocol request whose header and
+	// body agree. The cross-check passes; the stateful-rejection check fires.
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(sessionIDHeader, sessionID)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(string(respBody), "stateless") {
+		t.Errorf("body = %q, want a message mentioning 'stateless'", respBody)
+	}
+}
+
+// TestStreamableStateless_AcceptsNewProtocol is the positive control:
+// confirms that a stateless server still accepts new-protocol requests
+// (the rejection in TestStreamableStateful_RejectsNewProtocol must not
+// fire on Stateless: true).
+func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
 	}
 }

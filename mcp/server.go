@@ -143,6 +143,9 @@ type ServerOptions struct {
 	//
 	// As a special case, if GetSessionID returns the empty string, the
 	// Mcp-Session-Id header will not be set.
+	//
+	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
+	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
 }
 
@@ -279,6 +282,9 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
 			}
 		}
+	}
+	if err := validateParamHeaderAnnotations(t); err != nil {
+		panic(fmt.Errorf("AddTool %q: invalid parameter header annotations: %v", t.Name, err))
 	}
 	st := &serverTool{tool: t, handler: h}
 	// Assume there was a change, since add replaces existing tools.
@@ -753,10 +759,15 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	})
 }
 
-func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+// getServerTool looks up a server tool by name.
+func (s *Server) getServerTool(name string) (*serverTool, bool) {
 	s.mu.Lock()
-	st, ok := s.tools.get(req.Params.Name)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.tools.get(name)
+}
+
+func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+	st, ok := s.getServerTool(req.Params.Name)
 	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
@@ -1439,13 +1450,32 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	initialized := ss.state.InitializeParams != nil
 	ss.mu.Unlock()
 
-	// From the spec:
-	// "The client SHOULD NOT send requests other than pings before the server
-	// has responded to the initialize request."
+	// Per-request protocol detection (SEP-2575): if the request carries
+	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
+	// follows the new sessionless protocol. The initialization gate is
+	// skipped for such requests.
+	validatedMeta, perRequestErr := validateRequestMeta(req)
+	if perRequestErr != nil {
+		return nil, perRequestErr
+	}
+
+	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+		ss.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = validatedMeta.initializeParams
+		})
+	}
+
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized:
+		if validatedMeta.usesNewProtocol {
+			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
+		}
 	default:
-		if !initialized {
+		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}
@@ -1477,9 +1507,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	var wasInit bool
 	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
+		wasInit = state.InitializeParams != nil
+		if !wasInit {
+			state.InitializeParams = params
+		}
 	})
+	if wasInit {
+		ss.server.opts.Logger.Error("duplicate initialize request")
+		return nil, fmt.Errorf("duplicate %q received", methodInitialize)
+	}
 
 	s := ss.server
 	return &InitializeResult{

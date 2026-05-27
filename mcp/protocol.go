@@ -165,10 +165,12 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 }
 
 func (x *CallToolParams) isParams()              {}
+func (x *CallToolParams) isNil() bool            { return x == nil }
 func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 func (x *CallToolParamsRaw) isParams()              {}
+func (x *CallToolParamsRaw) isNil() bool            { return x == nil }
 func (x *CallToolParamsRaw) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParamsRaw) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -187,6 +189,7 @@ type CancelledParams struct {
 }
 
 func (x *CancelledParams) isParams()              {}
+func (x *CancelledParams) isNil() bool            { return x == nil }
 func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -374,7 +377,8 @@ type CompleteParams struct {
 	Ref      *CompleteReference     `json:"ref"`
 }
 
-func (*CompleteParams) isParams() {}
+func (x *CompleteParams) isParams()   {}
+func (x *CompleteParams) isNil() bool { return x == nil }
 
 type CompletionResultDetails struct {
 	HasMore bool     `json:"hasMore,omitempty"`
@@ -422,6 +426,7 @@ type CreateMessageParams struct {
 }
 
 func (x *CreateMessageParams) isParams()              {}
+func (x *CreateMessageParams) isNil() bool            { return x == nil }
 func (x *CreateMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -448,6 +453,7 @@ type CreateMessageWithToolsParams struct {
 }
 
 func (x *CreateMessageWithToolsParams) isParams()              {}
+func (x *CreateMessageWithToolsParams) isNil() bool            { return x == nil }
 func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -654,6 +660,7 @@ type GetPromptParams struct {
 }
 
 func (x *GetPromptParams) isParams()              {}
+func (x *GetPromptParams) isNil() bool            { return x == nil }
 func (x *GetPromptParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *GetPromptParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -706,6 +713,7 @@ func (p *initializeParamsV2) toV1() *InitializeParams {
 }
 
 func (x *InitializeParams) isParams()              {}
+func (x *InitializeParams) isNil() bool            { return x == nil }
 func (x *InitializeParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializeParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -739,6 +747,7 @@ type InitializedParams struct {
 }
 
 func (x *InitializedParams) isParams()              {}
+func (x *InitializedParams) isNil() bool            { return x == nil }
 func (x *InitializedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -752,6 +761,7 @@ type ListPromptsParams struct {
 }
 
 func (x *ListPromptsParams) isParams()              {}
+func (x *ListPromptsParams) isNil() bool            { return x == nil }
 func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListPromptsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
@@ -780,6 +790,7 @@ type ListResourceTemplatesParams struct {
 }
 
 func (x *ListResourceTemplatesParams) isParams()              {}
+func (x *ListResourceTemplatesParams) isNil() bool            { return x == nil }
 func (x *ListResourceTemplatesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourceTemplatesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourceTemplatesParams) cursorPtr() *string     { return &x.Cursor }
@@ -808,6 +819,7 @@ type ListResourcesParams struct {
 }
 
 func (x *ListResourcesParams) isParams()              {}
+func (x *ListResourcesParams) isNil() bool            { return x == nil }
 func (x *ListResourcesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourcesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourcesParams) cursorPtr() *string     { return &x.Cursor }
@@ -833,6 +845,7 @@ type ListRootsParams struct {
 }
 
 func (x *ListRootsParams) isParams()              {}
+func (x *ListRootsParams) isNil() bool            { return x == nil }
 func (x *ListRootsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -858,6 +871,7 @@ type ListToolsParams struct {
 }
 
 func (x *ListToolsParams) isParams()              {}
+func (x *ListToolsParams) isNil() bool            { return x == nil }
 func (x *ListToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListToolsParams) cursorPtr() *string     { return &x.Cursor }
@@ -896,6 +910,7 @@ type LoggingMessageParams struct {
 }
 
 func (x *LoggingMessageParams) isParams()              {}
+func (x *LoggingMessageParams) isNil() bool            { return x == nil }
 func (x *LoggingMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -958,6 +973,7 @@ type PingParams struct {
 }
 
 func (x *PingParams) isParams()              {}
+func (x *PingParams) isNil() bool            { return x == nil }
 func (x *PingParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PingParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -978,7 +994,8 @@ type ProgressNotificationParams struct {
 	Total float64 `json:"total,omitempty"`
 }
 
-func (*ProgressNotificationParams) isParams() {}
+func (x *ProgressNotificationParams) isParams()   {}
+func (x *ProgressNotificationParams) isNil() bool { return x == nil }
 
 // IconTheme specifies the theme an icon is designed for.
 type IconTheme string
@@ -1048,6 +1065,7 @@ type PromptListChangedParams struct {
 }
 
 func (x *PromptListChangedParams) isParams()              {}
+func (x *PromptListChangedParams) isNil() bool            { return x == nil }
 func (x *PromptListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PromptListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1089,6 +1107,7 @@ type ReadResourceParams struct {
 }
 
 func (x *ReadResourceParams) isParams()              {}
+func (x *ReadResourceParams) isNil() bool            { return x == nil }
 func (x *ReadResourceParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1145,6 +1164,7 @@ type ResourceListChangedParams struct {
 }
 
 func (x *ResourceListChangedParams) isParams()              {}
+func (x *ResourceListChangedParams) isNil() bool            { return x == nil }
 func (x *ResourceListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ResourceListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1205,6 +1225,7 @@ type RootsListChangedParams struct {
 }
 
 func (x *RootsListChangedParams) isParams()              {}
+func (x *RootsListChangedParams) isNil() bool            { return x == nil }
 func (x *RootsListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1288,6 +1309,7 @@ type SetLoggingLevelParams struct {
 }
 
 func (x *SetLoggingLevelParams) isParams()              {}
+func (x *SetLoggingLevelParams) isNil() bool            { return x == nil }
 func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1346,6 +1368,13 @@ type Tool struct {
 	Icons []Icon `json:"icons,omitempty"`
 }
 
+// hintomitempty is a compatibility parameter that restores the pre-1.7.0
+// behavior of [ToolAnnotations] JSON marshaling, where false-valued bare bool
+// fields (ReadOnlyHint, IdempotentHint) were omitted from the output.
+// See the documentation for the mcpgodebug package for instructions on how to
+// enable it.
+var hintomitempty = mcpgodebug.Value("hintomitempty")
+
 // Additional properties describing a Tool to clients.
 //
 // NOTE: all properties in ToolAnnotations are hints. They are not
@@ -1368,7 +1397,7 @@ type ToolAnnotations struct {
 	// (This property is meaningful only when ReadOnlyHint == false.)
 	//
 	// Default: false
-	IdempotentHint bool `json:"idempotentHint,omitempty"`
+	IdempotentHint bool `json:"idempotentHint"`
 	// If true, this tool may interact with an "open world" of external entities. If
 	// false, the tool's domain of interaction is closed. For example, the world of
 	// a web search tool is open, whereas that of a memory tool is not.
@@ -1378,9 +1407,28 @@ type ToolAnnotations struct {
 	// If true, the tool does not modify its environment.
 	//
 	// Default: false
-	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
+	ReadOnlyHint bool `json:"readOnlyHint"`
 	// A human-readable title for the tool.
 	Title string `json:"title,omitempty"`
+}
+
+// MarshalJSON implements [json.Marshaler] for ToolAnnotations.
+//
+// To restore the previous behavior where false-valued ReadOnlyHint and
+// IdempotentHint were omitted, set MCPGODEBUG=hintomitempty=1.
+func (t ToolAnnotations) MarshalJSON() ([]byte, error) {
+	if hintomitempty == "1" {
+		type compat struct {
+			DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+			IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+			OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+			ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+			Title           string `json:"title,omitempty"`
+		}
+		return json.Marshal(compat(t))
+	}
+	type nomethod ToolAnnotations
+	return json.Marshal(nomethod(t))
 }
 
 type ToolListChangedParams struct {
@@ -1390,6 +1438,7 @@ type ToolListChangedParams struct {
 }
 
 func (x *ToolListChangedParams) isParams()              {}
+func (x *ToolListChangedParams) isNil() bool            { return x == nil }
 func (x *ToolListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ToolListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1403,7 +1452,8 @@ type SubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (*SubscribeParams) isParams() {}
+func (x *SubscribeParams) isParams()   {}
+func (x *SubscribeParams) isNil() bool { return x == nil }
 
 // Sent from the client to request cancellation of resources/updated
 // notifications from the server. This should follow a previous
@@ -1416,7 +1466,8 @@ type UnsubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (*UnsubscribeParams) isParams() {}
+func (x *UnsubscribeParams) isParams()   {}
+func (x *UnsubscribeParams) isNil() bool { return x == nil }
 
 // A notification from the server to the client, informing it that a resource
 // has changed and may need to be read again. This should only be sent if the
@@ -1429,7 +1480,8 @@ type ResourceUpdatedNotificationParams struct {
 	URI string `json:"uri"`
 }
 
-func (*ResourceUpdatedNotificationParams) isParams() {}
+func (x *ResourceUpdatedNotificationParams) isParams()   {}
+func (x *ResourceUpdatedNotificationParams) isNil() bool { return x == nil }
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -1468,7 +1520,8 @@ type ElicitParams struct {
 	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
-func (x *ElicitParams) isParams() {}
+func (x *ElicitParams) isParams()   {}
+func (x *ElicitParams) isNil() bool { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -1500,7 +1553,8 @@ type ElicitationCompleteParams struct {
 	ElicitationID string `json:"elicitationId"`
 }
 
-func (*ElicitationCompleteParams) isParams() {}
+func (x *ElicitationCompleteParams) isParams()   {}
+func (x *ElicitationCompleteParams) isNil() bool { return x == nil }
 
 // An Implementation describes the name and version of an MCP implementation, with an optional
 // title for UI representation.
@@ -1629,4 +1683,18 @@ const (
 	methodSubscribe                 = "resources/subscribe"
 	notificationToolListChanged     = "notifications/tools/list_changed"
 	methodUnsubscribe               = "resources/unsubscribe"
+)
+
+// Per-request _meta field names for the >= 2026-06-30 protocol version.
+//
+// These keys appear inside a Params._meta map and carry information that
+// previously came from the initialization handshake (SEP-2575).
+const (
+	// MetaKeyProtocolVersion identifies the MCP protocol version that the
+	// request follows.
+	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
+	// MetaKeyClientInfo carries the client's [Implementation].
+	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
+	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 )

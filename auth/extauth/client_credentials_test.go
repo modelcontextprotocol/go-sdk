@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -276,6 +278,86 @@ func TestClientCredentialsHandler_Authorize(t *testing.T) {
 			t.Fatal("expected non-nil TokenSource")
 		}
 	})
+}
+
+func TestClientCredentialsHandler_ScopeAccumulation(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		MetadataEndpointConfig: &oauthtest.MetadataEndpointConfig{
+			ServeOAuthInsertedEndpoint: true,
+		},
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test-client": {Secret: "test-secret"},
+			},
+		},
+		ClientCredentialsConfig: &oauthtest.ClientCredentialsConfig{
+			Enabled: true,
+		},
+		TokenScopeFunc: func(requestedScope string) string {
+			// Simulate a server that never grants "write".
+			var granted []string
+			for _, s := range strings.Fields(requestedScope) {
+				if s != "write" {
+					granted = append(granted, s)
+				}
+			}
+			return strings.Join(granted, " ")
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First authorization: 401 with scope="read write".
+	// The token response will only grant "read" (TokenScopeFunc strips "write").
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("WWW-Authenticate", `Bearer scope="read write"`)
+	req := httptest.NewRequest("GET", resourceURL, nil)
+	if err := handler.Authorize(t.Context(), req, resp); err != nil {
+		t.Fatalf("First Authorize failed: %v", err)
+	}
+
+	// Verify only "read" was granted (the token omitted "write").
+	issuer := authServer.URL()
+	if diff := cmp.Diff([]string{"read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second authorization: 401 with scope="admin" (simulating step-up).
+	// Accumulated scopes should be "read" (previously granted) + "admin" (new),
+	// but NOT "write" (requested but never granted).
+	resp2 := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp2.Header.Set("WWW-Authenticate", `Bearer scope="admin"`)
+	req2 := httptest.NewRequest("GET", resourceURL, nil)
+	if err := handler.Authorize(t.Context(), req2, resp2); err != nil {
+		t.Fatalf("Second Authorize failed: %v", err)
+	}
+
+	// Verify accumulated scopes: "read" (granted) + "admin" (new), no "write".
+	if diff := cmp.Diff([]string{"admin", "read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("After second Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
+	}
 }
 
 func TestSelectTokenAuthMethod(t *testing.T) {
