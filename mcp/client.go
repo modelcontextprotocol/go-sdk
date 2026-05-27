@@ -1076,23 +1076,23 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 
 // Ping makes an MCP "ping" request to the server.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[*PingParams](params)))
 	return err
 }
 
 // ListPrompts lists prompts that are currently available on the server.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[*ListPromptsParams](params)))
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
-	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[*GetPromptParams](params)))
 }
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[*ListToolsParams](params)))
 	if err != nil {
 		return nil, err
 	}
@@ -1115,44 +1115,44 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if tool := cs.getCachedTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[*CallToolParams](params)))
 }
 
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[*SetLoggingLevelParams](params)))
 	return err
 }
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[*ListResourcesParams](params)))
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[*ListResourceTemplatesParams](params)))
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[*ReadResourceParams](params)))
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
-	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[*CompleteParams](params)))
 }
 
 // Subscribe sends a "resources/subscribe" request to the server, asking for
 // notifications when the specified resource changes.
 func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[*SubscribeParams](params)))
 	return err
 }
 
 // Unsubscribe sends a "resources/unsubscribe" request to the server, cancelling
 // a previous subscription.
 func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[*UnsubscribeParams](params)))
 	return err
 }
 
@@ -1224,7 +1224,7 @@ func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *Elicit
 // This can be used if the client is performing a long-running task that was
 // initiated by the server.
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
+	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[*ProgressNotificationParams](params)))
 }
 
 // Tools provides an iterator for all tools available on the server,

@@ -2376,7 +2376,7 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 	}
 	defer session.Close()
 
-	result, err := session.ListTools(ctx, &ListToolsParams{})
+	result, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1122,7 +1122,7 @@ func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p 
 // This is typically used to report on the status of a long-running request
 // that was initiated by the client.
 func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
+	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[*ProgressNotificationParams](params)))
 }
 
 func newServerRequest[P Params](ss *ServerSession, params P) *ServerRequest[P] {
@@ -1197,7 +1197,7 @@ func (ss *ServerSession) ID() string {
 
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[*PingParams](params)))
 	return err
 }
 
@@ -1206,7 +1206,7 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 	if err := ss.checkInitialized(methodListRoots); err != nil {
 		return nil, err
 	}
-	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
+	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[*ListRootsParams](params)))
 }
 
 // CreateMessage sends a sampling request to the client.
@@ -1226,7 +1226,7 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 		p2.Messages = []*SamplingMessage{} // avoid JSON "null"
 		params = &p2
 	}
-	res, err := handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
+	res, err := handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[*CreateMessageParams](params)))
 	if err != nil {
 		return nil, err
 	}
@@ -1263,7 +1263,7 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 		p2.Messages = []*SamplingMessageV2{} // avoid JSON "null"
 		params = &p2
 	}
-	return handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[Params](params)))
+	return handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, orZero[*CreateMessageWithToolsParams](params)))
 }
 
 // Elicit sends an elicitation request to the client asking for user input.
@@ -1302,7 +1302,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		}
 	}
 
-	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[Params](params)))
+	res, err := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, orZero[*ElicitParams](params)))
 	if err != nil {
 		return nil, err
 	}
@@ -1353,7 +1353,7 @@ func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) 
 	if compareLevels(params.Level, logLevel) < 0 {
 		return nil
 	}
-	return handleNotify(ctx, notificationLoggingMessage, newServerRequest(ss, orZero[Params](params)))
+	return handleNotify(ctx, notificationLoggingMessage, newServerRequest(ss, orZero[*LoggingMessageParams](params)))
 }
 
 // AddSendingMiddleware wraps the current sending method handler using the provided
