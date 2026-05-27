@@ -97,10 +97,6 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// This can be called from user code, with an arbitrary value for method.
 		return nil, jsonrpc2.ErrNotHandled
 	}
-	// Populate the SEP-2575 per-request _meta triple. This may allocate a
-	// fresh Params struct on the request if the caller passed nil and the
-	// session has negotiated the new protocol.
-	injectRequestMeta(req)
 	params := req.GetParams()
 	if initParams, ok := params.(*InitializeParams); ok {
 		// Fix the marshaling of initialize params, to work around #607.
@@ -109,12 +105,10 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
-	// Collapse a typed-nil-wrapping interface (e.g. (*ListToolsParams)(nil))
-	// to a true nil interface so that the JSON-RPC layer omits the "params"
-	// field on the wire.
-	if params != nil && params.isNil() {
-		params = nil
-	}
+	// Populate the SEP-2575 per-request _meta triple on the outgoing request.
+	// This is a no-op for old protocol versions and for requests where the
+	// caller did not provide params.
+	injectRequestMeta(req)
 
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
@@ -231,8 +225,7 @@ func injectRequestMeta(req Request) {
 	}
 	params := req.GetParams()
 	if params == nil || params.isNil() {
-		req.setEmptyParams()
-		params = req.GetParams()
+		return
 	}
 	m := params.GetMeta()
 	if m == nil {
@@ -585,7 +578,6 @@ type Request interface {
 	GetParams() Params
 	// GetExtra returns the Extra field for ServerRequests, and nil for ClientRequests.
 	GetExtra() *RequestExtra
-	setEmptyParams()
 }
 
 // A ClientRequest is a request to a client.
@@ -637,17 +629,6 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
-
-func (r *ClientRequest[P]) setEmptyParams() {
-	baseType := reflect.TypeFor[P]().Elem()
-	ptrVal := reflect.New(baseType)
-	r.Params = ptrVal.Interface().(P)
-}
-func (r *ServerRequest[P]) setEmptyParams() {
-	baseType := reflect.TypeFor[P]().Elem()
-	ptrVal := reflect.New(baseType)
-	r.Params = ptrVal.Interface().(P)
-}
 
 // ProtocolVersion returns the protocol version negotiated for this request.
 //
