@@ -183,7 +183,11 @@ func DecodeMessage(data []byte) (Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if msg.Method != "" {
+	var fields map[string]json.RawMessage
+	if err := internaljson.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("unmarshaling jsonrpc message fields: %w", err)
+	}
+	if _, hasMethod := fields["method"]; hasMethod {
 		// has a method, must be a call
 		return &Request{
 			Method: msg.Method,
