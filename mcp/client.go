@@ -430,6 +430,27 @@ func (cs *ClientSession) usesNewProtocol() bool {
 	return res != nil && res.ProtocolVersion >= protocolVersion20260630
 }
 
+// injectRequestMeta populates the SEP-2575 per-request `_meta` triple
+// (protocolVersion, clientInfo, clientCapabilities) on the given outgoing
+// request params. Keys already present in params.Meta are not overwritten.
+func (cs *ClientSession) injectRequestMeta(params Params) {
+	res := cs.state.InitializeResult
+	m := params.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyProtocolVersion]; !ok {
+		m[MetaKeyProtocolVersion] = res.ProtocolVersion
+	}
+	if _, ok := m[MetaKeyClientInfo]; !ok {
+		m[MetaKeyClientInfo] = cs.client.impl
+	}
+	if _, ok := m[MetaKeyClientCapabilities]; !ok {
+		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion)
+	}
+	params.SetMeta(m)
+}
+
 func (cs *ClientSession) ID() string {
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
 		return c.SessionID()
@@ -1090,24 +1111,33 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListPrompts lists prompts that are currently available on the server.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ListPromptsParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &ListPromptsParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &GetPromptParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &GetPromptParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ListToolsParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &ListToolsParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
@@ -1132,6 +1162,9 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if tool := cs.getCachedTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
+	if cs.usesNewProtocol() {
+		cs.injectRequestMeta(params)
+	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
@@ -1142,31 +1175,43 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ListResourcesParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &ListResourcesParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ListResourceTemplatesParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &ListResourceTemplatesParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ReadResourceParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &ReadResourceParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
-	if params == nil && cs.usesNewProtocol() {
-		params = &CompleteParams{}
+	if cs.usesNewProtocol() {
+		if params == nil {
+			params = &CompleteParams{}
+		}
+		cs.injectRequestMeta(params)
 	}
 	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
 }
@@ -1253,9 +1298,6 @@ func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *Elicit
 // This can be used if the client is performing a long-running task that was
 // initiated by the server.
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	if params == nil && cs.usesNewProtocol() {
-		params = &ProgressNotificationParams{}
-	}
 	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
 }
 
