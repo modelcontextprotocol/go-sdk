@@ -825,6 +825,16 @@ func (c *streamableServerConn) SessionID() string {
 	return c.sessionID
 }
 
+// pendingClientRequests returns the number of incoming requests from the
+// client that the server has not yet finished responding to. Used by the
+// keepalive loop to skip pings while a tool call (or any other request)
+// is still being handled — the in-flight response IS the liveness signal.
+func (c *streamableServerConn) pendingClientRequests() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.requestStreams)
+}
+
 // A stream is a single logical stream of SSE events within a server session.
 // A stream begins with a client request, or with a client GET that has
 // no Last-Event-ID header.

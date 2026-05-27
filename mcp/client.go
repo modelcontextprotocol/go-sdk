@@ -391,6 +391,12 @@ func (cs *ClientSession) getCachedTool(name string) *Tool {
 	return cs.toolCache[name]
 }
 
+// hasPendingRequests is the client-side counterpart of
+// ServerSession.hasPendingRequests. See keepaliveSession in shared.go.
+func (cs *ClientSession) hasPendingRequests() bool {
+	return false
+}
+
 // registerElicitationWaiter registers a waiter for an elicitation complete
 // notification with the given elicitation ID. It returns two functions: an await
 // function that waits for the notification or context cancellation, and a cleanup

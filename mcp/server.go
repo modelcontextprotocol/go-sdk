@@ -1144,6 +1144,16 @@ type ServerSession struct {
 	state ServerSessionState
 }
 
+func (ss *ServerSession) hasPendingRequests() bool {
+	type pendingReporter interface {
+		pendingClientRequests() int
+	}
+	if c, ok := ss.mcpConn.(pendingReporter); ok {
+		return c.pendingClientRequests() > 0
+	}
+	return false
+}
+
 func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	ss.mu.Lock()
 	mut(&ss.state)

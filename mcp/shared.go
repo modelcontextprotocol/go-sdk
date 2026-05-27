@@ -745,6 +745,7 @@ type listResult[T any] interface {
 type keepaliveSession interface {
 	Ping(ctx context.Context, params *PingParams) error
 	Close() error
+	hasPendingRequests() bool
 }
 
 // startKeepalive starts the keepalive mechanism for a session.
@@ -769,6 +770,10 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if session.hasPendingRequests() {
+					// Active request is a liveness signal; skip this tick.
+					continue
+				}
 				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
