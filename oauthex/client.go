@@ -23,6 +23,8 @@ type ClientCredentials struct {
 	// credentials are registered with. Pre-registered credentials are bound
 	// to a specific authorization server; when set, an error is returned if
 	// the discovered authorization server does not match, per SEP-2352.
+	// The comparison ignores a single trailing slash, matching the
+	// tolerance applied during RFC 8414 Section 3.3 metadata validation.
 	// OPTIONAL.
 	Issuer string
 }

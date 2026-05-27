@@ -129,7 +129,7 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	}
 
 	creds := h.config.Credentials
-	if creds.Issuer != "" && creds.Issuer != asm.Issuer {
+	if creds.Issuer != "" && !authutil.IssuersEqual(creds.Issuer, asm.Issuer) {
 		return fmt.Errorf("authorization server issuer %q does not match pre-registered credentials issuer %q", asm.Issuer, creds.Issuer)
 	}
 

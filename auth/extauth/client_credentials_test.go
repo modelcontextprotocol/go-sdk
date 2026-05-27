@@ -244,6 +244,28 @@ func TestClientCredentialsHandler_Authorize(t *testing.T) {
 		}
 	})
 
+	t.Run("issuer match ignoring trailing slash", func(t *testing.T) {
+		config := validClientCredentialsConfig()
+		// authServer.URL() has no trailing slash; configure with one to
+		// verify the comparison tolerates the difference (per RFC 8414 §3.3
+		// normalization applied in oauthex.IssuersEqual).
+		config.Credentials.Issuer = authServer.URL() + "/"
+		handler, err := NewClientCredentialsHandler(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp := &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{},
+			Body:       http.NoBody,
+		}
+		req := httptest.NewRequest("GET", resourceURL, nil)
+		if err := handler.Authorize(t.Context(), req, resp); err != nil {
+			t.Fatalf("Authorize() unexpected error = %v", err)
+		}
+	})
+
 	t.Run("PRM via resource_metadata in challenge", func(t *testing.T) {
 		prmMux := http.NewServeMux()
 		prmMux.Handle("/custom-prm", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{

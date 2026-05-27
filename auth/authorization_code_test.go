@@ -693,6 +693,31 @@ func TestHandleRegistration(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name: "Preregistered_IssuerMatchTrailingSlash",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "", // set dynamically in the test (with trailing slash)
+				},
+			},
+			want: &resolvedClientConfig{
+				registrationType: registrationTypePreregistered,
+				clientID:         "pre_client_id",
+				clientSecret:     "pre_client_secret",
+				authStyle:        oauth2.AuthStyleInParams,
+			},
+		},
+		{
 			name: "NoneSupported",
 			handlerConfig: &AuthorizationCodeHandlerConfig{
 				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com/metadata.json"},
@@ -708,6 +733,11 @@ func TestHandleRegistration(t *testing.T) {
 			// For the IssuerMatch test, set the Issuer to the actual server URL.
 			if tt.name == "Preregistered_IssuerMatch" {
 				tt.handlerConfig.PreregisteredClient.Issuer = s.URL()
+			}
+			// For the trailing-slash variant, append a trailing slash so the
+			// configured issuer differs only in normalization from asm.Issuer.
+			if tt.name == "Preregistered_IssuerMatchTrailingSlash" {
+				tt.handlerConfig.PreregisteredClient.Issuer = s.URL() + "/"
 			}
 			tt.handlerConfig.AuthorizationCodeFetcher = func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 				return nil, nil
