@@ -465,6 +465,70 @@ func setProgressToken(p Params, pt any) {
 	m[progressTokenKey] = pt
 }
 
+// extractRequestMeta performs a lightweight partial unmarshal of the `_meta`
+// field from a JSON-RPC request's raw params.
+func extractRequestMeta(rawParams json.RawMessage) Meta {
+	if len(rawParams) == 0 {
+		return nil
+	}
+	var meta struct {
+		Meta Meta `json:"_meta"`
+	}
+	if err := internaljson.Unmarshal(rawParams, &meta); err != nil {
+		return nil
+	}
+	return meta.Meta
+}
+
+type validatedMeta struct {
+	usesNewProtocol  bool
+	initializeParams *InitializeParams
+}
+
+// validateRequestMeta inspects a JSON-RPC request to detect whether it follows
+// the >= 2026-06-30 protocol via the `_meta` field.
+// If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
+// validatedMeta with usesNewProtocol set to false, and a nil error.
+// If the request has a protocolVersion in _meta:
+//   - For notifications, it returns usesNewProtocol set to true and a nil initializeParams.
+//   - For call requests, it validates the presence of clientInfo and clientCapabilities in _meta.
+//     If either is missing or invalid, it returns nil and a non-nil error. Otherwise, it returns
+//     usesNewProtocol set to true and the populated initializeParams.
+func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
+	meta := extractRequestMeta(req.Params)
+	if meta == nil {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
+	if !ok {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	// Notifications do not carry full client identity. In new protocol, only cancel notification
+	// is allowed in STDIO.
+	if !req.IsCall() {
+		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
+	}
+	clientInfo, ok := decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
+	if !ok {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientInfo),
+		}
+	}
+	capabilities, ok := decodeMetaValue[*ClientCapabilities](meta, MetaKeyClientCapabilities)
+	if !ok {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
+		}
+	}
+	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
+		ProtocolVersion: protocolVersion,
+		Capabilities:    capabilities,
+		ClientInfo:      clientInfo,
+	}}, nil
+}
+
 // A Request is a method request with parameters and additional information, such as the session.
 // Request is implemented by [*ClientRequest] and [*ServerRequest].
 type Request interface {
@@ -525,6 +589,94 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
 
+// ProtocolVersion returns the protocol version negotiated for this request.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams] established during the
+// initialize handshake.
+func (r *ServerRequest[P]) ProtocolVersion() string {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := m[MetaKeyProtocolVersion].(string); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ProtocolVersion
+		}
+	}
+	return ""
+}
+
+// ClientInfo returns the [Implementation] identifying the calling client.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams].
+func (r *ServerRequest[P]) ClientInfo() *Implementation {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*Implementation](m, MetaKeyClientInfo); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ClientInfo
+		}
+	}
+	return nil
+}
+
+// ClientCapabilities returns the [ClientCapabilities] of the calling client.
+//
+// For requests following the >= 2026-06-30 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams].
+func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*ClientCapabilities](m, MetaKeyClientCapabilities); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.Capabilities
+		}
+	}
+	return nil
+}
+
+// getRequestMeta returns the raw `_meta` map from the request's params, or
+// nil if the params are absent.
+func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
+	// In practice P is a pointer type implementing Params.
+	if any(r.Params) == nil || r.Params.isNil() {
+		return nil
+	}
+	return r.Params.GetMeta()
+}
+
+// decodeMetaValue decodes a typed value out of a `_meta` map. Values may
+// arrive either as the typed Go value (when constructed in-process) or as
+// the generic JSON map produced by encoding/json after wire transit. In the
+// latter case, the value is re-encoded and decoded into the target type.
+func decodeMetaValue[T any](m map[string]any, key string) (T, bool) {
+	var zero T
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return zero, false
+	}
+	if v, ok := raw.(T); ok {
+		return v, true
+	}
+	var v T
+	if err := remarshal(raw, &v); err != nil {
+		return zero, false
+	}
+	return v, true
+}
+
 func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
 	return &ServerRequest[P]{Session: s, Params: p}
 }
@@ -542,6 +694,9 @@ type Params interface {
 
 	// isParams discourages implementation of Params outside of this package.
 	isParams()
+
+	// isNil returns true if the underlying value is nil.
+	isNil() bool
 }
 
 // RequestParams is a parameter (input) type for an MCP request.

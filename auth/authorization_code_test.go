@@ -78,6 +78,7 @@ func TestAuthorize(t *testing.T) {
 			return &AuthorizationResult{
 				Code:  location.Query().Get("code"),
 				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
 			}, nil
 		},
 	})
@@ -176,6 +177,7 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 			return &AuthorizationResult{
 				Code:  loc.Query().Get("code"),
 				State: loc.Query().Get("state"),
+				Iss:   loc.Query().Get("iss"),
 			}, nil
 		},
 	})
@@ -733,6 +735,59 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 	if got.authStyle != oauth2.AuthStyleInHeader {
 		t.Errorf("handleRegistration() authStyle = %v, want %v", got.authStyle, oauth2.AuthStyleInHeader)
+	}
+}
+
+func TestValidateIssuerResponse(t *testing.T) {
+	const expectedIssuer = "https://auth.example.com"
+
+	tests := []struct {
+		name            string
+		iss             string
+		issSupported    bool
+		wantErr         bool
+		wantErrContains string
+	}{
+		{
+			name:         "ValidIss",
+			iss:          expectedIssuer,
+			issSupported: true,
+		},
+		{
+			name:            "WrongIss",
+			iss:             "https://attacker.example.com",
+			issSupported:    true,
+			wantErr:         true,
+			wantErrContains: "does not match expected issuer",
+		},
+		{
+			name:            "MissingIssWhenRequired",
+			iss:             "",
+			issSupported:    true,
+			wantErr:         true,
+			wantErrContains: "RFC 9207",
+		},
+		{
+			name:         "MissingIssWhenNotRequired",
+			iss:          "",
+			issSupported: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIssuerResponse(tt.iss, expectedIssuer, tt.issSupported)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("validateIssuerResponse() = nil, want error containing %q", tt.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("validateIssuerResponse() error = %q, want it to contain %q", err.Error(), tt.wantErrContains)
+				}
+			} else if err != nil {
+				t.Fatalf("validateIssuerResponse() unexpected error = %v", err)
+			}
+		})
 	}
 }
 
