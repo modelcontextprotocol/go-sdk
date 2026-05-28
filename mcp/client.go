@@ -363,7 +363,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 			break
 		}
 	}
-	if negotiated == "" {
+	if negotiated == "" || negotiated < protocolVersion20260630 {
 		// If there is no overlap, fall back to initialize so version
 		// negotiation can happen via the legacy path.
 		return nil, true, nil

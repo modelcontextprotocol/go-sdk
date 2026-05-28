@@ -31,7 +31,7 @@ var (
 	// ErrUnknown should be used for all non coded errors.
 	ErrUnknown = NewError(-32001, "unknown error")
 	// ErrServerClosing is returned for calls that arrive while the server is closing.
-	ErrServerClosing = NewError(-32004, "server is closing")
+	ErrServerClosing = NewError(-32006, "server is closing")
 	// ErrClientClosing is a dummy error returned for calls initiated while the client is closing.
 	ErrClientClosing = NewError(-32003, "client is closing")
 
@@ -45,6 +45,8 @@ var (
 	// should be returned to the caller to indicate that the specific request is
 	// invalid in the current context.
 	ErrRejected = NewError(-32005, "rejected by transport")
+	// ErrUnsupportedProtocolVersion is returned when a server does not support the protocol version.
+	ErrUnsupportedProtocolVersion = NewError(-32004, "unsupported protocol version")
 )
 
 const wireVersion = "2.0"

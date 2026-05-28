@@ -3579,3 +3579,48 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
 	}
 }
+
+// TestStreamableClientUnsupportedVersionFallback exercises the full
+// SEP-2575 fallback. The client requests protocolVersion20260630, which the server does
+// not advertise in supportedProtocolVersions. The server therefore rejects
+// the server/discover POST at the transport-level header validation with a
+// plain HTTP 400 ("Bad Request: Unsupported protocol version ..."). The
+// streamable client must recognize this body, keep the connection alive, and
+// successfully complete the legacy initialize handshake.
+//
+// TODO: once 20260630 is part of supportedProtocolVersion on server side, modify the list in the test to keep it consistent.
+func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		nil,
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	ir := session.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil; expected legacy initialize to populate it")
+	}
+	if ir.ProtocolVersion != latestProtocolVersion {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback)",
+			ir.ProtocolVersion, latestProtocolVersion)
+	}
+
+	// Verify the session is fully usable after the fallback by issuing a
+	// real call against the server.
+	if err := session.Ping(ctx, nil); err != nil {
+		t.Errorf("Ping after fallback initialize: %v", err)
+	}
+}
