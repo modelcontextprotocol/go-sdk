@@ -14,7 +14,7 @@ import (
 )
 
 // resultType indicates whether a result is complete or requires further input
-// from the client via the MRTR (Multi Round-Trip Requests) protocol.
+// from the client via the multi round-trip request protocol.
 type resultType string
 
 const (
@@ -28,8 +28,8 @@ const (
 	resultTypeInputRequired resultType = "input_required"
 )
 
-// InputRequest is a sealed interface for parameters that a server can include
-// in an MRTR input-required result. Implementations are [*ElicitParams],
+// InputRequest is a type for parameters that a server can include in the response
+// to request input from client (SEP-2322). Implementations are [*ElicitParams],
 // [*CreateMessageParams], and [*ListRootsParams].
 type InputRequest interface{ isInputRequest() }
 
@@ -38,6 +38,9 @@ type InputRequest interface{ isInputRequest() }
 type InputRequestMap map[string]InputRequest
 
 func (m InputRequestMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]any(nil))
+	}
 	type wire struct {
 		Method string       `json:"method"`
 		Params InputRequest `json:"params,omitempty"`
@@ -74,6 +77,9 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
+	if rawMap == nil {
+		return nil
+	}
 	result := make(InputRequestMap, len(rawMap))
 	for k, raw := range rawMap {
 		switch raw.Method {
@@ -103,8 +109,8 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// InputResponse is a sealed interface for results that a client sends back
-// when fulfilling an MRTR input request. Implementations are [*ElicitResult],
+// InputResponse is a type for results that a client sends back when fulfilling
+// a server input request (SEP-2322). Implementations are [*ElicitResult],
 // [*CreateMessageResult], and [*ListRootsResult].
 type InputResponse interface{ isInputResponse() }
 
@@ -345,8 +351,14 @@ func (r *CallToolResult) GetError() error {
 
 func (*CallToolResult) isResult() {}
 
-func (r *CallToolResult) setResultType(rt resultType)            { r.resultType = rt }
-func (r *CallToolResult) inputRequests() map[string]InputRequest { return r.InputRequests }
+func (r *CallToolResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *CallToolResult) requestState() string        { return r.RequestState }
+func (r *CallToolResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
 func (r *CallToolResult) hasContent() bool {
 	return len(r.Content) > 0 || r.StructuredContent != nil
 }
@@ -362,9 +374,18 @@ func (x *CallToolResult) MarshalJSON() ([]byte, error) {
 	type res CallToolResult // avoid recursion
 	type wire struct {
 		res
-		ResultType resultType `json:"resultType,omitempty"`
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
 	}
-	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
 }
 
 func (x *CallToolResult) UnmarshalJSON(data []byte) error {
@@ -902,7 +923,7 @@ type GetPromptResult struct {
 	// InputRequests is populated when ResultType is ResultTypeInputRequired.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
-	// RequestState is the opaque state for MRTR retries.
+	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
@@ -913,9 +934,15 @@ type GetPromptResult struct {
 
 func (*GetPromptResult) isResult() {}
 
-func (r *GetPromptResult) setResultType(rt resultType)            { r.resultType = rt }
-func (r *GetPromptResult) inputRequests() map[string]InputRequest { return r.InputRequests }
-func (r *GetPromptResult) hasContent() bool                       { return len(r.Messages) > 0 }
+func (r *GetPromptResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *GetPromptResult) requestState() string        { return r.RequestState }
+func (r *GetPromptResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *GetPromptResult) hasContent() bool { return len(r.Messages) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
@@ -925,9 +952,18 @@ func (x *GetPromptResult) MarshalJSON() ([]byte, error) {
 	type res GetPromptResult
 	type wire struct {
 		res
-		ResultType resultType `json:"resultType,omitempty"`
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
 	}
-	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
 }
 
 func (x *GetPromptResult) UnmarshalJSON(data []byte) error {
@@ -1386,7 +1422,7 @@ type ReadResourceResult struct {
 	// InputRequests is populated when ResultType is ResultTypeInputRequired.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
-	// RequestState is the opaque state for MRTR retries.
+	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
@@ -1397,9 +1433,15 @@ type ReadResourceResult struct {
 
 func (*ReadResourceResult) isResult() {}
 
-func (r *ReadResourceResult) setResultType(rt resultType)            { r.resultType = rt }
-func (r *ReadResourceResult) inputRequests() map[string]InputRequest { return r.InputRequests }
-func (r *ReadResourceResult) hasContent() bool                       { return len(r.Contents) > 0 }
+func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) requestState() string        { return r.RequestState }
+func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *ReadResourceResult) hasContent() bool { return len(r.Contents) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
@@ -1409,9 +1451,18 @@ func (x *ReadResourceResult) MarshalJSON() ([]byte, error) {
 	type res ReadResourceResult
 	type wire struct {
 		res
-		ResultType resultType `json:"resultType,omitempty"`
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
 	}
-	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
 }
 
 func (x *ReadResourceResult) UnmarshalJSON(data []byte) error {

@@ -14,30 +14,29 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const defaultMRTRMaxRetries = 3
+const maxMultiRoundTripRetries = 10
+const maxLoadSheddingMultiRoundTripRetries = 3
 
-// MRTROptions configures the client-side MRTR (Multi Round-Trip Requests)
+// MultiRoundTripOptions configures the client-side multi round-trip request (SEP-2322)
 // middleware. The middleware is enabled by default and automatically fulfills input
 // requests from the server by invoking the appropriate client handlers and
 // retrying the original call.
-type MRTROptions struct {
-	// MaxRetries is the maximum number of MRTR retry attempts after the
-	// initial call. Defaults to 3 if the provided value is <= 0.
-	MaxRetries int
-	// Disabled prevents the automatic MRTR middleware from being installed.
-	// When true, the client returns input-required results directly and
-	// callers must handle the retry loop themselves using [CallToolResult.NeedsInput],
+type MultiRoundTripOptions struct {
+	// Disabled prevents the automatic multi-round-tirp middleware from being installed.
+	// When true, the client returns input-required results directly and callers must
+	// handle the retry loop themselves using [CallToolResult.NeedsInput],
 	// [GetPromptResult.NeedsInput], or [ReadResourceResult.NeedsInput].
 	Disabled bool
 }
 
-type mrtrResult interface {
+type multiRoundTripResponse interface {
 	setResultType(resultType)
 	inputRequests() map[string]InputRequest
+	requestState() string
 	hasContent() bool
 }
 
-func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) error {
+func handleMultiRoundTripResult(ss *ServerSession, logger *slog.Logger, res multiRoundTripResponse) error {
 	if res == nil {
 		return nil
 	}
@@ -51,20 +50,19 @@ func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) er
 		}
 	}
 
-	supportsMRTR := sessionSupportsMRTR(ss)
-
-	switch {
-	case hasInputRequests && supportsMRTR:
-		res.setResultType(resultTypeInputRequired)
-	case supportsMRTR:
-		res.setResultType(resultTypeComplete)
+	if clientSupportsMultiRoundTrip(ss) {
+		// For older clients the resultType is left unset. Input requests will be handled
+		// by serverMultiRoundTripMiddleware client calls and handler reinvocation.
+		if hasInputRequests {
+			res.setResultType(resultTypeInputRequired)
+		} else {
+			res.setResultType(resultTypeComplete)
+		}
 	}
-	// For older clients the resultType is left unset. The serverMRTRMiddleware fulfills the
-	// requests by calling the client directly and retries the handler.
 	return nil
 }
 
-func sessionSupportsMRTR(ss *ServerSession) bool {
+func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
 	protocolVersion := latestProtocolVersion
 	if iparams := ss.InitializeParams(); iparams != nil {
 		protocolVersion = iparams.ProtocolVersion
@@ -72,59 +70,66 @@ func sessionSupportsMRTR(ss *ServerSession) bool {
 	return protocolVersion >= protocolVersion20260630
 }
 
-func clientMRTRMiddleware(c *Client) Middleware {
+func clientMultiRoundTripMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
 			if method != methodCallTool && method != methodGetPrompt && method != methodReadResource {
 				return next(ctx, method, req)
 			}
 
-			maxRetries := defaultMRTRMaxRetries
-			if c.opts.MRTR != nil && c.opts.MRTR.MaxRetries > 0 {
-				maxRetries = c.opts.MRTR.MaxRetries
-			}
-
-			for retries := 0; ; retries++ {
+			loadSheddingFailures := 0
+			for retries := 1; ; retries++ {
 				res, err := next(ctx, method, req)
 				if err != nil {
 					return res, err
 				}
-				irm := mrtrInputRequests(res)
-				if len(irm) == 0 {
+				mrtrResult, ok := res.(multiRoundTripResponse)
+				if !ok {
 					return res, nil
 				}
-				if retries >= maxRetries {
-					return nil, fmt.Errorf("MRTR: exceeded maximum retries (%d)", maxRetries)
+				reqMap := mrtrResult.inputRequests()
+				if reqMap == nil {
+					return res, nil
+				}
+				if len(reqMap) == 0 {
+					loadSheddingFailures++
+				}
+				if loadSheddingFailures >= maxLoadSheddingMultiRoundTripRetries {
+					return nil, fmt.Errorf("multi-round-trip: exceeded maximum load-shedding retries (%d)", maxLoadSheddingMultiRoundTripRetries)
+				}
+				if retries >= maxMultiRoundTripRetries {
+					return nil, fmt.Errorf("multi-round-trip: exceeded maximum retries (%d)", maxMultiRoundTripRetries)
 				}
 				cs, ok := req.GetSession().(*ClientSession)
 				if !ok {
 					return res, nil
 				}
-				responses, err := fulfillInputRequests(ctx, cs, irm)
+				responses, err := fulfillInputRequests(ctx, cs, reqMap)
 				if err != nil {
 					return nil, err
 				}
-				setMRTRRetryParams(req, responses, mrtrRequestState(res))
+				setMultiRoundTripRetryParams(req, responses, mrtrResult.requestState())
 			}
 		}
 	}
 }
 
-// serverMRTRMiddleware is a receiving middleware for servers that transparently
-// handles MRTR for clients on older protocol versions. When a handler returns
-// InputRequests and the client does not support MRTR, the middleware fulfills
+// serverMultiRoundTripMiddleware is a receiving middleware for servers that transparently
+// handles multi-round-trip for clients on older protocol versions. When a handler returns
+// InputRequests and the client does not support multi-round-trip, the middleware fulfills
 // the requests by calling the client directly and reinvokes the handler once with the responses.
-func serverMRTRMiddleware() Middleware {
+func serverMultiRoundTripMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
 			if method != methodCallTool && method != methodGetPrompt && method != methodReadResource {
 				return next(ctx, method, req)
 			}
+
 			ss, ok := req.GetSession().(*ServerSession)
 			if !ok {
 				return next(ctx, method, req)
 			}
-			if sessionSupportsMRTR(ss) {
+			if clientSupportsMultiRoundTrip(ss) {
 				return next(ctx, method, req)
 			}
 
@@ -132,44 +137,25 @@ func serverMRTRMiddleware() Middleware {
 			if err != nil {
 				return res, err
 			}
-			irm := serverMRTRInputRequests(res)
-			if len(irm) == 0 {
+			mrtrResult, ok := res.(multiRoundTripResponse)
+			if !ok {
 				return res, nil
 			}
-			responses, err := fulfillServerInputRequests(ctx, ss, irm)
+			reqMap := mrtrResult.inputRequests()
+			if reqMap == nil {
+				return res, nil
+			}
+			if len(reqMap) == 0 {
+				return nil, fmt.Errorf("the server is busy, retry later")
+			}
+			responses, err := fulfillServerInputRequests(ctx, ss, reqMap)
 			if err != nil {
 				return nil, err
 			}
-			setMRTRRetryParams(req, responses, mrtrRequestState(res))
+			setMultiRoundTripRetryParams(req, responses, mrtrResult.requestState())
 			return next(ctx, method, req)
 		}
 	}
-}
-
-// serverMRTRInputRequests returns input requests from a result for old clients
-// where resultType is not set. It checks InputRequests directly.
-func serverMRTRInputRequests(res Result) InputRequestMap {
-	if res == nil {
-		return nil
-	}
-	switch r := res.(type) {
-	case *CallToolResult:
-		if r == nil {
-			return nil
-		}
-		return r.InputRequests
-	case *GetPromptResult:
-		if r == nil {
-			return nil
-		}
-		return r.InputRequests
-	case *ReadResourceResult:
-		if r == nil {
-			return nil
-		}
-		return r.InputRequests
-	}
-	return nil
 }
 
 func fulfillServerInputRequests(ctx context.Context, ss *ServerSession, requests InputRequestMap) (InputResponseMap, error) {
@@ -189,7 +175,7 @@ func fulfillServerInputRequests(ctx context.Context, ss *ServerSession, requests
 		})
 	}
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("MRTR: %w", err)
+		return nil, fmt.Errorf("multi-round-trip: %w", err)
 	}
 	return responses, nil
 }
@@ -227,43 +213,7 @@ func createMessageParamsToWithTools(p *CreateMessageParams) *CreateMessageWithTo
 	}
 }
 
-func mrtrInputRequests(res Result) InputRequestMap {
-	if res == nil {
-		return nil
-	}
-	switch r := res.(type) {
-	case *CallToolResult:
-		if r == nil || !r.NeedsInput() {
-			return nil
-		}
-		return r.InputRequests
-	case *GetPromptResult:
-		if r == nil || !r.NeedsInput() {
-			return nil
-		}
-		return r.InputRequests
-	case *ReadResourceResult:
-		if r == nil || !r.NeedsInput() {
-			return nil
-		}
-		return r.InputRequests
-	}
-	return nil
-}
-
-func mrtrRequestState(res Result) string {
-	switch r := res.(type) {
-	case *CallToolResult:
-		return r.RequestState
-	case *GetPromptResult:
-		return r.RequestState
-	case *ReadResourceResult:
-		return r.RequestState
-	}
-	return ""
-}
-
-func setMRTRRetryParams(req Request, responses InputResponseMap, state string) {
+func setMultiRoundTripRetryParams(req Request, responses InputResponseMap, state string) {
 	switch p := req.GetParams().(type) {
 	case *CallToolParams:
 		p.InputResponses = responses
@@ -297,7 +247,7 @@ func fulfillInputRequests(ctx context.Context, cs *ClientSession, requests Input
 		})
 	}
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("MRTR: %w", err)
+		return nil, fmt.Errorf("multi round-trip: %w", err)
 	}
 	return responses, nil
 }

@@ -199,7 +199,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
-	s.AddReceivingMiddleware(serverMRTRMiddleware())
+	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
 	return s
 }
 
@@ -372,7 +372,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
-		// Skip when the handler returned input requests (MRTR): content and
+		// Skip when the handler returned input requests (multi round-trip): content and
 		// inputRequests are mutually exclusive on the wire.
 		var outval any = out
 		if res.InputRequests != nil {
@@ -750,7 +750,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	}
 	res, err := prompt.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMRTRResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 			return nil, err
 		}
 	}
@@ -788,7 +788,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	}
 	res, err := st.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMRTRResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 			return nil, err
 		}
 		if res.Content == nil && res.resultType != resultTypeInputRequired {
@@ -843,7 +843,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err != nil {
 		return nil, err
 	}
-	if err := handleMRTRResult(req.Session, s.opts.Logger, res); err != nil {
+	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
 	if res.resultType == resultTypeInputRequired {

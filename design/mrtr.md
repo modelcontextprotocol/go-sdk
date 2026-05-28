@@ -84,20 +84,13 @@ The SDK validates at runtime that a handler does not return both content and `In
 
 An unexported receiving middleware is installed on the server for backward compatibility with older clients. When a handler returns `InputRequests` and the connected client uses a protocol version that does not support MRTR, the middleware fulfills the requests by calling `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the client directly and reinvokes the handler once with the collected `InputResponses`. If any of these calls fail, the entire request fails. Input requests are fulfilled concurrently. This lets server developers write protocol-version-independent code.
 
-An unexported sending middleware is installed on the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. `ClientOptions` is extended with configuration knobs:
+An unexported sending middleware is installed on the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. Clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
 ```go
-type MRTROptions struct {
-  MaxRetries int
+type MultiRoundTripOptions struct {
   Disabled   bool
 }
-client := mcp.NewClient(impl, &mcp.ClientOptions{
-  MRTR: &mcp.MRTROptions{MaxRetries: 3},
-})
-```
 
-Alternatively, clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
-```go
-client := mcp.NewClient(impl, &mcp.ClientOptions{MRTR: &mcp.MRTROptions{Disabled: true}})
+client := mcp.NewClient(impl, &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}})
 result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "my-tool"})
 if result.NeedsInput() { ... }
 ```
@@ -252,12 +245,12 @@ The downsides of this approach are:
 
 We could flip "unexported MRTR middleware with opt-out option" to "exported middleware with opt-in requirement".
 ```go
-func AutoMRTR(opts *MRTROptions) Middleware { ... }
-type MRTROptions struct {
+func AutoMRTR(opts *MultiRoundTripOptions) Middleware { ... }
+type MultiRoundTripOptions struct {
   MaxRetries int
 }
 client := mcp.NewClient(impl, nil)
-client.AddSendingMiddleware(mcp.AutoMRTR(&mcp.MRTROptions{
+client.AddSendingMiddleware(mcp.AutoMRTR(&mcp.MultiRoundTripOptions{
   MaxRetries: 5,
 }))
 ```

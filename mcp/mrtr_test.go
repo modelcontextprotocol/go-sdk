@@ -8,13 +8,14 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-func TestMRTR_ManualRetry(t *testing.T) {
+func TestMultiRoundTrip_ManualRetry(t *testing.T) {
 	type deployResult struct {
 		Deployed bool   `json:"deployed"`
 		Reason   string `json:"reason,omitempty"`
@@ -52,8 +53,8 @@ func TestMRTR_ManualRetry(t *testing.T) {
 		return &CallToolResult{}, &deployResult{Deployed: true}, nil
 	})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
-		MRTR: &MRTROptions{Disabled: true},
+	conn := mustConnect(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
 	})
 
 	// Round 1: initiate deployment
@@ -91,7 +92,7 @@ func TestMRTR_ManualRetry(t *testing.T) {
 	}
 }
 
-func TestMRTR_AutoRetry(t *testing.T) {
+func TestMultiRoundTrip_AutoRetry(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -161,7 +162,7 @@ func TestMRTR_AutoRetry(t *testing.T) {
 				return &CallToolResult{}, map[string]any{"ids": ids}, nil
 			})
 
-			conn := mustConnectMRTR(t, srv, &ClientOptions{
+			conn := mustConnect(t, srv, &ClientOptions{
 				ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
 					return &ElicitResult{Action: "accept"}, nil
 				},
@@ -200,39 +201,60 @@ func TestMRTR_AutoRetry(t *testing.T) {
 	}
 }
 
-func TestMRTR_MaxRetries(t *testing.T) {
+func TestMultiRoundTrip_MaxRetries(t *testing.T) {
+	testCases := []struct {
+		name        string
+		requests    InputRequestMap
+		wantRetries int
+	}{
+		{
+			name:        "load shedding",
+			requests:    InputRequestMap{},
+			wantRetries: maxLoadSheddingMultiRoundTripRetries,
+		},
+		{
+			name:        "input request",
+			requests:    InputRequestMap{"confirm": &ElicitParams{Message: "Again?"}},
+			wantRetries: maxMultiRoundTripRetries,
+		},
+	}
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
-	ctx := context.Background()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 
-	srv := NewServer(testImpl, nil)
-	AddTool(srv, &Tool{Name: "loop"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
-		return &CallToolResult{
-			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Again?"}},
-			RequestState:  "loop-state",
-		}, nil, nil
-	})
+			var serverCalls atomic.Int32
+			srv := NewServer(testImpl, nil)
+			AddTool(srv, &Tool{Name: "loop"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
+				serverCalls.Add(1)
+				return &CallToolResult{InputRequests: tc.requests, RequestState: "loop-state"}, nil, nil
+			})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
-		ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
-			return &ElicitResult{Action: "accept"}, nil
-		},
-		MRTR: &MRTROptions{MaxRetries: 2},
-	})
+			conn := mustConnect(t, srv, &ClientOptions{
+				ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
+					return &ElicitResult{Action: "accept"}, nil
+				},
+			})
 
-	_, err := conn.CallTool(ctx, &CallToolParams{Name: "loop"})
-	if err == nil {
-		t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+			_, err := conn.CallTool(ctx, &CallToolParams{Name: "loop"})
+			if err == nil {
+				t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+			}
+			if serverCalls.Load() != int32(tc.wantRetries) {
+				t.Errorf("serverCalls = %d, want %d", serverCalls.Load(), tc.wantRetries)
+			}
+		})
 	}
 }
 
-func TestMRTR_ServerMiddleware(t *testing.T) {
-	// mrtrToolHandler returns a ToolHandler (plain, non-generic) that requests
+func TestMultiRoundTrip_ServerMiddleware(t *testing.T) {
+	// multiRoundTripToolHandler returns a ToolHandler (plain, non-generic) that requests
 	// the given inputRequests on the first call and returns the fulfilled
 	// response IDs on the second.
-	mrtrToolHandler := func(inputRequests InputRequestMap) ToolHandler {
+	multiRoundTripToolHandler := func(inputRequests InputRequestMap) ToolHandler {
 		return func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
 			if len(req.Params.InputResponses) == 0 {
 				return &CallToolResult{
@@ -279,10 +301,10 @@ func TestMRTR_ServerMiddleware(t *testing.T) {
 			srv := NewServer(testImpl, nil)
 			srv.AddTool(
 				&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
-				mrtrToolHandler(tt.inputRequests),
+				multiRoundTripToolHandler(tt.inputRequests),
 			)
 
-			// Connect with an OLD protocol version where MRTR is not supported.
+			// Connect with an OLD protocol version where multi-round-trip is not supported.
 			// The server middleware should handle it transparently.
 			st, ct := NewInMemoryTransports()
 			ss, err := srv.Connect(t.Context(), st, nil)
@@ -292,7 +314,7 @@ func TestMRTR_ServerMiddleware(t *testing.T) {
 			t.Cleanup(func() { _ = ss.Close() })
 
 			c := NewClient(testImpl, &ClientOptions{
-				MRTR: &MRTROptions{Disabled: true},
+				MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
 				ElicitationHandler: func(_ context.Context, req *ElicitRequest) (*ElicitResult, error) {
 					return &ElicitResult{Action: "accept"}, nil
 				},
@@ -315,7 +337,7 @@ func TestMRTR_ServerMiddleware(t *testing.T) {
 	}
 }
 
-func TestMRTR_GetPrompt_AutoRetry(t *testing.T) {
+func TestMultiRoundTrip_GetPrompt_AutoRetry(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -336,7 +358,7 @@ func TestMRTR_GetPrompt_AutoRetry(t *testing.T) {
 		}, nil
 	})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
+	conn := mustConnect(t, srv, &ClientOptions{
 		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
@@ -357,7 +379,7 @@ func TestMRTR_GetPrompt_AutoRetry(t *testing.T) {
 	}
 }
 
-func TestMRTR_GetPrompt_ManualRetry(t *testing.T) {
+func TestMultiRoundTrip_GetPrompt_ManualRetry(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -378,8 +400,8 @@ func TestMRTR_GetPrompt_ManualRetry(t *testing.T) {
 		}, nil
 	})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
-		MRTR: &MRTROptions{Disabled: true},
+	conn := mustConnect(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
 	})
 
 	res, err := conn.GetPrompt(ctx, &GetPromptParams{Name: "review"})
@@ -409,7 +431,7 @@ func TestMRTR_GetPrompt_ManualRetry(t *testing.T) {
 	}
 }
 
-func TestMRTR_ReadResource_AutoRetry(t *testing.T) {
+func TestMultiRoundTrip_ReadResource_AutoRetry(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -429,7 +451,7 @@ func TestMRTR_ReadResource_AutoRetry(t *testing.T) {
 		}, nil
 	})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
+	conn := mustConnect(t, srv, &ClientOptions{
 		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
@@ -450,7 +472,7 @@ func TestMRTR_ReadResource_AutoRetry(t *testing.T) {
 	}
 }
 
-func TestMRTR_ReadResource_ManualRetry(t *testing.T) {
+func TestMultiRoundTrip_ReadResource_ManualRetry(t *testing.T) {
 	orig := supportedProtocolVersions
 	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
@@ -470,8 +492,8 @@ func TestMRTR_ReadResource_ManualRetry(t *testing.T) {
 		}, nil
 	})
 
-	conn := mustConnectMRTR(t, srv, &ClientOptions{
-		MRTR: &MRTROptions{Disabled: true},
+	conn := mustConnect(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
 	})
 
 	res, err := conn.ReadResource(ctx, &ReadResourceParams{URI: "test://data"})
@@ -501,7 +523,7 @@ func TestMRTR_ReadResource_ManualRetry(t *testing.T) {
 	}
 }
 
-func mustConnectMRTR(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
+func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
 	t.Helper()
 	st, ct := NewInMemoryTransports()
 	ss, err := s.Connect(t.Context(), st, nil)

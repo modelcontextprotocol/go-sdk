@@ -65,8 +65,8 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
-	if opts.MRTR == nil || !opts.MRTR.Disabled {
-		c.AddSendingMiddleware(clientMRTRMiddleware(c))
+	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
+		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
 	}
 	return c
 }
@@ -158,10 +158,10 @@ type ClientOptions struct {
 	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
-	// MRTR configures the automatic MRTR (Multi Round-Trip Requests) middleware.
+	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
 	// By default (nil), the middleware is enabled with default settings.
-	// Set Disabled to true to opt out of automatic MRTR handling.
-	MRTR *MRTROptions
+	// Set Disabled to true to opt out of automatic MultiRoundTrip handling.
+	MultiRoundTrip *MultiRoundTripOptions
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
