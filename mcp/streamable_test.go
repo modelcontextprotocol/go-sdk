@@ -771,7 +771,7 @@ func req(id int64, method string, params any) *jsonrpc.Request {
 
 func completeCallToolResult() *CallToolResult {
 	r := &CallToolResult{Content: []Content{}}
-	r.resultType = ResultTypeComplete
+	r.resultType = resultTypeComplete
 	return r
 }
 

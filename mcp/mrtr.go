@@ -32,7 +32,7 @@ type MRTROptions struct {
 }
 
 type mrtrResult interface {
-	setResultType(ResultType)
+	setResultType(resultType)
 	inputRequests() map[string]InputRequest
 	hasContent() bool
 }
@@ -55,9 +55,9 @@ func handleMRTRResult(ss *ServerSession, logger *slog.Logger, res mrtrResult) er
 
 	switch {
 	case hasInputRequests && supportsMRTR:
-		res.setResultType(ResultTypeInputRequired)
+		res.setResultType(resultTypeInputRequired)
 	case supportsMRTR:
-		res.setResultType(ResultTypeComplete)
+		res.setResultType(resultTypeComplete)
 	}
 	// For older clients the resultType is left unset. The serverMRTRMiddleware fulfills the
 	// requests by calling the client directly and retries the handler.

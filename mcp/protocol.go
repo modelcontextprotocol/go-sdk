@@ -13,19 +13,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
 
-// ResultType indicates whether a result is complete or requires further input
+// resultType indicates whether a result is complete or requires further input
 // from the client via the MRTR (Multi Round-Trip Requests) protocol.
-type ResultType string
+type resultType string
 
 const (
-	// ResultTypeComplete indicates the result is final.
+	// resultTypeComplete indicates the result is final.
 	// This is the default when ResultType is empty.
-	ResultTypeComplete ResultType = "complete"
+	resultTypeComplete resultType = "complete"
 
-	// ResultTypeInputRequired indicates the server needs additional client
+	// resultTypeInputRequired indicates the server needs additional client
 	// input before it can complete the request. The client should fulfill the
 	// InputRequests and retry the call with the responses.
-	ResultTypeInputRequired ResultType = "input_required"
+	resultTypeInputRequired resultType = "input_required"
 )
 
 // InputRequest is a sealed interface for parameters that a server can include
@@ -306,7 +306,7 @@ type CallToolResult struct {
 	// client input. Empty or ResultTypeComplete means the call succeeded
 	// normally. ResultTypeInputRequired means the client should fulfill the
 	// InputRequests and retry the call.
-	resultType ResultType
+	resultType resultType
 	// The error passed to setError, if any.
 	// It is not marshaled, and therefore it is only visible on the server.
 	// Its only use is in server sending middleware, where it can be accessed
@@ -345,7 +345,7 @@ func (r *CallToolResult) GetError() error {
 
 func (*CallToolResult) isResult() {}
 
-func (r *CallToolResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *CallToolResult) setResultType(rt resultType)            { r.resultType = rt }
 func (r *CallToolResult) inputRequests() map[string]InputRequest { return r.InputRequests }
 func (r *CallToolResult) hasContent() bool {
 	return len(r.Content) > 0 || r.StructuredContent != nil
@@ -356,13 +356,13 @@ func (r *CallToolResult) hasContent() bool {
 // When NeedsInput returns true, check InputRequests for the set of
 // requests the server needs fulfilled before retrying the call.
 // An empty InputRequests with NeedsInput true indicates load-shedding.
-func (r *CallToolResult) NeedsInput() bool { return r.resultType == ResultTypeInputRequired }
+func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
 
 func (x *CallToolResult) MarshalJSON() ([]byte, error) {
 	type res CallToolResult // avoid recursion
 	type wire struct {
 		res
-		ResultType ResultType `json:"resultType,omitempty"`
+		ResultType resultType `json:"resultType,omitempty"`
 	}
 	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
 }
@@ -372,7 +372,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		res
 		Content    []*wireContent `json:"content"`
-		ResultType ResultType     `json:"resultType"`
+		ResultType resultType     `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
@@ -908,24 +908,24 @@ type GetPromptResult struct {
 
 	// ResultType indicates whether this result is complete or requires further
 	// client input. See [CallToolResult.ResultType] for details.
-	resultType ResultType
+	resultType resultType
 }
 
 func (*GetPromptResult) isResult() {}
 
-func (r *GetPromptResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *GetPromptResult) setResultType(rt resultType)            { r.resultType = rt }
 func (r *GetPromptResult) inputRequests() map[string]InputRequest { return r.InputRequests }
 func (r *GetPromptResult) hasContent() bool                       { return len(r.Messages) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
-func (r *GetPromptResult) NeedsInput() bool { return r.resultType == ResultTypeInputRequired }
+func (r *GetPromptResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
 
 func (x *GetPromptResult) MarshalJSON() ([]byte, error) {
 	type res GetPromptResult
 	type wire struct {
 		res
-		ResultType ResultType `json:"resultType,omitempty"`
+		ResultType resultType `json:"resultType,omitempty"`
 	}
 	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
 }
@@ -934,7 +934,7 @@ func (x *GetPromptResult) UnmarshalJSON(data []byte) error {
 	type res GetPromptResult
 	var wire struct {
 		res
-		ResultType ResultType `json:"resultType"`
+		ResultType resultType `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
@@ -1392,24 +1392,24 @@ type ReadResourceResult struct {
 
 	// ResultType indicates whether this result is complete or requires further
 	// client input. See [CallToolResult.ResultType] for details.
-	resultType ResultType
+	resultType resultType
 }
 
 func (*ReadResourceResult) isResult() {}
 
-func (r *ReadResourceResult) setResultType(rt ResultType)            { r.resultType = rt }
+func (r *ReadResourceResult) setResultType(rt resultType)            { r.resultType = rt }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest { return r.InputRequests }
 func (r *ReadResourceResult) hasContent() bool                       { return len(r.Contents) > 0 }
 
 // NeedsInput reports whether this result requires further client input.
 // See [CallToolResult.NeedsInput] for details.
-func (r *ReadResourceResult) NeedsInput() bool { return r.resultType == ResultTypeInputRequired }
+func (r *ReadResourceResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
 
 func (x *ReadResourceResult) MarshalJSON() ([]byte, error) {
 	type res ReadResourceResult
 	type wire struct {
 		res
-		ResultType ResultType `json:"resultType,omitempty"`
+		ResultType resultType `json:"resultType,omitempty"`
 	}
 	return json.Marshal(wire{res: res(*x), ResultType: x.resultType})
 }
@@ -1418,7 +1418,7 @@ func (x *ReadResourceResult) UnmarshalJSON(data []byte) error {
 	type res ReadResourceResult
 	var wire struct {
 		res
-		ResultType ResultType `json:"resultType"`
+		ResultType resultType `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err

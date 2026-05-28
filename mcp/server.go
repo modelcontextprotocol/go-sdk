@@ -791,7 +791,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		if err := handleMRTRResult(req.Session, s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.resultType != ResultTypeInputRequired {
+		if res.Content == nil && res.resultType != resultTypeInputRequired {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -846,7 +846,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMRTRResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
-	if res.resultType == ResultTypeInputRequired {
+	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
 	if res == nil || res.Contents == nil {
