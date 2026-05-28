@@ -1522,3 +1522,57 @@ func TestStreamableClientConnect_DiscoverPropagatesOtherErrors(t *testing.T) {
 		t.Error("server received initialize; Connect should have aborted on the discover error")
 	}
 }
+
+// TestStreamableClientConnect_DiscoverVPreBadRequest verifies that
+// Client.Connect falls back to the legacy initialize handshake when a
+// pre-SEP-2575 (vPre) server rejects server/discover.
+func TestStreamableClientConnect_DiscoverVPreBadRequest(t *testing.T) {
+	ctx := context.Background()
+
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				wantProtocolVersion: protocolVersion20260630,
+				// Reproduce the exact body a vPre server produces via
+				// http.Error(w, err.Error(), 400) where err comes from
+				// checkRequest. http.Error appends a trailing newline.
+				body:   "JSON RPC not handled: \"server/discover\" unsupported\n",
+				status: http.StatusBadRequest,
+				header: header{"Content-Type": "text/plain; charset=utf-8"},
+			},
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "fallback",
+				},
+				responseFunc: echoResult(initResult),
+			},
+			{"POST", "fallback", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: latestProtocolVersion,
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	if got := session.InitializeResult().ProtocolVersion; got != latestProtocolVersion {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, latestProtocolVersion)
+	}
+}

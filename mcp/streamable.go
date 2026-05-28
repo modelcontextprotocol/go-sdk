@@ -2056,7 +2056,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	if err := c.checkResponse(requestSummary, resp); err != nil {
 		// Only fail the connection for non-transient errors.
 		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		if !errors.Is(err, jsonrpc2.ErrRejected) {
+		if !errors.Is(err, jsonrpc2.ErrRejected) && !errors.Is(err, jsonrpc2.ErrMethodNotFound) {
 			c.fail(err)
 		}
 		return err
@@ -2268,6 +2268,19 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read the body and if we can detect vPre servers that
+		// reject "server/discover" as unsupported method with a plain HTTP 400,
+		// then return jsonrpc2.ErrMethodNotFound.
+		if resp.StatusCode == http.StatusBadRequest {
+			body, _ := io.ReadAll(resp.Body)
+			target := fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)
+			if strings.Contains(string(body), target) {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
+			}
+			if strings.Contains(string(body), "Unsupported protocol version") {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.NewError(CodeUnsupportedProtocolVersion, "Unsupported protocol version"), http.StatusText(resp.StatusCode))
+			}
+		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil
