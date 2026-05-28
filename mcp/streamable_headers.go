@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
@@ -70,26 +72,63 @@ func unmarshalSchemaProperties(schema any) map[string]headerSchemaProperty {
 	return s.Properties
 }
 
-// extractParamHeaderAnnotations returns a map of parameter name to header name
+// extractParamHeaderAnnotations returns a map of parameter path to header name
 // for all properties in the tool's InputSchema that have an x-mcp-header
-// annotation.
+// annotation, including nested properties.
 func extractParamHeaderAnnotations(tool *Tool) map[string]string {
 	props := unmarshalSchemaProperties(tool.InputSchema)
 	if len(props) == 0 {
 		return nil
 	}
 	result := make(map[string]string)
-	for propName, prop := range props {
-		var headerName string
-		if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
-			continue
-		}
-		result[propName] = headerName
-	}
+	collectParamHeaderAnnotations(props, "", result)
 	if len(result) == 0 {
 		return nil
 	}
 	return result
+}
+
+// collectParamHeaderAnnotations walks the schema properties and records every
+// x-mcp-header annotation it finds, keyed by the dot-separated property path.
+func collectParamHeaderAnnotations(props map[string]headerSchemaProperty, prefix string, out map[string]string) {
+	for propName, prop := range props {
+		path := propName
+		if prefix != "" {
+			path = prefix + "." + propName
+		}
+		var headerName string
+		if err := json.Unmarshal(prop.XMCPHeader, &headerName); err == nil && headerName != "" {
+			out[path] = headerName
+		}
+		if len(prop.Properties) > 0 {
+			collectParamHeaderAnnotations(prop.Properties, path, out)
+		}
+	}
+}
+
+// lookupArgument navigates the arguments object using a dot-separated path
+// and returns the raw JSON value at that location. It reports whether the
+// value was found.
+func lookupArgument(args map[string]json.RawMessage, path string) (json.RawMessage, bool) {
+	parts := strings.Split(path, ".")
+	if len(parts) == 0 {
+		return nil, false
+	}
+	cur, ok := args[parts[0]]
+	if !ok {
+		return nil, false
+	}
+	for _, part := range parts[1:] {
+		var obj map[string]json.RawMessage
+		if err := internaljson.Unmarshal(cur, &obj); err != nil {
+			return nil, false
+		}
+		cur, ok = obj[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 // primitiveToString conversion.
@@ -98,8 +137,6 @@ func primitiveToString(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
 		return v, true
-	case float64:
-		return fmt.Sprintf("%g", v), true
 	case bool:
 		return fmt.Sprintf("%t", v), true
 	default:
@@ -164,8 +201,8 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 	}
 
 	res := make(map[string]string)
-	for paramName, headerName := range paramHeaders {
-		argRaw, ok := raw.Arguments[paramName]
+	for paramPath, headerName := range paramHeaders {
+		argRaw, ok := lookupArgument(raw.Arguments, paramPath)
 		if !ok {
 			continue
 		}
@@ -201,62 +238,83 @@ func filterValidTools(logger *slog.Logger, tools []*Tool) []*Tool {
 }
 
 // validateParamHeaderAnnotations checks that a tool's x-mcp-header annotations
-// are valid.
+// are valid. Annotations may appear on properties at any nesting
+// depth within the inputSchema and must be unique across all of them.
 func validateParamHeaderAnnotations(tool *Tool) error {
 	props := unmarshalSchemaProperties(tool.InputSchema)
 	if len(props) == 0 {
 		return nil
 	}
-
 	seen := make(map[string]bool)
+	return validateParamHeadersIn(props, "", seen)
+}
+
+func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string, seen map[string]bool) error {
 	for propName, prop := range props {
-		if err := checkForNestedHeaders(prop, propName); err != nil {
-			return err
+		path := propName
+		if prefix != "" {
+			path = prefix + "." + propName
 		}
 		if prop.XMCPHeader == nil {
 			continue
 		}
 		var headerName string
 		if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
-			return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", propName)
+			return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", path)
 		}
 		if err := validateHeaderName(headerName); err != nil {
-			return fmt.Errorf("property %q: %w", propName, err)
+			return fmt.Errorf("property %q: %w", path, err)
 		}
 		lower := strings.ToLower(headerName)
 		if seen[lower] {
-			return fmt.Errorf("property %q: duplicate x-mcp-header value %q (case-insensitive)", propName, headerName)
+			return fmt.Errorf("property %q: duplicate x-mcp-header value %q (case-insensitive)", path, headerName)
 		}
 		seen[lower] = true
-
 		if prop.Type != "string" && prop.Type != "number" && prop.Type != "integer" && prop.Type != "boolean" {
-			return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types, got %v", propName, prop.Type)
+			return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types, got %v", path, prop.Type)
+		}
+		if len(prop.Properties) > 0 {
+			if err := validateParamHeadersIn(prop.Properties, path, seen); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func checkForNestedHeaders(prop headerSchemaProperty, path string) error {
-	for propName, nested := range prop.Properties {
-		if nested.XMCPHeader != nil {
-			return fmt.Errorf("property %q: x-mcp-header cannot be applied to nested properties", path+"."+propName)
-		}
-		if err := checkForNestedHeaders(nested, path+"."+propName); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// validateHeaderName checks that a header name contains only valid
-// ASCII characters (excluding space and ':').
+// validateHeaderName checks that a header name matches the HTTP field-name
+// token syntax (1*tchar).
 func validateHeaderName(name string) error {
+	if name == "" {
+		return fmt.Errorf("x-mcp-header value must be a non-empty string")
+	}
 	for _, c := range name {
-		if c <= 0x20 || c > 0x7E || c == ':' {
+		if !isTChar(c) {
 			return fmt.Errorf("x-mcp-header value %q contains invalid character %q", name, c)
 		}
 	}
 	return nil
+}
+
+// isTChar reports whether c is a valid HTTP token character (tchar)
+//
+//	tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+//	        "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+func isTChar(c rune) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= 'a' && c <= 'z':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.',
+		'^', '_', '`', '|', '~':
+		return true
+	}
+	return false
 }
 
 func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func(string) (*serverTool, bool)) error {
@@ -315,20 +373,20 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 		return nil
 	}
 
-	for paramName, headerName := range paramHeaders {
+	for paramPath, headerName := range paramHeaders {
 		fullHeader := paramHeaderPrefix + headerName
 		headerVal := header.Get(fullHeader)
-		argRaw, argExists := raw.Arguments[paramName]
+		argRaw, argExists := lookupArgument(raw.Arguments, paramPath)
 
 		if !argExists || string(argRaw) == "null" {
 			if headerVal != "" {
-				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, paramName)
+				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, paramPath)
 			}
 			continue
 		}
 
 		if headerVal == "" {
-			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, paramName)
+			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, paramPath)
 		}
 
 		decoded, ok := decodeHeaderValue(headerVal)
@@ -338,19 +396,48 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 
 		bodyVal := unmarshalPrimitive(argRaw)
 		if bodyVal == nil {
-			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramName)
-		}
-		expected, ok := primitiveToString(bodyVal)
-		if !ok {
-			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramName)
+			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramPath)
 		}
 
-		// TODO: String comparison may not work ideally for numbers
-		if decoded != expected {
+		if !primitiveEqual(decoded, bodyVal) {
 			return fmt.Errorf("header mismatch: %s header value '%s' does not match body value", fullHeader, headerVal)
 		}
 	}
 	return nil
+}
+
+// primitiveEqual reports whether the (decoded) header string equals the
+// JSON-derived body value. For numeric body values, the comparison is done
+// numerically with a relative precision of 1e-9.
+// For other primitive types, comparison is done as strings.
+func primitiveEqual(headerStr string, bodyVal any) bool {
+	if bodyNum, ok := bodyVal.(float64); ok {
+		headerNum, err := strconv.ParseFloat(headerStr, 64)
+		if err != nil {
+			return false
+		}
+		return numericallyEqual(headerNum, bodyNum)
+	}
+	expected, ok := primitiveToString(bodyVal)
+	if !ok {
+		return false
+	}
+	return headerStr == expected
+}
+
+// numericallyEqual reports whether two float64 values are equal within a
+// relative precision of 1e-9 (with an absolute fallback for values near zero).
+func numericallyEqual(a, b float64) bool {
+	if a == b {
+		return true
+	}
+	const epsilon = 1e-9
+	diff := math.Abs(a - b)
+	largest := math.Max(math.Abs(a), math.Abs(b))
+	if largest < 1 {
+		return diff <= epsilon
+	}
+	return diff <= epsilon*largest
 }
 
 // encodeHeaderValue converts a parameter value to an HTTP header-safe string
@@ -383,14 +470,14 @@ func decodeHeaderValue(headerValue string) (string, bool) {
 		return headerValue, true
 	}
 
-	if strings.HasPrefix(strings.ToLower(headerValue), base64Prefix) &&
-		strings.HasSuffix(headerValue, base64Suffix) {
-		encoded := headerValue[len(base64Prefix) : len(headerValue)-len(base64Suffix)]
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return "", false
+	if encoded, ok := strings.CutPrefix(headerValue, base64Prefix); ok {
+		if encoded, ok = strings.CutSuffix(encoded, base64Suffix); ok {
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return "", false
+			}
+			return string(decoded), true
 		}
-		return string(decoded), true
 	}
 	return headerValue, true
 }
@@ -406,6 +493,11 @@ func requiresBase64Encoding(s string) bool {
 		if c < 0x20 || c > 0x7E {
 			return true
 		}
+	}
+	// Per SEP-2243, plain-ASCII values that match the base64 sentinel pattern
+	// must also be base64-encoded to avoid ambiguity with already-encoded values.
+	if strings.HasPrefix(s, base64Prefix) && strings.HasSuffix(s, base64Suffix) {
+		return true
 	}
 	return false
 }
