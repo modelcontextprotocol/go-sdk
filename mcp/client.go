@@ -332,7 +332,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 //   - (nil, false, err):    any other failure (transport error, malformed response, etc.);
 //     caller should propagate the error.
 func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, bool, error) {
-	protocolVersion, _ := ctx.Value(protocolVersionContextKey{}).(string)
+	protocolVersion := protocolVersionFromContext(ctx)
 	caps := c.capabilities(protocolVersion)
 	params := &DiscoverParams{
 		Meta: Meta{

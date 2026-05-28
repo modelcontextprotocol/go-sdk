@@ -2150,7 +2150,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if v, ok := req.Context().Value(protocolVersionContextKey{}).(string); ok && v != "" {
+	} else if v := protocolVersionFromContext(req.Context()); v != "" {
 		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
