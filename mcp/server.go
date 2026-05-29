@@ -187,7 +187,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Server{
+	s := &Server{
 		impl:                    impl,
 		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
@@ -199,6 +199,8 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
+	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
@@ -370,8 +372,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
+		// Skip when the handler returned input requests (multi round-trip): content and
+		// inputRequests are mutually exclusive on the wire.
 		var outval any = out
-		if elemZero != nil {
+		if res.InputRequests != nil {
+			outval = nil
+		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the unpointered type.
 			var z Out
@@ -742,7 +748,13 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
-	return prompt.handler(ctx, req)
+	res, err := prompt.handler(ctx, req)
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, err
 }
 
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
@@ -775,10 +787,15 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil && res.Content == nil {
-		res2 := *res
-		res2.Content = []Content{} // avoid "null"
-		res = &res2
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+		if res.Content == nil && res.resultType != resultTypeInputRequired {
+			res2 := *res
+			res2.Content = []Content{} // avoid "null"
+			res = &res2
+		}
 	}
 	return res, err
 }
@@ -825,6 +842,12 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	res, err := handler(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		return nil, err
+	}
+	if res.resultType == resultTypeInputRequired {
+		return res, nil
 	}
 	if res == nil || res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)

@@ -58,13 +58,17 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Client{
+	c := &Client{
 		impl:                    impl,
 		opts:                    opts,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
+	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
+		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
+	}
+	return c
 }
 
 // ClientOptions configures the behavior of the client.
@@ -154,6 +158,10 @@ type ClientOptions struct {
 	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
+	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
+	// By default (nil), the middleware is enabled with default settings.
+	// Set Disabled to true to opt out of automatic MultiRoundTrip handling.
+	MultiRoundTrip *MultiRoundTripOptions
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.

@@ -769,6 +769,12 @@ func req(id int64, method string, params any) *jsonrpc.Request {
 	return r
 }
 
+func completeCallToolResult() *CallToolResult {
+	r := &CallToolResult{Content: []Content{}}
+	r.resultType = resultTypeComplete
+	return r
+}
+
 func resp(id int64, result any, err error) *jsonrpc.Response {
 	return &jsonrpc.Response{
 		ID:     jsonrpc2.Int64ID(id),
@@ -1947,7 +1953,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",
@@ -1991,7 +1997,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",
@@ -2007,7 +2013,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
 			})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",

@@ -13,6 +13,178 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
 
+// resultType indicates whether a result is complete or requires further input
+// from the client via the multi round-trip request protocol.
+type resultType string
+
+const (
+	// resultTypeComplete indicates the result is final.
+	// This is the default when ResultType is empty.
+	resultTypeComplete resultType = "complete"
+
+	// resultTypeInputRequired indicates the server needs additional client
+	// input before it can complete the request. The client should fulfill the
+	// InputRequests and retry the call with the responses.
+	resultTypeInputRequired resultType = "input_required"
+)
+
+// InputRequest is a type for parameters that a server can include in the response
+// to request input from client (SEP-2322). Implementations are [*ElicitParams],
+// [*CreateMessageParams], and [*ListRootsParams].
+type InputRequest interface{ isInputRequest() }
+
+// InputRequestMap maps server-assigned request IDs to [InputRequest] values.
+// It is used in result types to tell the client what input the server needs.
+type InputRequestMap map[string]InputRequest
+
+func (m InputRequestMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]any(nil))
+	}
+	type wire struct {
+		Method string       `json:"method"`
+		Params InputRequest `json:"params,omitempty"`
+	}
+	typeToMethod := func(v InputRequest) (string, error) {
+		switch v.(type) {
+		case *ElicitParams:
+			return methodElicit, nil
+		case *CreateMessageParams, *CreateMessageWithToolsParams:
+			return methodCreateMessage, nil
+		case *ListRootsParams:
+			return methodListRoots, nil
+		default:
+			return "", fmt.Errorf("unsupported type: %T", v)
+		}
+	}
+	converted := map[string]*wire{}
+	for k, v := range m {
+		method, err := typeToMethod(v)
+		if err != nil {
+			return nil, err
+		}
+		converted[k] = &wire{Method: method, Params: v}
+	}
+	return json.Marshal(converted)
+}
+
+func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	var rawMap map[string]*raw
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+	if rawMap == nil {
+		return nil
+	}
+	result := make(InputRequestMap, len(rawMap))
+	for k, raw := range rawMap {
+		switch raw.Method {
+		case methodElicit:
+			var p ElicitParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodCreateMessage:
+			var p CreateMessageWithToolsParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodListRoots:
+			var p ListRootsParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		default:
+			return fmt.Errorf("unsupported InputRequest method: %q", raw.Method)
+		}
+	}
+	*m = result
+	return nil
+}
+
+// InputResponse is a type for results that a client sends back when fulfilling
+// a server input request (SEP-2322). Implementations are [*ElicitResult],
+// [*CreateMessageResult], and [*ListRootsResult].
+type InputResponse interface{ isInputResponse() }
+
+// InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
+// values. It is used in params types when retrying a call after an
+// input-required result.
+type InputResponseMap map[string]InputResponse
+
+func (m InputResponseMap) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Method string        `json:"method"`
+		Result InputResponse `json:"result,omitempty"`
+	}
+	typeToMethod := func(v InputResponse) (string, error) {
+		switch v.(type) {
+		case *ElicitResult:
+			return methodElicit, nil
+		case *CreateMessageResult, *CreateMessageWithToolsResult:
+			return methodCreateMessage, nil
+		case *ListRootsResult:
+			return methodListRoots, nil
+		default:
+			return "", fmt.Errorf("unsupported type: %T", v)
+		}
+	}
+	converted := map[string]*wire{}
+	for k, v := range m {
+		method, err := typeToMethod(v)
+		if err != nil {
+			return nil, err
+		}
+		converted[k] = &wire{Method: method, Result: v}
+	}
+	return json.Marshal(converted)
+}
+
+func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+	}
+	var rawMap map[string]*raw
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+	result := make(InputResponseMap, len(rawMap))
+	for k, raw := range rawMap {
+		switch raw.Method {
+		case methodElicit:
+			var p ElicitResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodCreateMessage:
+			var p CreateMessageWithToolsResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodListRoots:
+			var p ListRootsResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		default:
+			return fmt.Errorf("unsupported InputResponse method: %q", raw.Method)
+		}
+	}
+	*m = result
+	return nil
+}
+
 // Optional annotations for the client. The client can use annotations to inform
 // how objects are used or displayed.
 type Annotations struct {
@@ -46,6 +218,14 @@ type CallToolParams struct {
 	// Arguments holds the tool arguments. It can hold any value that can be
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	// The client must echo this back when retrying.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // CallToolParamsRaw is passed to tool handlers on the server. Its arguments
@@ -61,6 +241,14 @@ type CallToolParamsRaw struct {
 	// is the responsibility of the tool handler to unmarshal and validate the
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	// The client must echo this back when retrying.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // A CallToolResult is the server's response to a tool call.
@@ -107,6 +295,24 @@ type CallToolResult struct {
 	// the Content field.
 	IsError bool `json:"isError,omitempty"`
 
+	// InputRequests is a map of server-assigned IDs to input requests.
+	// Populated only when ResultType is ResultTypeInputRequired.
+	// The client must fulfill these and echo the IDs back in InputResponses
+	// when retrying the call.
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+
+	// RequestState is an opaque string the client must echo back when
+	// retrying after an input-required result. Servers use this to carry
+	// context between independent requests.
+	//
+	// Unauthenticated servers must encrypt, sign and verify this value.
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. Empty or ResultTypeComplete means the call succeeded
+	// normally. ResultTypeInputRequired means the client should fulfill the
+	// InputRequests and retry the call.
+	resultType resultType
 	// The error passed to setError, if any.
 	// It is not marshaled, and therefore it is only visible on the server.
 	// Its only use is in server sending middleware, where it can be accessed
@@ -145,13 +351,49 @@ func (r *CallToolResult) GetError() error {
 
 func (*CallToolResult) isResult() {}
 
-// UnmarshalJSON handles the unmarshalling of content into the Content
-// interface.
+func (r *CallToolResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *CallToolResult) requestState() string        { return r.RequestState }
+func (r *CallToolResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *CallToolResult) hasContent() bool {
+	return len(r.Content) > 0 || r.StructuredContent != nil
+}
+
+// NeedsInput reports whether this result requires further client input.
+// This is true when the server returned ResultType "input_required".
+// When NeedsInput returns true, check InputRequests for the set of
+// requests the server needs fulfilled before retrying the call.
+// An empty InputRequests with NeedsInput true indicates load-shedding.
+func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *CallToolResult) MarshalJSON() ([]byte, error) {
+	type res CallToolResult // avoid recursion
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
 func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	type res CallToolResult // avoid recursion
 	var wire struct {
 		res
-		Content []*wireContent `json:"content"`
+		Content    []*wireContent `json:"content"`
+		ResultType resultType     `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
@@ -160,6 +402,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
 		return err
 	}
+	wire.res.resultType = wire.ResultType
 	*x = CallToolResult(wire.res)
 	return nil
 }
@@ -426,6 +669,7 @@ type CreateMessageParams struct {
 }
 
 func (x *CreateMessageParams) isParams()              {}
+func (x *CreateMessageParams) isInputRequest()        {}
 func (x *CreateMessageParams) isNil() bool            { return x == nil }
 func (x *CreateMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -453,6 +697,7 @@ type CreateMessageWithToolsParams struct {
 }
 
 func (x *CreateMessageWithToolsParams) isParams()              {}
+func (x *CreateMessageWithToolsParams) isInputRequest()        {}
 func (x *CreateMessageWithToolsParams) isNil() bool            { return x == nil }
 func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -553,7 +798,8 @@ type CreateMessageResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
-func (*CreateMessageResult) isResult() {}
+func (*CreateMessageResult) isResult()        {}
+func (*CreateMessageResult) isInputResponse() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
 	var wire struct {
@@ -598,7 +844,8 @@ var createMessageWithToolsResultAllow = map[string]bool{
 	"tool_use": true,
 }
 
-func (*CreateMessageWithToolsResult) isResult() {}
+func (*CreateMessageWithToolsResult) isResult()        {}
+func (*CreateMessageWithToolsResult) isInputResponse() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
 // marshaled as a single object for compatibility with pre-2025-11-25
@@ -657,6 +904,13 @@ type GetPromptParams struct {
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// The name of the prompt or prompt template.
 	Name string `json:"name"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 func (x *GetPromptParams) isParams()              {}
@@ -672,9 +926,66 @@ type GetPromptResult struct {
 	// An optional description for the prompt.
 	Description string           `json:"description,omitempty"`
 	Messages    []*PromptMessage `json:"messages"`
+
+	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// See [CallToolResult.InputRequests].
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+	// RequestState is the opaque state for multi-round-trip retries.
+	// See [CallToolResult.RequestState].
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. See [CallToolResult.ResultType] for details.
+	resultType resultType
 }
 
 func (*GetPromptResult) isResult() {}
+
+func (r *GetPromptResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *GetPromptResult) requestState() string        { return r.RequestState }
+func (r *GetPromptResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *GetPromptResult) hasContent() bool { return len(r.Messages) > 0 }
+
+// NeedsInput reports whether this result requires further client input.
+// See [CallToolResult.NeedsInput] for details.
+func (r *GetPromptResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *GetPromptResult) MarshalJSON() ([]byte, error) {
+	type res GetPromptResult
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
+func (x *GetPromptResult) UnmarshalJSON(data []byte) error {
+	type res GetPromptResult
+	var wire struct {
+		res
+		ResultType resultType `json:"resultType"`
+	}
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	wire.res.resultType = wire.ResultType
+	*x = GetPromptResult(wire.res)
+	return nil
+}
 
 // InitializeParams is sent by the client to initialize the session.
 type InitializeParams struct {
@@ -845,6 +1156,7 @@ type ListRootsParams struct {
 }
 
 func (x *ListRootsParams) isParams()              {}
+func (x *ListRootsParams) isInputRequest()        {}
 func (x *ListRootsParams) isNil() bool            { return x == nil }
 func (x *ListRootsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -859,7 +1171,8 @@ type ListRootsResult struct {
 	Roots []*Root `json:"roots"`
 }
 
-func (*ListRootsResult) isResult() {}
+func (*ListRootsResult) isResult()        {}
+func (*ListRootsResult) isInputResponse() {}
 
 type ListToolsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -1104,6 +1417,13 @@ type ReadResourceParams struct {
 	// The URI of the resource to read. The URI can use any protocol; it is up to
 	// the server how to interpret it.
 	URI string `json:"uri"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 func (x *ReadResourceParams) isParams()              {}
@@ -1117,9 +1437,66 @@ type ReadResourceResult struct {
 	// attach additional metadata to their responses.
 	Meta     `json:"_meta,omitempty"`
 	Contents []*ResourceContents `json:"contents"`
+
+	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// See [CallToolResult.InputRequests].
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+	// RequestState is the opaque state for multi-round-trip retries.
+	// See [CallToolResult.RequestState].
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. See [CallToolResult.ResultType] for details.
+	resultType resultType
 }
 
 func (*ReadResourceResult) isResult() {}
+
+func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) requestState() string        { return r.RequestState }
+func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *ReadResourceResult) hasContent() bool { return len(r.Contents) > 0 }
+
+// NeedsInput reports whether this result requires further client input.
+// See [CallToolResult.NeedsInput] for details.
+func (r *ReadResourceResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *ReadResourceResult) MarshalJSON() ([]byte, error) {
+	type res ReadResourceResult
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
+func (x *ReadResourceResult) UnmarshalJSON(data []byte) error {
+	type res ReadResourceResult
+	var wire struct {
+		res
+		ResultType resultType `json:"resultType"`
+	}
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	wire.res.resultType = wire.ResultType
+	*x = ReadResourceResult(wire.res)
+	return nil
+}
 
 // A known resource that the server is capable of reading.
 type Resource struct {
@@ -1520,8 +1897,9 @@ type ElicitParams struct {
 	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
-func (x *ElicitParams) isParams()   {}
-func (x *ElicitParams) isNil() bool { return x == nil }
+func (x *ElicitParams) isParams()       {}
+func (x *ElicitParams) isInputRequest() {}
+func (x *ElicitParams) isNil() bool     { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -1541,7 +1919,8 @@ type ElicitResult struct {
 	Content map[string]any `json:"content,omitempty"`
 }
 
-func (*ElicitResult) isResult() {}
+func (*ElicitResult) isResult()        {}
+func (*ElicitResult) isInputResponse() {}
 
 // ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
 type ElicitationCompleteParams struct {
