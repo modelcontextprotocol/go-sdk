@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -223,4 +224,4 @@ func TestContentUnmarshalNilWithInvalidContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(mcp.CallToolResult{})}
+var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(mcp.CallToolResult{}, mcp.GetPromptResult{}, mcp.ReadResourceResult{})}
