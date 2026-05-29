@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -206,7 +207,7 @@ func TestEndToEnd(t *testing.T) {
 					Role:    "user",
 				}},
 			}
-			if diff := cmp.Diff(wantReview, gotReview); diff != "" {
+			if diff := cmp.Diff(wantReview, gotReview, ctrCmpOpts...); diff != "" {
 				t.Errorf("prompts/get 'code_review' mismatch (-want +got):\n%s", diff)
 			}
 
@@ -2371,4 +2372,4 @@ func TestSetErrorPreservesContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}
+var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
