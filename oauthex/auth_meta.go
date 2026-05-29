@@ -12,7 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -114,6 +115,13 @@ type AuthServerMeta struct {
 	// ClientIDMetadataDocumentSupported is a boolean indicating whether the authorization server
 	// supports client ID metadata documents.
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+
+	// AuthorizationResponseIssParameterSupported indicates whether the authorization server
+	// provides the "iss" parameter in authorization responses per [RFC 9207].
+	// When true, clients must verify the "iss" parameter is present and matches the Issuer field.
+	//
+	// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
 }
 
 // GetAuthServerMeta issues a GET request to retrieve authorization server metadata
@@ -146,8 +154,7 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 		}
 		return nil, fmt.Errorf("%v", err) // Do not expose error types.
 	}
-	if strings.TrimRight(asm.Issuer, "/") != strings.TrimRight(issuer, "/") {
-		// Validate the Issuer field (see RFC 8414, section 3.3).
+	if !authutil.IssuersEqual(asm.Issuer, issuer) {
 		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuer)
 	}
 
