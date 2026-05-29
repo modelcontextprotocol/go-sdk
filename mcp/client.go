@@ -365,10 +365,14 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	// Since supportedProtocolVersions is defined in descending order (newest to oldest),
 	// the first match we find is the highest supported version.
 	var negotiated string
-	for _, v := range supportedProtocolVersions {
-		if slices.Contains(res.SupportedVersions, v) {
-			negotiated = v
-			break
+	if slices.Contains(res.SupportedVersions, protocolVersion) {
+		negotiated = protocolVersion
+	} else {
+		for _, v := range supportedProtocolVersions {
+			if slices.Contains(res.SupportedVersions, v) {
+				negotiated = v
+				break
+			}
 		}
 	}
 	if negotiated == "" || negotiated < protocolVersion20260630 {
