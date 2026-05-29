@@ -73,7 +73,7 @@ func TestClientCredentials_ValidateCoversAllAuthFields(t *testing.T) {
 	var pointerFields int
 	for i := range typ.NumField() {
 		f := typ.Field(i)
-		if f.Name == "ClientID" {
+		if f.Name == "ClientID" || f.Name == "Issuer" {
 			continue
 		}
 		if f.Type.Kind() != reflect.Ptr {

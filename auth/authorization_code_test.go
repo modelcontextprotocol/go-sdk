@@ -609,6 +609,8 @@ func TestHandleRegistration(t *testing.T) {
 		asm           *oauthex.AuthServerMeta
 		want          *resolvedClientConfig
 		wantError     bool
+		issuerMatch   bool
+		issuerSuffix  string
 	}{
 		{
 			name: "ClientIDMetadataDocument",
@@ -648,6 +650,79 @@ func TestHandleRegistration(t *testing.T) {
 			},
 		},
 		{
+			name: "Preregistered_IssuerMatch",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "", // set dynamically in the test
+				},
+			},
+			want: &resolvedClientConfig{
+				registrationType: registrationTypePreregistered,
+				clientID:         "pre_client_id",
+				clientSecret:     "pre_client_secret",
+				authStyle:        oauth2.AuthStyleInParams,
+			},
+			issuerMatch: true,
+		},
+		{
+			name: "Preregistered_IssuerMismatch",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "https://other-issuer.example.com",
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "Preregistered_IssuerMatchTrailingSlash",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "", // set dynamically in the test (with trailing slash)
+				},
+			},
+			want: &resolvedClientConfig{
+				registrationType: registrationTypePreregistered,
+				clientID:         "pre_client_id",
+				clientSecret:     "pre_client_secret",
+				authStyle:        oauth2.AuthStyleInParams,
+			},
+			issuerMatch:  true,
+			issuerSuffix: "/",
+		},
+		{
 			name: "NoneSupported",
 			handlerConfig: &AuthorizationCodeHandlerConfig{
 				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com/metadata.json"},
@@ -660,6 +735,10 @@ func TestHandleRegistration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{RegistrationConfig: tt.serverConfig})
 			s.Start(t)
+			// Set the Issuer dynamically if requested by the test case.
+			if tt.issuerMatch {
+				tt.handlerConfig.PreregisteredClient.Issuer = s.URL() + tt.issuerSuffix
+			}
 			tt.handlerConfig.AuthorizationCodeFetcher = func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 				return nil, nil
 			}
@@ -678,6 +757,9 @@ func TestHandleRegistration(t *testing.T) {
 					t.Fatalf("handleRegistration() unexpected error = %v", err)
 				}
 				return
+			}
+			if tt.wantError {
+				t.Fatal("handleRegistration() expected error, got nil")
 			}
 			if got.registrationType != tt.want.registrationType {
 				t.Errorf("handleRegistration() registrationType = %v, want %v", got.registrationType, tt.want.registrationType)
