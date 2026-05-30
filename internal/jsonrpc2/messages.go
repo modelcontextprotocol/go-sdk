@@ -109,7 +109,7 @@ func (msg *Request) IsCall() bool { return msg.ID.IsValid() }
 
 func (msg *Request) marshal(to *wireCombined) {
 	to.ID = msg.ID.value
-	to.Method = msg.Method
+	to.Method = &msg.Method
 	to.Params = msg.Params
 }
 
@@ -183,10 +183,10 @@ func DecodeMessage(data []byte) (Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if msg.Method != "" {
+	if msg.Method != nil {
 		// has a method, must be a call
 		return &Request{
-			Method: msg.Method,
+			Method: *msg.Method,
 			ID:     id,
 			Params: msg.Params,
 		}, nil

@@ -54,7 +54,7 @@ const wireVersion = "2.0"
 type wireCombined struct {
 	VersionTag string          `json:"jsonrpc"`
 	ID         any             `json:"id,omitempty"`
-	Method     string          `json:"method,omitempty"`
+	Method     *string         `json:"method,omitempty"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	Error      *WireError      `json:"error,omitempty"`

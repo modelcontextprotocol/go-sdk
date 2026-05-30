@@ -63,6 +63,24 @@ func TestWireMessage(t *testing.T) {
 	}
 }
 
+func TestDecodeEmptyMethodAsRequest(t *testing.T) {
+	msg, err := jsonrpc2.DecodeMessage([]byte(`{"jsonrpc":"2.0","id":5,"method":"","params":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		t.Fatalf("decoded message is %T, want *jsonrpc2.Request", msg)
+	}
+	if req.ID.Raw() != int64(5) {
+		t.Fatalf("request id = %v, want 5", req.ID.Raw())
+	}
+	if req.Method != "" {
+		t.Fatalf("request method = %q, want empty string", req.Method)
+	}
+}
+
 func newNotification(method string, params any) jsonrpc2.Message {
 	msg, err := jsonrpc2.NewNotification(method, params)
 	if err != nil {
