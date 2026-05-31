@@ -1920,6 +1920,82 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 	})
 }
 
+// scriptedKeepaliveSession is a keepaliveSession test double whose Ping
+// returns errors from a script (one entry consumed per call; the last entry
+// repeats once exhausted), and records how many times Close was called. Ping
+// returns immediately so the keepalive loop's pace is driven purely by the
+// ticker, making the test deterministic under synctest.
+type scriptedKeepaliveSession struct {
+	pingErrs   []error
+	pingCalls  atomic.Int64
+	closeCalls atomic.Int64
+}
+
+func (s *scriptedKeepaliveSession) Ping(context.Context, *PingParams) error {
+	n := int(s.pingCalls.Add(1)) - 1
+	if n >= len(s.pingErrs) {
+		n = len(s.pingErrs) - 1
+	}
+	return s.pingErrs[n]
+}
+
+func (s *scriptedKeepaliveSession) Close() error {
+	s.closeCalls.Add(1)
+	return nil
+}
+
+// TestStartKeepalive_FailureThreshold verifies that the session is kept alive
+// across consecutive ping failures below the threshold and only closed once the
+// threshold is reached.
+func TestStartKeepalive_FailureThreshold(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		sess := &scriptedKeepaliveSession{pingErrs: []error{errors.New("boom")}}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		var cancel context.CancelFunc
+		startKeepalive(sess, interval, 3, &cancel, logger)
+		defer cancel()
+
+		// After two ticks → two failures, still below threshold 3: not closed.
+		time.Sleep(2*interval + interval/2)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 0 {
+			t.Fatalf("session closed below threshold: closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
+		}
+
+		// Third tick → third failure reaches threshold: session closed.
+		time.Sleep(interval)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 1 {
+			t.Fatalf("expected one Close at threshold, got closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
+		}
+	})
+}
+
+// TestStartKeepalive_SuccessResetsFailures verifies that a successful ping
+// resets the consecutive-failure counter, so an isolated failure between
+// successes never accumulates toward the threshold.
+func TestStartKeepalive_SuccessResetsFailures(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		// fail, success, fail, fail, then success (the tail repeats): the run
+		// never has 3 consecutive failures, so the session is never closed.
+		sess := &scriptedKeepaliveSession{pingErrs: []error{
+			errors.New("boom"), nil, errors.New("boom"), errors.New("boom"), nil,
+		}}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		var cancel context.CancelFunc
+		startKeepalive(sess, interval, 3, &cancel, logger)
+		defer cancel()
+
+		time.Sleep(6 * interval)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 0 {
+			t.Fatalf("session closed despite a success resetting the counter: closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
+		}
+	})
+}
+
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
