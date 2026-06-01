@@ -124,3 +124,72 @@ func TestIOConnRead(t *testing.T) {
 		})
 	}
 }
+
+func TestIOConnReadMaxMessageBytes(t *testing.T) {
+	ctx := context.Background()
+	input := `{"jsonrpc":"2.0","id":1,"method":"test","params":{}}`
+
+	t.Run("allows frame at limit", func(t *testing.T) {
+		tr := newIOConnWithOptions(rwc{
+			rc: io.NopCloser(strings.NewReader(input)),
+		}, int64(len(input)))
+		t.Cleanup(func() { tr.Close() })
+
+		msg, err := tr.Read(ctx)
+		if err != nil {
+			t.Fatalf("Read() returned error: %v", err)
+		}
+		if got := msg.(*jsonrpc.Request).Method; got != "test" {
+			t.Fatalf("Read() method = %q, want test", got)
+		}
+	})
+
+	t.Run("allows line ending beyond limit", func(t *testing.T) {
+		for _, lineEnding := range []string{"\n", "\r\n"} {
+			tr := newIOConnWithOptions(rwc{
+				rc: io.NopCloser(strings.NewReader(input + lineEnding)),
+			}, int64(len(input)))
+			t.Cleanup(func() { tr.Close() })
+
+			msg, err := tr.Read(ctx)
+			if err != nil {
+				t.Fatalf("Read() with line ending %q returned error: %v", lineEnding, err)
+			}
+			if got := msg.(*jsonrpc.Request).Method; got != "test" {
+				t.Fatalf("Read() method = %q, want test", got)
+			}
+		}
+	})
+
+	t.Run("rejects frame over limit", func(t *testing.T) {
+		tr := newIOConnWithOptions(rwc{
+			rc: io.NopCloser(strings.NewReader(input)),
+		}, int64(len(input)-1))
+		t.Cleanup(func() { tr.Close() })
+
+		_, err := tr.Read(ctx)
+		if err == nil {
+			t.Fatal("Read() returned nil error")
+		}
+		want := "JSON-RPC message exceeds maximum size"
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Read() error = %q, want substring %q", err, want)
+		}
+	})
+
+	t.Run("keeps zero limit unbounded", func(t *testing.T) {
+		longInput := `{"jsonrpc":"2.0","id":1,"method":"` + strings.Repeat("x", 8192) + `","params":{}}`
+		tr := newIOConnWithOptions(rwc{
+			rc: io.NopCloser(strings.NewReader(longInput)),
+		}, 0)
+		t.Cleanup(func() { tr.Close() })
+
+		msg, err := tr.Read(ctx)
+		if err != nil {
+			t.Fatalf("Read() returned error: %v", err)
+		}
+		if got := msg.(*jsonrpc.Request).Method; got != strings.Repeat("x", 8192) {
+			t.Fatalf("Read() method length = %d, want 8192", len(got))
+		}
+	})
+}
