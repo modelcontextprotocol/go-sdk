@@ -330,8 +330,7 @@ func (mc *methodCache[R]) get(key string) (R, bool) {
 		var zero R
 		return zero, false
 	}
-	if !entry.isValid() {
-		delete(mc.cachedValues, key)
+	if entry.ttlMs <= 0 || !entry.isValid() {
 		var zero R
 		return zero, false
 	}
@@ -339,10 +338,6 @@ func (mc *methodCache[R]) get(key string) (R, bool) {
 }
 
 func (mc *methodCache[R]) put(key string, result R) {
-	ttl := result.GetTTLMs()
-	if ttl <= 0 {
-		return
-	}
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if mc.cachedValues == nil {
@@ -351,7 +346,18 @@ func (mc *methodCache[R]) put(key string, result R) {
 	mc.cachedValues[key] = &cacheEntry[R]{
 		result:     result,
 		receivedAt: time.Now(),
-		ttlMs:      ttl,
+		ttlMs:      result.GetTTLMs(),
+	}
+}
+
+// forEach calls f for each entry currently in the cache, regardless of TTL.
+// This is used to look up data (such as a tool definition) that is derived
+// from list results but not subject to TTL-based expiry on the lookup path.
+func (mc *methodCache[R]) forEach(f func(R)) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	for _, entry := range mc.cachedValues {
+		f(entry.result)
 	}
 }
 
@@ -395,10 +401,6 @@ type ClientSession struct {
 	resourcesCache         methodCache[*ListResourcesResult]
 	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
 	readResourceCache      methodCache[*ReadResourceResult]
-
-	// Per-tool cache for CallTool context injection.
-	toolCacheMu sync.RWMutex
-	toolCache   map[string]*Tool
 
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
@@ -448,19 +450,25 @@ func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
 }
 
-func (cs *ClientSession) cacheTools(tools []*Tool) {
-	cs.toolCacheMu.Lock()
-	defer cs.toolCacheMu.Unlock()
-	cs.toolCache = make(map[string]*Tool, len(tools))
-	for _, tool := range tools {
-		cs.toolCache[tool.Name] = tool
-	}
-}
-
-func (cs *ClientSession) getCachedTool(name string) *Tool {
-	cs.toolCacheMu.RLock()
-	defer cs.toolCacheMu.RUnlock()
-	return cs.toolCache[name]
+// lookupTool returns the most recently seen definition of the tool with the
+// given name across all cached ListTools results, or nil if no such tool has
+// been seen. It is used by CallTool to inject the tool definition into the
+// outgoing request context for transport-layer features (e.g. x-mcp-header
+// param annotations).
+func (cs *ClientSession) lookupTool(name string) *Tool {
+	var found *Tool
+	cs.toolsCache.forEach(func(r *ListToolsResult) {
+		if found != nil {
+			return
+		}
+		for _, t := range r.Tools {
+			if t.Name == name {
+				found = t
+				return
+			}
+		}
+	})
+	return found
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -1096,23 +1104,28 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
+	var cursor string
 	if params != nil {
-		if result, ok := cs.toolsCache.get(params.Cursor); ok {
+		cursor = params.Cursor
+	}
+	if !cs.client.opts.DisableCache {
+		if result, ok := cs.toolsCache.get(cursor); ok {
 			return result, nil
 		}
 	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
-		if params != nil && params.Cursor != "" {
+		if cursor != "" {
 			cs.toolsCache.invalidate()
 		}
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
-	cs.cacheTools(result.Tools)
-	if !cs.client.opts.DisableCache && params != nil {
-		cs.toolsCache.put(params.Cursor, result)
-	}
+	// Always cache the result so CallTool can look up tool definitions by name
+	// for transport-layer features (e.g. x-mcp-header annotations). The TTL
+	// hint controls whether a future ListTools call returns the cached value
+	// (see methodCache.get), independent of name lookup.
+	cs.toolsCache.put(cursor, result)
 	return result, nil
 }
 
@@ -1127,7 +1140,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.getCachedTool(params.Name); tool != nil {
+	if tool := cs.lookupTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))

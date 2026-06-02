@@ -440,16 +440,22 @@ func TestClientCapabilities(t *testing.T) {
 	}
 }
 
-func TestToolCache(t *testing.T) {
+func TestLookupTool(t *testing.T) {
 	tool1 := &Tool{Name: "tool1", Description: "first"}
 	tool2 := &Tool{Name: "tool2", Description: "second"}
 	tool1Updated := &Tool{Name: "tool1", Description: "updated"}
 
+	// page represents a single cached ListToolsResult, keyed by cursor.
+	type page struct {
+		cursor string
+		tools  []*Tool
+	}
+
 	testCases := []struct {
-		name         string
-		cacheBatches [][]*Tool
-		lookup       string
-		want         *Tool
+		name   string
+		pages  []page
+		lookup string
+		want   *Tool
 	}{
 		{
 			name:   "empty cache",
@@ -457,58 +463,58 @@ func TestToolCache(t *testing.T) {
 			want:   nil,
 		},
 		{
-			name:         "single tool found",
-			cacheBatches: [][]*Tool{{tool1}},
-			lookup:       "tool1",
-			want:         tool1,
+			name:   "single tool found",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1}}},
+			lookup: "tool1",
+			want:   tool1,
 		},
 		{
-			name:         "unknown tool",
-			cacheBatches: [][]*Tool{{tool1}},
-			lookup:       "nonexistent",
-			want:         nil,
+			name:   "unknown tool",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1}}},
+			lookup: "nonexistent",
+			want:   nil,
 		},
 		{
-			name:         "multiple tools single batch",
-			cacheBatches: [][]*Tool{{tool1, tool2}},
-			lookup:       "tool2",
-			want:         tool2,
+			name:   "multiple tools single page",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1, tool2}}},
+			lookup: "tool2",
+			want:   tool2,
 		},
 		{
-			name:         "replace clears old entries",
-			cacheBatches: [][]*Tool{{tool1}, {tool2}},
-			lookup:       "tool1",
-			want:         nil,
+			name: "tool found across paginated pages",
+			pages: []page{
+				{cursor: "", tools: []*Tool{tool1}},
+				{cursor: "page2", tools: []*Tool{tool2}},
+			},
+			lookup: "tool2",
+			want:   tool2,
 		},
 		{
-			name:         "replace keeps new entries",
-			cacheBatches: [][]*Tool{{tool1}, {tool2}},
-			lookup:       "tool2",
-			want:         tool2,
+			name: "re-list same cursor overwrites entry",
+			pages: []page{
+				{cursor: "", tools: []*Tool{tool1}},
+				{cursor: "", tools: []*Tool{tool1Updated}},
+			},
+			lookup: "tool1",
+			want:   tool1Updated,
 		},
 		{
-			name:         "overwrite existing entry",
-			cacheBatches: [][]*Tool{{tool1}, {tool1Updated}},
-			lookup:       "tool1",
-			want:         tool1Updated,
-		},
-		{
-			name:         "empty batch no-op",
-			cacheBatches: [][]*Tool{{}},
-			lookup:       "tool1",
-			want:         nil,
+			name:   "empty page no-op",
+			pages:  []page{{cursor: "", tools: []*Tool{}}},
+			lookup: "tool1",
+			want:   nil,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := &ClientSession{}
-			for _, batch := range tc.cacheBatches {
-				cs.cacheTools(batch)
+			for _, p := range tc.pages {
+				cs.toolsCache.put(p.cursor, &ListToolsResult{Tools: p.tools})
 			}
-			got := cs.getCachedTool(tc.lookup)
+			got := cs.lookupTool(tc.lookup)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("getCachedTool(%q) mismatch (-want +got):\n%s", tc.lookup, diff)
+				t.Errorf("lookupTool(%q) mismatch (-want +got):\n%s", tc.lookup, diff)
 			}
 		})
 	}
