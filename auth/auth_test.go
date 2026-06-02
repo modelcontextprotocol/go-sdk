@@ -63,6 +63,11 @@ func TestVerify(t *testing.T) {
 			"token missing expiration", 401,
 		},
 		{
+			"no expiration with AllowMissingExpiration accepts",
+			&RequireBearerTokenOptions{AllowMissingExpiration: true}, "Bearer noexp",
+			"", 0,
+		},
+		{
 			"expired", nil, "Bearer expired",
 			"token expired", 401,
 		},

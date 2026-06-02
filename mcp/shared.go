@@ -755,9 +755,20 @@ type keepaliveSession interface {
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
 //
-// logger must be non-nil; ping failures (which terminate the keepalive loop and
-// close the session) are reported via logger so they are not silently dropped.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+// failureThreshold is the number of consecutive ping failures tolerated before
+// the session is closed; a value below 1 is treated as 1 (close on the first
+// failure). A successful ping resets the counter. This mirrors the spec's
+// "multiple failed pings MAY trigger a connection reset" language, letting a
+// transient miss pass without tearing down an otherwise live session.
+//
+// logger must be non-nil; ping failures (both the tolerated ones and the final
+// one that closes the session) are reported via logger so they are not silently
+// dropped.
+func startKeepalive(session keepaliveSession, interval time.Duration, failureThreshold int, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+	if failureThreshold < 1 {
+		failureThreshold = 1
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -768,6 +779,7 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -776,17 +788,32 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
-				if err != nil {
-					if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
-						// Peer doesn't support ping, stop the keepalive process.
-						return
-					}
-					// Ping failed; log it before closing the session so the
-					// failure is observable to operators. See #218.
-					logger.Error("keepalive ping failed; closing session", "error", err)
-					_ = session.Close()
+				if err == nil {
+					consecutiveFailures = 0
+					continue
+				}
+				if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
+					// Peer doesn't support ping, stop the keepalive process.
 					return
 				}
+				consecutiveFailures++
+				if consecutiveFailures < failureThreshold {
+					// Tolerate transient failures below the threshold; log so
+					// the misses are still observable to operators. See #218.
+					logger.Warn("keepalive ping failed; tolerating below threshold",
+						"error", err,
+						"consecutiveFailures", consecutiveFailures,
+						"failureThreshold", failureThreshold)
+					continue
+				}
+				// Threshold reached; log before closing the session so the
+				// failure is observable to operators. See #218.
+				logger.Error("keepalive ping failed; closing session",
+					"error", err,
+					"consecutiveFailures", consecutiveFailures,
+					"failureThreshold", failureThreshold)
+				_ = session.Close()
+				return
 			}
 		}
 	}()

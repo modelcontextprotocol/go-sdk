@@ -79,6 +79,13 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 	// Function called when a client session subscribes to a resource.
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
@@ -1616,7 +1623,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
+	startKeepalive(ss, interval, ss.server.opts.KeepAliveFailureThreshold, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

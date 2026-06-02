@@ -1958,16 +1958,18 @@ type ElicitationCompleteParams struct {
 func (x *ElicitationCompleteParams) isParams()   {}
 func (x *ElicitationCompleteParams) isNil() bool { return x == nil }
 
-// An Implementation describes the name and version of an MCP implementation, with an optional
-// title for UI representation.
+// An Implementation describes the name and version of an MCP implementation, with
+// optional display metadata.
 type Implementation struct {
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
 	Name string `json:"name"`
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
-	Title   string `json:"title,omitempty"`
-	Version string `json:"version"`
+	Title string `json:"title,omitempty"`
+	// A human-readable description of the implementation.
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version"`
 	// WebsiteURL for the server, if any.
 	WebsiteURL string `json:"websiteUrl,omitempty"`
 	// Icons for the Server, if any.

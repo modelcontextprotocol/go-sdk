@@ -167,6 +167,13 @@ type ClientOptions struct {
 	// the session is automatically closed.
 	// NOTE: The keepalive feature is only available for protocol versions < 2026-06-30
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -559,7 +566,7 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel, cs.client.opts.Logger)
+	startKeepalive(cs, interval, cs.client.opts.KeepAliveFailureThreshold, &cs.keepaliveCancel, cs.client.opts.Logger)
 }
 
 // AddRoots adds the given roots to the client,
