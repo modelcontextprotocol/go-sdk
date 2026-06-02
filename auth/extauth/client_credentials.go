@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -47,6 +48,9 @@ type ClientCredentialsHandlerConfig struct {
 type ClientCredentialsHandler struct {
 	config      *ClientCredentialsHandlerConfig
 	tokenSource oauth2.TokenSource
+
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
+	grantedScopes map[string][]string
 }
 
 // Compile-time check that ClientCredentialsHandler implements auth.OAuthHandler.
@@ -67,7 +71,10 @@ func NewClientCredentialsHandler(config *ClientCredentialsHandlerConfig) (*Clien
 	if config.Credentials.ClientSecretAuth == nil {
 		return nil, fmt.Errorf("clientSecretAuth is required for client credentials grant")
 	}
-	return &ClientCredentialsHandler{config: config}, nil
+	return &ClientCredentialsHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 // TokenSource returns the token source for outgoing requests.
@@ -121,29 +128,50 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		}
 	}
 
-	// Determine scopes: use PRM's scopes_supported if available.
-	scopes := scopesFromChallenges(wwwChallenges)
-	if len(scopes) == 0 && len(prm.ScopesSupported) > 0 {
-		scopes = prm.ScopesSupported
+	creds := h.config.Credentials
+	if creds.Issuer != "" && !authutil.IssuersEqual(creds.Issuer, asm.Issuer) {
+		return fmt.Errorf("authorization server issuer %q does not match pre-registered credentials issuer %q", asm.Issuer, creds.Issuer)
 	}
 
+	// Determine requestedScopes: use PRM's scopes_supported if available.
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
+	}
+
+	// Accumulate scopes: union previously granted scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+
 	// Step 3: Exchange client credentials for an access token.
-	creds := h.config.Credentials
 	cfg := &clientcredentials.Config{
 		ClientID:     creds.ClientID,
 		ClientSecret: creds.ClientSecretAuth.ClientSecret,
 		TokenURL:     asm.TokenEndpoint,
-		Scopes:       scopes,
+		Scopes:       requestedScopes,
 		AuthStyle:    selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
 	}
 
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	h.tokenSource = cfg.TokenSource(ctxWithClient)
 
-	// Eagerly fetch a token to surface errors immediately.
-	if _, err := h.tokenSource.Token(); err != nil {
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
+}
+
+func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
+	tok, err := h.tokenSource.Token()
+	if err != nil {
 		h.tokenSource = nil
 		return fmt.Errorf("client credentials token request failed: %w", err)
+	}
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
 	}
 	return nil
 }

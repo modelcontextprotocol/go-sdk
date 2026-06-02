@@ -128,12 +128,21 @@ func (i *sessionInfo) stopTimer() {
 type StreamableHTTPOptions struct {
 	// Stateless controls whether the session is 'stateless'.
 	//
-	// A stateless server does not validate the Mcp-Session-Id header, and uses a
-	// temporary session with default initialization parameters. Any
+	// A stateless server does not read or set the Mcp-Session-Id header, and
+	// uses a temporary session with default initialization parameters for each
+	// request. [ServerOptions.GetSessionID] is not consulted. Any
 	// server->client request is rejected immediately as there's no way for the
 	// client to respond. Server->Client notifications may reach the client if
 	// they are made in the context of an incoming request, as described in the
 	// documentation for [StreamableServerTransport].
+	// In Stateless mode, GET and DELETE requests return 405 Method Not Allowed.
+	//
+	// This mode aligns with the sessionless direction of the MCP spec; see
+	// [SEP-2567]. The previous behavior, in which stateless servers still
+	// honored Mcp-Session-Id, can be restored temporarily via the
+	// MCPGODEBUG compatibility parameter "allowsessionsinstateless=1".
+	//
+	// [SEP-2567]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567
 	Stateless bool
 
 	// TODO(#148): support session retention (?)
@@ -247,6 +256,16 @@ var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
 // The option will be removed in the 1.8.0 version of the SDK.
 var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 
+// allowsessionsinstateless is a compatibility parameter that restores the old
+// behavior of reading and using Mcp-Session-Id headers in stateless mode. When
+// set to "1", stateless servers will read the session ID from the request
+// header (or generate one via GetSessionID), set it on response headers, and
+// accept DELETE requests. When unset (the default), stateless servers ignore
+// session IDs entirely and reject DELETE with 405.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.9.0 version of the SDK.
+var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -288,7 +307,17 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 // serveStateless handles requests for stateless servers.
 // Stateless servers only support POST. Each request creates a temporary
 // session that is closed when the request completes.
+//
+// When the allowsessionsinstateless compatibility flag is set, DELETE is also
+// accepted (as a no-op) and session IDs are read from the request header.
 func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.Request) {
+	legacySessions := allowsessionsinstateless == "1"
+
+	if req.Method == http.MethodDelete && legacySessions {
+		h.serveStatelessLegacyDELETE(w, req)
+		return
+	}
+
 	if req.Method != http.MethodPost {
 		// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
 		w.Header().Set("Allow", "POST")
@@ -314,11 +343,18 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	// In stateless mode, the client may provide a session ID for application-
-	// level state correlation. If absent, generate one.
-	sessionID := req.Header.Get(sessionIDHeader)
-	if sessionID == "" {
-		sessionID = server.opts.GetSessionID()
+	connectOpts, usesNewProtocol, err := h.ephemeralConnectOpts(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var sessionID string
+	if legacySessions && !usesNewProtocol {
+		sessionID = req.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			sessionID = server.opts.GetSessionID()
+		}
 	}
 
 	transport := &StreamableServerTransport{
@@ -329,11 +365,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		logger:       h.opts.Logger,
 	}
 
-	connectOpts, err := h.ephemeralConnectOpts(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
@@ -345,11 +376,31 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	transport.ServeHTTP(w, req)
 }
 
+// serveStatelessLegacyDELETE handles DELETE requests in stateless mode when the
+// allowsessionsinstateless compatibility flag is set. DELETE requires a
+// Mcp-Session-Id header but is otherwise a no-op since stateless servers don't
+// persist sessions.
+func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter, req *http.Request) {
+	sessionID := req.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ephemeralConnectOpts peeks at the request body to determine whether it
-// contains an initialize or initialized message. If not, default session state
-// is constructed so that the session doesn't reject the request.
+// contains an initialize or initialized message or whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
+//
+// For old-protocol requests, default session state is synthesized so that
+// the session's init gate doesn't reject the request.
+//
 // It is used for both stateless servers and stateful servers with no session ID.
-func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*ServerSessionOptions, error) {
+//
+// The returned usesNewProtocol bool reports whether the protocol version
+// header indicates a protocol version >= 2026-06-30 (SEP-2575).
+func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
@@ -358,7 +409,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 	var hasInitialize, hasInitialized bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
+		return nil, false, fmt.Errorf("failed to read body")
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -372,23 +423,28 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*Server
 				case notificationInitialized:
 					hasInitialized = true
 				}
+				if protocolVersion >= protocolVersion20260630 {
+					usesNewProtocol = true
+				}
 			}
 		}
 	}
 
 	state := new(ServerSessionState)
-	if !hasInitialize {
+	// Only synthesize fake InitializeParams/InitializedParams for old-protocol
+	// requests.
+	if !hasInitialize && !usesNewProtocol {
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: protocolVersion,
 		}
 	}
-	if !hasInitialized {
+	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
 	state.LogLevel = "info"
 	return &ServerSessionOptions{
 		State: state,
-	}, nil
+	}, usesNewProtocol, nil
 }
 
 func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
@@ -533,7 +589,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// that arrives before a session exists (e.g. initialize or ping) on a
 	// server configured this way.
 	if sessionID == "" {
-		connectOpts, err := h.ephemeralConnectOpts(req)
+		connectOpts, _, err := h.ephemeralConnectOpts(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1236,6 +1292,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
 	var initializeProtocolVersion string
+	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
@@ -1251,6 +1308,41 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				var params InitializeParams
 				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
 					initializeProtocolVersion = params.ProtocolVersion
+				}
+			}
+			// SEP-2575: requests carrying `_meta.protocolVersion` require the
+			// Mcp-Protocol-Version HTTP header to be present and to match the
+			// per-request `_meta.protocolVersion` value.
+			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
+			// only when [StreamableHTTPOptions.Stateless] is true.
+			//
+			// TODO: this validation can be moved within validateMcpHeaders.
+			var metaVersion string
+			if meta := extractRequestMeta(jreq.Params); meta != nil {
+				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
+			}
+			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
+				if !c.stateless {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+						protocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion == "" {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header is required for requests carrying %q",
+						protocolVersionHeader, MetaKeyProtocolVersion),
+						http.StatusBadRequest)
+					return
+				}
+				if headerVersion != metaVersion {
+					http.Error(w, fmt.Sprintf(
+						"Bad Request: %s header %q does not match request %s %q",
+						protocolVersionHeader, headerVersion,
+						MetaKeyProtocolVersion, metaVersion),
+						http.StatusBadRequest)
+					return
 				}
 			}
 			// Include metadata for all requests (including notifications).
@@ -1654,11 +1746,13 @@ func init() {
 // Connect implements the [Transport] interface.
 //
 // The resulting [Connection] writes messages via POST requests to the
-// transport URL with the Mcp-Session-Id header set, and reads messages from
-// hanging requests.
+// transport URL, and reads messages from hanging requests. If the server
+// provides a session ID via the Mcp-Session-Id response header, subsequent
+// requests include it; sessionless servers that omit the header are fully
+// supported.
 //
-// When closed, the connection issues a DELETE request to terminate the logical
-// session.
+// When closed, the connection issues a DELETE request to terminate the
+// session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
 	client := t.HTTPClient
 	if client == nil {
@@ -1750,6 +1844,13 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()
 
+	// When the protocol version is >= 2026-06-30, the standalone HTTP GET
+	// SSE stream is removed.
+	if state.InitializeResult == nil ||
+		state.InitializeResult.ProtocolVersion >= protocolVersion20260630 {
+		return
+	}
+
 	// Start the standalone SSE stream as soon as we have the initialized
 	// result, if continuous listening is enabled.
 	//
@@ -1809,7 +1910,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		return
 	}
 	summary := "standalone SSE stream"
-	if err := c.checkResponse(summary, resp); err != nil {
+	if err := c.checkResponse(c.ctx, summary, resp); err != nil {
 		c.fail(err)
 		return
 	}
@@ -1952,10 +2053,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	}
 
-	if err := c.checkResponse(requestSummary, resp); err != nil {
+	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
 		// Only fail the connection for non-transient errors.
 		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		if !errors.Is(err, jsonrpc2.ErrRejected) {
+		// ErrMethodNotFound and ErrUnsupportedProtocolVersion should not break the connection as they trigger the initialize fallback.
+		if !errors.Is(err, jsonrpc2.ErrRejected) && !errors.Is(err, jsonrpc2.ErrMethodNotFound) && !errors.Is(err, jsonrpc2.ErrUnsupportedProtocolVersion) {
 			c.fail(err)
 		}
 		return err
@@ -2049,6 +2151,8 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if v := protocolVersionFromContext(req.Context()); v != "" {
+		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
@@ -2134,7 +2238,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		}
 
 		resp = newResp
-		if err := c.checkResponse(requestSummary, resp); err != nil {
+		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
 			c.fail(err)
 			return
 		}
@@ -2145,7 +2249,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 // translates it into an error if the request was unsuccessful.
 //
 // The response body is close if a non-nil error is returned.
-func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.Response) (err error) {
+func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary string, resp *http.Response) (err error) {
 	defer func() {
 		if err != nil {
 			resp.Body.Close()
@@ -2165,6 +2269,19 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read the body and if we can detect vPre servers that
+		// reject "server/discover" as unsupported method with a plain HTTP 400,
+		// then return jsonrpc2.ErrMethodNotFound or jsonrpc2.ErrUnsupportedProtocolVersion to trigger the fallback.
+		protocolVersion := protocolVersionFromContext(ctx)
+		if protocolVersion != "" && protocolVersion >= protocolVersion20260630 {
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
+			}
+			if strings.Contains(string(body), "Unsupported protocol version") {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
+			}
+		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil
@@ -2335,6 +2452,9 @@ func (c *streamableClientConn) Close() error {
 	c.closeOnce.Do(func() {
 		if errors.Is(c.failure(), ErrSessionMissing) {
 			// If the session is missing, no need to delete it.
+		} else if c.SessionID() == "" {
+			// No session was established (e.g. the server is stateless),
+			// so there is nothing to delete.
 		} else {
 			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
 			if err != nil {

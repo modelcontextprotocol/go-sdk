@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -49,6 +50,12 @@ type AuthorizationResult struct {
 	Code string
 	// State string returned by the authorization server.
 	State string
+	// Iss is the issuer identifier returned by the authorization server in the
+	// authorization response per [RFC 9207]. The AuthorizationCodeFetcher should
+	// populate this from the "iss" query parameter in the redirect URI if present.
+	//
+	// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+	Iss string
 }
 
 // AuthorizationArgs is the input to [AuthorizationCodeFetcher].
@@ -128,6 +135,9 @@ type AuthorizationCodeHandler struct {
 
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
+
+	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
+	grantedScopes map[string][]string
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
@@ -187,7 +197,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.Client == nil {
 		config.Client = http.DefaultClient
 	}
-	return &AuthorizationCodeHandler{config: config}, nil
+	return &AuthorizationCodeHandler{
+		config:        config,
+		grantedScopes: make(map[string][]string),
+	}, nil
 }
 
 func isNonRootHTTPSURL(u string) bool {
@@ -275,18 +288,23 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	scps := scopesFromChallenges(wwwChallenges)
-	if len(scps) == 0 && len(prm.ScopesSupported) > 0 {
-		scps = prm.ScopesSupported
+	requestedScopes := scopesFromChallenges(wwwChallenges)
+	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
+		requestedScopes = prm.ScopesSupported
 	}
 
 	// SEP-2207: when the client desires refresh tokens and the Authorization
 	// Server advertises offline_access support, add it to the requested scopes.
 	if h.config.RequestRefreshToken &&
 		slices.Contains(asm.ScopesSupported, "offline_access") &&
-		!slices.Contains(scps, "offline_access") {
-		scps = append(scps, "offline_access")
+		!slices.Contains(requestedScopes, "offline_access") {
+		requestedScopes = append(requestedScopes, "offline_access")
 	}
+
+	// Accumulate scopes: union previously granted scopes with the newly
+	// challenged scopes so that step-up authorization does not lose
+	// permissions granted in earlier rounds (SEP-2350).
+	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -298,7 +316,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 			AuthStyle: resolvedClientConfig.authStyle,
 		},
 		RedirectURL: h.config.RedirectURL,
-		Scopes:      scps,
+		Scopes:      requestedScopes,
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
@@ -306,8 +324,16 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return err
 	}
+	if err := validateIssuerResponse(authRes.Iss, asm.Issuer, asm.AuthorizationResponseIssParameterSupported); err != nil {
+		return err
+	}
 
-	return h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	if err != nil {
+		return err
+	}
+
+	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
@@ -481,6 +507,9 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 2. Attempt to use pre-registered client configuration.
 	preCfg := h.config.PreregisteredClient
 	if preCfg != nil {
+		if preCfg.Issuer != "" && !authutil.IssuersEqual(preCfg.Issuer, asm.Issuer) {
+			return nil, fmt.Errorf("authorization server issuer %q does not match pre-registered credentials issuer %q", asm.Issuer, preCfg.Issuer)
+		}
 		authStyle := selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported)
 		clientSecret := ""
 		if preCfg.ClientSecretAuth != nil {
@@ -543,6 +572,27 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 	}, nil
 }
 
+// validateIssuerResponse validates the "iss" parameter in an authorization response
+// per [RFC 9207].
+//
+// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bool) error {
+	if issParameterSupported {
+		if iss == "" {
+			return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
+		}
+		if iss != expectedIssuer {
+			return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
+		}
+	} else {
+		if iss != "" {
+			return fmt.Errorf("authorization server does not advertise RFC 9207 iss parameter support but iss was received in the authorization response")
+		}
+	}
+
+	return nil
+}
+
 // exchangeAuthorizationCode exchanges the authorization code for a token
 // and stores it in a token source.
 func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context, cfg *oauth2.Config, authResult *authResult, resourceURL string) error {
@@ -556,5 +606,22 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	return nil
+}
+
+// updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
+func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
+	if h.tokenSource == nil {
+		return nil
+	}
+	tok, err := h.tokenSource.Token()
+	if err != nil {
+		return err
+	}
+	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
+		h.grantedScopes[issuer] = requestedScopes
+	} else {
+		h.grantedScopes[issuer] = tokenScopes
+	}
 	return nil
 }
