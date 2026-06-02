@@ -632,6 +632,13 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 // don't overlap with the SDK. The test then asserts the resulting session
 // state and whether the legacy initialize handshake ran.
 func TestClientConnectDiscover(t *testing.T) {
+	// Temporarily enable 2026-06-30 support in the SDK for this test
+	oldSupported := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	t.Cleanup(func() {
+		supportedProtocolVersions = oldSupported
+	})
+
 	const otherVersionsOnly = "1999-01-01"
 
 	tests := []struct {
@@ -652,7 +659,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			name: "discover success skips initialize",
 			discoverHandler: func() (Result, error) {
 				return &DiscoverResult{
-					SupportedVersions: []string{latestProtocolVersion},
+					SupportedVersions: []string{protocolVersion20260630},
 					Capabilities: &ServerCapabilities{
 						Tools: &ToolCapabilities{ListChanged: true},
 					},
@@ -660,7 +667,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}, nil
 			},
 			wantInitialize: false,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20260630,
 		},
 		{
 			name: "method not found falls back to initialize",
@@ -736,7 +743,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			defer ss.Close()
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, ct, nil)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 			if tc.wantConnectErr {
 				if err == nil {
 					_ = cs.Close()
@@ -814,7 +821,7 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 			return nil, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

@@ -26,6 +26,12 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   Params), restoring the previous behavior. The default behavior was changed to
   align with SEP-2164 and the JSON-RPC specification.
 
+- `hintomitempty` added. If set to `1`, `ToolAnnotations` JSON marshaling
+  will omit `ReadOnlyHint` and `IdempotentHint` when their value is `false`,
+  restoring the previous behavior. The default behavior was changed to always
+  serialize these fields, since their Go types are bare `bool` (not `*bool`)
+  and omitting `false` made it indistinguishable from unset.
+  
 - `allowsessionsinstateless` added. If set to `1`, stateless streamable HTTP
   servers will read the `Mcp-Session-Id` request header (or generate one via
   `GetSessionID`), set it on response headers, and accept `DELETE` requests,

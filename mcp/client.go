@@ -58,13 +58,17 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Client{
+	c := &Client{
 		impl:                    impl,
 		opts:                    opts,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 	}
+	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
+		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
+	}
+	return c
 }
 
 // ClientOptions configures the behavior of the client.
@@ -154,11 +158,22 @@ type ClientOptions struct {
 	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
+	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
+	// By default (nil), the middleware is enabled with default settings.
+	// Set Disabled to true to opt out of automatic MultiRoundTrip handling.
+	MultiRoundTrip *MultiRoundTripOptions
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	// NOTE: The keepalive feature is only available for protocol versions < 2026-06-30
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -332,7 +347,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 //   - (nil, false, err):    any other failure (transport error, malformed response, etc.);
 //     caller should propagate the error.
 func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, bool, error) {
-	protocolVersion, _ := ctx.Value(protocolVersionContextKey{}).(string)
+	protocolVersion := protocolVersionFromContext(ctx)
 	caps := c.capabilities(protocolVersion)
 	params := &DiscoverParams{
 		Meta: Meta{
@@ -345,28 +360,34 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
 	if err != nil {
 		// According to SEP-2575, only the two signals below (MethodNotFound
-		// and UnsupportedProtocolVersionError) should trigger a fallback. However,
-		// to allow communication between vPost clients and vPre servers, we
-		// trigger fallback for any error.
+		// and UnsupportedProtocolVersionError) should trigger a fallback.
 		var werr *jsonrpc.Error
 		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
 			return nil, true, nil
 		}
+		return nil, false, err
+	}
+
+	// Pick the highest protocol version that both the server and this SDK support.
+	// Since supportedProtocolVersions is defined in descending order (newest to oldest),
+	// the first match we find is the highest supported version.
+	var negotiated string
+	if slices.Contains(res.SupportedVersions, protocolVersion) {
+		negotiated = protocolVersion
+	} else {
+		for _, v := range supportedProtocolVersions {
+			if slices.Contains(res.SupportedVersions, v) {
+				negotiated = v
+				break
+			}
+		}
+	}
+	if negotiated == "" || negotiated < protocolVersion20260630 {
+		// If there is no overlap, fall back to initialize so version
+		// negotiation can happen via the legacy path.
 		return nil, true, nil
 	}
 
-	// Pick the highest protocol version that both the server and this SDK
-	// support. If there is no overlap, fall back to initialize so version
-	// negotiation can happen via the legacy path.
-	negotiated := ""
-	for _, v := range res.SupportedVersions {
-		if slices.Contains(supportedProtocolVersions, v) && v > negotiated {
-			negotiated = v
-		}
-	}
-	if negotiated == "" {
-		return nil, true, nil
-	}
 	return &InitializeResult{
 		Capabilities:    res.Capabilities,
 		Instructions:    res.Instructions,
@@ -414,6 +435,42 @@ type clientSessionState struct {
 }
 
 func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
+
+// usesNewProtocol reports whether this session has negotiated a protocol
+// version >= 2026-06-30, which requires the SEP-2575 per-request `_meta`
+// triple on every outgoing request.
+func (cs *ClientSession) usesNewProtocol() bool {
+	res := cs.state.InitializeResult
+	return res != nil && res.ProtocolVersion >= protocolVersion20260630
+}
+
+// injectRequestMeta populates the SEP-2575 per-request `_meta` triple
+// (protocolVersion, clientInfo, clientCapabilities) on the given outgoing
+// request params. Keys already present in params.Meta are not overwritten.
+func injectRequestMeta[T any, P interface {
+	*T
+	Params
+}](cs *ClientSession, params P) P {
+	res := cs.state.InitializeResult
+	if params.isNil() {
+		params = new(T)
+	}
+	m := params.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyProtocolVersion]; !ok {
+		m[MetaKeyProtocolVersion] = res.ProtocolVersion
+	}
+	if _, ok := m[MetaKeyClientInfo]; !ok {
+		m[MetaKeyClientInfo] = cs.client.impl
+	}
+	if _, ok := m[MetaKeyClientCapabilities]; !ok {
+		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion)
+	}
+	params.SetMeta(m)
+	return params
+}
 
 func (cs *ClientSession) ID() string {
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
@@ -509,7 +566,7 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel, cs.client.opts.Logger)
+	startKeepalive(cs, interval, cs.client.opts.KeepAliveFailureThreshold, &cs.keepaliveCancel, cs.client.opts.Logger)
 }
 
 // AddRoots adds the given roots to the client,
@@ -1075,16 +1132,25 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListPrompts lists prompts that are currently available on the server.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
@@ -1108,6 +1174,9 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if tool := cs.getCachedTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
@@ -1118,20 +1187,32 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
 }
 

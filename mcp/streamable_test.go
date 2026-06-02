@@ -769,6 +769,12 @@ func req(id int64, method string, params any) *jsonrpc.Request {
 	return r
 }
 
+func completeCallToolResult() *CallToolResult {
+	r := &CallToolResult{Content: []Content{}}
+	r.resultType = resultTypeComplete
+	return r
+}
+
 func resp(id int64, result any, err error) *jsonrpc.Response {
 	return &jsonrpc.Response{
 		ID:     jsonrpc2.Int64ID(id),
@@ -1947,7 +1953,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(2, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",
@@ -1991,7 +1997,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(6, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",
@@ -2007,7 +2013,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
 			})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(7, &CallToolResult{Content: []Content{}}, nil)},
+			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResult(), nil)},
 		},
 		{
 			method: "POST",
@@ -2063,7 +2069,15 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	})
 	defer handler.closeAll()
 
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
+	// once Server.discover returns a real DiscoverResult instead of
+	// MethodNotFound. See comment on discoverInterceptor for details.
+	wrapped := discoverInterceptor(t, handler,
+		[]string{minVersionForStandardHeaders},
+		&ServerCapabilities{Tools: &ToolCapabilities{}},
+		&Implementation{Name: "testServer", Version: "v1.0.0"},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
 	defer httpServer.Close()
 
 	// Use the MCP client with a custom RoundTripper to inject a bad header.
@@ -2225,7 +2239,15 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
+	// once Server.discover returns a real DiscoverResult instead of
+	// MethodNotFound. See comment on discoverInterceptor for details.
+	wrapped := discoverInterceptor(t, handler,
+		[]string{minVersionForStandardHeaders},
+		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
+		&Implementation{Name: "testServer", Version: "v1.0.0"},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
 	defer httpServer.Close()
 
 	var capturedHeaders http.Header
@@ -2339,7 +2361,15 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
+	// once Server.discover returns a real DiscoverResult instead of
+	// MethodNotFound. See comment on discoverInterceptor for details.
+	wrapped := discoverInterceptor(t, handler,
+		[]string{minVersionForStandardHeaders},
+		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
+		&Implementation{Name: "testServer", Version: "v1.0.0"},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
 	defer httpServer.Close()
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
@@ -2660,6 +2690,51 @@ func TestStreamableSessionTimeout(t *testing.T) {
 		t.Errorf("server.Sessions() is not empty; length %d", len(ss))
 	}
 	handler.mu.Unlock()
+}
+
+// discoverInterceptor wraps an HTTP handler so that POST requests carrying a
+// server/discover JSON-RPC request are answered with a canned DiscoverResult
+// advertising the given supportedVersions. All other requests are forwarded
+// to next unchanged.
+//
+// TODO(SEP-2575): this is a workaround for tests that need an end-to-end
+// SEP-2575 session (e.g. to exercise the Mcp-Method / Mcp-Param-* request
+// headers gated on protocol >= 2026-06-30) while the server-side
+// Server.discover implementation still returns MethodNotFound. Once
+// server-side discover is implemented, this helper can be removed and the
+// tests can hit the real handler directly.
+func discoverInterceptor(t *testing.T, next http.Handler, supportedVersions []string, capabilities *ServerCapabilities, serverInfo *Implementation) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			next.ServeHTTP(w, req)
+			return
+		}
+		body, err := io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		msg, err := jsonrpc.DecodeMessage(body)
+		if err != nil {
+			next.ServeHTTP(w, req)
+			return
+		}
+		r, ok := msg.(*jsonrpc.Request)
+		if !ok || r.Method != methodDiscover {
+			next.ServeHTTP(w, req)
+			return
+		}
+		result := &DiscoverResult{
+			SupportedVersions: supportedVersions,
+			Capabilities:      capabilities,
+			ServerInfo:        serverInfo,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)})))
+	})
 }
 
 // mustNotPanic is a helper to enforce that test handlers do not panic (see
@@ -3510,6 +3585,51 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestStreamableClientUnsupportedVersionFallback exercises the full
+// SEP-2575 fallback. The client requests protocolVersion20260630, which the server does
+// not advertise in supportedProtocolVersions. The server therefore rejects
+// the server/discover POST at the transport-level header validation with a
+// plain HTTP 400 ("Bad Request: Unsupported protocol version ..."). The
+// streamable client must recognize this body, keep the connection alive, and
+// successfully complete the legacy initialize handshake.
+//
+// TODO: once 20260630 is part of supportedProtocolVersion on server side, modify the list in the test to keep it consistent.
+func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		nil,
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	ir := session.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil; expected legacy initialize to populate it")
+	}
+	if ir.ProtocolVersion != latestProtocolVersion {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback)",
+			ir.ProtocolVersion, latestProtocolVersion)
+	}
+
+	// Verify the session is fully usable after the fallback by issuing a
+	// real call against the server.
+	if err := session.Ping(ctx, nil); err != nil {
+		t.Errorf("Ping after fallback initialize: %v", err)
 	}
 }
 

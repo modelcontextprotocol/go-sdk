@@ -1356,6 +1356,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// per-request `_meta.protocolVersion` value.
 			// The new (>= 2026-06-30) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
+			//
+			// TODO: this validation can be moved within validateMcpHeaders.
 			var metaVersion string
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
@@ -1952,7 +1954,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		return
 	}
 	summary := "standalone SSE stream"
-	if err := c.checkResponse(summary, resp); err != nil {
+	if err := c.checkResponse(c.ctx, summary, resp); err != nil {
 		c.fail(err)
 		return
 	}
@@ -2095,10 +2097,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	}
 
-	if err := c.checkResponse(requestSummary, resp); err != nil {
+	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
 		// Only fail the connection for non-transient errors.
 		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		if !errors.Is(err, jsonrpc2.ErrRejected) {
+		// ErrMethodNotFound and ErrUnsupportedProtocolVersion should not break the connection as they trigger the initialize fallback.
+		if !errors.Is(err, jsonrpc2.ErrRejected) && !errors.Is(err, jsonrpc2.ErrMethodNotFound) && !errors.Is(err, jsonrpc2.ErrUnsupportedProtocolVersion) {
 			c.fail(err)
 		}
 		return err
@@ -2192,7 +2195,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 	}
 	if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if v, ok := req.Context().Value(protocolVersionContextKey{}).(string); ok && v != "" {
+	} else if v := protocolVersionFromContext(req.Context()); v != "" {
 		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
@@ -2279,7 +2282,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		}
 
 		resp = newResp
-		if err := c.checkResponse(requestSummary, resp); err != nil {
+		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
 			c.fail(err)
 			return
 		}
@@ -2290,7 +2293,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 // translates it into an error if the request was unsuccessful.
 //
 // The response body is close if a non-nil error is returned.
-func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.Response) (err error) {
+func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary string, resp *http.Response) (err error) {
 	defer func() {
 		if err != nil {
 			resp.Body.Close()
@@ -2310,6 +2313,19 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read the body and if we can detect vPre servers that
+		// reject "server/discover" as unsupported method with a plain HTTP 400,
+		// then return jsonrpc2.ErrMethodNotFound or jsonrpc2.ErrUnsupportedProtocolVersion to trigger the fallback.
+		protocolVersion := protocolVersionFromContext(ctx)
+		if protocolVersion != "" && protocolVersion >= protocolVersion20260630 {
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
+			}
+			if strings.Contains(string(body), "Unsupported protocol version") {
+				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
+			}
+		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil

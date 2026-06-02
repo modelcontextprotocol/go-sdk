@@ -79,6 +79,13 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 	// Function called when a client session subscribes to a resource.
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
@@ -187,7 +194,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Server{
+	s := &Server{
 		impl:                    impl,
 		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
@@ -199,6 +206,8 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
+	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
@@ -370,8 +379,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
+		// Skip when the handler returned input requests (multi round-trip): content and
+		// inputRequests are mutually exclusive on the wire.
 		var outval any = out
-		if elemZero != nil {
+		if res.InputRequests != nil {
+			outval = nil
+		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the unpointered type.
 			var z Out
@@ -742,7 +755,13 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
-	return prompt.handler(ctx, req)
+	res, err := prompt.handler(ctx, req)
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, err
 }
 
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
@@ -811,10 +830,15 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil && res.Content == nil {
-		res2 := *res
-		res2.Content = []Content{} // avoid "null"
-		res = &res2
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+		if res.Content == nil && res.resultType != resultTypeInputRequired {
+			res2 := *res
+			res2.Content = []Content{} // avoid "null"
+			res = &res2
+		}
 	}
 	return res, err
 }
@@ -861,6 +885,12 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	res, err := handler(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		return nil, err
+	}
+	if res.resultType == resultTypeInputRequired {
+		return res, nil
 	}
 	if res == nil || res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
@@ -1507,12 +1537,6 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
-		ss.updateState(func(state *ServerSessionState) {
-			state.InitializeParams = validatedMeta.initializeParams
-		})
-	}
-
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
@@ -1523,16 +1547,18 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	case methodDiscover:
-		if !validatedMeta.usesNewProtocol {
-			return nil, &jsonrpc.Error{
-				Code:    jsonrpc.CodeMethodNotFound,
-				Message: fmt.Sprintf("%q is not supported in the legacy protocol", req.Method),
-			}
-		}
+		// server/discover is available to old clients too (SEP-2575): it's
+		// harmless and does not require initialization. state.InitializeParams
+		// is populated within the discover handler.
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		}
+		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+			ss.updateState(func(state *ServerSessionState) {
+				state.InitializeParams = validatedMeta.initializeParams
+			})
 		}
 	}
 
@@ -1562,9 +1588,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	var wasInit bool
 	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
+		wasInit = state.InitializeParams != nil
+		if !wasInit {
+			state.InitializeParams = params
+		}
 	})
+	if wasInit {
+		ss.server.opts.Logger.Error("duplicate initialize request")
+		return nil, fmt.Errorf("duplicate %q received", methodInitialize)
+	}
 
 	s := ss.server
 	return &InitializeResult{
@@ -1629,7 +1663,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
+	startKeepalive(ss, interval, ss.server.opts.KeepAliveFailureThreshold, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

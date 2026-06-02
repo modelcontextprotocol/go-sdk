@@ -245,6 +245,39 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	}
 }
 
+func TestImplementationDescriptionJSON(t *testing.T) {
+	impl := &Implementation{
+		Name:        "greeter",
+		Title:       "Greeter",
+		Description: "Example server for greeting tools",
+		Version:     "v1.0.0",
+	}
+	got, err := json.Marshal(impl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"name":"greeter","title":"Greeter","description":"Example server for greeting tools","version":"v1.0.0"}`
+	if string(got) != want {
+		t.Fatalf("Implementation JSON = %s, want %s", got, want)
+	}
+
+	var roundTrip Implementation
+	if err := json.Unmarshal(got, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(impl, &roundTrip); diff != "" {
+		t.Fatalf("Implementation round trip mismatch (-want +got):\n%s", diff)
+	}
+
+	got, err = json.Marshal(&Implementation{Name: "greeter", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "description") {
+		t.Fatalf("empty description should be omitted, got %s", got)
+	}
+}
+
 // TODO(v0.3.0): rewrite this test.
 // func TestToolValidate(t *testing.T) {
 // 	// Check that the tool returned from NewServerTool properly validates its input schema.

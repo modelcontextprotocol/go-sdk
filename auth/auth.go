@@ -47,6 +47,21 @@ type RequireBearerTokenOptions struct {
 	ResourceMetadataURL string
 	// The required scopes.
 	Scopes []string
+	// AllowMissingExpiration opts the middleware out of the
+	// `tokenInfo.Expiration.IsZero()` reject. Default false preserves the
+	// existing strict behaviour (every TokenInfo must carry an Expiration).
+	//
+	// Some IdPs emit session-bound bearer tokens that do not carry a standalone
+	// `exp` claim — the token's lifetime is bounded by an external session and
+	// is not advertised in-band. Resource servers integrating with such IdPs
+	// need to opt in to validating the rest of the token (scopes, signature
+	// via the verifier callback, etc.) without requiring the expiration field
+	// to be present.
+	//
+	// When enabled, the verifier is still responsible for any session-level
+	// validity check it can perform; this option only relaxes the middleware's
+	// own expiration enforcement.
+	AllowMissingExpiration bool
 }
 
 type tokenInfoKey struct{}
@@ -131,9 +146,10 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 
 	// Check expiration.
 	if tokenInfo.Expiration.IsZero() {
-		return nil, "token missing expiration", http.StatusUnauthorized
-	}
-	if tokenInfo.Expiration.Before(time.Now()) {
+		if opts == nil || !opts.AllowMissingExpiration {
+			return nil, "token missing expiration", http.StatusUnauthorized
+		}
+	} else if tokenInfo.Expiration.Before(time.Now()) {
 		return nil, "token expired", http.StatusUnauthorized
 	}
 	return tokenInfo, "", 0
