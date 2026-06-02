@@ -1888,9 +1888,7 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Unlock()
 
 	// Under SEP-2575 (protocol version >= 2026-06-30) the standalone HTTP GET
-	// SSE stream is removed; server-to-client notifications instead flow via
-	// the new subscriptions/listen RPC. Only open the standalone SSE stream
-	// for legacy protocol versions.
+	// SSE stream is removed.
 	if state.InitializeResult == nil ||
 		state.InitializeResult.ProtocolVersion >= protocolVersion20260630 {
 		return

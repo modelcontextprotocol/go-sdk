@@ -238,7 +238,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	err := call.Await(ctx, result)
 	switch {
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return errors.Join(fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err), err)
+		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
 		notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 		defer cancelNotify()
