@@ -784,6 +784,10 @@ func TestClientConnectDiscover(t *testing.T) {
 // request sent by Client.Connect carries the SEP-2575 per-request _meta triple:
 // protocolVersion, clientInfo, and clientCapabilities.
 func TestClientConnectDiscover_RequestContents(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
 	ctx := context.Background()
 
 	type captured struct {
