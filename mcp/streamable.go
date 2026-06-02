@@ -2326,7 +2326,6 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 			if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
 				return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
 			}
-
 			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
 				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
 			}
