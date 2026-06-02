@@ -1405,6 +1405,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
+			if jreq.Method == methodInitialize && metaVersion == "" && headerVersion >= protocolVersion20260630 {
+				metaVersion = initializeProtocolVersion
+			}
 			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
 				// server/discover is exempt from the stateful
 				// rejection as it should learn about the supported protocols from the
