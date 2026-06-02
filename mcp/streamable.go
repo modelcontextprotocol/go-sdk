@@ -1404,6 +1404,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
+			if jreq.Method == methodInitialize && metaVersion == "" && headerVersion >= protocolVersion20260630 {
+				metaVersion = initializeProtocolVersion
+			}
 			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
 				// Extract again the protcol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
