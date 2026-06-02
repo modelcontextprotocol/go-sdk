@@ -303,19 +303,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
-	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) {
-		if protocolVersion >= protocolVersion20260630 {
-			data, _ := json.Marshal(UnsupportedProtocolVersionData{
-				Supported: supportedProtocolVersions,
-				Requested: protocolVersion,
-			})
-			writeJSONRPCError(w, http.StatusBadRequest, jsonrpc.ID{}, &jsonrpc.Error{
-				Code:    CodeUnsupportedProtocolVersion,
-				Message: "unsupported protocol version",
-				Data:    data,
-			})
-			return
-		}
+	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) && protocolVersion < protocolVersion20260630 {
 		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
 		return
 	}
@@ -1343,6 +1331,21 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			// Reject any request with a protocol version that is not supported.
+			// This check is only performed for protocol versions >= 2026-06-30 as per SEP-2738, and is perfomed here to include the jreq-ID in
+			// the response object.
+			if protocolVersion != "" && protocolVersion >= protocolVersion20260630 && !slices.Contains(supportedProtocolVersions, protocolVersion) {
+				data, _ := json.Marshal(UnsupportedProtocolVersionData{
+					Supported: supportedProtocolVersions,
+					Requested: protocolVersion,
+				})
+				writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+					Code:    CodeUnsupportedProtocolVersion,
+					Message: "unsupported protocol version",
+					Data:    data,
+				})
+				return
+			}
 			if jreq.Method == methodInitialize {
 				isInitialize = true
 				// Extract the protocol version from InitializeParams.
@@ -2319,6 +2322,11 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		protocolVersion := protocolVersionFromContext(ctx)
 		if protocolVersion != "" && protocolVersion >= protocolVersion20260630 {
 			body, _ := io.ReadAll(resp.Body)
+			msg, _ := jsonrpc.DecodeMessage(body)
+			if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
+				return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
+			}
+
 			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
 				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
 			}

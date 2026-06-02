@@ -2069,15 +2069,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	})
 	defer handler.closeAll()
 
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	// Use the MCP client with a custom RoundTripper to inject a bad header.
@@ -2239,15 +2231,7 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	var capturedHeaders http.Header
@@ -2361,15 +2345,7 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
@@ -2690,51 +2666,6 @@ func TestStreamableSessionTimeout(t *testing.T) {
 		t.Errorf("server.Sessions() is not empty; length %d", len(ss))
 	}
 	handler.mu.Unlock()
-}
-
-// discoverInterceptor wraps an HTTP handler so that POST requests carrying a
-// server/discover JSON-RPC request are answered with a canned DiscoverResult
-// advertising the given supportedVersions. All other requests are forwarded
-// to next unchanged.
-//
-// TODO(SEP-2575): this is a workaround for tests that need an end-to-end
-// SEP-2575 session (e.g. to exercise the Mcp-Method / Mcp-Param-* request
-// headers gated on protocol >= 2026-06-30) while the server-side
-// Server.discover implementation still returns MethodNotFound. Once
-// server-side discover is implemented, this helper can be removed and the
-// tests can hit the real handler directly.
-func discoverInterceptor(t *testing.T, next http.Handler, supportedVersions []string, capabilities *ServerCapabilities, serverInfo *Implementation) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			next.ServeHTTP(w, req)
-			return
-		}
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
-			return
-		}
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		msg, err := jsonrpc.DecodeMessage(body)
-		if err != nil {
-			next.ServeHTTP(w, req)
-			return
-		}
-		r, ok := msg.(*jsonrpc.Request)
-		if !ok || r.Method != methodDiscover {
-			next.ServeHTTP(w, req)
-			return
-		}
-		result := &DiscoverResult{
-			SupportedVersions: supportedVersions,
-			Capabilities:      capabilities,
-			ServerInfo:        serverInfo,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)})))
-	})
 }
 
 // mustNotPanic is a helper to enforce that test handlers do not panic (see
