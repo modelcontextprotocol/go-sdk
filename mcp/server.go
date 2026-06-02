@@ -775,6 +775,13 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	if versions == nil {
 		versions = slices.Clone(supportedProtocolVersions)
 	}
+	req.Session.updateState(func(state *ServerSessionState) {
+		state.InitializeParams = &InitializeParams{
+			ProtocolVersion: req.ProtocolVersion(),
+			Capabilities: req.ClientCapabilities(),
+			ClientInfo:      req.ClientInfo(),
+		}
+	})
 	return &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),

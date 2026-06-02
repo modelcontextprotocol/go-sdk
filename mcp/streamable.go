@@ -1331,21 +1331,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			// Reject any request with a protocol version that is not supported.
-			// This check is only performed for protocol versions >= 2026-06-30 as per SEP-2738, and is perfomed here to include the jreq-ID in
-			// the response object.
-			if protocolVersion != "" && protocolVersion >= protocolVersion20260630 && !slices.Contains(supportedProtocolVersions, protocolVersion) {
-				data, _ := json.Marshal(UnsupportedProtocolVersionData{
-					Supported: supportedProtocolVersions,
-					Requested: protocolVersion,
-				})
-				writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
-					Code:    CodeUnsupportedProtocolVersion,
-					Message: "unsupported protocol version",
-					Data:    data,
-				})
-				return
-			}
 			if jreq.Method == methodInitialize {
 				isInitialize = true
 				// Extract the protocol version from InitializeParams.
@@ -1389,6 +1374,19 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 						protocolVersionHeader, headerVersion,
 						MetaKeyProtocolVersion, metaVersion),
 						http.StatusBadRequest)
+					return
+				}
+				// Reject any request with a protocol version that is not supported.
+				if !slices.Contains(supportedProtocolVersions, protocolVersion) {
+					data, _ := json.Marshal(UnsupportedProtocolVersionData{
+						Supported: supportedProtocolVersions,
+						Requested: protocolVersion,
+					})
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code:    CodeUnsupportedProtocolVersion,
+						Message: "unsupported protocol version",
+						Data:    data,
+					})
 					return
 				}
 			}

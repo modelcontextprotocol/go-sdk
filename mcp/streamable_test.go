@@ -3645,3 +3645,74 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 		t.Errorf("DiscoverResult.SupportedVersions is empty; want at least one legacy version")
 	}
 }
+
+// TestStreamableHTTP_E2E_DiscoverSuccess is a full end-to-end smoke test for
+// SEP-2575 over the streamable HTTP transport.
+func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
+	ctx := context.Background()
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "e2e-server", Version: "v1"}, nil)
+	// Register a simple tool so we can prove the session is usable end-to-end.
+	AddTool(server, &Tool{Name: "echo", Description: "echoes its input"},
+		func(_ context.Context, _ *CallToolRequest, args struct {
+			Msg string `json:"msg"`
+		}) (*CallToolResult, struct{}, error) {
+			return &CallToolResult{
+				Content: []Content{&TextContent{Text: args.Msg}},
+			}, struct{}{}, nil
+		},
+	)
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	client := NewClient(&Implementation{Name: "e2e-client", Version: "v1"}, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil after Connect; discover should have populated it")
+	}
+	if ir.ProtocolVersion != protocolVersion20260630 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (negotiated via discover)",
+			ir.ProtocolVersion, protocolVersion20260630)
+	}
+	if ir.ServerInfo == nil || ir.ServerInfo.Name != "e2e-server" {
+		t.Errorf("InitializeResult.ServerInfo = %+v, want name=e2e-server", ir.ServerInfo)
+	}
+
+	// Prove the session is fully usable: list tools and call one.
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools.Tools) != 1 || tools.Tools[0].Name != "echo" {
+		t.Errorf("ListTools = %+v, want one tool named 'echo'", tools.Tools)
+	}
+	res, err := cs.CallTool(ctx, &CallToolParams{
+		Name:      "echo",
+		Arguments: map[string]any{"msg": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool result content = %+v, want 1 entry", res.Content)
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok || tc.Text != "hello" {
+		t.Errorf("CallTool result[0] = %+v, want TextContent{Text:\"hello\"}", res.Content[0])
+	}
+}
