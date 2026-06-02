@@ -503,7 +503,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok {
+	if !ok || protocolVersion < protocolVersion20260630 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	// Notifications do not carry full client identity. In new protocol, only cancel notification

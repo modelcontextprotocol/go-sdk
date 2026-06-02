@@ -1543,6 +1543,17 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if perRequestErr != nil {
 		return nil, perRequestErr
 	}
+	if validatedMeta.usesNewProtocol && !slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedProtocolVersions,
+			Requested: validatedMeta.initializeParams.ProtocolVersion,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		}
+	}
 
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized, methodSubscribe, methodUnsubscribe:

@@ -665,7 +665,7 @@ func (c *Connection) handleAsync() {
 
 // processResult processes the result of a request and, if appropriate, sends a response.
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
-	if nomethodnotfoundcodeinerror == "0" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
+	if nomethodnotfoundcodeinerror != "1" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)
 	}
 
