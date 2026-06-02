@@ -1071,6 +1071,29 @@ type ListPromptsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+type DiscoverParams struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (x *DiscoverParams) isParams()              {}
+func (x *DiscoverParams) isNil() bool            { return x == nil }
+func (x *DiscoverParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *DiscoverParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+type DiscoverResult struct {
+	Meta `json:"_meta,omitempty"`
+	// The versions of the Model Context Protocol that the server supports.
+	SupportedVersions []string `json:"supportedVersions"`
+	// The server's capabilities.
+	Capabilities *ServerCapabilities `json:"capabilities"`
+	// Information about the server implementation.
+	ServerInfo *Implementation `json:"serverInfo"`
+	// Instructions describing how to use the server and its features.
+	Instructions string `json:"instructions,omitempty"`
+}
+
+func (*DiscoverResult) isResult() {}
+
 func (x *ListPromptsParams) isParams()              {}
 func (x *ListPromptsParams) isNil() bool            { return x == nil }
 func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x) }
@@ -2041,6 +2064,7 @@ const (
 	methodCallTool                  = "tools/call"
 	notificationCancelled           = "notifications/cancelled"
 	methodComplete                  = "completion/complete"
+	methodDiscover                  = "server/discover"
 	methodCreateMessage             = "sampling/createMessage"
 	methodElicit                    = "elicitation/create"
 	notificationElicitationComplete = "notifications/elicitation/complete"

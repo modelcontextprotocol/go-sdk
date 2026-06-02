@@ -105,6 +105,7 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
+
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, params)
@@ -344,6 +345,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
+	// SEP-2575 for UnsupportedProtocolVersionError.
+	CodeUnsupportedProtocolVersion = -32004
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
 	CodeHeaderMismatch = -32001
