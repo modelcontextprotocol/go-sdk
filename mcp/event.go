@@ -52,7 +52,12 @@ func writeEvent(w http.ResponseWriter, evt Event) (int, error) {
 	if evt.Retry != "" {
 		fmt.Fprintf(&b, "retry: %s\n", evt.Retry)
 	}
-	fmt.Fprintf(&b, "data: %s\n\n", string(evt.Data))
+	// Write the payload directly into a pre-grown buffer to avoid the extra
+	// copy from string(evt.Data) and repeated buffer regrowths.
+	b.Grow(len("data: \n\n") + len(evt.Data))
+	b.WriteString("data: ")
+	b.Write(evt.Data)
+	b.WriteString("\n\n")
 	n, err := w.Write(b.Bytes())
 	rc := http.NewResponseController(w)
 	// Ignore returned error as flushing is best-effort.
