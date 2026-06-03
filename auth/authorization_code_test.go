@@ -115,6 +115,101 @@ func TestAuthorize(t *testing.T) {
 	}
 }
 
+// TestAuthorize_RefreshAfterContextCancel verifies that the token source built
+// by Authorize keeps refreshing after the context passed to Authorize is
+// cancelled. The token source is stored on the handler and used by the
+// transport for the whole connection lifetime, whereas Authorize is typically
+// called from a request- or connect-scoped context. golang.org/x/oauth2
+// captures the context handed to Config.TokenSource and reuses it for every
+// refresh, so binding it to the request context made every refresh after the
+// access token expired fail with "context canceled". Regression test for that.
+func TestAuthorize_RefreshAfterContextCancel(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the reuse token source
+		// treats the access token as expired immediately and must refresh.
+		AccessTokenTTL:    1,
+		IssueRefreshToken: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+
+	// Authorize under a context that we cancel immediately afterwards, mimicking
+	// the request/connect context the transport passes and that is already done
+	// by the time a later token refresh runs.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := handler.Authorize(ctx, req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+	cancel()
+
+	tokenSource, err := handler.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	// The access token is already expired, so this forces a refresh round-trip.
+	// It must not fail with "context canceled" from the cancelled Authorize ctx.
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("token refresh after Authorize context cancellation failed: %v", err)
+	}
+	if token.AccessToken != "test_access_token_refreshed" {
+		t.Errorf("expected refreshed access token %q, got %q", "test_access_token_refreshed", token.AccessToken)
+	}
+}
+
 func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
 		RegistrationConfig: &oauthtest.RegistrationConfig{
