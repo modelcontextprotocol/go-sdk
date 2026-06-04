@@ -1925,6 +1925,8 @@ type streamableClientConn struct {
 	sessionID         string
 }
 
+var _ clientConnection = (*streamableClientConn)(nil)
+
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
