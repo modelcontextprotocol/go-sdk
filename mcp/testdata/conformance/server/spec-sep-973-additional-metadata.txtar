@@ -87,6 +87,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"tools": [
 			{
@@ -141,6 +142,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"resources": [
 			{
@@ -166,6 +168,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 4,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"prompts": [
 			{

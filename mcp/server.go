@@ -752,7 +752,7 @@ func (s *Server) applyCacheControl(req Request, res Result, c *Cacheable) {
 		*c = s.opts.CacheControl(req, res)
 		return
 	}
-	*c = Cacheable{CacheScope: "public"}
+	*c = Cacheable{TTLMs: 0, CacheScope: "public"}
 }
 
 func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {

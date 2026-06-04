@@ -67,6 +67,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"resources": [
 			{
@@ -86,6 +87,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"contents": [
 			{
@@ -105,6 +107,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"ttlMs": 0,
 		"cacheScope": "public",
 		"contents": [
 			{
