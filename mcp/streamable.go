@@ -1407,18 +1407,31 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					return
 				}
 				if headerVersion == "" {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: %s header is required for requests carrying %q",
-						protocolVersionHeader, MetaKeyProtocolVersion),
-						http.StatusBadRequest)
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: CodeHeaderMismatch,
+						Message: fmt.Sprintf(
+							"%s header is required for requests carrying %q",
+							protocolVersionHeader, MetaKeyProtocolVersion),
+					})
+					return
+				}
+				if metaVersion == "" {
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: jsonrpc.CodeInvalidParams,
+						Message: fmt.Sprintf(
+							"missing or invalid _meta field %q",
+							MetaKeyProtocolVersion),
+					})
 					return
 				}
 				if headerVersion != metaVersion {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: %s header %q does not match request %s %q",
-						protocolVersionHeader, headerVersion,
-						MetaKeyProtocolVersion, metaVersion),
-						http.StatusBadRequest)
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: CodeHeaderMismatch,
+						Message: fmt.Sprintf(
+							"%s header %q does not match request %s %q",
+							protocolVersionHeader, headerVersion,
+							MetaKeyProtocolVersion, metaVersion),
+					})
 					return
 				}
 			}
