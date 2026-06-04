@@ -1565,9 +1565,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	case methodDiscover:
-		// server/discover is available to old clients too (SEP-2575): it's
-		// harmless and does not require initialization. state.InitializeParams
-		// is populated within the discover handler.
+		// In case of methodDiscover call the state.initializeParams is populated
+		// within the discover handle function to make sure the method is supported
+		// when the user is probing a pre-2026-06-30 server.
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)

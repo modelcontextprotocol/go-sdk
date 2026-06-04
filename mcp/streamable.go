@@ -936,16 +936,15 @@ func (s *stream) release() {
 	s.done = nil // may already be nil, if the stream is done or closed
 }
 
-// newProtocolErrorStatus reports the HTTP status to send when the given
+// extractErrorStatus reports the HTTP status to send when the given
 // outgoing message is a JSON-RPC error response under the SEP-2575 protocol
-// (>= 2026-06-30). Returns 0 if no override is needed (legacy protocol, not
-// an error response, or a code without a SEP-mandated HTTP status).
+// (>= 2026-06-30).
 //
 // Per SEP-2575:
 //   - MethodNotFound (-32601) MUST return HTTP 404.
 //   - InvalidParams (-32602) and UnsupportedProtocolVersion (-32004) MUST
 //     return HTTP 400.
-func newProtocolErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
+func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 	if protocolVersionFromContext(ctx) < protocolVersion20260630 {
 		return 0
 	}
@@ -976,9 +975,7 @@ func newProtocolErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 // If overrideStatus is non-zero, data is treated as a SEP-2575 protocol-level
 // error response (>= 2026-06-30): it is written as a single raw JSON-RPC
 // response body with Content-Type: application/json and HTTP status
-// overrideStatus, bypassing the SSE framing of the surrounding stream.
-// Callers MUST ensure no prior write has committed the response status
-// (e.g. the SSE prime event is gated to legacy protocol versions).
+// overrideStatus.
 //
 // Returns true if the stream is now done (all requests have been responded to).
 // The done value is always accurate, even if an error is returned.
@@ -1730,7 +1727,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	// SEP-2575: map protocol-level JSON-RPC error codes to HTTP status codes
 	// on the new protocol (>= 2026-06-30). When non-zero, deliverLocked will
 	// write the body as raw application/json with the override status.
-	overrideStatus := newProtocolErrorStatus(ctx, msg)
+	overrideStatus := extractErrorStatus(ctx, msg)
 
 	done, err := s.deliverLocked(data, eventID, responseTo, overrideStatus)
 	if err != nil {
