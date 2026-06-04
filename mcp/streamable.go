@@ -936,6 +936,36 @@ func (s *stream) release() {
 	s.done = nil // may already be nil, if the stream is done or closed
 }
 
+// newProtocolErrorStatus reports the HTTP status to send when the given
+// outgoing message is a JSON-RPC error response under the SEP-2575 protocol
+// (>= 2026-06-30). Returns 0 if no override is needed (legacy protocol, not
+// an error response, or a code without a SEP-mandated HTTP status).
+//
+// Per SEP-2575:
+//   - MethodNotFound (-32601) MUST return HTTP 404.
+//   - InvalidParams (-32602) and UnsupportedProtocolVersion (-32004) MUST
+//     return HTTP 400.
+func newProtocolErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
+	if protocolVersionFromContext(ctx) < protocolVersion20260630 {
+		return 0
+	}
+	resp, ok := msg.(*jsonrpc.Response)
+	if !ok || resp.Error == nil {
+		return 0
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(resp.Error, &jerr) {
+		return 0
+	}
+	switch jerr.Code {
+	case jsonrpc.CodeMethodNotFound:
+		return http.StatusNotFound
+	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion:
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
 // deliverLocked writes data to the stream (for SSE) or stores it in
 // pendingJSONMessages (for JSON mode). The eventID is used for SSE event ID;
 // pass "" to omit.
@@ -943,11 +973,18 @@ func (s *stream) release() {
 // If responseTo is valid, it is removed from the requests map. When all
 // requests have been responded to, the done channel is closed and set to nil.
 //
+// If overrideStatus is non-zero, data is treated as a SEP-2575 protocol-level
+// error response (>= 2026-06-30): it is written as a single raw JSON-RPC
+// response body with Content-Type: application/json and HTTP status
+// overrideStatus, bypassing the SSE framing of the surrounding stream.
+// Callers MUST ensure no prior write has committed the response status
+// (e.g. the SSE prime event is gated to legacy protocol versions).
+//
 // Returns true if the stream is now done (all requests have been responded to).
 // The done value is always accurate, even if an error is returned.
 //
 // s.mu must be held when calling this method.
-func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID) (done bool, err error) {
+func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID, overrideStatus int) (done bool, err error) {
 	// First, record the response. We must do this *before* returning an error
 	// below, as even if the stream is disconnected we want to update our
 	// accounting.
@@ -961,6 +998,17 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	}
 	if done {
 		defer func() { close(s.done); s.done = nil }()
+	}
+	// SEP-2575 protocol-level error override: write the error as a raw
+	// JSON-RPC response with the spec-mandated HTTP status, bypassing any
+	// SSE framing.
+	if overrideStatus != 0 {
+		s.w.Header().Set("Content-Type", "application/json")
+		s.w.WriteHeader(overrideStatus)
+		if _, err := s.w.Write(data); err != nil {
+			return done, err
+		}
+		return done, nil
 	}
 	// Try to write to the response.
 	//
@@ -1321,7 +1369,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
 			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
-				if headerVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) {
+				if headerVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
 					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
 						Code:    jsonrpc.CodeMethodNotFound,
 						Message: err.Error(),
@@ -1374,19 +1422,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 						protocolVersionHeader, headerVersion,
 						MetaKeyProtocolVersion, metaVersion),
 						http.StatusBadRequest)
-					return
-				}
-				// Reject any request with a protocol version that is not supported.
-				if !slices.Contains(supportedProtocolVersions, protocolVersion) {
-					data, _ := json.Marshal(UnsupportedProtocolVersionData{
-						Supported: supportedProtocolVersions,
-						Requested: protocolVersion,
-					})
-					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
-						Code:    CodeUnsupportedProtocolVersion,
-						Message: "unsupported protocol version",
-						Data:    data,
-					})
 					return
 				}
 			}
@@ -1500,7 +1535,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		stream.pendingJSONMessages = []json.RawMessage{}
 	} else {
 		// SSE mode: write a priming event if supported.
-		if c.eventStore != nil && effectiveVersion >= protocolVersion20251125 {
+		//
+		// SEP-2575 removes Last-Event-ID-based resumable streams for protocol
+		// version >= 2026-06-30.
+		if c.eventStore != nil && effectiveVersion >= protocolVersion20251125 && effectiveVersion < protocolVersion20260630 {
 			// Write a priming event, as defined by [§2.1.6] of the spec.
 			//
 			// [§2.1.6]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
@@ -1689,7 +1727,12 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		eventID = formatEventID(s.id, s.lastIdx+1)
 	}
 
-	done, err := s.deliverLocked(data, eventID, responseTo)
+	// SEP-2575: map protocol-level JSON-RPC error codes to HTTP status codes
+	// on the new protocol (>= 2026-06-30). When non-zero, deliverLocked will
+	// write the body as raw application/json with the override status.
+	overrideStatus := newProtocolErrorStatus(ctx, msg)
+
+	done, err := s.deliverLocked(data, eventID, responseTo, overrideStatus)
 	if err != nil {
 		errs = append(errs, err)
 	} else {

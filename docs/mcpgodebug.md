@@ -40,7 +40,7 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   stateless servers ignore session IDs entirely and reject `DELETE` with 405.
 
 - `nomethodnotfoundcodeinerror` added. If set to `1`, the jsonrpc2 layer will not
-  include the MethodNotFound Error (`-32001`) in the error response when the 
+  include the MethodNotFound Error (`-32601`) in the error response when the 
   requested method in STDIO transport is not found. The default behavior was
   changed to include the MethodNotFound Error in the error response when the
   requested method in STDIO transport is not found.

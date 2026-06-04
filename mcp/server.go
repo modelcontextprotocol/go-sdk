@@ -778,7 +778,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	req.Session.updateState(func(state *ServerSessionState) {
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: req.ProtocolVersion(),
-			Capabilities: req.ClientCapabilities(),
+			Capabilities:    req.ClientCapabilities(),
 			ClientInfo:      req.ClientInfo(),
 		}
 	})
