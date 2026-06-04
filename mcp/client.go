@@ -174,11 +174,6 @@ type ClientOptions struct {
 	// reset" guidance, letting a transient miss pass without tearing down an
 	// otherwise live session. Has no effect unless KeepAlive is non-zero.
 	KeepAliveFailureThreshold int
-	// DisableCache disables client-side TTL caching of list and read results
-	// (SEP-2549). When true, every call to ListTools, ListPrompts,
-	// ListResources, ListResourceTemplates, and ReadResource makes a fresh
-	// request to the server regardless of any ttlMs hint.
-	DisableCache bool
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -339,75 +334,6 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	return cs, nil
-}
-
-// methodCache is a per-method TTL cache for list results, as described in
-// SEP-2549. Each entry is keyed by cursor (for paginated list methods) or URI
-// (for resources/read).
-type methodCache[R CacheableResult] struct {
-	mu           sync.Mutex
-	cachedValues map[string]*cacheEntry[R]
-}
-
-type cacheEntry[R any] struct {
-	result     R
-	receivedAt time.Time
-	ttlMs      int
-}
-
-func (e *cacheEntry[R]) isValid() bool {
-	return time.Since(e.receivedAt) < time.Duration(e.ttlMs)*time.Millisecond
-}
-
-func (mc *methodCache[R]) get(key string) (R, bool) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	entry, ok := mc.cachedValues[key]
-	if !ok {
-		var zero R
-		return zero, false
-	}
-	if entry.ttlMs <= 0 || !entry.isValid() {
-		var zero R
-		return zero, false
-	}
-	return entry.result, true
-}
-
-func (mc *methodCache[R]) put(key string, result R) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	if mc.cachedValues == nil {
-		mc.cachedValues = make(map[string]*cacheEntry[R])
-	}
-	mc.cachedValues[key] = &cacheEntry[R]{
-		result:     result,
-		receivedAt: time.Now(),
-		ttlMs:      result.GetTTLMs(),
-	}
-}
-
-// forEach calls f for each entry currently in the cache, regardless of TTL.
-// This is used to look up data (such as a tool definition) that is derived
-// from list results but not subject to TTL-based expiry on the lookup path.
-func (mc *methodCache[R]) forEach(f func(R)) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	for _, entry := range mc.cachedValues {
-		f(entry.result)
-	}
-}
-
-func (mc *methodCache[R]) invalidate() {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	clear(mc.cachedValues)
-}
-
-func (mc *methodCache[R]) invalidateKey(key string) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	delete(mc.cachedValues, key)
 }
 
 // discover sends a SEP-2575 server/discover request to probe the server for
@@ -1211,25 +1137,25 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 }
 
 // ListPrompts lists prompts that are currently available on the server.
+//
+// Results may be served from a client-side TTL cache populated by previous
+// calls; see SEP-2549.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	if params != nil && !cs.client.opts.DisableCache {
-		if result, ok := cs.promptsCache.get(params.Cursor); ok {
-			return result, nil
-		}
+	var cursor string
+	if params != nil {
+		cursor = params.Cursor
+	}
+	if result, ok := cs.promptsCache.get(cursor); ok {
+		return result, nil
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
-		if params != nil && params.Cursor != "" {
-			cs.promptsCache.invalidate()
-		}
 		return nil, err
 	}
-	if !cs.client.opts.DisableCache && params != nil {
-		cs.promptsCache.put(params.Cursor, result)
-	}
+	cs.promptsCache.put(cursor, result)
 	return result, nil
 }
 
@@ -1247,26 +1173,17 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 	if params != nil {
 		cursor = params.Cursor
 	}
-	if !cs.client.opts.DisableCache {
-		if result, ok := cs.toolsCache.get(cursor); ok {
-			return result, nil
-		}
+	if result, ok := cs.toolsCache.get(cursor); ok {
+		return result, nil
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
-		if cursor != "" {
-			cs.toolsCache.invalidate()
-		}
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
-	// Always cache the result so CallTool can look up tool definitions by name
-	// for transport-layer features (e.g. x-mcp-header annotations). The TTL
-	// hint controls whether a future ListTools call returns the cached value
-	// (see methodCache.get), independent of name lookup.
 	cs.toolsCache.put(cursor, result)
 	return result, nil
 }
@@ -1298,33 +1215,32 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	if params != nil && !cs.client.opts.DisableCache {
-		if result, ok := cs.resourcesCache.get(params.Cursor); ok {
-			return result, nil
-		}
+	var cursor string
+	if params != nil {
+		cursor = params.Cursor
+	}
+	if result, ok := cs.resourcesCache.get(cursor); ok {
+		return result, nil
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
-		if params != nil && params.Cursor != "" {
-			cs.resourcesCache.invalidate()
-		}
 		return nil, err
 	}
-	if !cs.client.opts.DisableCache && params != nil {
-		cs.resourcesCache.put(params.Cursor, result)
-	}
+	cs.resourcesCache.put(cursor, result)
 	return result, nil
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	if params != nil && !cs.client.opts.DisableCache {
-		if result, ok := cs.resourceTemplatesCache.get(params.Cursor); ok {
-			return result, nil
-		}
+	var cursor string
+	if params != nil {
+		cursor = params.Cursor
+	}
+	if result, ok := cs.resourceTemplatesCache.get(cursor); ok {
+		return result, nil
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
@@ -1333,18 +1249,18 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 	if err != nil {
 		return nil, err
 	}
-	if !cs.client.opts.DisableCache && params != nil {
-		cs.resourceTemplatesCache.put(params.Cursor, result)
-	}
+	cs.resourceTemplatesCache.put(cursor, result)
 	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	if params != nil && !cs.client.opts.DisableCache {
-		if result, ok := cs.readResourceCache.get(params.URI); ok {
-			return result, nil
-		}
+	var uri string
+	if params != nil {
+		uri = params.URI
+	}
+	if result, ok := cs.readResourceCache.get(uri); ok {
+		return result, nil
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
@@ -1353,9 +1269,7 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 	if err != nil {
 		return nil, err
 	}
-	if !cs.client.opts.DisableCache && params != nil {
-		cs.readResourceCache.put(params.URI, result)
-	}
+	cs.readResourceCache.put(uri, result)
 	return result, nil
 }
 

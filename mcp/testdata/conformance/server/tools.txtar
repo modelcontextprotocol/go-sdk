@@ -64,6 +64,7 @@ inc
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"cacheScope": "public",
 		"tools": [
 			{
 				"description": "say hi",
@@ -169,6 +170,7 @@ inc
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"cacheScope": "public",
 		"resources": []
 	}
 }
@@ -176,6 +178,7 @@ inc
 	"jsonrpc": "2.0",
 	"id": 4,
 	"result": {
+		"cacheScope": "public",
 		"prompts": []
 	}
 }

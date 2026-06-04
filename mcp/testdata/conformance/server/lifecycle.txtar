@@ -53,6 +53,7 @@ See also modelcontextprotocol/go-sdk#225.
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"cacheScope": "public",
 		"tools": []
 	}
 }
@@ -60,6 +61,7 @@ See also modelcontextprotocol/go-sdk#225.
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"cacheScope": "public",
 		"tools": []
 	}
 }

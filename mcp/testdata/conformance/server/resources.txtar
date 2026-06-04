@@ -67,6 +67,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"cacheScope": "public",
 		"resources": [
 			{
 				"mimeType": "text/plain",
@@ -85,6 +86,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"cacheScope": "public",
 		"contents": [
 			{
 				"uri": "embedded:info",
@@ -103,6 +105,7 @@ info.txt
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"cacheScope": "public",
 		"contents": [
 			{
 				"uri": "file:///info.txt",

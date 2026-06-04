@@ -154,6 +154,23 @@ type ServerOptions struct {
 	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
+
+	// CacheControl, if non-nil, is called for each response to a cacheable
+	// method (tools/list, prompts/list, resources/list,
+	// resources/templates/list, resources/read) to populate the SEP-2549
+	// `ttlMs` and `cacheScope` fields. It is invoked after the result has
+	// been assembled but before it is returned to the client.
+	//
+	// The concrete type of req.GetParams() identifies the method (for
+	// example, *ListToolsParams for tools/list or *ReadResourceParams for
+	// resources/read), and res holds the assembled response (e.g.
+	// *ListToolsResult), allowing the policy to depend on response
+	// contents as well as the request.
+	//
+	// If CacheControl is nil, the response is sent with the safe default
+	// `Cacheable{CacheScope: "public"}` (TTLMs: 0), which tells clients to
+	// treat the result as immediately stale and not cache it.
+	CacheControl func(req Request, res Result) Cacheable
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -730,18 +747,31 @@ func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	return slices.Values(clients)
 }
 
+func (s *Server) applyCacheControl(req Request, res Result, c *Cacheable) {
+	if s.opts.CacheControl != nil {
+		*c = s.opts.CacheControl(req, res)
+		return
+	}
+	*c = Cacheable{CacheScope: "public"}
+}
+
 func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
 		req.Params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
+	res, err := paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
 			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.applyCacheControl(req, res, &res.Cacheable)
+	return res, nil
 }
 
 func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
@@ -777,12 +807,17 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
+	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
 			res.Tools = append(res.Tools, t.tool)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.applyCacheControl(req, res, &res.Cacheable)
+	return res, nil
 }
 
 // getServerTool looks up a server tool by name.
@@ -820,12 +855,17 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
+	res, err := paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
 			res.Resources = append(res.Resources, r.resource)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.applyCacheControl(req, res, &res.Cacheable)
+	return res, nil
 }
 
 func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
@@ -834,13 +874,18 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if req.Params == nil {
 		req.Params = &ListResourceTemplatesParams{}
 	}
-	return paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
+	res, err := paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
 		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
 				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
+	s.applyCacheControl(req, res, &res.Cacheable)
+	return res, nil
 }
 
 func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
@@ -875,6 +920,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 			c.MIMEType = mimeType
 		}
 	}
+	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 

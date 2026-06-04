@@ -45,6 +45,7 @@ code_review
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"cacheScope": "public",
 		"tools": []
 	}
 }
@@ -52,6 +53,7 @@ code_review
 	"jsonrpc": "2.0",
 	"id": 4,
 	"result": {
+		"cacheScope": "public",
 		"prompts": [
 			{
 				"arguments": [

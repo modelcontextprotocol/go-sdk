@@ -87,6 +87,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"cacheScope": "public",
 		"tools": [
 			{
 				"description": "return resourceLink content with Icon",
@@ -140,6 +141,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 3,
 	"result": {
+		"cacheScope": "public",
 		"resources": [
 			{
 				"mimeType": "text/plain",
@@ -164,6 +166,7 @@ infoWithIcon
 	"jsonrpc": "2.0",
 	"id": 4,
 	"result": {
+		"cacheScope": "public",
 		"prompts": [
 			{
 				"arguments": [

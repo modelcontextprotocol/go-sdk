@@ -1118,7 +1118,7 @@ type Cacheable struct {
 	// If 0, the response SHOULD be considered immediately stale.
 	// If positive, the client SHOULD consider the result fresh for this
 	// many milliseconds after receiving the response.
-	TTLMs int `json:"ttlMs"`
+	TTLMs int `json:"ttlMs,omitempty"`
 
 	// Indicates the intended scope of the cached response, analogous to
 	// HTTP Cache-Control: public vs Cache-Control: private.
