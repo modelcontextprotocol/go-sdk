@@ -310,7 +310,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
 				var data UnsupportedProtocolVersionData
 				if err := json.Unmarshal(werr.Data, &data); err == nil {
-					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" {
+					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260630 {
 						discoverCtx = context.WithValue(ctx, protocolVersionContextKey{}, negotiatedVersion)
 						continue
 					}

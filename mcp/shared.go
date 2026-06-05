@@ -67,8 +67,8 @@ func negotiatedVersion(clientVersion string) string {
 // negotiateMutuallySupportedVersion returns a protocol version that is supported
 // by both the client and the server.
 func negotiateMutuallySupportedVersion(supported []string) string {
-	for _, ver := range supported {
-		if slices.Contains(supportedProtocolVersions, ver) {
+	for _, ver := range supportedProtocolVersions {
+		if slices.Contains(supported, ver) {
 			return ver
 		}
 	}
