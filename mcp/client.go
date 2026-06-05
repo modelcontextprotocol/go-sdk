@@ -307,6 +307,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if !errors.As(err, &werr) {
 				return nil, err
 			}
+			// Try to negotiate a mutually supported version if the server
+			// reports an UnsupportedProtocolVersionError with a supported version.
 			if werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
 				var data UnsupportedProtocolVersionData
 				if err := json.Unmarshal(werr.Data, &data); err == nil {
@@ -316,8 +318,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					}
 				}
 			}
-			// According to SEP-2575, only MethodNotFound and UnsupportedProtocolVersion
-			// trigger a fallback to legacy initialize.
+			// MethodNotFound and UnsupportedProtocolVersion trigger a fallback to legacy initialize.
 			if werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion {
 				break
 			}
