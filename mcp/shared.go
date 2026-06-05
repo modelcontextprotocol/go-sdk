@@ -344,6 +344,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32003
 	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
 	// SEP-2575 for UnsupportedProtocolVersionError.
 	CodeUnsupportedProtocolVersion = -32004

@@ -959,7 +959,7 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 	switch jerr.Code {
 	case jsonrpc.CodeMethodNotFound:
 		return http.StatusNotFound
-	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion:
+	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion, CodeMissingRequiredClientCapabilities:
 		return http.StatusBadRequest
 	}
 	return 0
