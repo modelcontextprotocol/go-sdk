@@ -64,6 +64,17 @@ func negotiatedVersion(clientVersion string) string {
 	return clientVersion
 }
 
+// negotiateMutuallySupportedVersion returns a protocol version that is supported
+// by both the client and the server.
+func negotiateMutuallySupportedVersion(supported []string) string {
+	for _, ver := range supported {
+		if slices.Contains(supportedProtocolVersions, ver) {
+			return ver
+		}
+	}
+	return ""
+}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
