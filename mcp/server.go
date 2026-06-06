@@ -1498,7 +1498,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, methodSetLevel:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
@@ -1518,6 +1518,11 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
+			})
+		}
+		if validatedMeta.usesNewProtocol && validatedMeta.logLevel != "" {
+			ss.updateState(func(state *ServerSessionState) {
+				state.LogLevel = validatedMeta.logLevel
 			})
 		}
 	}

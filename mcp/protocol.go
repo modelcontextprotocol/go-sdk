@@ -2102,4 +2102,6 @@ const (
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	// MetaKeyLogLevel identifies the desired log level for the request.
+	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 )
