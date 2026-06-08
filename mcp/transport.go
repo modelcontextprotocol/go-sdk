@@ -48,6 +48,19 @@ type Transport interface {
 	Connect(ctx context.Context) (Connection, error)
 }
 
+// ProtocolVersionSupporter is an optional capability that a [Transport] may
+// implement to declare which MCP protocol versions it can serve.
+//
+// [Server.Connect] consults this interface to filter the
+// list of versions advertised in server/discover responses. Transports that
+// do not implement this interface are assumed to support every protocol
+// version known to the SDK.
+type ProtocolVersionSupporter interface {
+	// SupportsProtocolVersion reports whether the transport can serve
+	// requests using the given protocol version.
+	SupportsProtocolVersion(version string) bool
+}
+
 // A Connection is a logical bidirectional JSON-RPC connection.
 type Connection interface {
 	// Read reads the next message to process off the connection.

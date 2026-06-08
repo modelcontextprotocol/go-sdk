@@ -116,7 +116,6 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
-
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, params)
@@ -356,6 +355,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32003
 	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
 	// SEP-2575 for UnsupportedProtocolVersionError.
 	CodeUnsupportedProtocolVersion = -32004
@@ -516,7 +518,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok {
+	if !ok || protocolVersion < protocolVersion20260630 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	// Notifications do not carry full client identity.
