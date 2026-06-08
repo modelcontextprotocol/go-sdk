@@ -2378,8 +2378,7 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		// JSON-RPC error (or detect vPre servers that reject "server/discover"
 		// as an unsupported method with a plain HTTP 400) regardless of the
 		// negotiated protocol version. Setting MCPGODEBUG=noprotocolerrorbody=1
-		// restores the previous behavior, where this fallback only ran when the
-		// request was made under protocol version >= 2026-06-30.
+		// restores the previous behavior.
 		if noprotocolerrorbody == "1" {
 			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 		}

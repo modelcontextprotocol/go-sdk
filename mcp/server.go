@@ -1563,7 +1563,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// learn the server's supported versions from the response (whether the
 	// handler returns a DiscoverResult or an UnsupportedProtocolVersionError
 	// with a Data.Supported payload).
-	if validatedMeta.usesNewProtocol && req.Method != methodDiscover &&
+	if validatedMeta.usesNewProtocol &&
 		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
 		data, _ := json.Marshal(UnsupportedProtocolVersionData{
 			Supported: supportedProtocolVersions,
@@ -1577,7 +1577,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized, methodSubscribe, methodUnsubscribe, methodSetLevel:
+	case methodInitialize, methodPing, notificationInitialized, methodSetLevel:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{

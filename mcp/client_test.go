@@ -6,7 +6,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -1098,31 +1097,24 @@ func TestInMemory_E2E_DiscoverPropagatesOtherErrors(t *testing.T) {
 	}
 }
 
-// If the server does not support the requested version, it returns an
-// UnsupportedProtocolVersionError containing its list of supported
-// versions. The client selects a mutually supported version from the list
-// and retries.
+// TestClientConnectDiscover_UnsupportedVersionNegotiation verifies the
+// per SEP-2575 Version Negotiation Flow: when the client probes server/discover
+// with a protocol version the server doesn't implement, the server's
+// UnsupportedProtocolVersionError carries Data.Supported, and the client
+// selects a mutually supported version from that list and retries.
 func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
-	// Temporarily enable 2026-06-30 support in the SDK for this test so it
-	// is a candidate during negotiation.
 	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
-	t.Cleanup(func() {
-		supportedProtocolVersions = oldSupported
-	})
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(oldSupported)...)
+	t.Cleanup(func() { supportedProtocolVersions = oldSupported })
 
 	ctx := context.Background()
 
-	const (
-		unsupportedClientVersion = "2099-12-31"
-		serverNegotiatedVersion  = protocolVersion20260630
-	)
+	const unsupportedClientVersion = "2099-12-31"
 
 	var (
-		discoverCalls          atomic.Int32
-		gotInitialize          atomic.Bool
-		firstRequestedVersion  atomic.Value // string
-		secondRequestedVersion atomic.Value // string
+		discoverCalls           atomic.Int32
+		gotInitialize           atomic.Bool
+		observedDiscoverVersion atomic.Value // string
 	)
 
 	s := NewServer(testImpl, nil)
@@ -1135,37 +1127,10 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 					t.Errorf("discover req has unexpected type %T", req)
 					return nil, jsonrpc2.ErrMethodNotFound
 				}
-				requested, _ := sr.Params.GetMeta()[MetaKeyProtocolVersion].(string)
-
-				n := discoverCalls.Add(1)
-				switch n {
-				case 1:
-					firstRequestedVersion.Store(requested)
-					data, err := json.Marshal(UnsupportedProtocolVersionData{
-						Supported: []string{serverNegotiatedVersion},
-						Requested: requested,
-					})
-					if err != nil {
-						t.Fatalf("marshal error data: %v", err)
-					}
-					return nil, &jsonrpc.Error{
-						Code:    CodeUnsupportedProtocolVersion,
-						Message: "unsupported protocol version",
-						Data:    data,
-					}
-				case 2:
-					secondRequestedVersion.Store(requested)
-					return &DiscoverResult{
-						SupportedVersions: []string{serverNegotiatedVersion},
-						Capabilities: &ServerCapabilities{
-							Tools: &ToolCapabilities{ListChanged: true},
-						},
-						ServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
-					}, nil
-				default:
-					t.Errorf("unexpected discover call #%d", n)
-					return nil, jsonrpc2.ErrMethodNotFound
+				if v, _ := sr.Params.GetMeta()[MetaKeyProtocolVersion].(string); v != "" {
+					observedDiscoverVersion.Store(v)
 				}
+				discoverCalls.Add(1)
 			case methodInitialize:
 				gotInitialize.Store(true)
 			}
@@ -1187,14 +1152,11 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	}
 	defer cs.Close()
 
-	if got, want := discoverCalls.Load(), int32(2); got != want {
-		t.Errorf("server/discover call count = %d, want %d", got, want)
+	if got, want := discoverCalls.Load(), int32(1); got != want {
+		t.Errorf("server/discover handler call count = %d, want %d (first probe is rejected by the dispatcher; only the retry reaches the handler)", got, want)
 	}
-	if got, _ := firstRequestedVersion.Load().(string); got != unsupportedClientVersion {
-		t.Errorf("first discover requested version = %q, want %q", got, unsupportedClientVersion)
-	}
-	if got, _ := secondRequestedVersion.Load().(string); got != serverNegotiatedVersion {
-		t.Errorf("retry discover requested version = %q, want %q (server's advertised supported version)", got, serverNegotiatedVersion)
+	if got, _ := observedDiscoverVersion.Load().(string); got != protocolVersion20260630 {
+		t.Errorf("retry discover requested version = %q, want %q (highest mutually supported version)", got, protocolVersion20260630)
 	}
 	if gotInitialize.Load() {
 		t.Error("legacy initialize handshake ran, but negotiated discover should have succeeded")
@@ -1204,7 +1166,7 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after Connect")
 	}
-	if got, want := ir.ProtocolVersion, serverNegotiatedVersion; got != want {
+	if got, want := ir.ProtocolVersion, protocolVersion20260630; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 	}
 }
