@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -1094,5 +1095,116 @@ func TestInMemory_E2E_DiscoverPropagatesOtherErrors(t *testing.T) {
 	}
 	if sawInitialize.Load() {
 		t.Error("server received initialize; Connect should have aborted on the discover error")
+	}
+}
+
+// If the server does not support the requested version, it returns an
+// UnsupportedProtocolVersionError containing its list of supported
+// versions. The client selects a mutually supported version from the list
+// and retries.
+func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
+	// Temporarily enable 2026-06-30 support in the SDK for this test so it
+	// is a candidate during negotiation.
+	oldSupported := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	t.Cleanup(func() {
+		supportedProtocolVersions = oldSupported
+	})
+
+	ctx := context.Background()
+
+	const (
+		unsupportedClientVersion = "2099-12-31"
+		serverNegotiatedVersion  = protocolVersion20260630
+	)
+
+	var (
+		discoverCalls          atomic.Int32
+		gotInitialize          atomic.Bool
+		firstRequestedVersion  atomic.Value // string
+		secondRequestedVersion atomic.Value // string
+	)
+
+	s := NewServer(testImpl, nil)
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			switch method {
+			case methodDiscover:
+				sr, ok := req.(*ServerRequest[*DiscoverParams])
+				if !ok {
+					t.Errorf("discover req has unexpected type %T", req)
+					return nil, jsonrpc2.ErrMethodNotFound
+				}
+				requested, _ := sr.Params.GetMeta()[MetaKeyProtocolVersion].(string)
+
+				n := discoverCalls.Add(1)
+				switch n {
+				case 1:
+					firstRequestedVersion.Store(requested)
+					data, err := json.Marshal(UnsupportedProtocolVersionData{
+						Supported: []string{serverNegotiatedVersion},
+						Requested: requested,
+					})
+					if err != nil {
+						t.Fatalf("marshal error data: %v", err)
+					}
+					return nil, &jsonrpc.Error{
+						Code:    CodeUnsupportedProtocolVersion,
+						Message: "unsupported protocol version",
+						Data:    data,
+					}
+				case 2:
+					secondRequestedVersion.Store(requested)
+					return &DiscoverResult{
+						SupportedVersions: []string{serverNegotiatedVersion},
+						Capabilities: &ServerCapabilities{
+							Tools: &ToolCapabilities{ListChanged: true},
+						},
+						ServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
+					}, nil
+				default:
+					t.Errorf("unexpected discover call #%d", n)
+					return nil, jsonrpc2.ErrMethodNotFound
+				}
+			case methodInitialize:
+				gotInitialize.Store(true)
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: unsupportedClientVersion})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if got, want := discoverCalls.Load(), int32(2); got != want {
+		t.Errorf("server/discover call count = %d, want %d", got, want)
+	}
+	if got, _ := firstRequestedVersion.Load().(string); got != unsupportedClientVersion {
+		t.Errorf("first discover requested version = %q, want %q", got, unsupportedClientVersion)
+	}
+	if got, _ := secondRequestedVersion.Load().(string); got != serverNegotiatedVersion {
+		t.Errorf("retry discover requested version = %q, want %q (server's advertised supported version)", got, serverNegotiatedVersion)
+	}
+	if gotInitialize.Load() {
+		t.Error("legacy initialize handshake ran, but negotiated discover should have succeeded")
+	}
+
+	ir := cs.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil after Connect")
+	}
+	if got, want := ir.ProtocolVersion, serverNegotiatedVersion; got != want {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 	}
 }

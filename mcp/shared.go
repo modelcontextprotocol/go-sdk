@@ -64,6 +64,17 @@ func negotiatedVersion(clientVersion string) string {
 	return clientVersion
 }
 
+// negotiateMutuallySupportedVersion returns a protocol version that is supported
+// by both the client and the server.
+func negotiateMutuallySupportedVersion(supported []string) string {
+	for _, ver := range supportedProtocolVersions {
+		if slices.Contains(supported, ver) {
+			return ver
+		}
+	}
+	return ""
+}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
@@ -489,6 +500,7 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 type validatedMeta struct {
 	usesNewProtocol  bool
 	initializeParams *InitializeParams
+	logLevel         LoggingLevel
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
@@ -509,8 +521,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	if !ok || protocolVersion < protocolVersion20260630 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	// Notifications do not carry full client identity. In new protocol, only cancel notification
-	// is allowed in STDIO.
+	// Notifications do not carry full client identity.
 	if !req.IsCall() {
 		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
@@ -528,11 +539,12 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
+	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
 	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    capabilities,
 		ClientInfo:      clientInfo,
-	}}, nil
+	}, logLevel: logLevel}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.

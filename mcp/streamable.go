@@ -267,11 +267,8 @@ var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 
 // noprotocolerrorbody is a compatibility parameter that restores the previous
-// behavior of [streamableClientConn.checkResponse], which only decoded the
-// JSON-RPC error body of a non-2xx HTTP response when the request was made
-// under protocol version >= 2026-06-30. When set to "1", the client will fall
-// back to that protocol-version-gated logic; when unset (the default), the
-// client always attempts to surface the underlying JSON-RPC error.
+// behavior of [streamableClientConn.checkResponse]. When unset (the default),
+// the client always attempts to surface the underlying JSON-RPC error.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
@@ -461,7 +458,9 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
-	state.LogLevel = "info"
+	if !usesNewProtocol {
+		state.LogLevel = "info"
+	}
 	return &ServerSessionOptions{
 		State: state,
 	}, usesNewProtocol, nil
