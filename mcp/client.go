@@ -290,18 +290,41 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// signals it doesn't support it, fall back to the legacy initialize
 		// handshake.
 		discoverCtx := context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
-		discRes, fallback, err := c.discover(discoverCtx, cs)
-		if err != nil {
+		// We try to discover the server's capabilities. If the server rejects the
+		// requested version but specifies which versions it supports, we negotiate
+		// a mutually supported version and try again.
+		for range 2 {
+			discRes, err := c.discover(discoverCtx, cs)
+			if err == nil {
+				cs.state.InitializeResult = discRes
+				if hc, ok := cs.mcpConn.(clientConnection); ok {
+					hc.sessionUpdated(cs.state)
+				}
+				return cs, nil
+			}
+
+			var werr *jsonrpc.Error
+			if !errors.As(err, &werr) {
+				return nil, err
+			}
+			// Try to negotiate a mutually supported version if the server
+			// reports an UnsupportedProtocolVersionError with a supported version.
+			if werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
+				var data UnsupportedProtocolVersionData
+				if err := json.Unmarshal(werr.Data, &data); err == nil {
+					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260630 {
+						discoverCtx = context.WithValue(ctx, protocolVersionContextKey{}, negotiatedVersion)
+						continue
+					}
+				}
+			}
+			// MethodNotFound and UnsupportedProtocolVersion trigger a fallback to legacy initialize.
+			if werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion {
+				break
+			}
 			return nil, err
 		}
-		if !fallback {
-			cs.state.InitializeResult = discRes
-			if hc, ok := cs.mcpConn.(clientConnection); ok {
-				hc.sessionUpdated(cs.state)
-			}
-			return cs, nil
-		}
-		// Fallback to the legacy initialize handshake.
+		// Fallback to the legacy initialize handshake with the legacy protocol version.
 		protocolVersion = protocolVersion20251125
 	}
 
@@ -338,15 +361,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 
 // discover sends a SEP-2575 server/discover request to probe the server for
 // stateless protocol support.
-//
-// The return values have three possible combinations:
-//   - (result, false, nil): discovery succeeded; caller should skip legacy initialization.
-//   - (nil, true, nil):     the server explicitly signaled it doesn't support
-//     discovery (Method not found, or UnsupportedProtocolVersionError, or version mismatch);
-//     caller should fall back to the legacy initialize handshake.
-//   - (nil, false, err):    any other failure (transport error, malformed response, etc.);
-//     caller should propagate the error.
-func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, bool, error) {
+func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, error) {
 	protocolVersion := protocolVersionFromContext(ctx)
 	caps := c.capabilities(protocolVersion)
 	params := &DiscoverParams{
@@ -359,13 +374,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	req := &DiscoverRequest{Session: cs, Params: params}
 	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
 	if err != nil {
-		// According to SEP-2575, only the two signals below (MethodNotFound
-		// and UnsupportedProtocolVersionError) should trigger a fallback.
-		var werr *jsonrpc.Error
-		if errors.As(err, &werr) && (werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion) {
-			return nil, true, nil
-		}
-		return nil, false, err
+		return nil, err
 	}
 
 	// Pick the highest protocol version that both the server and this SDK support.
@@ -375,17 +384,12 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	if slices.Contains(res.SupportedVersions, protocolVersion) {
 		negotiated = protocolVersion
 	} else {
-		for _, v := range supportedProtocolVersions {
-			if slices.Contains(res.SupportedVersions, v) {
-				negotiated = v
-				break
-			}
-		}
+		negotiated = negotiateMutuallySupportedVersion(res.SupportedVersions)
 	}
 	if negotiated == "" || negotiated < protocolVersion20260630 {
 		// If there is no overlap, fall back to initialize so version
 		// negotiation can happen via the legacy path.
-		return nil, true, nil
+		return nil, jsonrpc2.ErrUnsupportedProtocolVersion
 	}
 
 	return &InitializeResult{
@@ -393,7 +397,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		Instructions:    res.Instructions,
 		ProtocolVersion: negotiated,
 		ServerInfo:      res.ServerInfo,
-	}, false, nil
+	}, nil
 }
 
 // A ClientSession is a logical connection with an MCP server. Its
