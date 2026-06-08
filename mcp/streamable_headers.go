@@ -131,31 +131,63 @@ func lookupArgument(args map[string]json.RawMessage, path string) (json.RawMessa
 	return cur, true
 }
 
-// primitiveToString conversion.
-// Returns false in the second return value if the argument is not a primitive value.
+// maxSafeInteger and minSafeInteger bound the integer values that can be
+// faithfully represented as IEEE-754 double-precision floats. Per SEP-2243
+// (PR #2772), x-mcp-header integer parameter values MUST fall within this
+// range.
+const (
+	maxSafeInteger = 1<<53 - 1    // 2^53 - 1 = 9007199254740991
+	minSafeInteger = -(1<<53 - 1) // -(2^53 - 1) = -9007199254740991
+)
+
+// unmarshalPrimitive unmarshals a JSON value into the Go representation used
+// for x-mcp-header processing per SEP-2243 (PR #2772):
+//
+//   - JSON string  -> string
+//   - JSON boolean -> bool
+//   - JSON integer (within the JavaScript safe-integer range) -> int64
+//
+// JSON numbers that are non-integers (have a fractional part, NaN, or ±Inf)
+// or integers outside the safe range are rejected because the `number` type
+// is not permitted for x-mcp-header parameters; only integer, string, boolean
+// are allowed.
+func unmarshalPrimitive(raw json.RawMessage) any {
+	var val any
+	if err := internaljson.Unmarshal(raw, &val); err != nil {
+		return nil
+	}
+	switch v := val.(type) {
+	case string, bool:
+		return v
+	case float64:
+		// JSON numbers always decode as float64; promote to int64 if the
+		// value is an integer within the safe range, otherwise reject.
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) {
+			return nil
+		}
+		if v < minSafeInteger || v > maxSafeInteger {
+			return nil
+		}
+		return int64(v)
+	default:
+		return nil
+	}
+}
+
+// primitiveToString formats an x-mcp-header value (as produced by
+// [unmarshalPrimitive]) to its canonical header string representation per
+// SEP-2243. Returns false if value is not one of the permitted primitive
+// types (string, bool, int64).
 func primitiveToString(value any) (string, bool) {
 	switch v := value.(type) {
 	case string:
 		return v, true
 	case bool:
 		return fmt.Sprintf("%t", v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
 	default:
 		return "", false
-	}
-}
-
-// unmarshalPrimitive unmarshals a JSON value into a Go primitive
-// (string, float64, or bool). Returns nil for non-primitive types.
-func unmarshalPrimitive(raw json.RawMessage) any {
-	var val any
-	if err := internaljson.Unmarshal(raw, &val); err != nil {
-		return nil
-	}
-	switch val.(type) {
-	case string, float64, bool:
-		return val
-	default:
-		return nil
 	}
 }
 
@@ -255,23 +287,22 @@ func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string
 		if prefix != "" {
 			path = prefix + "." + propName
 		}
-		if prop.XMCPHeader == nil {
-			continue
-		}
-		var headerName string
-		if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
-			return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", path)
-		}
-		if err := validateHeaderName(headerName); err != nil {
-			return fmt.Errorf("property %q: %w", path, err)
-		}
-		lower := strings.ToLower(headerName)
-		if seen[lower] {
-			return fmt.Errorf("property %q: duplicate x-mcp-header value %q (case-insensitive)", path, headerName)
-		}
-		seen[lower] = true
-		if prop.Type != "string" && prop.Type != "number" && prop.Type != "integer" && prop.Type != "boolean" {
-			return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types, got %v", path, prop.Type)
+		if prop.XMCPHeader != nil {
+			if prop.Type != "string" && prop.Type != "integer" && prop.Type != "boolean" {
+				return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types (integer, string, boolean), got %q", path, prop.Type)
+			}
+			var headerName string
+			if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
+				return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", path)
+			}
+			if err := validateHeaderName(headerName); err != nil {
+				return fmt.Errorf("property %q: %w", path, err)
+			}
+			lower := strings.ToLower(headerName)
+			if seen[lower] {
+				return fmt.Errorf("property %q: duplicate x-mcp-header value %q (case-insensitive)", path, headerName)
+			}
+			seen[lower] = true
 		}
 		if len(prop.Properties) > 0 {
 			if err := validateParamHeadersIn(prop.Properties, path, seen); err != nil {
@@ -407,17 +438,8 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 }
 
 // primitiveEqual reports whether the (decoded) header string equals the
-// JSON-derived body value. For numeric body values, the comparison is done
-// numerically with a relative precision of 1e-9.
-// For other primitive types, comparison is done as strings.
+// JSON-derived body value.
 func primitiveEqual(headerStr string, bodyVal any) bool {
-	if bodyNum, ok := bodyVal.(float64); ok {
-		headerNum, err := strconv.ParseFloat(headerStr, 64)
-		if err != nil {
-			return false
-		}
-		return numericallyEqual(headerNum, bodyNum)
-	}
 	expected, ok := primitiveToString(bodyVal)
 	if !ok {
 		return false
@@ -425,26 +447,11 @@ func primitiveEqual(headerStr string, bodyVal any) bool {
 	return headerStr == expected
 }
 
-// numericallyEqual reports whether two float64 values are equal within a
-// relative precision of 1e-9 (with an absolute fallback for values near zero).
-func numericallyEqual(a, b float64) bool {
-	if a == b {
-		return true
-	}
-	const epsilon = 1e-9
-	diff := math.Abs(a - b)
-	largest := math.Max(math.Abs(a), math.Abs(b))
-	if largest < 1 {
-		return diff <= epsilon
-	}
-	return diff <= epsilon*largest
-}
-
 // encodeHeaderValue converts a parameter value to an HTTP header-safe string
 // per the SEP-2243 encoding rules:
 //   - string: used as-is if safe ASCII, otherwise Base64 encoded
-//   - number (float64): decimal string representation
-//   - bool: lowercase "true" or "false"
+//   - int64:  decimal string representation
+//   - bool:   lowercase "true" or "false"
 //
 // Values that contain non-ASCII characters, control characters, or
 // leading/trailing whitespace are Base64-encoded with the =?base64?...?= wrapper.

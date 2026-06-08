@@ -633,7 +633,7 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErrSub: "primitive types",
 		},
 		{
-			name: "x-mcp-header on number type is valid",
+			name: "x-mcp-header on number type is invalid",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
@@ -646,6 +646,8 @@ func TestValidateToolParamHeaders(t *testing.T) {
 					},
 				},
 			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
 		},
 		{
 			name: "x-mcp-header on integer type is valid",
@@ -833,6 +835,50 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "primitive types",
 		},
+		{
+			name: "nested invalid header name is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type":         "string",
+									"x-mcp-header": "Bad Header", // contains a space
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "nested x-mcp-header on number type is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"count": map[string]any{
+									"type":         "number",
+									"x-mcp-header": "Count",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1011,13 +1057,13 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 			},
 		},
 		{
-			name: "handles number argument",
+			name: "handles integer argument",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+						"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
 					},
 				},
 			},
@@ -1028,6 +1074,23 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 			wantHeaders: map[string]string{
 				"Mcp-Param-Count": "42",
 			},
+		},
+		{
+			name: "out-of-range integer argument produces no header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
+					},
+				},
+			},
+			params: &CallToolParams{
+				Name:      "test",
+				Arguments: map[string]any{"count": float64(maxSafeInteger) + 2},
+			},
+			wantHeaders: nil,
 		},
 		{
 			name: "no tool in extra does not add param headers",
@@ -1244,10 +1307,24 @@ func TestUnmarshalPrimitive(t *testing.T) {
 		want any
 	}{
 		{"string", `"hello"`, "hello"},
-		{"number", `42`, float64(42)},
-		{"float", `3.14`, float64(3.14)},
 		{"true", `true`, true},
 		{"false", `false`, false},
+
+		// Integer JSON numbers are promoted to int64.
+		{"integer", `42`, int64(42)},
+		{"integer zero", `0`, int64(0)},
+		{"integer negative", `-7`, int64(-7)},
+		{"integer max safe", `9007199254740991`, int64(maxSafeInteger)},
+		{"integer min safe", `-9007199254740991`, int64(minSafeInteger)},
+		// JSON serialization of an integer-valued float (e.g. "42.0") is
+		// still a valid integer at the value level and must be accepted.
+		{"integer-valued float", `42.0`, int64(42)},
+
+		// Non-integer numbers, out-of-range integers, and disallowed JSON
+		// kinds are rejected (return nil).
+		{"float with fraction", `3.14`, nil},
+		{"integer above max safe", `9007199254740993`, nil},
+		{"integer below min safe", `-9007199254740993`, nil},
 		{"null", `null`, nil},
 		{"array", `[1,2]`, nil},
 		{"object", `{"a":1}`, nil},
@@ -1289,15 +1366,17 @@ func TestEncodeHeaderValue(t *testing.T) {
 		// Uppercase sentinel does NOT collide (case-sensitive markers).
 		{"uppercase pseudo-sentinel passes through", "=?BASE64?abc?=", "=?BASE64?abc?=", true},
 
-		// Numbers
-		{"integer", float64(42), "42", true},
-		{"float", float64(3.14159), "3.14159", true},
+		{"integer", int64(42), "42", true},
+		{"integer zero", int64(0), "0", true},
+		{"integer negative", int64(-7), "-7", true},
+		{"integer max safe", int64(maxSafeInteger), "9007199254740991", true},
+		{"integer min safe", int64(minSafeInteger), "-9007199254740991", true},
 
 		// Booleans
 		{"true", true, "true", true},
 		{"false", false, "false", true},
 
-		// Unsupported types
+		{"raw float64 rejected", float64(42), "", false},
 		{"nil", nil, "", false},
 		{"slice", []string{"a"}, "", false},
 	}
@@ -1376,16 +1455,15 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestValidateParamHeaders_NumericComparison verifies that numeric values are
-// compared as numbers (per SEP-2243), so common representational differences
-// like "42" vs "42.0" or "1e2" vs "100" do not cause spurious mismatches.
-func TestValidateParamHeaders_NumericComparison(t *testing.T) {
+// TestValidateParamHeaders_IntegerComparison verifies server-side validation
+// of integer x-mcp-header parameters per SEP-2243.
+func TestValidateParamHeaders_IntegerComparison(t *testing.T) {
 	tool := &Tool{
 		Name: "test",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+				"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
 			},
 		},
 	}
@@ -1396,14 +1474,14 @@ func TestValidateParamHeaders_NumericComparison(t *testing.T) {
 		wantErr   bool
 	}{
 		{"integer matches integer", "42", float64(42), false},
-		{"integer header matches float body", "42", float64(42.0), false},
-		{"float header matches integer body", "42.0", float64(42), false},
-		{"scientific notation matches integer", "1e2", float64(100), false},
-		{"integer matches scientific notation body", "100", float64(1e2), false},
-		{"negative numbers match", "-3.14", float64(-3.14), false},
-		{"different numbers do not match", "42", float64(43), true},
+		{"integer header matches integer-valued float body", "42", float64(42.0), false},
+		{"negative integer matches", "-7", float64(-7), false},
+		{"large safe integer matches", "1000000000000", float64(1e12), false},
+		{"non-canonical '42.0' rejected against integer body", "42.0", float64(42), true},
+		{"scientific notation rejected", "1e2", float64(100), true},
+		{"non-integer body rejected (number type not permitted)", "3.14", float64(3.14), true},
+		{"different integers do not match", "42", float64(43), true},
 		{"non-numeric header fails", "not-a-number", float64(42), true},
-		{"large integers match exactly", "1000000000000", float64(1e12), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
