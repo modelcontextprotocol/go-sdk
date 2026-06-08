@@ -62,6 +62,19 @@ type RequireBearerTokenOptions struct {
 	// validity check it can perform; this option only relaxes the middleware's
 	// own expiration enforcement.
 	AllowMissingExpiration bool
+	// ClockSkew bounds the tolerance applied to a token's Expiration when
+	// deciding whether it has elapsed. A token is rejected only if
+	// Expiration + ClockSkew is before the current time. Zero (the default)
+	// preserves strict comparison: any expired token is rejected immediately.
+	//
+	// Resource servers running behind a CDN, in distributed deployments, or
+	// communicating with an authorization server whose clock drifts a few
+	// seconds (common with cloud-managed IdPs) need a small positive value
+	// here to avoid rejecting tokens that are valid by the issuer's clock
+	// but momentarily appear expired by the verifier's. The same tolerance
+	// guards against an issuer's clock running slightly fast at /token
+	// issuance time.
+	ClockSkew time.Duration
 }
 
 type tokenInfoKey struct{}
@@ -144,12 +157,17 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		}
 	}
 
-	// Check expiration.
+	if opts == nil {
+		opts = &RequireBearerTokenOptions{}
+	}
+	// Check expiration, with optional clock-skew tolerance. Skew only applies
+	// when an expiration is present; a missing expiration is governed solely by
+	// AllowMissingExpiration.
 	if tokenInfo.Expiration.IsZero() {
-		if opts == nil || !opts.AllowMissingExpiration {
+		if !opts.AllowMissingExpiration {
 			return nil, "token missing expiration", http.StatusUnauthorized
 		}
-	} else if tokenInfo.Expiration.Before(time.Now()) {
+	} else if tokenInfo.Expiration.Add(opts.ClockSkew).Before(time.Now()) {
 		return nil, "token expired", http.StatusUnauthorized
 	}
 	return tokenInfo, "", 0

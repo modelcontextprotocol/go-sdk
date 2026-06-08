@@ -526,27 +526,6 @@ func TestMultiRoundTrip_ReadResource_ManualRetry(t *testing.T) {
 func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
 	t.Helper()
 
-	// The mrtr tests require negotiating the 2026-06-30 protocol version.
-	// Server.discover is currently a stub that returns ErrMethodNotFound, which
-	// would cause Client.Connect to fall back to the legacy initialize handshake
-	// and downgrade the negotiated version. Install a receiving middleware that
-	// answers server/discover with a DiscoverResult advertising 2026-06-30 so
-	// the client can negotiate the new protocol via the discover path.
-	//
-	// TODO: Remove this once the server has a proper discover implementation.
-	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			if method == methodDiscover {
-				return &DiscoverResult{
-					SupportedVersions: []string{protocolVersion20260630},
-					Capabilities:      &ServerCapabilities{},
-					ServerInfo:        testImpl,
-				}, nil
-			}
-			return next(ctx, method, req)
-		}
-	})
-
 	st, ct := NewInMemoryTransports()
 	ss, err := s.Connect(t.Context(), st, nil)
 	if err != nil {

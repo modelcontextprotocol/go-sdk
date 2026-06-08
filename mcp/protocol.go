@@ -2143,4 +2143,17 @@ const (
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	// MetaKeyLogLevel identifies the desired log level for the request.
+	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 )
+
+// UnsupportedProtocolVersionData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeUnsupportedProtocolVersion]. The server uses it to advertise which
+// versions it supports so the client can pick a mutually supported one.
+type UnsupportedProtocolVersionData struct {
+	// Supported is the list of protocol versions the server supports.
+	Supported []string `json:"supported"`
+	// Requested is the protocol version the client asked for.
+	Requested string `json:"requested"`
+}

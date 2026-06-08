@@ -796,9 +796,45 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
 //
-// TODO: Complete implementation.
-func (s *Server) discover(context.Context, *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+// It returns the protocol versions supported by the underlying transport,
+// the server's capabilities, the server's identity, and the server's
+// instructions, allowing clients to negotiate without performing the legacy
+// initialize handshake.
+func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	versions := req.Session.supportedVersions
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	}
+	req.Session.updateState(func(state *ServerSessionState) {
+		state.InitializeParams = &InitializeParams{
+			ProtocolVersion: req.ProtocolVersion(),
+			Capabilities:    req.ClientCapabilities(),
+			ClientInfo:      req.ClientInfo(),
+		}
+	})
+	return &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		ServerInfo:        s.impl,
+		Instructions:      s.opts.Instructions,
+	}, nil
+}
+
+// filterSupportedVersions returns the subset of [supportedProtocolVersions]
+// that the Transport can serve. If t does not implement [ProtocolVersionSupporter], every
+// SDK-supported version is included.
+func filterSupportedVersions(t Transport) []string {
+	pvs, ok := t.(ProtocolVersionSupporter)
+	if !ok {
+		return slices.Clone(supportedProtocolVersions)
+	}
+	out := make([]string, 0, len(supportedProtocolVersions))
+	for _, v := range supportedProtocolVersions {
+		if pvs.SupportsProtocolVersion(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
@@ -1139,6 +1175,11 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		return nil, err
 	}
 
+	// Compute the protocol versions this session can serve, filtered by the
+	// transport's capabilities (if it implements [ProtocolVersionSupporter]).
+	// The list is consumed by the SEP-2575 server/discover handler.
+	ss.supportedVersions = filterSupportedVersions(t)
+
 	// Start keepalive before returning the session to avoid race conditions with Close.
 	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
 	if s.opts.KeepAlive > 0 {
@@ -1222,6 +1263,12 @@ type ServerSession struct {
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
 	keepaliveCancel context.CancelFunc
+
+	// supportedVersions is the subset of [supportedProtocolVersions] that the
+	// transport can actually serve, computed once at connection time from
+	// [ProtocolVersionSupporter] (if implemented by the transport) and used by
+	// the SEP-2575 server/discover handler.
+	supportedVersions []string
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1413,13 +1460,28 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	return res, nil
 }
 
+// logLevelContextKey carries the per-request log level from
+// [ServerSession.handle] to [ServerSession.Log] for new-protocol
+// (>= 2026-06-30) requests. The level is scoped to a single in-flight request
+// — including handler goroutines that call [ServerSession.Log] concurrently —
+// rather than to the session, which avoids races between concurrent requests
+// and aligns with SEP-2575's per-request opt-in model. The value type is
+// [LoggingLevel]; an empty string means the request opted out of log messages.
+type logLevelContextKey struct{}
+
 // Log sends a log message to the client.
-// The message is not sent if the client has not called SetLevel, or if its level
-// is below that of the last SetLevel.
+//
+// For new-protocol (>= 2026-06-30) requests, the level is taken from the
+// originating request's `_meta` field (SEP-2575); an absent or empty value
+// suppresses the message per spec. For old-protocol requests, the level is
+// taken from the session state set via `logging/setLevel`.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
-	ss.mu.Unlock()
+	logLevel, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
+	if !ok {
+		ss.mu.Lock()
+		logLevel = ss.state.LogLevel
+		ss.mu.Unlock()
+	}
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1542,9 +1604,26 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if perRequestErr != nil {
 		return nil, perRequestErr
 	}
+	// server/discover is exempt from the version-validation gate so that a
+	// client probing with a version the server doesn't implement can still
+	// learn the server's supported versions from the response (whether the
+	// handler returns a DiscoverResult or an UnsupportedProtocolVersionError
+	// with a Data.Supported payload).
+	if validatedMeta.usesNewProtocol &&
+		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedProtocolVersions,
+			Requested: validatedMeta.initializeParams.ProtocolVersion,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		}
+	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, methodSetLevel:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
@@ -1579,6 +1658,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// For new-protocol requests, propagate the per-request log level.
+	if validatedMeta.usesNewProtocol {
+		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
+	}
 	return handleReceive(ctx, ss, req)
 }
 

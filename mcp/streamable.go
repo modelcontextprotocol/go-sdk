@@ -266,6 +266,23 @@ var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 // The option will be removed in the 1.9.0 version of the SDK.
 var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 
+// noprotocolerrorbody is a compatibility parameter that restores the previous
+// behavior of [streamableClientConn.checkResponse]. When unset (the default),
+// the client always attempts to surface the underlying JSON-RPC error.
+var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
+
+// writeJSONRPCError writes a JSON-RPC error response with the given HTTP
+// status code, request ID (may be a zero ID for errors that occur before the
+// request body has been parsed), and JSON-RPC error.
+func writeJSONRPCError(w http.ResponseWriter, status int, id jsonrpc.ID, jerr *jsonrpc.Error) {
+	resp := &jsonrpc.Response{ID: id, Error: jerr}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if data, err := jsonrpc2.EncodeMessage(resp); err == nil {
+		w.Write(data)
+	}
+}
+
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -291,7 +308,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
-	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) {
+	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) && protocolVersion < protocolVersion20260630 {
 		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
 		return
 	}
@@ -441,7 +458,9 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
-	state.LogLevel = "info"
+	if !usesNewProtocol {
+		state.LogLevel = "info"
+	}
 	return &ServerSessionOptions{
 		State: state,
 	}, usesNewProtocol, nil
@@ -782,6 +801,16 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 	return t.connection, nil
 }
 
+// The streamable HTTP transport supports every legacy SDK protocol version,
+// but the SEP-2575 >= 2026-06-30 protocol is only supported when the
+// transport is configured as stateless.
+func (t *StreamableServerTransport) SupportsProtocolVersion(version string) bool {
+	if version >= protocolVersion20260630 {
+		return t.Stateless && slices.Contains(supportedProtocolVersions, version)
+	}
+	return slices.Contains(supportedProtocolVersions, version)
+}
+
 type streamableServerConn struct {
 	sessionID    string
 	stateless    bool
@@ -914,6 +943,35 @@ func (s *stream) release() {
 	s.done = nil // may already be nil, if the stream is done or closed
 }
 
+// extractErrorStatus reports the HTTP status to send when the given
+// outgoing message is a JSON-RPC error response under the SEP-2575 protocol
+// (>= 2026-06-30).
+//
+// Per SEP-2575:
+//   - MethodNotFound (-32601) MUST return HTTP 404.
+//   - InvalidParams (-32602) and UnsupportedProtocolVersion (-32004) MUST
+//     return HTTP 400.
+func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
+	if protocolVersionFromContext(ctx) < protocolVersion20260630 {
+		return 0
+	}
+	resp, ok := msg.(*jsonrpc.Response)
+	if !ok || resp.Error == nil {
+		return 0
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(resp.Error, &jerr) {
+		return 0
+	}
+	switch jerr.Code {
+	case jsonrpc.CodeMethodNotFound:
+		return http.StatusNotFound
+	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion, CodeMissingRequiredClientCapabilities:
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
 // deliverLocked writes data to the stream (for SSE) or stores it in
 // pendingJSONMessages (for JSON mode). The eventID is used for SSE event ID;
 // pass "" to omit.
@@ -921,11 +979,16 @@ func (s *stream) release() {
 // If responseTo is valid, it is removed from the requests map. When all
 // requests have been responded to, the done channel is closed and set to nil.
 //
+// If overrideStatus is non-zero, data is treated as a SEP-2575 protocol-level
+// error response (>= 2026-06-30): it is written as a single raw JSON-RPC
+// response body with Content-Type: application/json and HTTP status
+// overrideStatus.
+//
 // Returns true if the stream is now done (all requests have been responded to).
 // The done value is always accurate, even if an error is returned.
 //
 // s.mu must be held when calling this method.
-func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID) (done bool, err error) {
+func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.ID, overrideStatus int) (done bool, err error) {
 	// First, record the response. We must do this *before* returning an error
 	// below, as even if the stream is disconnected we want to update our
 	// accounting.
@@ -939,6 +1002,17 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	}
 	if done {
 		defer func() { close(s.done); s.done = nil }()
+	}
+	// SEP-2575 protocol-level error override: write the error as a raw
+	// JSON-RPC response with the spec-mandated HTTP status, bypassing any
+	// SSE framing.
+	if overrideStatus != 0 {
+		s.w.Header().Set("Content-Type", "application/json")
+		s.w.WriteHeader(overrideStatus)
+		if _, err := s.w.Write(data); err != nil {
+			return done, err
+		}
+		return done, nil
 	}
 	// Try to write to the response.
 	//
@@ -1299,6 +1373,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
 			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
+				if headerVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
+					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
+						Code:    jsonrpc.CodeMethodNotFound,
+						Message: err.Error(),
+					})
+					return
+				}
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -1322,7 +1403,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
-				if !c.stateless {
+				// server/discover is exempt from the stateful
+				// rejection as it should learn about the supported protocols from the
+				// DiscoverResult response.
+				if !c.stateless && jreq.Method != methodDiscover {
 					http.Error(w, fmt.Sprintf(
 						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
 						protocolVersion),
@@ -1330,18 +1414,31 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					return
 				}
 				if headerVersion == "" {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: %s header is required for requests carrying %q",
-						protocolVersionHeader, MetaKeyProtocolVersion),
-						http.StatusBadRequest)
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: CodeHeaderMismatch,
+						Message: fmt.Sprintf(
+							"%s header is required for requests carrying %q",
+							protocolVersionHeader, MetaKeyProtocolVersion),
+					})
+					return
+				}
+				if metaVersion == "" {
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: jsonrpc.CodeInvalidParams,
+						Message: fmt.Sprintf(
+							"missing or invalid _meta field %q",
+							MetaKeyProtocolVersion),
+					})
 					return
 				}
 				if headerVersion != metaVersion {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: %s header %q does not match request %s %q",
-						protocolVersionHeader, headerVersion,
-						MetaKeyProtocolVersion, metaVersion),
-						http.StatusBadRequest)
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: CodeHeaderMismatch,
+						Message: fmt.Sprintf(
+							"%s header %q does not match request %s %q",
+							protocolVersionHeader, headerVersion,
+							MetaKeyProtocolVersion, metaVersion),
+					})
 					return
 				}
 			}
@@ -1455,7 +1552,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		stream.pendingJSONMessages = []json.RawMessage{}
 	} else {
 		// SSE mode: write a priming event if supported.
-		if c.eventStore != nil && effectiveVersion >= protocolVersion20251125 {
+		//
+		// SEP-2575 removes Last-Event-ID-based resumable streams for protocol
+		// version >= 2026-06-30.
+		if c.eventStore != nil && effectiveVersion >= protocolVersion20251125 && effectiveVersion < protocolVersion20260630 {
 			// Write a priming event, as defined by [§2.1.6] of the spec.
 			//
 			// [§2.1.6]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
@@ -1644,7 +1744,12 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		eventID = formatEventID(s.id, s.lastIdx+1)
 	}
 
-	done, err := s.deliverLocked(data, eventID, responseTo)
+	// SEP-2575: map protocol-level JSON-RPC error codes to HTTP status codes
+	// on the new protocol (>= 2026-06-30). When non-zero, deliverLocked will
+	// write the body as raw application/json with the override status.
+	overrideStatus := extractErrorStatus(ctx, msg)
+
+	done, err := s.deliverLocked(data, eventID, responseTo, overrideStatus)
 	if err != nil {
 		errs = append(errs, err)
 	} else {
@@ -1844,7 +1949,7 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()
 
-	// When the protocol version is >= 2026-06-30, the standalone HTTP GET
+	// Under SEP-2575 (protocol version >= 2026-06-30) the standalone HTTP GET
 	// SSE stream is removed.
 	if state.InitializeResult == nil ||
 		state.InitializeResult.ProtocolVersion >= protocolVersion20260630 {
@@ -2269,18 +2374,24 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Read the body and if we can detect vPre servers that
-		// reject "server/discover" as unsupported method with a plain HTTP 400,
-		// then return jsonrpc2.ErrMethodNotFound or jsonrpc2.ErrUnsupportedProtocolVersion to trigger the fallback.
-		protocolVersion := protocolVersionFromContext(ctx)
-		if protocolVersion != "" && protocolVersion >= protocolVersion20260630 {
-			body, _ := io.ReadAll(resp.Body)
-			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
-				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
-			}
-			if strings.Contains(string(body), "Unsupported protocol version") {
-				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
-			}
+		// By default, always try to decode the body and surface the underlying
+		// JSON-RPC error (or detect vPre servers that reject "server/discover"
+		// as an unsupported method with a plain HTTP 400) regardless of the
+		// negotiated protocol version. Setting MCPGODEBUG=noprotocolerrorbody=1
+		// restores the previous behavior.
+		if noprotocolerrorbody == "1" {
+			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
+		}
+		body, _ := io.ReadAll(resp.Body)
+		msg, _ := jsonrpc.DecodeMessage(body)
+		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
+			return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
+		}
+		if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
+			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
+		}
+		if strings.Contains(string(body), "Unsupported protocol version") {
+			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
 		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}

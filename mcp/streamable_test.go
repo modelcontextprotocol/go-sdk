@@ -2069,15 +2069,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	})
 	defer handler.closeAll()
 
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	// Use the MCP client with a custom RoundTripper to inject a bad header.
@@ -2239,15 +2231,7 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	var capturedHeaders http.Header
@@ -2361,15 +2345,7 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 		Stateless: true,
 	})
 	defer handler.closeAll()
-	// TODO(SEP-2575): drop discoverInterceptor and hit `handler` directly
-	// once Server.discover returns a real DiscoverResult instead of
-	// MethodNotFound. See comment on discoverInterceptor for details.
-	wrapped := discoverInterceptor(t, handler,
-		[]string{minVersionForStandardHeaders},
-		&ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
-		&Implementation{Name: "testServer", Version: "v1.0.0"},
-	)
-	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
 	defer httpServer.Close()
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
@@ -2382,7 +2358,9 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 	}
 	defer session.Close()
 
-	result, err := session.ListTools(ctx, nil)
+	// Pass non-nil params so the SEP-2575 per-request _meta triple is
+	// injected; injectMeta is a no-op when params is nil.
+	result, err := session.ListTools(ctx, &ListToolsParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2688,51 +2666,6 @@ func TestStreamableSessionTimeout(t *testing.T) {
 		t.Errorf("server.Sessions() is not empty; length %d", len(ss))
 	}
 	handler.mu.Unlock()
-}
-
-// discoverInterceptor wraps an HTTP handler so that POST requests carrying a
-// server/discover JSON-RPC request are answered with a canned DiscoverResult
-// advertising the given supportedVersions. All other requests are forwarded
-// to next unchanged.
-//
-// TODO(SEP-2575): this is a workaround for tests that need an end-to-end
-// SEP-2575 session (e.g. to exercise the Mcp-Method / Mcp-Param-* request
-// headers gated on protocol >= 2026-06-30) while the server-side
-// Server.discover implementation still returns MethodNotFound. Once
-// server-side discover is implemented, this helper can be removed and the
-// tests can hit the real handler directly.
-func discoverInterceptor(t *testing.T, next http.Handler, supportedVersions []string, capabilities *ServerCapabilities, serverInfo *Implementation) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			next.ServeHTTP(w, req)
-			return
-		}
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
-			return
-		}
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		msg, err := jsonrpc.DecodeMessage(body)
-		if err != nil {
-			next.ServeHTTP(w, req)
-			return
-		}
-		r, ok := msg.(*jsonrpc.Request)
-		if !ok || r.Method != methodDiscover {
-			next.ServeHTTP(w, req)
-			return
-		}
-		result := &DiscoverResult{
-			SupportedVersions: supportedVersions,
-			Capabilities:      capabilities,
-			ServerInfo:        serverInfo,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)})))
-	})
 }
 
 // mustNotPanic is a helper to enforce that test handlers do not panic (see
@@ -3628,5 +3561,158 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	// real call against the server.
 	if err := session.Ping(ctx, nil); err != nil {
 		t.Errorf("Ping after fallback initialize: %v", err)
+	}
+}
+
+// TestStreamableStateful_AcceptsDiscover verifies that a stateful HTTP server
+// accepts a server/discover probe carrying MCP-Protocol-Version: 2026-06-30
+// (and the matching _meta.protocolVersion), instead of rejecting it with the
+// "stateless required" 400. The SEP-2575 client flow has the client probing
+// the server with the new protocol version to learn which versions are
+// supported.
+func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  methodDiscover,
+		"params": map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260630,
+				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+				MetaKeyClientCapabilities: map[string]any{"sampling": map[string]any{}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(methodHeader, methodDiscover)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	}
+
+	// Parse the JSON-RPC response. The body may arrive as a bare JSON object
+	// or as a single SSE event depending on the Accept negotiation; both
+	// shapes are valid here.
+	jsonPayload := respBody
+	if i := bytes.Index(respBody, []byte("data: ")); i >= 0 {
+		jsonPayload = respBody[i+len("data: "):]
+		if j := bytes.IndexByte(jsonPayload, '\n'); j >= 0 {
+			jsonPayload = jsonPayload[:j]
+		}
+	}
+	var rpcResp struct {
+		Result *DiscoverResult `json:"result"`
+		Error  *jsonrpc.Error  `json:"error"`
+	}
+	if err := json.Unmarshal(jsonPayload, &rpcResp); err != nil {
+		t.Fatalf("unmarshal response %q: %v", respBody, err)
+	}
+	if rpcResp.Error != nil {
+		t.Fatalf("discover returned error: %+v (body = %s)", rpcResp.Error, respBody)
+	}
+	if rpcResp.Result == nil {
+		t.Fatalf("discover returned no result; body = %s", respBody)
+	}
+	if slices.Contains(rpcResp.Result.SupportedVersions, protocolVersion20260630) {
+		t.Errorf("DiscoverResult.SupportedVersions = %v, must not include %q on a stateful transport",
+			rpcResp.Result.SupportedVersions, protocolVersion20260630)
+	}
+	if len(rpcResp.Result.SupportedVersions) == 0 {
+		t.Errorf("DiscoverResult.SupportedVersions is empty; want at least one legacy version")
+	}
+}
+
+// TestStreamableHTTP_E2E_DiscoverSuccess is a full end-to-end smoke test for
+// SEP-2575 over the streamable HTTP transport.
+func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
+	ctx := context.Background()
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
+	server := NewServer(&Implementation{Name: "e2e-server", Version: "v1"}, nil)
+	// Register a simple tool so we can prove the session is usable end-to-end.
+	AddTool(server, &Tool{Name: "echo", Description: "echoes its input"},
+		func(_ context.Context, _ *CallToolRequest, args struct {
+			Msg string `json:"msg"`
+		}) (*CallToolResult, struct{}, error) {
+			return &CallToolResult{
+				Content: []Content{&TextContent{Text: args.Msg}},
+			}, struct{}{}, nil
+		},
+	)
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	client := NewClient(&Implementation{Name: "e2e-client", Version: "v1"}, nil)
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil after Connect; discover should have populated it")
+	}
+	if ir.ProtocolVersion != protocolVersion20260630 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (negotiated via discover)",
+			ir.ProtocolVersion, protocolVersion20260630)
+	}
+	if ir.ServerInfo == nil || ir.ServerInfo.Name != "e2e-server" {
+		t.Errorf("InitializeResult.ServerInfo = %+v, want name=e2e-server", ir.ServerInfo)
+	}
+
+	// Prove the session is fully usable: list tools and call one.
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools.Tools) != 1 || tools.Tools[0].Name != "echo" {
+		t.Errorf("ListTools = %+v, want one tool named 'echo'", tools.Tools)
+	}
+	res, err := cs.CallTool(ctx, &CallToolParams{
+		Name:      "echo",
+		Arguments: map[string]any{"msg": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool result content = %+v, want 1 entry", res.Content)
+	}
+	tc, ok := res.Content[0].(*TextContent)
+	if !ok || tc.Text != "hello" {
+		t.Errorf("CallTool result[0] = %+v, want TextContent{Text:\"hello\"}", res.Content[0])
 	}
 }
