@@ -266,6 +266,14 @@ var enableoriginverification = mcpgodebug.Value("enableoriginverification")
 // The option will be removed in the 1.9.0 version of the SDK.
 var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 
+// noprotocolerrorbody is a compatibility parameter that restores the previous
+// behavior of [streamableClientConn.checkResponse], which only decoded the
+// JSON-RPC error body of a non-2xx HTTP response when the request was made
+// under protocol version >= 2026-06-30. When set to "1", the client will fall
+// back to that protocol-version-gated logic; when unset (the default), the
+// client always attempts to surface the underlying JSON-RPC error.
+var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -2367,22 +2375,25 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Read the body and if we can detect vPre servers that
-		// reject "server/discover" as unsupported method with a plain HTTP 400,
-		// then return jsonrpc2.ErrMethodNotFound or jsonrpc2.ErrUnsupportedProtocolVersion to trigger the fallback.
-		protocolVersion := protocolVersionFromContext(ctx)
-		if protocolVersion != "" && protocolVersion >= protocolVersion20260630 {
-			body, _ := io.ReadAll(resp.Body)
-			msg, _ := jsonrpc.DecodeMessage(body)
-			if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
-				return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
-			}
-			if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
-				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
-			}
-			if strings.Contains(string(body), "Unsupported protocol version") {
-				return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
-			}
+		// By default, always try to decode the body and surface the underlying
+		// JSON-RPC error (or detect vPre servers that reject "server/discover"
+		// as an unsupported method with a plain HTTP 400) regardless of the
+		// negotiated protocol version. Setting MCPGODEBUG=noprotocolerrorbody=1
+		// restores the previous behavior, where this fallback only ran when the
+		// request was made under protocol version >= 2026-06-30.
+		if noprotocolerrorbody == "1" {
+			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
+		}
+		body, _ := io.ReadAll(resp.Body)
+		msg, _ := jsonrpc.DecodeMessage(body)
+		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
+			return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
+		}
+		if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
+			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
+		}
+		if strings.Contains(string(body), "Unsupported protocol version") {
+			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
 		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}

@@ -44,6 +44,11 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   changed to include the MethodNotFound Error in the error response when the
   requested method in STDIO transport is not found.
 
+- `noprotocolerrorbody` added. If set to `1`, the streamable HTTP client will
+  not attempt to decode the JSON-RPC error body of a non-2xx HTTP response, 
+  restoring the previous behavior. The default behavior was changed so that
+  the client always attempts to surface the underlying JSON-RPC error.
+
 ### 1.6.0
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.
