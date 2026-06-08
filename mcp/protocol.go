@@ -2102,6 +2102,8 @@ const (
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	// MetaKeyLogLevel identifies the desired log level for the request.
+	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 )
 
 // UnsupportedProtocolVersionData is the SEP-2575 payload carried in the

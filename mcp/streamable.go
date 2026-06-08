@@ -441,7 +441,9 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
 	}
-	state.LogLevel = "info"
+	if !usesNewProtocol {
+		state.LogLevel = "info"
+	}
 	return &ServerSessionOptions{
 		State: state,
 	}, usesNewProtocol, nil

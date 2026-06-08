@@ -1367,13 +1367,28 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	return res, nil
 }
 
+// logLevelContextKey carries the per-request log level from
+// [ServerSession.handle] to [ServerSession.Log] for new-protocol
+// (>= 2026-06-30) requests. The level is scoped to a single in-flight request
+// — including handler goroutines that call [ServerSession.Log] concurrently —
+// rather than to the session, which avoids races between concurrent requests
+// and aligns with SEP-2575's per-request opt-in model. The value type is
+// [LoggingLevel]; an empty string means the request opted out of log messages.
+type logLevelContextKey struct{}
+
 // Log sends a log message to the client.
-// The message is not sent if the client has not called SetLevel, or if its level
-// is below that of the last SetLevel.
+//
+// For new-protocol (>= 2026-06-30) requests, the level is taken from the
+// originating request's `_meta` field (SEP-2575); an absent or empty value
+// suppresses the message per spec. For old-protocol requests, the level is
+// taken from the session state set via `logging/setLevel`.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
-	ss.mu.Unlock()
+	logLevel, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
+	if !ok {
+		ss.mu.Lock()
+		logLevel = ss.state.LogLevel
+		ss.mu.Unlock()
+	}
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1498,7 +1513,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, methodSetLevel:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
@@ -1533,6 +1548,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// For new-protocol requests, propagate the per-request log level.
+	if validatedMeta.usesNewProtocol {
+		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
+	}
 	return handleReceive(ctx, ss, req)
 }
 

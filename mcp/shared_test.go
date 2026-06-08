@@ -21,6 +21,7 @@ func TestValidateRequestMeta(t *testing.T) {
 		isNotification  bool
 		params          any
 		wantUsesNew     bool
+		wantLogLevel    LoggingLevel
 		wantErrContains string
 	}{
 		{
@@ -101,6 +102,35 @@ func TestValidateRequestMeta(t *testing.T) {
 			params:      json.RawMessage(`{"_meta": "not an object", "name": "x"}`),
 			wantUsesNew: false,
 		},
+		{
+			name:   "new protocol with logLevel",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+					MetaKeyLogLevel:           "warning",
+				},
+				"name": "x",
+			},
+			wantUsesNew:  true,
+			wantLogLevel: "warning",
+		},
+		{
+			name:   "new protocol without logLevel",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew:  true,
+			wantLogLevel: "",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +156,9 @@ func TestValidateRequestMeta(t *testing.T) {
 			usesNew := vmeta != nil && vmeta.usesNewProtocol
 			if usesNew != tc.wantUsesNew {
 				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
+			}
+			if vmeta != nil && vmeta.logLevel != tc.wantLogLevel {
+				t.Errorf("logLevel = %q, want %q", vmeta.logLevel, tc.wantLogLevel)
 			}
 			if tc.wantErrContains == "" {
 				if err != nil {
