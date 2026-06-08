@@ -174,8 +174,6 @@ type ClientOptions struct {
 	// reset" guidance, letting a transient miss pass without tearing down an
 	// otherwise live session. Has no effect unless KeepAlive is non-zero.
 	KeepAliveFailureThreshold int
-	// If set, requests the server to set its log level to the given value.
-	LogLevel LoggingLevel
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -356,7 +354,6 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 			MetaKeyProtocolVersion:    protocolVersion,
 			MetaKeyClientInfo:         c.impl,
 			MetaKeyClientCapabilities: caps,
-			MetaKeyLogLevel:           c.opts.LogLevel,
 		},
 	}
 	req := &DiscoverRequest{Session: cs, Params: params}
@@ -448,9 +445,8 @@ func (cs *ClientSession) usesNewProtocol() bool {
 }
 
 // injectRequestMeta populates the SEP-2575 per-request `_meta` triple
-// (protocolVersion, clientInfo, clientCapabilities) and optional LoggingLevel
-// on the given outgoing request params. Keys already present in params.Meta
-// are not overwritten.
+// (protocolVersion, clientInfo, clientCapabilities) on the given outgoing
+// request params. Keys already present in params.Meta are not overwritten.
 func injectRequestMeta[T any, P interface {
 	*T
 	Params
@@ -471,9 +467,6 @@ func injectRequestMeta[T any, P interface {
 	}
 	if _, ok := m[MetaKeyClientCapabilities]; !ok {
 		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion)
-	}
-	if _, ok := m[MetaKeyLogLevel]; !ok && cs.client.opts.LogLevel != "" {
-		m[MetaKeyLogLevel] = cs.client.opts.LogLevel
 	}
 	params.SetMeta(m)
 	return params

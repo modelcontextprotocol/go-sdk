@@ -526,7 +526,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
-	logLevel, _ := meta[MetaKeyLogLevel].(LoggingLevel)
+	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
 	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    capabilities,
