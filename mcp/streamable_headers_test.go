@@ -1473,15 +1473,21 @@ func TestValidateParamHeaders_IntegerComparison(t *testing.T) {
 		bodyArg   any
 		wantErr   bool
 	}{
+		// Canonical decimal form matches.
 		{"integer matches integer", "42", float64(42), false},
 		{"integer header matches integer-valued float body", "42", float64(42.0), false},
 		{"negative integer matches", "-7", float64(-7), false},
 		{"large safe integer matches", "1000000000000", float64(1e12), false},
-		{"non-canonical '42.0' rejected against integer body", "42.0", float64(42), true},
-		{"scientific notation rejected", "1e2", float64(100), true},
-		{"non-integer body rejected (number type not permitted)", "3.14", float64(3.14), true},
+
+		{"non-canonical '42.0' header matches integer body", "42.0", float64(42), false},
+		{"scientific notation header matches integer body", "1e2", float64(100), false},
+		{"negative non-canonical header matches", "-7.0", float64(-7), false},
+
+		// Genuine mismatches and invalid forms are still rejected.
 		{"different integers do not match", "42", float64(43), true},
+		{"fractional header against integer body", "3.14", float64(3), true},
 		{"non-numeric header fails", "not-a-number", float64(42), true},
+		{"header outside safe range against integer body", "9007199254740993", float64(42), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

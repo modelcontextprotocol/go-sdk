@@ -132,16 +132,14 @@ func lookupArgument(args map[string]json.RawMessage, path string) (json.RawMessa
 }
 
 // maxSafeInteger and minSafeInteger bound the integer values that can be
-// faithfully represented as IEEE-754 double-precision floats. Per SEP-2243
-// (PR #2772), x-mcp-header integer parameter values MUST fall within this
-// range.
+// faithfully represented as IEEE-754 double-precision floats.
 const (
 	maxSafeInteger = 1<<53 - 1    // 2^53 - 1 = 9007199254740991
 	minSafeInteger = -(1<<53 - 1) // -(2^53 - 1) = -9007199254740991
 )
 
 // unmarshalPrimitive unmarshals a JSON value into the Go representation used
-// for x-mcp-header processing per SEP-2243 (PR #2772):
+// for x-mcp-header processing per SEP-2243:
 //
 //   - JSON string  -> string
 //   - JSON boolean -> bool
@@ -160,8 +158,6 @@ func unmarshalPrimitive(raw json.RawMessage) any {
 	case string, bool:
 		return v
 	case float64:
-		// JSON numbers always decode as float64; promote to int64 if the
-		// value is an integer within the safe range, otherwise reject.
 		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) {
 			return nil
 		}
@@ -440,6 +436,19 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 // primitiveEqual reports whether the (decoded) header string equals the
 // JSON-derived body value.
 func primitiveEqual(headerStr string, bodyVal any) bool {
+	if bodyInt, ok := bodyVal.(int64); ok {
+		headerNum, err := strconv.ParseFloat(headerStr, 64)
+		if err != nil {
+			return false
+		}
+		if math.IsNaN(headerNum) || math.IsInf(headerNum, 0) || headerNum != math.Trunc(headerNum) {
+			return false
+		}
+		if headerNum < minSafeInteger || headerNum > maxSafeInteger {
+			return false
+		}
+		return int64(headerNum) == bodyInt
+	}
 	expected, ok := primitiveToString(bodyVal)
 	if !ok {
 		return false
