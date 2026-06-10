@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,9 @@ type ServerOptions struct {
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
 	UnsubscribeHandler func(context.Context, *UnsubscribeRequest) error
+	// ListResourcesHandler, if non-nil, serves resources/list dynamically.
+	// See [ListResourcesHandler] for semantics.
+	ListResourcesHandler ListResourcesHandler
 
 	// Capabilities optionally configures the server's default capabilities,
 	// before any capabilities are inferred from other configuration or server
@@ -617,7 +621,7 @@ func (s *Server) capabilities() *ServerCapabilities {
 	}
 
 	// Augment with resources capability if resources/templates exist or legacy HasResources is set.
-	if s.opts.HasResources || s.resources.len() > 0 || s.resourceTemplates.len() > 0 {
+	if s.opts.HasResources || s.resources.len() > 0 || s.resourceTemplates.len() > 0 || s.opts.ListResourcesHandler != nil {
 		if caps.Resources == nil {
 			caps.Resources = &ResourceCapabilities{ListChanged: true}
 		}
@@ -850,18 +854,165 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	return res, err
 }
 
-func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Server) listResources(ctx context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
-		res.Resources = []*Resource{} // avoid JSON null
-		for _, r := range resources {
-			res.Resources = append(res.Resources, r.resource)
+	if s.opts.ListResourcesHandler == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, populateListResourcesResult)
+	}
+	return s.listResourcesWithHandler(ctx, req)
+}
+
+func populateListResourcesResult(res *ListResourcesResult, resources []*serverResource) {
+	res.Resources = []*Resource{} // avoid JSON null
+	for _, r := range resources {
+		res.Resources = append(res.Resources, r.resource)
+	}
+}
+
+const (
+	listResourcesPhaseStatic  = "static"
+	listResourcesPhaseHandler = "handler"
+	listResourcesCursorPrefix = "lr1:"
+)
+
+type listResourcesCursor struct {
+	Phase         string
+	StaticCursor  string
+	HandlerCursor string
+}
+
+func encodeListResourcesCursor(c listResourcesCursor) (string, error) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(c); err != nil {
+		return "", fmt.Errorf("failed to encode list resources cursor: %w", err)
+	}
+	return listResourcesCursorPrefix + base64.URLEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+func decodeListResourcesCursor(cursor string) (*listResourcesCursor, error) {
+	if cursor == "" {
+		return &listResourcesCursor{Phase: listResourcesPhaseStatic}, nil
+	}
+	if !strings.HasPrefix(cursor, listResourcesCursorPrefix) {
+		return nil, fmt.Errorf("not a list resources cursor")
+	}
+	decoded, err := base64.URLEncoding.DecodeString(cursor[len(listResourcesCursorPrefix):])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode list resources cursor: %w", err)
+	}
+	var c listResourcesCursor
+	if err := gob.NewDecoder(bytes.NewReader(decoded)).Decode(&c); err != nil {
+		return nil, fmt.Errorf("failed to decode list resources cursor: %w", err)
+	}
+	return &c, nil
+}
+
+func normalizeListResourcesResult(res *ListResourcesResult) *ListResourcesResult {
+	if res == nil {
+		return &ListResourcesResult{Resources: []*Resource{}}
+	}
+	if res.Resources == nil {
+		res2 := *res
+		res2.Resources = []*Resource{}
+		return &res2
+	}
+	return res
+}
+
+func (s *Server) listResourcesWithHandler(ctx context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
+	handler := s.opts.ListResourcesHandler
+
+	s.mu.Lock()
+	hasStatic := s.resources.len() > 0
+	pageSize := s.opts.PageSize
+	s.mu.Unlock()
+
+	if !hasStatic {
+		res, err := handler(ctx, req)
+		if err != nil {
+			return nil, err
 		}
-	})
+		return normalizeListResourcesResult(res), nil
+	}
+
+	phase, err := decodeListResourcesCursor(req.Params.Cursor)
+	if err != nil {
+		return nil, jsonrpc2.ErrInvalidParams
+	}
+
+	if phase.Phase == listResourcesPhaseHandler {
+		handlerReq := &ListResourcesRequest{
+			Session: req.Session,
+			Params:  &ListResourcesParams{Meta: req.Params.Meta, Cursor: phase.HandlerCursor},
+		}
+		res, err := handler(ctx, handlerReq)
+		if err != nil {
+			return nil, err
+		}
+		res = normalizeListResourcesResult(res)
+		if res.NextCursor != "" {
+			res.NextCursor, err = encodeListResourcesCursor(listResourcesCursor{
+				Phase:         listResourcesPhaseHandler,
+				HandlerCursor: res.NextCursor,
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+		return res, nil
+	}
+
+	s.mu.Lock()
+	staticParams := &ListResourcesParams{Meta: req.Params.Meta, Cursor: phase.StaticCursor}
+	res, err := paginateList(s.resources, pageSize, staticParams, &ListResourcesResult{}, populateListResourcesResult)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+
+	if res.NextCursor != "" {
+		res.NextCursor, err = encodeListResourcesCursor(listResourcesCursor{
+			Phase:        listResourcesPhaseStatic,
+			StaticCursor: res.NextCursor,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
+
+	if len(res.Resources) > 0 {
+		res.NextCursor, err = encodeListResourcesCursor(listResourcesCursor{Phase: listResourcesPhaseHandler})
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
+
+	handlerReq := &ListResourcesRequest{
+		Session: req.Session,
+		Params:  &ListResourcesParams{Meta: req.Params.Meta},
+	}
+	hRes, err := handler(ctx, handlerReq)
+	if err != nil {
+		return nil, err
+	}
+	hRes = normalizeListResourcesResult(hRes)
+
+	if hRes.NextCursor != "" {
+		hRes.NextCursor, err = encodeListResourcesCursor(listResourcesCursor{
+			Phase:         listResourcesPhaseHandler,
+			HandlerCursor: hRes.NextCursor,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return hRes, nil
 }
 
 func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
