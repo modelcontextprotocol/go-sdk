@@ -21,7 +21,7 @@ func TestListResourcesHandlerDynamicOnly(t *testing.T) {
 				return &ListResourcesResult{Resources: []*Resource{}}, nil
 			}
 			return &ListResourcesResult{
-				Resources: []*Resource{{URI: "dynamic://a"}},
+				Resources:  []*Resource{{URI: "dynamic://a"}},
 				NextCursor: "page2",
 			}, nil
 		},
