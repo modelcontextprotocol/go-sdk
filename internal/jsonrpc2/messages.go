@@ -172,6 +172,10 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 }
 
 func DecodeMessage(data []byte) (Message, error) {
+	fields := map[string]json.RawMessage{}
+	if err := internaljson.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+	}
 	msg := wireCombined{}
 	if err := internaljson.Unmarshal(data, &msg); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
@@ -183,8 +187,8 @@ func DecodeMessage(data []byte) (Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if msg.Method != "" {
-		// has a method, must be a call
+	if _, ok := fields["method"]; ok {
+		// has a method field, must be a call, even if the method is empty
 		return &Request{
 			Method: msg.Method,
 			ID:     id,
