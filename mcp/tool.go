@@ -65,8 +65,14 @@ type serverTool struct {
 // applySchema validates whether data is valid JSON according to the provided
 // schema, after applying schema defaults.
 //
-// Returns the JSON value augmented with defaults.
-func applySchema(data json.RawMessage, resolved *jsonschema.Resolved) (json.RawMessage, error) {
+// If forOutput is false, the data is treated as tool input: the schema's root
+// type must be "object" and the value is unmarshaled into a map.
+//
+// If forOutput is true, the data is treated as tool output: the schema's root
+// may be of any type (object, array, primitive, composition).
+//
+// Returns the JSON value, augmented with defaults where applicable.
+func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput bool) (json.RawMessage, error) {
 	// TODO: use reflection to create the struct type to unmarshal into.
 	// Separate validation from assignment.
 
@@ -75,33 +81,64 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved) (json.RawM
 	// This avoids inconsistent representation due to custom marshallers, such as
 	// time.Time (issue #449).
 	//
-	// Additionally, unmarshalling into a map ensures that the resulting JSON is
+	// For input, unmarshalling into a map ensures that the resulting JSON is
 	// at least {}, even if data is empty. For example, arguments is technically
 	// an optional property of callToolParams, and we still want to apply the
 	// defaults in this case.
 	//
 	// TODO(rfindley): in which cases can resolved be nil?
-	if resolved != nil {
+	if resolved == nil {
+		return data, nil
+	}
+
+	var unmarshaled any
+	if !forOutput {
 		v := make(map[string]any)
 		if len(data) > 0 {
 			if err := internaljson.Unmarshal(data, &v); err != nil {
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
 		}
-		if err := resolved.ApplyDefaults(&v); err != nil {
-			return nil, fmt.Errorf("applying schema defaults:\n%w", err)
-		}
-		if err := resolved.Validate(&v); err != nil {
-			return nil, err
-		}
-		// We must re-marshal with the default values applied.
-		var err error
-		data, err = json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling with defaults: %v", err)
+		unmarshaled = v
+	} else {
+		if len(data) > 0 {
+			if err := internaljson.Unmarshal(data, &unmarshaled); err != nil {
+				return nil, fmt.Errorf("unmarshaling output: %w", err)
+			}
 		}
 	}
-	return data, nil
+
+	// Apply defaults only when the value is a map: jsonschema.Resolved.ApplyDefaults
+	// only operates on object properties. For object-rooted output schemas,
+	// coerce a nil result (from "null" or empty data) into {} so handlers that
+	// return a typed-nil map still validate.
+	appliedDefaults := false
+	if _, ok := unmarshaled.(map[string]any); ok {
+		if err := resolved.ApplyDefaults(&unmarshaled); err != nil {
+			return nil, fmt.Errorf("applying schema defaults:\n%w", err)
+		}
+		appliedDefaults = true
+	} else if forOutput && unmarshaled == nil && resolved.Schema().Type == "object" {
+		unmarshaled = make(map[string]any)
+		if err := resolved.ApplyDefaults(&unmarshaled); err != nil {
+			return nil, fmt.Errorf("applying schema defaults:\n%w", err)
+		}
+		appliedDefaults = true
+	}
+
+	if err := resolved.Validate(&unmarshaled); err != nil {
+		return nil, err
+	}
+
+	// Re-marshal only when defaults may have changed the value.
+	if !appliedDefaults {
+		return data, nil
+	}
+	out, err := json.Marshal(unmarshaled)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling with defaults: %v", err)
+	}
+	return out, nil
 }
 
 // validateToolName checks whether name is a valid tool name, reporting a

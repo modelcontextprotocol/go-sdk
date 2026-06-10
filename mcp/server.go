@@ -232,7 +232,8 @@ func (s *Server) RemovePrompts(names ...string) {
 // that takes no input, or one where any input is valid, set [Tool.InputSchema] to
 // `{"type": "object"}`, using your preferred library or `json.RawMessage`.
 //
-// If present, [Tool.OutputSchema] must also have type "object".
+// If present, [Tool.OutputSchema] may be any valid JSON Schema (object, array,
+// primitive, or composition).
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage.
@@ -279,16 +280,10 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 			if s == nil {
 				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
 			}
-			if s.Type != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
-			}
 		} else {
-			var m map[string]any
+			var m any
 			if err := remarshal(t.OutputSchema, &m); err != nil {
-				panic(fmt.Errorf("AddTool %q: can't marshal output schema to a JSON object: %v", t.Name, err))
-			}
-			if typ := m["type"]; typ != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
+				panic(fmt.Errorf("AddTool %q: can't marshal output schema to JSON: %v", t.Name, err))
 			}
 		}
 	}
@@ -340,7 +335,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 		// Validate input and apply defaults.
 		var err error
-		input, err = applySchema(input, inputResolved)
+		input, err = applySchema(input, inputResolved, false)
 		if err != nil {
 			var errRes CallToolResult
 			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
@@ -402,7 +397,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			//
 			// We validate against the JSON, rather than the output value, as
 			// some types may have custom JSON marshalling (issue #447).
-			outJSON, err = applySchema(outJSON, outputResolved)
+			outJSON, err = applySchema(outJSON, outputResolved, true)
 			if err != nil {
 				return nil, fmt.Errorf("validating tool output: %w", err)
 			}
@@ -525,9 +520,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 // empty object schema value.
 //
 // If the tool's output schema is nil, and the Out type is not 'any', the
-// output schema is set to the schema inferred from the Out type argument,
-// which must also be a map or struct. If the Out type is 'any', the output
-// schema is omitted.
+// output schema is set to the schema inferred from the Out type argument.
+// Per SEP-2106, the Out type may be any Go type whose inferred schema is a
+// valid JSON Schema (struct, map, slice, primitive, etc.). If the Out type is
+// 'any', the output schema is omitted.
 //
 // Unlike [Server.AddTool], AddTool does a lot automatically, and forces
 // tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
