@@ -5,6 +5,8 @@
 package mcp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,11 +113,15 @@ type serverConnection interface {
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	// MaxMessageBytes, if positive, rejects incoming JSON-RPC message payloads
+	// larger than this many bytes. The line ending is not counted.
+	MaxMessageBytes int64
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConnWithOptions(rwc{os.Stdin, nopCloserWriter{os.Stdout}}, t.MaxMessageBytes), nil
 }
 
 // nopCloserWriter is an io.WriteCloser with a trivial Close method.
@@ -130,11 +136,14 @@ func (nopCloserWriter) Close() error { return nil }
 type IOTransport struct {
 	Reader io.ReadCloser
 	Writer io.WriteCloser
+	// MaxMessageBytes, if positive, rejects incoming JSON-RPC message payloads
+	// larger than this many bytes. The line ending is not counted.
+	MaxMessageBytes int64
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.Reader, t.Writer}), nil
+	return newIOConnWithOptions(rwc{t.Reader, t.Writer}, t.MaxMessageBytes), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
@@ -405,6 +414,10 @@ type msgOrErr struct {
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	return newIOConnWithOptions(rwc, 0)
+}
+
+func newIOConnWithOptions(rwc io.ReadWriteCloser, maxMessageBytes int64) *ioConn {
 	var (
 		incoming = make(chan msgOrErr)
 		closed   = make(chan struct{})
@@ -416,24 +429,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
-		dec := json.NewDecoder(rwc)
+		reader := bufio.NewReader(rwc)
 		for {
-			var raw json.RawMessage
-			err := dec.Decode(&raw)
-			// If decoding was successful, check for trailing data at the end of the stream.
-			if err == nil {
-				// Read the next byte to check if there is trailing data.
-				var tr [1]byte
-				if n, readErr := dec.Buffered().Read(tr[:]); n > 0 {
-					// If read byte is not a newline, it is an error.
-					// Support both Unix (\n) and Windows (\r\n) line endings.
-					if tr[0] != '\n' && tr[0] != '\r' {
-						err = fmt.Errorf("invalid trailing data at the end of stream")
-					}
-				} else if readErr != nil && readErr != io.EOF {
-					err = readErr
-				}
-			}
+			raw, err := readFrame(reader, maxMessageBytes)
 			select {
 			case incoming <- msgOrErr{msg: raw, err: err}:
 			case <-closed:
@@ -449,6 +447,66 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 		incoming: incoming,
 		closed:   closed,
 	}
+}
+
+func readFrame(reader *bufio.Reader, maxMessageBytes int64) (json.RawMessage, error) {
+	var frame []byte
+	for {
+		part, err := reader.ReadSlice('\n')
+		frame = append(frame, part...)
+		switch {
+		case err == nil:
+			frame = trimLineEnding(frame)
+			if maxMessageBytes > 0 && int64(len(frame)) > maxMessageBytes {
+				return nil, fmt.Errorf("JSON-RPC message exceeds maximum size of %d bytes", maxMessageBytes)
+			}
+			if err := validateJSONFrame(frame); err != nil {
+				return nil, err
+			}
+			return json.RawMessage(frame), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			if maxMessageBytes > 0 && int64(len(frame)) > maxMessageBytes {
+				return nil, fmt.Errorf("JSON-RPC message exceeds maximum size of %d bytes", maxMessageBytes)
+			}
+			continue
+		case errors.Is(err, io.EOF):
+			if len(frame) == 0 {
+				return nil, io.EOF
+			}
+			if maxMessageBytes > 0 && int64(len(frame)) > maxMessageBytes {
+				return nil, fmt.Errorf("JSON-RPC message exceeds maximum size of %d bytes", maxMessageBytes)
+			}
+			if err := validateJSONFrame(frame); err != nil {
+				return nil, err
+			}
+			return json.RawMessage(frame), nil
+		default:
+			return nil, err
+		}
+	}
+}
+
+func trimLineEnding(frame []byte) []byte {
+	if n := len(frame); n > 0 && frame[n-1] == '\n' {
+		frame = frame[:n-1]
+	}
+	if n := len(frame); n > 0 && frame[n-1] == '\r' {
+		frame = frame[:n-1]
+	}
+	return frame
+}
+
+func validateJSONFrame(frame []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(frame))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("invalid trailing data at the end of stream")
+	}
+	return nil
 }
 
 func (c *ioConn) SessionID() string { return "" }
