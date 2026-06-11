@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -2449,3 +2451,202 @@ func TestSetErrorPreservesContent(t *testing.T) {
 }
 
 var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
+
+// runSubscriptionsListenTest exercises the SEP-2575 auto-listen flow end-to-end
+// against the supplied transport pair. It captures every notification and the
+// acknowledgment the client sees, then asserts:
+//
+//   - the auto-listen issued by Client.Connect is acknowledged with a tagged
+//     subscription ID;
+//   - tool and prompt list-changed notifications are delivered to the matching
+//     handlers, each carrying the same subscription ID as the ack;
+//   - the subscription persists across multiple unrelated changes;
+//   - cs.Close() ends the subscription and further changes don't deliver.
+func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct Transport, events chan subListenEvent) {
+	t.Helper()
+
+	ctx, topCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer topCancel()
+
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	waitFor := func(kind string) subListenEvent {
+		t.Helper()
+		select {
+		case e := <-events:
+			if e.kind != kind {
+				t.Fatalf("got event %q (id=%s), want kind %q", e.kind, e.id, kind)
+			}
+			return e
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %q event", kind)
+			return subListenEvent{}
+		}
+	}
+	expectNoEvent := func(d time.Duration) {
+		t.Helper()
+		select {
+		case e := <-events:
+			t.Fatalf("unexpected event %q (id=%s)", e.kind, e.id)
+		case <-time.After(d):
+		}
+	}
+
+	ack := waitFor("ack")
+	if ack.id == "" {
+		t.Fatalf("acknowledgment missing subscription ID")
+	}
+
+	server.AddTool(&Tool{Name: "t2", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	if e := waitFor("tool"); e.id != ack.id {
+		t.Errorf("first tool notif id = %s, want %s", e.id, ack.id)
+	}
+
+	server.AddPrompt(&Prompt{Name: "p2"}, nil)
+	if e := waitFor("prompt"); e.id != ack.id {
+		t.Errorf("first prompt notif id = %s, want %s", e.id, ack.id)
+	}
+
+	server.AddTool(&Tool{Name: "t3", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	if e := waitFor("tool"); e.id != ack.id {
+		t.Errorf("second tool notif id = %s, want %s", e.id, ack.id)
+	}
+	server.AddPrompt(&Prompt{Name: "p3"}, nil)
+	if e := waitFor("prompt"); e.id != ack.id {
+		t.Errorf("second prompt notif id = %s, want %s", e.id, ack.id)
+	}
+	expectNoEvent(notificationDelay * 5)
+
+	cs.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	server.AddTool(&Tool{Name: "t4", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	server.AddPrompt(&Prompt{Name: "p4"}, nil)
+	expectNoEvent(notificationDelay * 20)
+}
+
+type subListenEvent struct {
+	kind string // "ack", "tool", "prompt"
+	id   string // subscription ID from _meta, stringified for cross-encoding equality
+}
+
+// newSubListenClient returns a client wired to push every ack and every
+// list-changed notification it receives into events, tagged with the kind
+// and the subscription ID extracted from _meta.
+func newSubListenClient(events chan subListenEvent) *Client {
+	asEvent := func(kind string, raw any) subListenEvent {
+		return subListenEvent{kind, fmt.Sprint(raw)}
+	}
+	c := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(_ context.Context, req *ToolListChangedRequest) {
+			events <- asEvent("tool", req.Params.Meta[MetaKeySubscriptionID])
+		},
+		PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
+			events <- asEvent("prompt", req.Params.Meta[MetaKeySubscriptionID])
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- asEvent("ack", cr.Params.Meta[MetaKeySubscriptionID])
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	return c
+}
+
+func newSubListenServer() *Server {
+	s := NewServer(testImpl, nil)
+	AddTool(s, &Tool{Name: "t1"}, sayHi)
+	s.AddPrompt(&Prompt{Name: "p1"}, nil)
+	return s
+}
+
+func enableNewProtocol(t *testing.T) {
+	t.Helper()
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+}
+
+// TestSubscriptionsListen_InMemory exercises the listen flow over the
+// session-shared in-memory transport (semantically equivalent to STDIO).
+// Cancellation here propagates via notifications/cancelled.
+func TestSubscriptionsListen_InMemory(t *testing.T) {
+	enableNewProtocol(t)
+	events := make(chan subListenEvent, 64)
+	server := newSubListenServer()
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+	runSubscriptionsListenTest(t, newSubListenClient(events), server, ct, events)
+}
+
+// TestSubscriptionsListen_Streamable exercises the listen flow over a
+// stateless HTTP server (SEP-2575). Each listen rides its own SSE response
+// stream; cs.Close() tears it down.
+func TestSubscriptionsListen_Streamable(t *testing.T) {
+	enableNewProtocol(t)
+	events := make(chan subListenEvent, 64)
+	server := newSubListenServer()
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+	runSubscriptionsListenTest(t, newSubListenClient(events), server,
+		&StreamableClientTransport{Endpoint: httpServer.URL}, events)
+}
+
+// TestSubscriptionsListen_NoHandlersNoListen verifies that a new-protocol
+// client without any list-changed handlers registered does not open an
+// auto-listen on connect, and therefore does not receive any acknowledgment
+// or downstream notifications.
+func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
+	enableNewProtocol(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	events := make(chan subListenEvent, 8)
+	server := newSubListenServer()
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				events <- subListenEvent{"ack", ""}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	server.AddTool(&Tool{Name: "t2", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+
+	select {
+	case e := <-events:
+		t.Fatalf("unexpected event %q on no-handler client", e.kind)
+	case <-time.After(notificationDelay * 10):
+	}
+}

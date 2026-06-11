@@ -313,11 +313,13 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				if subscribeParams.Notifications.ToolsListChanged ||
 					subscribeParams.Notifications.PromptsListChanged ||
 					subscribeParams.Notifications.ResourcesListChanged {
-					// The listen blocks until the server cancels it (or the
-					// underlying connection ends). Run it in a goroutine so
-					// Connect can return; the SDK retires it on cs.Close().
+					// The listen blocks until the server cancels it. Run it in
+					// a goroutine so Connect can return; ClientSession.Close
+					// cancels its context to send notifications/cancelled.
+					listenCtx, cancelListen := context.WithCancel(context.Background())
+					cs.listenCancel = cancelListen
 					go func() {
-						_ = cs.subscriptionsListen(context.Background(), subscribeParams)
+						_ = cs.subscriptionsListen(listenCtx, subscribeParams)
 					}()
 				}
 				return cs, nil
@@ -436,6 +438,7 @@ type ClientSession struct {
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
+	listenCancel    context.CancelFunc
 	mcpConn         Connection
 
 	// No mutex is (currently) required to guard the session state, because it is
@@ -517,6 +520,9 @@ func (cs *ClientSession) Close() error {
 	//    Close is idempotent and conn.Close() handles concurrent calls correctly
 	if cs.keepaliveCancel != nil {
 		cs.keepaliveCancel()
+	}
+	if cs.listenCancel != nil {
+		cs.listenCancel()
 	}
 	err := cs.conn.Close()
 
