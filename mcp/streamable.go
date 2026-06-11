@@ -1365,6 +1365,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	calls := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
+	isSubscriptionsListen := false
 	var initializeProtocolVersion string
 	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
@@ -1390,6 +1391,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
 					initializeProtocolVersion = params.ProtocolVersion
 				}
+			}
+			if jreq.Method == methodSubscriptionsListen {
+				isSubscriptionsListen = true
 			}
 			// SEP-2575: requests carrying `_meta.protocolVersion` require the
 			// Mcp-Protocol-Version HTTP header to be present and to match the
@@ -1528,13 +1532,20 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	// subscriptions/listen is inherently a long-lived SSE endpoint (SEP-2575):
+	// it has no synchronous result, the response stream stays open until the
+	// client cancels, and the server pushes notifications on it as they occur.
+	// Force SSE mode (bypassing JSONResponse) so the buffered application/json
+	// path doesn't deadlock waiting for a completion that won't come.
+	useSSE := !c.jsonResponse || isSubscriptionsListen
+
 	// Set response headers. Accept was checked in [StreamableHTTPHandler].
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	if c.jsonResponse {
-		w.Header().Set("Content-Type", "application/json")
-	} else {
+	if useSSE {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Connection", "keep-alive")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
 	}
 	if c.sessionID != "" && isInitialize {
 		w.Header().Set(sessionIDHeader, c.sessionID)
@@ -1545,7 +1556,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	done := make(chan struct{})
 	stream.done = done
 	stream.protocolVersion = effectiveVersion
-	if c.jsonResponse {
+	if !useSSE {
 		// JSON mode: collect messages in pendingJSONMessages until done.
 		// Set pendingJSONMessages to a non-nil value to signal that this is an
 		// application/json stream.
@@ -1570,6 +1581,17 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if _, err := writeEvent(w, e); err != nil {
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
+		}
+		// For subscriptions/listen, flush headers eagerly so the client sees
+		// the open SSE stream even when an HTTP/2-aware reverse proxy is
+		// buffering the HEADERS frame waiting for a DATA frame to coalesce
+		// with. The acknowledgment notification will follow shortly, but the
+		// client can begin reading event-stream framing immediately. See the
+		// equivalent comment in [streamableServerConn.acquireStream].
+		if isSubscriptionsListen {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, ": ok\n\n")
+			_ = http.NewResponseController(w).Flush()
 		}
 	}
 
@@ -2460,7 +2482,8 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			if jsonResp, ok := msg.(*jsonrpc.Response); ok && forCall != nil {
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
-				if jsonResp.ID == forCall.ID {
+				// The subscriptions/listen is now returning a response in the SSE stream.
+				if jsonResp.ID == forCall.ID && forCall.Method != methodSubscriptionsListen {
 					return "", 0, true
 				}
 			}
