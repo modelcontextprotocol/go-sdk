@@ -973,6 +973,19 @@ func TestStreamableServerTransport(t *testing.T) {
 			wantSessions: 1,
 		},
 		{
+			name: "initialize protocol version header mismatch",
+			requests: []streamableRequest{
+				{
+					method:             "POST",
+					headers:            http.Header{protocolVersionHeader: {protocolVersion20251125}},
+					messages:           []jsonrpc.Message{req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618})},
+					wantStatusCode:     http.StatusBadRequest,
+					wantBodyContaining: "header mismatch",
+				},
+			},
+			wantSessions: 0,
+		},
+		{
 			name: "batch rejected on 2025-06-18",
 			requests: []streamableRequest{
 				initialize,
