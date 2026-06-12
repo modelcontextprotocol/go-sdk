@@ -1793,15 +1793,7 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 // It should never be invoked in practice because cancellation is preempted,
 // but having its signature here facilitates the construction of methodInfo
 // that can be used to validate incoming cancellation notifications.
-func (ss *ServerSession) cancel(_ context.Context, param *CancelledParams) (Result, error) {
-	id, err := jsonrpc.MakeID(param.RequestID)
-	if err != nil {
-		return nil, nil
-	}
-	server := ss.server
-	server.removeSubscription(server.toolsSubscriptions, ss, id)
-	server.removeSubscription(server.promptsSubscriptions, ss, id)
-	server.removeSubscription(server.resourcesSubscriptions, ss, id)
+func (ss *ServerSession) cancel(_ context.Context, _ *CancelledParams) (Result, error) {
 	return nil, nil
 }
 
