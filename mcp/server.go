@@ -35,6 +35,9 @@ import (
 // DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
+// A map from sessions to the set of subscription IDs they have active for a given feature.
+type activeSubscriptions map[*ServerSession]map[jsonrpc.ID]bool
+
 // A Server is an instance of an MCP server.
 //
 // Servers expose server-side MCP features, which can serve one or more MCP
@@ -53,9 +56,9 @@ type Server struct {
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
-	toolsSubscriptions      map[*ServerSession]map[jsonrpc.ID]bool
-	promptsSubscriptions    map[*ServerSession]map[jsonrpc.ID]bool
-	resourcesSubscriptions  map[*ServerSession]map[jsonrpc.ID]bool
+	toolsSubscriptions      activeSubscriptions
+	promptsSubscriptions    activeSubscriptions
+	resourcesSubscriptions  activeSubscriptions
 	pendingNotifications    map[string]*time.Timer // notification name -> timer for pending notification send
 }
 
@@ -207,9 +210,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
-		toolsSubscriptions:      make(map[*ServerSession]map[jsonrpc.ID]bool),
-		promptsSubscriptions:    make(map[*ServerSession]map[jsonrpc.ID]bool),
-		resourcesSubscriptions:  make(map[*ServerSession]map[jsonrpc.ID]bool),
+		toolsSubscriptions:      make(activeSubscriptions),
+		promptsSubscriptions:    make(activeSubscriptions),
+		resourcesSubscriptions:  make(activeSubscriptions),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
 	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
@@ -702,7 +705,15 @@ func (s *Server) notifySessions(n string) {
 	}
 	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
 
-	var activeSubscriptions map[*ServerSession]map[jsonrpc.ID]bool
+	// Notify sessions that subscribed to the notification with 'subscriptions/listen' method.
+	type subscription struct {
+		session *ServerSession
+		reqID   jsonrpc.ID
+	}
+	var subs []subscription
+
+	s.mu.Lock()
+	var activeSubscriptions activeSubscriptions
 	switch n {
 	case notificationToolListChanged:
 		activeSubscriptions = s.toolsSubscriptions
@@ -711,22 +722,27 @@ func (s *Server) notifySessions(n string) {
 	case notificationResourceListChanged:
 		activeSubscriptions = s.resourcesSubscriptions
 	}
+	for session, reqIDs := range activeSubscriptions {
+		for reqID := range reqIDs {
+			subs = append(subs, subscription{session: session, reqID: reqID})
+		}
+	}
+	s.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for session := range activeSubscriptions {
-		for reqID := range activeSubscriptions[session] {
-			params := changeNotificationParams[n]()
-			setSubscriptionID(params, reqID)
-			req := newRequest(session, params)
-			ctx = context.WithValue(ctx, idContextKey{}, reqID)
-			if err := handleNotify(ctx, n, req); err != nil {
-				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
-			}
+	for _, sub := range subs {
+		params := changeNotificationParams[n]()
+		injectMetaSubscriptionID(params, sub.reqID)
+		req := newRequest(sub.session, params)
+		reqCtx := context.WithValue(ctx, idContextKey{}, sub.reqID)
+		if err := handleNotify(reqCtx, n, req); err != nil {
+			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
 		}
 	}
 }
 
-func setSubscriptionID(params Params, reqID jsonrpc.ID) {
+func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
 	m := params.GetMeta()
 	if m == nil {
 		m = map[string]any{}
@@ -1072,27 +1088,51 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	return &emptyResult{}, nil
 }
 
-func (s *Server) addSubscription(index map[*ServerSession]map[jsonrpc.ID]bool, ss *ServerSession, id jsonrpc.ID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids := index[ss]
+func (m activeSubscriptions) add(ss *ServerSession, id jsonrpc.ID) {
+	ids := m[ss]
 	if ids == nil {
 		ids = make(map[jsonrpc.ID]bool)
-		index[ss] = ids
+		m[ss] = ids
 	}
 	ids[id] = true
 }
 
-func (s *Server) removeSubscription(index map[*ServerSession]map[jsonrpc.ID]bool, ss *ServerSession, id jsonrpc.ID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids, ok := index[ss]
+func (m activeSubscriptions) remove(ss *ServerSession, id jsonrpc.ID) {
+	ids, ok := m[ss]
 	if !ok {
 		return
 	}
 	delete(ids, id)
 	if len(ids) == 0 {
-		delete(index, ss)
+		delete(m, ss)
+	}
+}
+
+func (s *Server) addSubscriptions(allowed NotificationSubscriptions, ss *ServerSession, id jsonrpc.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if allowed.ToolsListChanged {
+		s.toolsSubscriptions.add(ss, id)
+	}
+	if allowed.PromptsListChanged {
+		s.promptsSubscriptions.add(ss, id)
+	}
+	if allowed.ResourcesListChanged {
+		s.resourcesSubscriptions.add(ss, id)
+	}
+}
+
+func (s *Server) removeSubscriptions(allowed NotificationSubscriptions, ss *ServerSession, id jsonrpc.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if allowed.ToolsListChanged {
+		s.toolsSubscriptions.remove(ss, id)
+	}
+	if allowed.PromptsListChanged {
+		s.promptsSubscriptions.remove(ss, id)
+	}
+	if allowed.ResourcesListChanged {
+		s.resourcesSubscriptions.remove(ss, id)
 	}
 }
 
@@ -1103,15 +1143,7 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
-	if allowed.ToolsListChanged {
-		s.addSubscription(s.toolsSubscriptions, req.Session, requestID)
-	}
-	if allowed.PromptsListChanged {
-		s.addSubscription(s.promptsSubscriptions, req.Session, requestID)
-	}
-	if allowed.ResourcesListChanged {
-		s.addSubscription(s.resourcesSubscriptions, req.Session, requestID)
-	}
+	s.addSubscriptions(allowed, req.Session, requestID)
 
 	ackParams := &SubscriptionsAcknowledgedParams{
 		Notifications: allowed,
@@ -1122,9 +1154,7 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 
 	defer func() {
-		s.removeSubscription(s.toolsSubscriptions, req.Session, requestID)
-		s.removeSubscription(s.promptsSubscriptions, req.Session, requestID)
-		s.removeSubscription(s.resourcesSubscriptions, req.Session, requestID)
+		s.removeSubscriptions(allowed, req.Session, requestID)
 	}()
 
 	<-ctx.Done()
