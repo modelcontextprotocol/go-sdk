@@ -154,23 +154,6 @@ type ServerOptions struct {
 	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
-
-	// CacheControl, if non-nil, is called for each response to a cacheable
-	// method (tools/list, prompts/list, resources/list,
-	// resources/templates/list, resources/read) to populate the SEP-2549
-	// `ttlMs` and `cacheScope` fields. It is invoked after the result has
-	// been assembled but before it is returned to the client.
-	//
-	// The concrete type of req.GetParams() identifies the method (for
-	// example, *ListToolsParams for tools/list or *ReadResourceParams for
-	// resources/read), and res holds the assembled response (e.g.
-	// *ListToolsResult), allowing the policy to depend on response
-	// contents as well as the request.
-	//
-	// If CacheControl is nil, the response is sent with the safe default
-	// `Cacheable{CacheScope: "public"}` (TTLMs: 0), which tells clients to
-	// treat the result as immediately stale and not cache it.
-	CacheControl func(req Request, res Result) Cacheable
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -747,14 +730,6 @@ func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	return slices.Values(clients)
 }
 
-func (s *Server) applyCacheControl(req Request, res Result, c *Cacheable) {
-	if s.opts.CacheControl != nil {
-		*c = s.opts.CacheControl(req, res)
-		return
-	}
-	*c = Cacheable{CacheScope: "public"}
-}
-
 func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -770,7 +745,6 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if err != nil {
 		return nil, err
 	}
-	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 
@@ -852,7 +826,6 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if err != nil {
 		return nil, err
 	}
-	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 
@@ -900,7 +873,6 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if err != nil {
 		return nil, err
 	}
-	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 
@@ -920,7 +892,6 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if err != nil {
 		return nil, err
 	}
-	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 
@@ -956,7 +927,6 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 			c.MIMEType = mimeType
 		}
 	}
-	s.applyCacheControl(req, res, &res.Cacheable)
 	return res, nil
 }
 
@@ -1828,5 +1798,6 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 		return zero, err
 	}
 	*res.nextCursorPtr() = nextCursor
+	res.setDefaultValues()
 	return res, nil
 }

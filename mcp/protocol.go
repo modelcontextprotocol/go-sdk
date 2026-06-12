@@ -1136,6 +1136,11 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 // GetCacheScope returns the cache scope.
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
+// setDefaultValues sets the default values for the cacheable fields.
+func (c *Cacheable) setDefaultValues() {
+	c.CacheScope = "public"
+}
+
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
