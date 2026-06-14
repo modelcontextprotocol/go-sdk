@@ -745,6 +745,7 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	return res, nil
 }
 
@@ -826,6 +827,7 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	return res, nil
 }
 
@@ -873,6 +875,7 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	return res, nil
 }
 
@@ -892,6 +895,7 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	return res, nil
 }
 
@@ -912,6 +916,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
@@ -1798,6 +1803,5 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 		return zero, err
 	}
 	*res.nextCursorPtr() = nextCursor
-	res.setDefaultValues()
 	return res, nil
 }

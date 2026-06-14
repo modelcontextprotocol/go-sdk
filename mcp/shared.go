@@ -757,9 +757,6 @@ type listParams interface {
 type listResult[T any] interface {
 	// Returns a pointer to the param's NextCursor field.
 	nextCursorPtr() *string
-
-	// setDefaultValues sets the default values for the cacheable fields.
-	setDefaultValues()
 }
 
 // keepaliveSession represents a session that supports keepalive functionality.
