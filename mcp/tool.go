@@ -141,6 +141,23 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 	return out, nil
 }
 
+// isObjectJSON reports whether data is a JSON object (i.e., starts with '{'
+// after any leading whitespace). Returns false for arrays, primitives, null,
+// or empty input.
+func isObjectJSON(data json.RawMessage) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // validateToolName checks whether name is a valid tool name, reporting a
 // non-nil error if not.
 func validateToolName(name string) error {

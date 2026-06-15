@@ -406,10 +406,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			// If the Content field isn't being used, return the serialized JSON in a
 			// TextContent block, as the spec suggests:
 			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+			//
+			// Ensure a serialized-JSON TextContent fallback is present in case of servers using array
+			// or primitive structuredContent, so that pre-SEP-2106 clients can recover the structured
+			// payload from unstructured content.
 			if res.Content == nil {
 				res.Content = []Content{&TextContent{
 					Text: string(outJSON),
 				}}
+			} else if !isObjectJSON(outJSON) {
+				res.Content = append(res.Content, &TextContent{
+					Text: string(outJSON),
+				})
 			}
 		}
 		return res, nil
