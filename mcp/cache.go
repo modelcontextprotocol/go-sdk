@@ -73,3 +73,23 @@ func (mc *methodCache[R]) invalidateKey(key string) {
 	defer mc.mu.Unlock()
 	delete(mc.cachedValues, key)
 }
+
+// cursorParams is the constraint for list-method params that carry a pagination
+// cursor and can be checked for nil. Both methods are already implemented by
+// every concrete list-params type.
+type cursorParams interface {
+	Params
+	cursorPtr() *string
+}
+
+// cachedListResult returns a cached list result keyed by the request cursor
+// (SEP-2549). It returns the zero value and false on miss or when params is nil.
+func cachedListResult[P cursorParams, R CacheableResult](cache *methodCache[R], params P) (R, bool) {
+	key := ""
+	if !params.isNil() {
+		if cp := params.cursorPtr(); cp != nil {
+			key = *cp
+		}
+	}
+	return cache.get(key)
+}

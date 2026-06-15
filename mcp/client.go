@@ -1145,21 +1145,19 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 // Results may be served from a client-side TTL cache populated by previous
 // calls; see SEP-2549.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	var cursor string
-	if params != nil {
-		cursor = params.Cursor
-	}
-	if result, ok := cs.promptsCache.get(cursor); ok {
-		return result, nil
-	}
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.promptsCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	cs.promptsCache.put(cursor, result)
+	if cs.usesNewProtocol() {
+		cs.promptsCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
@@ -1173,14 +1171,10 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
-	var cursor string
-	if params != nil {
-		cursor = params.Cursor
-	}
-	if result, ok := cs.toolsCache.get(cursor); ok {
-		return result, nil
-	}
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.toolsCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
@@ -1188,7 +1182,9 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
-	cs.toolsCache.put(cursor, result)
+	if cs.usesNewProtocol() {
+		cs.toolsCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
@@ -1219,61 +1215,59 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	var cursor string
-	if params != nil {
-		cursor = params.Cursor
-	}
-	if result, ok := cs.resourcesCache.get(cursor); ok {
-		return result, nil
-	}
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourcesCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	cs.resourcesCache.put(cursor, result)
+	if cs.usesNewProtocol() {
+		cs.resourcesCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	var cursor string
-	if params != nil {
-		cursor = params.Cursor
-	}
-	if result, ok := cs.resourceTemplatesCache.get(cursor); ok {
-		return result, nil
-	}
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourceTemplatesCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	cs.resourceTemplatesCache.put(cursor, result)
+	if cs.usesNewProtocol() {
+		cs.resourceTemplatesCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	var uri string
-	if params != nil {
-		uri = params.URI
-	}
-	if result, ok := cs.readResourceCache.get(uri); ok {
-		return result, nil
-	}
 	if cs.usesNewProtocol() {
+		var uri string
+		if params != nil {
+			uri = params.URI
+		}
+		if result, ok := cs.readResourceCache.get(uri); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	cs.readResourceCache.put(uri, result)
+	if cs.usesNewProtocol() {
+		cs.readResourceCache.put(params.URI, result)
+	}
 	return result, nil
 }
 
