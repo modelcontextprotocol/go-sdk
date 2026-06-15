@@ -300,6 +300,28 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
 					hc.sessionUpdated(cs.state)
 				}
+				subscribeParams := &SubscriptionsListenParams{}
+				if c.opts.ToolListChangedHandler != nil {
+					subscribeParams.Notifications.ToolsListChanged = true
+				}
+				if c.opts.PromptListChangedHandler != nil {
+					subscribeParams.Notifications.PromptsListChanged = true
+				}
+				if c.opts.ResourceListChangedHandler != nil {
+					subscribeParams.Notifications.ResourcesListChanged = true
+				}
+				if subscribeParams.Notifications.ToolsListChanged ||
+					subscribeParams.Notifications.PromptsListChanged ||
+					subscribeParams.Notifications.ResourcesListChanged {
+					// The listen blocks until the server cancels it. Run it in
+					// a goroutine so Connect can return; ClientSession.Close
+					// cancels its context to send notifications/cancelled.
+					listenCtx, cancelListen := context.WithCancel(context.Background())
+					cs.listenCancel = cancelListen
+					go func() {
+						_ = cs.subscriptionsListen(listenCtx, subscribeParams)
+					}()
+				}
 				return cs, nil
 			}
 
@@ -416,6 +438,7 @@ type ClientSession struct {
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
+	listenCancel    context.CancelFunc
 	mcpConn         Connection
 
 	// No mutex is (currently) required to guard the session state, because it is
@@ -497,6 +520,9 @@ func (cs *ClientSession) Close() error {
 	//    Close is idempotent and conn.Close() handles concurrent calls correctly
 	if cs.keepaliveCancel != nil {
 		cs.keepaliveCancel()
+	}
+	if cs.listenCancel != nil {
+		cs.listenCancel()
 	}
 	err := cs.conn.Close()
 
@@ -1079,6 +1105,7 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
 	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
+	notificationSubscriptionsAck:    newClientMethodInfo(clientMethod((*Client).callSubscriptionsAckHandler), notification|missingParamsOK),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
@@ -1232,6 +1259,21 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
 	return err
+}
+
+// SubscriptionsListen opens a SEP-2575 "subscriptions/listen" stream and
+// blocks for the lifetime of the subscription. The server's first message on
+// the stream is "notifications/subscriptions/acknowledged"; subsequent
+// opted-in notifications (e.g. tools/list_changed) are delivered through the
+// usual handlers registered in [ClientOptions].
+func (cs *ClientSession) subscriptionsListen(ctx context.Context, params *SubscriptionsListenParams) error {
+	params = injectRequestMeta(cs, params)
+	_, err := handleSend[*emptyResult](ctx, methodSubscriptionsListen, newClientRequest(cs, orZero[Params](params)))
+	return err
+}
+
+func (c *Client) callSubscriptionsAckHandler(context.Context, *ClientRequest[*SubscriptionsAcknowledgedParams]) (Result, error) {
+	return nil, nil
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChangedRequest) (Result, error) {
