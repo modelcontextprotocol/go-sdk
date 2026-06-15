@@ -1550,7 +1550,30 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		// Set pendingJSONMessages to a non-nil value to signal that this is an
 		// application/json stream.
 		stream.pendingJSONMessages = []json.RawMessage{}
-	} else {
+	}
+
+	c.mu.Lock()
+	for reqID := range calls {
+		if _, ok := c.requestStreams[reqID]; ok {
+			c.mu.Unlock()
+			writeJSONRPCError(w, http.StatusBadRequest, reqID, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidRequest,
+				Message: fmt.Sprintf("duplicate in-flight request ID %v", reqID.Raw()),
+			})
+			return
+		}
+	}
+	c.streams[stream.id] = stream
+	for reqID := range calls {
+		c.requestStreams[reqID] = stream.id
+	}
+	c.mu.Unlock()
+
+	// TODO(rfindley): if we have no event store, we should really cancel all
+	// remaining requests here, since the client will never get the results.
+	defer stream.release()
+
+	if !c.jsonResponse {
 		// SSE mode: write a priming event if supported.
 		//
 		// SEP-2575 removes Last-Event-ID-based resumable streams for protocol
@@ -1572,20 +1595,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 	}
-
-	// TODO(rfindley): if we have no event store, we should really cancel all
-	// remaining requests here, since the client will never get the results.
-	defer stream.release()
-
-	// The stream is now set up to deliver messages.
-	//
-	// Register it before publishing incoming messages.
-	c.mu.Lock()
-	c.streams[stream.id] = stream
-	for reqID := range calls {
-		c.requestStreams[reqID] = stream.id
-	}
-	c.mu.Unlock()
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
