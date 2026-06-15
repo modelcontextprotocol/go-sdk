@@ -1059,7 +1059,7 @@ func (s *stream) doneLocked() bool {
 }
 
 func (c *streamableServerConn) newStream(ctx context.Context, requests map[jsonrpc.ID]struct{}, id string) (*stream, error) {
-	if c.eventStore != nil {
+	if c.eventStore != nil && protocolVersionFromContext(ctx) < protocolVersion20260630 {
 		if err := c.eventStore.Open(ctx, c.sessionID, id); err != nil {
 			return nil, err
 		}
@@ -1367,14 +1367,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	isInitialize := false
 	isSubscriptionsListen := false
 	var initializeProtocolVersion string
-	headerVersion := protocolVersionFromContext(req.Context())
 	for _, msg := range incoming {
 		if jreq, ok := msg.(*jsonrpc.Request); ok {
 			// Preemptively check that this is a valid request, so that we can fail
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
 			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
-				if headerVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
+				if protocolVersion >= protocolVersion20260630 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
 					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
 						Code:    jsonrpc.CodeMethodNotFound,
 						Message: err.Error(),
@@ -1407,6 +1406,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260630 || metaVersion != "" {
+				// Extract again the protcol version from the context to see what the client
+				// is advertising in the Mcp-Protocol-Version HTTP header.
+				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
@@ -1456,6 +1458,12 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				// See the doc for CloseSSEStream: allow the request handler to
 				// explicitly close the ongoing stream.
 				jreq.Extra.(*RequestExtra).CloseSSEStream = func(args CloseSSEStreamArgs) {
+					// This mechanism was designed to trigger client reconnection with
+					// Last-Event-ID for server-initiated disconnect scenarios. It is
+					// deprecated in protocol version 2026-06-30.
+					if protocolVersion >= protocolVersion20260630 {
+						return
+					}
 					c.mu.Lock()
 					streamID, ok := c.requestStreams[jreq.ID]
 					var stream *stream
@@ -1740,7 +1748,8 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	// pushing down into the delivery layer.
 	delivered := false
 	var errs []error
-	if c.eventStore != nil {
+	protocolVersion := protocolVersionFromContext(ctx)
+	if c.eventStore != nil && protocolVersion < protocolVersion20260630 {
 		if err := c.eventStore.Append(ctx, c.sessionID, s.id, data); err != nil {
 			errs = append(errs, err)
 		} else {
@@ -1751,7 +1760,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	// Compute eventID for SSE streams with event store.
 	// Use s.lastIdx + 1 because deliverLocked increments before writing.
 	var eventID string
-	if c.eventStore != nil {
+	if c.eventStore != nil && protocolVersion < protocolVersion20260630 {
 		eventID = formatEventID(s.id, s.lastIdx+1)
 	}
 

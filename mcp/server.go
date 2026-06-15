@@ -1698,11 +1698,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if perRequestErr != nil {
 		return nil, perRequestErr
 	}
-	// server/discover is exempt from the version-validation gate so that a
-	// client probing with a version the server doesn't implement can still
-	// learn the server's supported versions from the response (whether the
-	// handler returns a DiscoverResult or an UnsupportedProtocolVersionError
-	// with a Data.Supported payload).
+
 	if validatedMeta.usesNewProtocol &&
 		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
 		data, _ := json.Marshal(UnsupportedProtocolVersionData{

@@ -2164,3 +2164,18 @@ type UnsupportedProtocolVersionData struct {
 	// Requested is the protocol version the client asked for.
 	Requested string `json:"requested"`
 }
+
+// MissingRequiredClientCapabilityData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeMissingRequiredClientCapabilities]. The server uses it to indicate
+// which client capabilities are required to process the request but were not
+// declared by the client in its per-request `_meta` field.
+//
+// Handlers that require a specific client capability should inspect the
+// per-request [ServerRequest.ClientCapabilities] and return a JSON-RPC error
+// populated with this structure when the required capability is missing.
+type MissingRequiredClientCapabilityData struct {
+	// RequiredCapabilities is the set of capabilities the server requires
+	// from the client to process the request.
+	RequiredCapabilities *ClientCapabilities `json:"requiredCapabilities"`
+}
