@@ -585,6 +585,8 @@ type RequestExtra struct {
 	// to configure the reconnection delay.
 	//
 	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
+	// This mechanism is deprecated in protocol version 2026-06-30 as the resumability
+	// feature is removed.
 	CloseSSEStream func(CloseSSEStreamArgs)
 }
 
