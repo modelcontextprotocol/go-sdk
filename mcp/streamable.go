@@ -1582,17 +1582,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
 		}
-		// For subscriptions/listen, flush headers eagerly so the client sees
-		// the open SSE stream even when an HTTP/2-aware reverse proxy is
-		// buffering the HEADERS frame waiting for a DATA frame to coalesce
-		// with. The acknowledgment notification will follow shortly, but the
-		// client can begin reading event-stream framing immediately. See the
-		// equivalent comment in [streamableServerConn.acquireStream].
-		if isSubscriptionsListen {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, ": ok\n\n")
-			_ = http.NewResponseController(w).Flush()
-		}
 	}
 
 	// TODO(rfindley): if we have no event store, we should really cancel all
@@ -2483,7 +2472,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
 				// The subscriptions/listen is now returning a response in the SSE stream.
-				if jsonResp.ID == forCall.ID && forCall.Method != methodSubscriptionsListen {
+				if jsonResp.ID == forCall.ID {
 					return "", 0, true
 				}
 			}

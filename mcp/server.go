@@ -1803,7 +1803,7 @@ func (ss *ServerSession) ping(context.Context, *PingParams) (*emptyResult, error
 // It should never be invoked in practice because cancellation is preempted,
 // but having its signature here facilitates the construction of methodInfo
 // that can be used to validate incoming cancellation notifications.
-func (ss *ServerSession) cancel(_ context.Context, _ *CancelledParams) (Result, error) {
+func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, error) {
 	return nil, nil
 }
 
