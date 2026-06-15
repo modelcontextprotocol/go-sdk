@@ -35,9 +35,6 @@ import (
 // DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
-// A map from sessions to the set of subscription IDs they have active for a given feature.
-type activeSubscriptions map[*ServerSession]map[jsonrpc.ID]bool
-
 // A Server is an instance of an MCP server.
 //
 // Servers expose server-side MCP features, which can serve one or more MCP
@@ -56,10 +53,7 @@ type Server struct {
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
 	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
-	toolsSubscriptions      activeSubscriptions
-	promptsSubscriptions    activeSubscriptions
-	resourcesSubscriptions  activeSubscriptions
-	pendingNotifications    map[string]*time.Timer // notification name -> timer for pending notification send
+	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -210,9 +204,6 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
-		toolsSubscriptions:      make(activeSubscriptions),
-		promptsSubscriptions:    make(activeSubscriptions),
-		resourcesSubscriptions:  make(activeSubscriptions),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
 	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
@@ -690,6 +681,11 @@ func (s *Server) changeAndNotify(notification string, change func() bool) {
 
 // notifySessions sends the notification n to all existing sessions.
 // It is called asynchronously by changeAndNotify.
+//
+// Legacy (pre-SEP-2575) sessions receive the notification on the shared
+// session channel. Sessions speaking the new protocol receive it only if they
+// have an active subscriptions/listen stream that opted in to this
+// notification type.
 func (s *Server) notifySessions(n string) {
 	s.mu.Lock()
 	sessions := slices.Clone(s.sessions)
@@ -698,46 +694,24 @@ func (s *Server) notifySessions(n string) {
 
 	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
 	var legacySessions []*ServerSession
-	for _, s := range sessions {
-		if s.InitializeParams().isNil() || s.InitializeParams().ProtocolVersion < protocolVersion20260630 {
-			legacySessions = append(legacySessions, s)
+	for _, session := range sessions {
+		if session.InitializeParams().isNil() || session.InitializeParams().ProtocolVersion < protocolVersion20260630 {
+			legacySessions = append(legacySessions, session)
 		}
 	}
 	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
 
-	// Notify sessions that subscribed to the notification with 'subscriptions/listen' method.
-	type subscription struct {
-		session *ServerSession
-		reqID   jsonrpc.ID
-	}
-	var subs []subscription
-
-	s.mu.Lock()
-	var activeSubscriptions activeSubscriptions
-	switch n {
-	case notificationToolListChanged:
-		activeSubscriptions = s.toolsSubscriptions
-	case notificationPromptListChanged:
-		activeSubscriptions = s.promptsSubscriptions
-	case notificationResourceListChanged:
-		activeSubscriptions = s.resourcesSubscriptions
-	}
-	for session, reqIDs := range activeSubscriptions {
-		for reqID := range reqIDs {
-			subs = append(subs, subscription{session: session, reqID: reqID})
-		}
-	}
-	s.mu.Unlock()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, sub := range subs {
-		params := changeNotificationParams[n]()
-		injectMetaSubscriptionID(params, sub.reqID)
-		req := newRequest(sub.session, params)
-		reqCtx := context.WithValue(ctx, idContextKey{}, sub.reqID)
-		if err := handleNotify(reqCtx, n, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
+	for _, session := range sessions {
+		for _, reqID := range session.subscribedListenIDs(n) {
+			params := changeNotificationParams[n]()
+			injectMetaSubscriptionID(params, reqID)
+			req := newRequest(session, params)
+			reqCtx := context.WithValue(ctx, idContextKey{}, reqID)
+			if err := handleNotify(reqCtx, n, req); err != nil {
+				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
+			}
 		}
 	}
 }
@@ -1088,54 +1062,6 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	return &emptyResult{}, nil
 }
 
-func (m activeSubscriptions) add(ss *ServerSession, id jsonrpc.ID) {
-	ids := m[ss]
-	if ids == nil {
-		ids = make(map[jsonrpc.ID]bool)
-		m[ss] = ids
-	}
-	ids[id] = true
-}
-
-func (m activeSubscriptions) remove(ss *ServerSession, id jsonrpc.ID) {
-	ids, ok := m[ss]
-	if !ok {
-		return
-	}
-	delete(ids, id)
-	if len(ids) == 0 {
-		delete(m, ss)
-	}
-}
-
-func (s *Server) addSubscriptions(allowed NotificationSubscriptions, ss *ServerSession, id jsonrpc.ID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if allowed.ToolsListChanged {
-		s.toolsSubscriptions.add(ss, id)
-	}
-	if allowed.PromptsListChanged {
-		s.promptsSubscriptions.add(ss, id)
-	}
-	if allowed.ResourcesListChanged {
-		s.resourcesSubscriptions.add(ss, id)
-	}
-}
-
-func (s *Server) removeSubscriptions(allowed NotificationSubscriptions, ss *ServerSession, id jsonrpc.ID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if allowed.ToolsListChanged {
-		s.toolsSubscriptions.remove(ss, id)
-	}
-	if allowed.PromptsListChanged {
-		s.promptsSubscriptions.remove(ss, id)
-	}
-	if allowed.ResourcesListChanged {
-		s.resourcesSubscriptions.remove(ss, id)
-	}
-}
-
 func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*emptyResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
@@ -1143,7 +1069,8 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
-	s.addSubscriptions(allowed, req.Session, requestID)
+	req.Session.addSubscription(requestID, allowed)
+	defer req.Session.removeSubscription(requestID)
 
 	ackParams := &SubscriptionsAcknowledgedParams{
 		Notifications: allowed,
@@ -1152,10 +1079,6 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	if err := req.Session.NotifySubscriptionAcked(ctx, ackParams); err != nil {
 		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
 	}
-
-	defer func() {
-		s.removeSubscriptions(allowed, req.Session, requestID)
-	}()
 
 	<-ctx.Done()
 	return &emptyResult{}, nil
@@ -1174,6 +1097,55 @@ func (s *Server) allowedSubscriptions(want NotificationSubscriptions) Notificati
 		agreed.ResourcesListChanged = true
 	}
 	return agreed
+}
+
+// addSubscription registers a subscriptions/listen stream on this session.
+func (ss *ServerSession) addSubscription(id jsonrpc.ID, allowed NotificationSubscriptions) {
+	if !allowed.ToolsListChanged && !allowed.PromptsListChanged && !allowed.ResourcesListChanged {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.subscriptions == nil {
+		ss.subscriptions = make(map[jsonrpc.ID]*listenSubscription)
+	}
+	ss.subscriptions[id] = &listenSubscription{
+		toolsListChanged:     allowed.ToolsListChanged,
+		promptsListChanged:   allowed.PromptsListChanged,
+		resourcesListChanged: allowed.ResourcesListChanged,
+	}
+}
+
+func (ss *ServerSession) removeSubscription(id jsonrpc.ID) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	delete(ss.subscriptions, id)
+}
+
+// subscribedListenIDs returns the listen-request IDs that opted in to the
+// given list-changed notification.
+func (ss *ServerSession) subscribedListenIDs(notification string) []jsonrpc.ID {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if len(ss.subscriptions) == 0 {
+		return nil
+	}
+	var ids []jsonrpc.ID
+	for id, sub := range ss.subscriptions {
+		var match bool
+		switch notification {
+		case notificationToolListChanged:
+			match = sub.toolsListChanged
+		case notificationPromptListChanged:
+			match = sub.promptsListChanged
+		case notificationResourceListChanged:
+			match = sub.resourcesListChanged
+		}
+		if match {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // Run runs the server over the given transport, which must be persistent.
@@ -1245,9 +1217,6 @@ func (s *Server) disconnect(cc *ServerSession) {
 	for _, subscribedSessions := range s.resourceSubscriptions {
 		delete(subscribedSessions, cc)
 	}
-	delete(s.toolsSubscriptions, cc)
-	delete(s.promptsSubscriptions, cc)
-	delete(s.resourcesSubscriptions, cc)
 
 	s.opts.Logger.Info("server session disconnected", "session_id", cc.ID())
 }
@@ -1385,6 +1354,17 @@ type ServerSession struct {
 
 	mu    sync.Mutex
 	state ServerSessionState
+	// subscriptions tracks the SEP-2575 subscriptions/listen streams opened by
+	// this session, keyed by the originating listen request ID.
+	subscriptions map[jsonrpc.ID]*listenSubscription
+}
+
+// listenSubscription records the notification types a single
+// subscriptions/listen stream has opted in to.
+type listenSubscription struct {
+	toolsListChanged     bool
+	promptsListChanged   bool
+	resourcesListChanged bool
 }
 
 func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
@@ -1855,14 +1835,6 @@ func (ss *ServerSession) Close() error {
 	if ss.onClose != nil && ss.calledOnClose.CompareAndSwap(false, true) {
 		ss.onClose()
 	}
-
-	// Clean up session subscriptions
-	server := ss.server
-	server.mu.Lock()
-	delete(server.toolsSubscriptions, ss)
-	delete(server.promptsSubscriptions, ss)
-	delete(server.resourcesSubscriptions, ss)
-	server.mu.Unlock()
 
 	return err
 }
