@@ -1249,7 +1249,7 @@ func TestExtractToolParamHeaders(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "nested x-mcp-header annotations use dotted paths",
+			name: "nested x-mcp-header annotations produce path-slice bindings",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
@@ -1277,6 +1277,19 @@ func TestExtractToolParamHeaders(t *testing.T) {
 				"config.deep.flag": "DeepFlag",
 			},
 		},
+		{
+			name: "property name containing a dot is preserved in path",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"user.id": map[string]any{"type": "string", "x-mcp-header": "UserId"},
+					},
+				},
+			},
+			want: map[string]string{"user.id": "UserId"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1291,9 +1304,15 @@ func TestExtractToolParamHeaders(t *testing.T) {
 			if len(got) != len(tt.want) {
 				t.Fatalf("extractToolParamHeaders() returned %d entries, want %d", len(got), len(tt.want))
 			}
+			// Index returned bindings by joined-path for comparison; the
+			// expected map uses dotted-path keys for readability.
+			gotMap := make(map[string]string, len(got))
+			for _, b := range got {
+				gotMap[strings.Join(b.Path, ".")] = b.Header
+			}
 			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("extractToolParamHeaders()[%q] = %q, want %q", k, got[k], v)
+				if gotMap[k] != v {
+					t.Errorf("extractToolParamHeaders()[%q] = %q, want %q", k, gotMap[k], v)
 				}
 			}
 		})

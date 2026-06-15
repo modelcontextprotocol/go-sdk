@@ -72,16 +72,22 @@ func unmarshalSchemaProperties(schema any) map[string]headerSchemaProperty {
 	return s.Properties
 }
 
-// extractParamHeaderAnnotations returns a map of parameter path to header name
-// for all properties in the tool's InputSchema that have an x-mcp-header
-// annotation, including nested properties.
-func extractParamHeaderAnnotations(tool *Tool) map[string]string {
+// paramHeaderBinding maps a (possibly nested) input-schema property to the
+// HTTP header it carries.
+type paramHeaderBinding struct {
+	Path   []string
+	Header string
+}
+
+// extractParamHeaderAnnotations returns the bindings for every property in
+// the tool's InputSchema that has an x-mcp-header annotation
+func extractParamHeaderAnnotations(tool *Tool) []paramHeaderBinding {
 	props := unmarshalSchemaProperties(tool.InputSchema)
 	if len(props) == 0 {
 		return nil
 	}
-	result := make(map[string]string)
-	collectParamHeaderAnnotations(props, "", result)
+	var result []paramHeaderBinding
+	result = collectParamHeaderAnnotations(props, nil, result)
 	if len(result) == 0 {
 		return nil
 	}
@@ -89,36 +95,36 @@ func extractParamHeaderAnnotations(tool *Tool) map[string]string {
 }
 
 // collectParamHeaderAnnotations walks the schema properties and records every
-// x-mcp-header annotation it finds, keyed by the dot-separated property path.
-func collectParamHeaderAnnotations(props map[string]headerSchemaProperty, prefix string, out map[string]string) {
+// x-mcp-header annotation it finds, keyed by the property-name path.
+func collectParamHeaderAnnotations(props map[string]headerSchemaProperty, prefix []string, out []paramHeaderBinding) []paramHeaderBinding {
 	for propName, prop := range props {
-		path := propName
-		if prefix != "" {
-			path = prefix + "." + propName
-		}
+		path := make([]string, len(prefix)+1)
+		copy(path, prefix)
+		path[len(prefix)] = propName
+
 		var headerName string
 		if err := json.Unmarshal(prop.XMCPHeader, &headerName); err == nil && headerName != "" {
-			out[path] = headerName
+			out = append(out, paramHeaderBinding{Path: path, Header: headerName})
 		}
 		if len(prop.Properties) > 0 {
-			collectParamHeaderAnnotations(prop.Properties, path, out)
+			out = collectParamHeaderAnnotations(prop.Properties, path, out)
 		}
 	}
+	return out
 }
 
-// lookupArgument navigates the arguments object using a dot-separated path
-// and returns the raw JSON value at that location. It reports whether the
-// value was found.
-func lookupArgument(args map[string]json.RawMessage, path string) (json.RawMessage, bool) {
-	parts := strings.Split(path, ".")
-	if len(parts) == 0 {
+// lookupArgument navigates the arguments object using the given property-name
+// path and returns the raw JSON value at that location. It reports whether
+// the value was found.
+func lookupArgument(args map[string]json.RawMessage, path []string) (json.RawMessage, bool) {
+	if len(path) == 0 {
 		return nil, false
 	}
-	cur, ok := args[parts[0]]
+	cur, ok := args[path[0]]
 	if !ok {
 		return nil, false
 	}
-	for _, part := range parts[1:] {
+	for _, part := range path[1:] {
 		var obj map[string]json.RawMessage
 		if err := internaljson.Unmarshal(cur, &obj); err != nil {
 			return nil, false
@@ -229,8 +235,8 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 	}
 
 	res := make(map[string]string)
-	for paramPath, headerName := range paramHeaders {
-		argRaw, ok := lookupArgument(raw.Arguments, paramPath)
+	for _, b := range paramHeaders {
+		argRaw, ok := lookupArgument(raw.Arguments, b.Path)
 		if !ok {
 			continue
 		}
@@ -245,7 +251,7 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 		if !ok {
 			continue
 		}
-		res[paramHeaderPrefix+headerName] = encoded
+		res[paramHeaderPrefix+b.Header] = encoded
 	}
 	return res
 }
@@ -400,20 +406,20 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 		return nil
 	}
 
-	for paramPath, headerName := range paramHeaders {
-		fullHeader := paramHeaderPrefix + headerName
+	for _, b := range paramHeaders {
+		fullHeader := paramHeaderPrefix + b.Header
 		headerVal := header.Get(fullHeader)
-		argRaw, argExists := lookupArgument(raw.Arguments, paramPath)
+		argRaw, argExists := lookupArgument(raw.Arguments, b.Path)
 
 		if !argExists || string(argRaw) == "null" {
 			if headerVal != "" {
-				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, paramPath)
+				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, strings.Join(b.Path, "."))
 			}
 			continue
 		}
 
 		if headerVal == "" {
-			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, paramPath)
+			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, strings.Join(b.Path, "."))
 		}
 
 		decoded, ok := decodeHeaderValue(headerVal)
@@ -423,7 +429,7 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 
 		bodyVal := unmarshalPrimitive(argRaw)
 		if bodyVal == nil {
-			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, paramPath)
+			return fmt.Errorf("header mismatch: %s header present but body parameter %q is not a primitive type", fullHeader, strings.Join(b.Path, "."))
 		}
 
 		if !primitiveEqual(decoded, bodyVal) {
