@@ -2471,7 +2471,6 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			if jsonResp, ok := msg.(*jsonrpc.Response); ok && forCall != nil {
 				// TODO: we should never get a response when forReq is nil (the standalone SSE request).
 				// We should detect this case.
-				// The subscriptions/listen is now returning a response in the SSE stream.
 				if jsonResp.ID == forCall.ID {
 					return "", 0, true
 				}
