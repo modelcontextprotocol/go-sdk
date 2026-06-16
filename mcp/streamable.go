@@ -1553,6 +1553,33 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	done := make(chan struct{})
 	stream.done = done
 	stream.protocolVersion = effectiveVersion
+
+	// Register the stream before publishing incoming messages so the server
+	// can route responses back to this HTTP request. Reject any call whose ID
+	// is already in flight on this session, atomically and without partial
+	// registration: pass 1 checks all IDs, pass 2 mutates only if all are
+	// fresh.
+	c.mu.Lock()
+	for reqID := range calls {
+		if _, ok := c.requestStreams[reqID]; ok {
+			c.mu.Unlock()
+			writeJSONRPCError(w, http.StatusBadRequest, reqID, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidRequest,
+				Message: fmt.Sprintf("duplicate in-flight request ID %v", reqID.Raw()),
+			})
+			return
+		}
+	}
+	c.streams[stream.id] = stream
+	for reqID := range calls {
+		c.requestStreams[reqID] = stream.id
+	}
+	c.mu.Unlock()
+
+	// TODO(rfindley): if we have no event store, we should really cancel all
+	// remaining requests here, since the client will never get the results.
+	defer stream.release()
+
 	if c.jsonResponse {
 		// JSON mode: collect messages in pendingJSONMessages until done.
 		// Set pendingJSONMessages to a non-nil value to signal that this is an
@@ -1580,20 +1607,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 	}
-
-	// TODO(rfindley): if we have no event store, we should really cancel all
-	// remaining requests here, since the client will never get the results.
-	defer stream.release()
-
-	// The stream is now set up to deliver messages.
-	//
-	// Register it before publishing incoming messages.
-	c.mu.Lock()
-	c.streams[stream.id] = stream
-	for reqID := range calls {
-		c.requestStreams[reqID] = stream.id
-	}
-	c.mu.Unlock()
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
