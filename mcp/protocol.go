@@ -270,7 +270,9 @@ type CallToolResult struct {
 	Content []Content `json:"content"`
 
 	// StructuredContent is an optional value that represents the structured
-	// result of the tool call. It must marshal to a JSON object.
+	// result of the tool call. Per SEP-2106, it may marshal to any valid JSON
+	// value (object, array, or primitive) conforming to the tool's
+	// [Tool.OutputSchema].
 	//
 	// When using a [ToolHandlerFor] with structured output, you should not
 	// populate this field. It will be automatically populated with the typed Out
