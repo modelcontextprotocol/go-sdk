@@ -525,6 +525,7 @@ func TestMultiRoundTrip_ReadResource_ManualRetry(t *testing.T) {
 
 func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
 	t.Helper()
+
 	st, ct := NewInMemoryTransports()
 	ss, err := s.Connect(t.Context(), st, nil)
 	if err != nil {
