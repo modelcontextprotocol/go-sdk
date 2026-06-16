@@ -521,7 +521,8 @@ func panics(f func()) (b bool) {
 }
 
 func TestAddTool(t *testing.T) {
-	// AddTool should panic if In or Out are not JSON objects.
+	// AddTool should panic if In is not a JSON object.
+	// Out may be of any type whose inferred JSON Schema is valid.
 	s := NewServer(testImpl, nil)
 	if !panics(func() {
 		AddTool(s, &Tool{Name: "T1"}, func(context.Context, *CallToolRequest, string) (*CallToolResult, any, error) { return nil, nil, nil })
@@ -535,12 +536,12 @@ func TestAddTool(t *testing.T) {
 	}) {
 		t.Error("good In: expected no panic")
 	}
-	if !panics(func() {
-		AddTool(s, &Tool{Name: "T2"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, int, error) {
+	if panics(func() {
+		AddTool(s, &Tool{Name: "T3"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, int, error) {
 			return nil, 0, nil
 		})
 	}) {
-		t.Error("bad Out: expected panic")
+		t.Error("primitive Out: expected no panic")
 	}
 }
 
@@ -651,6 +652,195 @@ func TestAddToolNilSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAddToolNonObjectOutputSchema verifies the low-level
+// Server.AddTool accepts an output schema whose root type is not "object"
+// (array or primitive) and structured content of the matching shape
+// round-trips end-to-end.
+func TestAddToolNonObjectOutputSchema(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name         string
+		outputSchema any
+		content      any
+		want         any
+	}{
+		{
+			name:         "array of objects",
+			outputSchema: &jsonschema.Schema{Type: "array", Items: &jsonschema.Schema{Type: "object"}},
+			content:      []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}},
+			want:         []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}},
+		},
+		{
+			name:         "primitive number (map-based schema)",
+			outputSchema: map[string]any{"type": "number"},
+			content:      42.0,
+			want:         42.0,
+		},
+		{
+			name:         "primitive string (RawMessage schema)",
+			outputSchema: json.RawMessage(`{"type":"string"}`),
+			content:      "hello",
+			want:         "hello",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			handler := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+				return &CallToolResult{StructuredContent: tc.content}, nil
+			}
+			tool := &Tool{
+				Name:         "t",
+				InputSchema:  &jsonschema.Schema{Type: "object"},
+				OutputSchema: tc.outputSchema,
+			}
+			// Must not panic.
+			server.AddTool(tool, handler)
+
+			ct, st := NewInMemoryTransports()
+			if _, err := server.Connect(ctx, st, nil); err != nil {
+				t.Fatal(err)
+			}
+			client := NewClient(testImpl, nil)
+			cs, err := client.Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			res, err := cs.CallTool(ctx, &CallToolParams{Name: "t"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected tool error: %v", res.Content)
+			}
+			if diff := cmp.Diff(tc.want, res.StructuredContent); diff != "" {
+				t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestAddToolGenericNonObjectOutput verifies SEP-2106 for the generic
+// AddTool[In, Out] helper: Out may be a slice or primitive whose inferred
+// JSON Schema has a non-object root.
+func TestAddToolGenericNonObjectOutput(t *testing.T) {
+	ctx := context.Background()
+
+	type item struct {
+		ID string `json:"id"`
+	}
+
+	t.Run("slice output", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "list"},
+			func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, []item, error) {
+				return nil, []item{{ID: "u1"}, {ID: "u2"}}, nil
+			})
+
+		ct, st := NewInMemoryTransports()
+		if _, err := server.Connect(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Verify tools/list reports an array-rooted output schema.
+		// jsonschema-go infers ["null","array"] for slices since nil slices
+		// are valid; accept either form.
+		lt, err := cs.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lt.Tools) != 1 {
+			t.Fatalf("got %d tools, want 1", len(lt.Tools))
+		}
+		gotSchema, _ := lt.Tools[0].OutputSchema.(map[string]any)
+		typeOK := false
+		switch typ := gotSchema["type"].(type) {
+		case string:
+			typeOK = typ == "array"
+		case []any:
+			for _, e := range typ {
+				if e == "array" {
+					typeOK = true
+				}
+			}
+		}
+		if !typeOK {
+			t.Errorf("output schema type = %v, want to include %q", gotSchema["type"], "array")
+		}
+
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "list"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %v", res.Content)
+		}
+		want := []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}}
+		if diff := cmp.Diff(want, res.StructuredContent); diff != "" {
+			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("primitive output", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "count"},
+			func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, int, error) {
+				return nil, 42, nil
+			})
+
+		ct, st := NewInMemoryTransports()
+		if _, err := server.Connect(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "count"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %v", res.Content)
+		}
+		if diff := cmp.Diff(float64(42), res.StructuredContent); diff != "" {
+			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestAddToolInputSchemaComposition verifies SEP-2106 (input side): composition
+// keywords such as oneOf are allowed on the input schema alongside
+// type:"object".
+func TestAddToolInputSchemaComposition(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	tool := &Tool{
+		Name: "lookup",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			OneOf: []*jsonschema.Schema{
+				{Required: []string{"id"}, Properties: map[string]*jsonschema.Schema{"id": {Type: "string"}}},
+				{Required: []string{"name"}, Properties: map[string]*jsonschema.Schema{"name": {Type: "string"}}},
+			},
+		},
+	}
+	// Must not panic.
+	server.AddTool(tool, func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{}, nil
+	})
 }
 
 type schema = jsonschema.Schema

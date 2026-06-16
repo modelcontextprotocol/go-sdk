@@ -234,7 +234,9 @@ type ToolResultContent struct {
 	ToolUseID string
 	// Content holds the unstructured result of the tool call.
 	Content []Content
-	// StructuredContent holds an optional structured result as a JSON object.
+	// StructuredContent holds an optional structured result. Per SEP-2106, it
+	// may be any valid JSON value (object, array, or primitive) conforming to
+	// the tool's output schema.
 	StructuredContent any
 	// IsError indicates whether the tool call ended in an error.
 	IsError bool

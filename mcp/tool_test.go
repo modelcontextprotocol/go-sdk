@@ -46,7 +46,7 @@ func TestApplySchema(t *testing.T) {
 		{`{"x": 0}`, new(map[string]any), &map[string]any{"x": 0.0}},
 	} {
 		raw := json.RawMessage(tt.data)
-		raw, err = applySchema(raw, resolved)
+		raw, err = applySchema(raw, resolved, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -56,6 +56,83 @@ func TestApplySchema(t *testing.T) {
 		if !reflect.DeepEqual(tt.v, tt.want) {
 			t.Errorf("got %#v, want %#v", tt.v, tt.want)
 		}
+	}
+}
+
+func TestApplySchemaOutput(t *testing.T) {
+	// SEP-2106: when forOutput is true, the schema may have a non-object root.
+	for _, tc := range []struct {
+		name    string
+		schema  *jsonschema.Schema
+		data    string
+		want    string
+		wantErr string
+	}{
+		{
+			name:   "array root accepts array",
+			schema: &jsonschema.Schema{Type: "array", Items: &jsonschema.Schema{Type: "integer"}},
+			data:   `[1,2,3]`,
+			want:   `[1,2,3]`,
+		},
+		{
+			name:    "array root rejects wrong element type",
+			schema:  &jsonschema.Schema{Type: "array", Items: &jsonschema.Schema{Type: "integer"}},
+			data:    `[1,"two",3]`,
+			wantErr: `"integer"`,
+		},
+		{
+			name:   "primitive number root",
+			schema: &jsonschema.Schema{Type: "number"},
+			data:   `42`,
+			want:   `42`,
+		},
+		{
+			name:   "primitive string root",
+			schema: &jsonschema.Schema{Type: "string"},
+			data:   `"hello"`,
+			want:   `"hello"`,
+		},
+		{
+			name:   "object root with defaults",
+			schema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"x": {Type: "integer", Default: json.RawMessage("3")}}},
+			data:   `{}`,
+			want:   `{"x":3}`,
+		},
+		{
+			name:   "empty object root with defaults",
+			schema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"x": {Type: "integer", Default: json.RawMessage("3")}}},
+			data:   ``,
+			want:   `{"x":3}`,
+		},
+		{
+			name:   "object root accepts null as empty object",
+			schema: &jsonschema.Schema{Type: "object"},
+			data:   `null`,
+			want:   `{}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, err := tc.schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := applySchema(json.RawMessage(tc.data), resolved, true)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("got %s, want error containing %q", got, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("got error %q, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
