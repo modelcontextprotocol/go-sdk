@@ -520,6 +520,55 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErrSub: "invalid character",
 		},
 		{
+			name: "x-mcp-header with separator char (parens) is invalid per RFC 9110",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "X-(Region)",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "x-mcp-header with equals sign is invalid per RFC 9110",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Region=1",
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "x-mcp-header with all tchar specials is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "!#$%&'*+-.^_`|~aZ0",
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "duplicate header names same case",
 			tool: &Tool{
 				Name: "test",
@@ -584,7 +633,7 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErrSub: "primitive types",
 		},
 		{
-			name: "x-mcp-header on number type is valid",
+			name: "x-mcp-header on number type is invalid",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
@@ -597,6 +646,8 @@ func TestValidateToolParamHeaders(t *testing.T) {
 					},
 				},
 			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
 		},
 		{
 			name: "x-mcp-header on integer type is valid",
@@ -629,7 +680,7 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			},
 		},
 		{
-			name: "x-mcp-header on nested property inside object",
+			name: "x-mcp-header on nested property inside object is valid",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
@@ -647,11 +698,9 @@ func TestValidateToolParamHeaders(t *testing.T) {
 					},
 				},
 			},
-			wantErr:    true,
-			wantErrSub: "nested",
 		},
 		{
-			name: "x-mcp-header on deeply nested property",
+			name: "x-mcp-header on deeply nested property is valid",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
@@ -674,8 +723,26 @@ func TestValidateToolParamHeaders(t *testing.T) {
 					},
 				},
 			},
+		},
+		{
+			name: "duplicate header names across nesting levels",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+							},
+						},
+					},
+				},
+			},
 			wantErr:    true,
-			wantErrSub: "nested",
+			wantErrSub: "duplicate",
 		},
 		{
 			name: "object property without nested x-mcp-header is valid",
@@ -733,7 +800,7 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErrSub: "primitive types",
 		},
 		{
-			name: "jsonschema.Schema nested x-mcp-header",
+			name: "jsonschema.Schema nested x-mcp-header is valid",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: &jsonschema.Schema{
@@ -751,8 +818,6 @@ func TestValidateToolParamHeaders(t *testing.T) {
 					},
 				},
 			},
-			wantErr:    true,
-			wantErrSub: "nested",
 		},
 		{
 			name: "json.RawMessage valid x-mcp-header",
@@ -766,6 +831,50 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			tool: &Tool{
 				Name:        "test",
 				InputSchema: json.RawMessage(`{"type":"object","properties":{"nested":{"type":"object","x-mcp-header":"Nested"}}}`),
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "nested invalid header name is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{
+									"type":         "string",
+									"x-mcp-header": "Bad Header", // contains a space
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "invalid character",
+		},
+		{
+			name: "nested x-mcp-header on number type is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"count": map[string]any{
+									"type":         "number",
+									"x-mcp-header": "Count",
+								},
+							},
+						},
+					},
+				},
 			},
 			wantErr:    true,
 			wantErrSub: "primitive types",
@@ -812,15 +921,15 @@ func TestFilterValidTools(t *testing.T) {
 		Name:        "plain",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
 	}
-	nestedInvalid := &Tool{
-		Name: "nested-invalid",
+	nestedValid := &Tool{
+		Name: "nested-valid",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"config": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"tenant": map[string]any{"type": "string", "x-mcp-header": "TenantId"},
 					},
 				},
 			},
@@ -852,12 +961,13 @@ func TestFilterValidTools(t *testing.T) {
 		},
 	}
 
-	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedInvalid, validJsonSchema, invalidJsonSchema})
-	if len(result) != 3 {
-		t.Fatalf("filterValidTools returned %d tools, want 3", len(result))
+	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedValid, validJsonSchema, invalidJsonSchema})
+	if len(result) != 4 {
+		t.Fatalf("filterValidTools returned %d tools, want 4", len(result))
 	}
-	if result[0].Name != "valid" || result[1].Name != "plain" || result[2].Name != "valid-jsonschema" {
-		t.Errorf("filterValidTools returned [%s, %s, %s], want [valid, plain, valid-jsonschema]", result[0].Name, result[1].Name, result[2].Name)
+	if result[0].Name != "valid" || result[1].Name != "plain" || result[2].Name != "nested-valid" || result[3].Name != "valid-jsonschema" {
+		t.Errorf("filterValidTools returned [%s, %s, %s, %s], want [valid, plain, nested-valid, valid-jsonschema]",
+			result[0].Name, result[1].Name, result[2].Name, result[3].Name)
 	}
 }
 
@@ -947,13 +1057,13 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 			},
 		},
 		{
-			name: "handles number argument",
+			name: "handles integer argument",
 			tool: &Tool{
 				Name: "test",
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+						"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
 					},
 				},
 			},
@@ -966,6 +1076,23 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 			},
 		},
 		{
+			name: "out-of-range integer argument produces no header",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
+					},
+				},
+			},
+			params: &CallToolParams{
+				Name:      "test",
+				Arguments: map[string]any{"count": float64(maxSafeInteger) + 2},
+			},
+			wantHeaders: nil,
+		},
+		{
 			name: "no tool in extra does not add param headers",
 			tool: nil,
 			params: &CallToolParams{
@@ -973,6 +1100,37 @@ func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
 				Arguments: map[string]any{"region": "us-west1"},
 			},
 			wantHeaders: nil,
+		},
+		{
+			name: "nested arguments resolve via dotted path",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+								"tenant": map[string]any{"type": "string", "x-mcp-header": "TenantId"},
+							},
+						},
+					},
+				},
+			},
+			params: &CallToolParams{
+				Name: "test",
+				Arguments: map[string]any{
+					"config": map[string]any{
+						"region": "us-west1",
+						"tenant": "acme",
+					},
+				},
+			},
+			wantHeaders: map[string]string{
+				"Mcp-Param-Region":   "us-west1",
+				"Mcp-Param-TenantId": "acme",
+			},
 		},
 	}
 
@@ -1090,6 +1248,48 @@ func TestExtractToolParamHeaders(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "nested x-mcp-header annotations produce path-slice bindings",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"tenant": map[string]any{"type": "string", "x-mcp-header": "TenantId"},
+								"deep": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"flag": map[string]any{"type": "boolean", "x-mcp-header": "DeepFlag"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: map[string]string{
+				"region":           "Region",
+				"config.tenant":    "TenantId",
+				"config.deep.flag": "DeepFlag",
+			},
+		},
+		{
+			name: "property name containing a dot is preserved in path",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"user.id": map[string]any{"type": "string", "x-mcp-header": "UserId"},
+					},
+				},
+			},
+			want: map[string]string{"user.id": "UserId"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1104,9 +1304,15 @@ func TestExtractToolParamHeaders(t *testing.T) {
 			if len(got) != len(tt.want) {
 				t.Fatalf("extractToolParamHeaders() returned %d entries, want %d", len(got), len(tt.want))
 			}
+			// Index returned bindings by joined-path for comparison; the
+			// expected map uses dotted-path keys for readability.
+			gotMap := make(map[string]string, len(got))
+			for _, b := range got {
+				gotMap[strings.Join(b.Path, ".")] = b.Header
+			}
 			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("extractToolParamHeaders()[%q] = %q, want %q", k, got[k], v)
+				if gotMap[k] != v {
+					t.Errorf("extractToolParamHeaders()[%q] = %q, want %q", k, gotMap[k], v)
 				}
 			}
 		})
@@ -1120,10 +1326,24 @@ func TestUnmarshalPrimitive(t *testing.T) {
 		want any
 	}{
 		{"string", `"hello"`, "hello"},
-		{"number", `42`, float64(42)},
-		{"float", `3.14`, float64(3.14)},
 		{"true", `true`, true},
 		{"false", `false`, false},
+
+		// Integer JSON numbers are promoted to int64.
+		{"integer", `42`, int64(42)},
+		{"integer zero", `0`, int64(0)},
+		{"integer negative", `-7`, int64(-7)},
+		{"integer max safe", `9007199254740991`, int64(maxSafeInteger)},
+		{"integer min safe", `-9007199254740991`, int64(minSafeInteger)},
+		// JSON serialization of an integer-valued float (e.g. "42.0") is
+		// still a valid integer at the value level and must be accepted.
+		{"integer-valued float", `42.0`, int64(42)},
+
+		// Non-integer numbers, out-of-range integers, and disallowed JSON
+		// kinds are rejected (return nil).
+		{"float with fraction", `3.14`, nil},
+		{"integer above max safe", `9007199254740993`, nil},
+		{"integer below min safe", `-9007199254740993`, nil},
 		{"null", `null`, nil},
 		{"array", `[1,2]`, nil},
 		{"object", `{"a":1}`, nil},
@@ -1158,15 +1378,24 @@ func TestEncodeHeaderValue(t *testing.T) {
 		{"string with carriage return", "line1\r\nline2", "=?base64?bGluZTENCmxpbmUy?=", true},
 		{"string with leading tab", "\tindented", "=?base64?CWluZGVudGVk?=", true},
 
-		// Numbers
-		{"integer", float64(42), "42", true},
-		{"float", float64(3.14159), "3.14159", true},
+		// Sentinel pattern collisions: plain-ASCII values that match the base64
+		// sentinel pattern must also be base64-encoded to avoid ambiguity.
+		{"sentinel collision literal", "=?base64?literal?=", "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?=", true},
+		{"sentinel collision empty", "=?base64??=", "=?base64?PT9iYXNlNjQ/Pz0=?=", true},
+		// Uppercase sentinel does NOT collide (case-sensitive markers).
+		{"uppercase pseudo-sentinel passes through", "=?BASE64?abc?=", "=?BASE64?abc?=", true},
+
+		{"integer", int64(42), "42", true},
+		{"integer zero", int64(0), "0", true},
+		{"integer negative", int64(-7), "-7", true},
+		{"integer max safe", int64(maxSafeInteger), "9007199254740991", true},
+		{"integer min safe", int64(minSafeInteger), "-9007199254740991", true},
 
 		// Booleans
 		{"true", true, "true", true},
 		{"false", false, "false", true},
 
-		// Unsupported types
+		{"raw float64 rejected", float64(42), "", false},
 		{"nil", nil, "", false},
 		{"slice", []string{"a"}, "", false},
 	}
@@ -1196,7 +1425,10 @@ func TestDecodeHeaderValue(t *testing.T) {
 		{"valid base64", "=?base64?SGVsbG8=?=", "Hello", true},
 		{"non-ASCII decoded", "=?base64?5pel5pys6Kqe?=", "日本語", true},
 		{"leading space decoded", "=?base64?IHVzLXdlc3Qx?=", " us-west1", true},
-		{"case-insensitive prefix", "=?BASE64?SGVsbG8=?=", "Hello", true},
+		// Per SEP-2243, the base64 sentinel markers are case-sensitive: an
+		// uppercase prefix is treated as a literal value, not a base64 marker.
+		{"uppercase prefix is literal", "=?BASE64?SGVsbG8=?=", "=?BASE64?SGVsbG8=?=", true},
+		{"mixed case prefix is literal", "=?Base64?SGVsbG8=?=", "=?Base64?SGVsbG8=?=", true},
 		{"invalid base64 chars", "=?base64?SGVs!!!bG8=?=", "", false},
 		// Missing prefix or suffix: treated as literal values, not base64
 		{"missing prefix", "SGVsbG8=", "SGVsbG8=", true},
@@ -1225,6 +1457,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		"Hello, 世界",
 		"line1\nline2",
 		"\ttab",
+		"=?base64?literal?=", // sentinel-pattern collision (SEP-2243)
 	}
 	for _, v := range values {
 		encoded, ok := encodeHeaderValue(v)
@@ -1238,5 +1471,98 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		if decoded != v {
 			t.Errorf("round-trip failed: %q -> %q -> %q", v, encoded, decoded)
 		}
+	}
+}
+
+// TestValidateParamHeaders_IntegerComparison verifies server-side validation
+// of integer x-mcp-header parameters per SEP-2243.
+func TestValidateParamHeaders_IntegerComparison(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"count": map[string]any{"type": "integer", "x-mcp-header": "Count"},
+			},
+		},
+	}
+	tests := []struct {
+		name      string
+		headerVal string
+		bodyArg   any
+		wantErr   bool
+	}{
+		// Canonical decimal form matches.
+		{"integer matches integer", "42", float64(42), false},
+		{"integer header matches integer-valued float body", "42", float64(42.0), false},
+		{"negative integer matches", "-7", float64(-7), false},
+		{"large safe integer matches", "1000000000000", float64(1e12), false},
+
+		{"non-canonical '42.0' header matches integer body", "42.0", float64(42), false},
+		{"scientific notation header matches integer body", "1e2", float64(100), false},
+		{"negative non-canonical header matches", "-7.0", float64(-7), false},
+
+		// Genuine mismatches and invalid forms are still rejected.
+		{"different integers do not match", "42", float64(43), true},
+		{"fractional header against integer body", "3.14", float64(3), true},
+		{"non-numeric header fails", "not-a-number", float64(42), true},
+		{"header outside safe range against integer body", "9007199254740993", float64(42), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(paramHeaderPrefix+"Count", tt.headerVal)
+			args := map[string]any{"count": tt.bodyArg}
+			msg := &jsonrpc.Request{
+				Method: "tools/call",
+				Params: mustMarshal(&CallToolParams{Name: "test", Arguments: args}),
+			}
+			err := validateParamHeaders(header, msg, tool)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateParamHeaders() = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateParamHeaders() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestValidateParamHeaders_NestedArguments verifies that the server-side
+// validation can look up nested arguments via the dotted path produced by
+// extractParamHeaderAnnotations.
+func TestValidateParamHeaders_NestedArguments(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"config": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					},
+				},
+			},
+		},
+	}
+	header := http.Header{}
+	header.Set(paramHeaderPrefix+"Region", "us-west1")
+	args := map[string]any{
+		"config": map[string]any{"region": "us-west1"},
+	}
+	msg := &jsonrpc.Request{
+		Method: "tools/call",
+		Params: mustMarshal(&CallToolParams{Name: "test", Arguments: args}),
+	}
+	if err := validateParamHeaders(header, msg, tool); err != nil {
+		t.Errorf("validateParamHeaders() = %v, want nil", err)
+	}
+
+	// Mismatched nested value should fail.
+	args["config"].(map[string]any)["region"] = "eu-west1"
+	msg.Params = mustMarshal(&CallToolParams{Name: "test", Arguments: args})
+	if err := validateParamHeaders(header, msg, tool); err == nil {
+		t.Error("validateParamHeaders() = nil, want error for mismatched nested value")
 	}
 }

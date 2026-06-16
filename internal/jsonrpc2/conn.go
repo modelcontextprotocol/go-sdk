@@ -14,7 +14,24 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
+
+// nomethodnotfoundcodeinerror is a compatibility parameter that restores the
+// pre-fix behavior of [processResult], where wrapped [ErrNotHandled] or
+// [ErrMethodNotFound] errors returned by request handlers were not
+// recognized as "method not found" signals. The original switch statement
+// compared sentinel errors with ==, which never matched errors returned via
+// fmt.Errorf("%w: ...", ErrNotHandled, ...) — including the ones produced
+// by checkRequest. As a result the wire error response carried code 0
+// instead of code -32601. The fix uses errors.Is to recognize wrapped
+// sentinels and append the method name to the message.
+//
+// To restore the previous behavior, set MCPGODEBUG=nomethodnotfoundcodeinerror=1.
+// This option will be removed in a future SDK version.
+// See the documentation for the mcpgodebug package for instructions on how
+// to use it.
+var nomethodnotfoundcodeinerror = mcpgodebug.Value("nomethodnotfoundcodeinerror")
 
 // Connection manages the jsonrpc2 protocol, connecting responses back to their
 // calls. Connection is bidirectional; it does not have a designated server or
@@ -648,9 +665,7 @@ func (c *Connection) handleAsync() {
 
 // processResult processes the result of a request and, if appropriate, sends a response.
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
-	switch err {
-	case ErrNotHandled, ErrMethodNotFound:
-		// Add detail describing the unhandled method.
+	if nomethodnotfoundcodeinerror != "1" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)
 	}
 

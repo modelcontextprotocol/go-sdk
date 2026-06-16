@@ -270,7 +270,9 @@ type CallToolResult struct {
 	Content []Content `json:"content"`
 
 	// StructuredContent is an optional value that represents the structured
-	// result of the tool call. It must marshal to a JSON object.
+	// result of the tool call. Per SEP-2106, it may marshal to any valid JSON
+	// value (object, array, or primitive) conforming to the tool's
+	// [Tool.OutputSchema].
 	//
 	// When using a [ToolHandlerFor] with structured output, you should not
 	// populate this field. It will be automatically populated with the typed Out
@@ -2102,4 +2104,32 @@ const (
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	// MetaKeyLogLevel identifies the desired log level for the request.
+	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 )
+
+// UnsupportedProtocolVersionData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeUnsupportedProtocolVersion]. The server uses it to advertise which
+// versions it supports so the client can pick a mutually supported one.
+type UnsupportedProtocolVersionData struct {
+	// Supported is the list of protocol versions the server supports.
+	Supported []string `json:"supported"`
+	// Requested is the protocol version the client asked for.
+	Requested string `json:"requested"`
+}
+
+// MissingRequiredClientCapabilityData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeMissingRequiredClientCapabilities]. The server uses it to indicate
+// which client capabilities are required to process the request but were not
+// declared by the client in its per-request `_meta` field.
+//
+// Handlers that require a specific client capability should inspect the
+// per-request [ServerRequest.ClientCapabilities] and return a JSON-RPC error
+// populated with this structure when the required capability is missing.
+type MissingRequiredClientCapabilityData struct {
+	// RequiredCapabilities is the set of capabilities the server requires
+	// from the client to process the request.
+	RequiredCapabilities *ClientCapabilities `json:"requiredCapabilities"`
+}

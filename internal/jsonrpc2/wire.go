@@ -33,7 +33,7 @@ var (
 	// ErrServerClosing is returned for calls that arrive while the server is closing.
 	ErrServerClosing = NewError(-32006, "server is closing")
 	// ErrClientClosing is a dummy error returned for calls initiated while the client is closing.
-	ErrClientClosing = NewError(-32003, "client is closing")
+	ErrClientClosing = NewError(-32007, "client is closing")
 
 	// The following errors have special semantics for MCP transports
 

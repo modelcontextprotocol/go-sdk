@@ -64,6 +64,17 @@ func negotiatedVersion(clientVersion string) string {
 	return clientVersion
 }
 
+// negotiateMutuallySupportedVersion returns a protocol version that is supported
+// by both the client and the server.
+func negotiateMutuallySupportedVersion(supported []string) string {
+	for _, ver := range supportedProtocolVersions {
+		if slices.Contains(supported, ver) {
+			return ver
+		}
+	}
+	return ""
+}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
@@ -105,7 +116,6 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		// capabilities, so any panic here is a bug.
 		params = initParams.toV2()
 	}
-
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
 		return nil, req.GetSession().getConn().Notify(ctx, method, params)
@@ -345,6 +355,9 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32003
 	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
 	// SEP-2575 for UnsupportedProtocolVersionError.
 	CodeUnsupportedProtocolVersion = -32004
@@ -487,6 +500,7 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 type validatedMeta struct {
 	usesNewProtocol  bool
 	initializeParams *InitializeParams
+	logLevel         LoggingLevel
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
@@ -504,11 +518,10 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok {
+	if !ok || protocolVersion < protocolVersion20260630 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	// Notifications do not carry full client identity. In new protocol, only cancel notification
-	// is allowed in STDIO.
+	// Notifications do not carry full client identity.
 	if !req.IsCall() {
 		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
@@ -526,11 +539,12 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
+	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
 	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    capabilities,
 		ClientInfo:      clientInfo,
-	}}, nil
+	}, logLevel: logLevel}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.
@@ -571,6 +585,8 @@ type RequestExtra struct {
 	// to configure the reconnection delay.
 	//
 	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
+	// This mechanism is deprecated in protocol version 2026-06-30 as the resumability
+	// feature is removed.
 	CloseSSEStream func(CloseSSEStreamArgs)
 }
 
