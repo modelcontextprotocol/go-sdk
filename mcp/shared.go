@@ -64,6 +64,17 @@ func negotiatedVersion(clientVersion string) string {
 	return clientVersion
 }
 
+// negotiateMutuallySupportedVersion returns a protocol version that is supported
+// by both the client and the server.
+func negotiateMutuallySupportedVersion(supported []string) string {
+	for _, ver := range supportedProtocolVersions {
+		if slices.Contains(supported, ver) {
+			return ver
+		}
+	}
+	return ""
+}
+
 // A MethodHandler handles MCP messages.
 // For methods, exactly one of the return values must be nil.
 // For notifications, both must be nil.
@@ -344,6 +355,12 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32003
+	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
+	// SEP-2575 for UnsupportedProtocolVersionError.
+	CodeUnsupportedProtocolVersion = -32004
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
 	CodeHeaderMismatch = -32001
@@ -483,6 +500,7 @@ func extractRequestMeta(rawParams json.RawMessage) Meta {
 type validatedMeta struct {
 	usesNewProtocol  bool
 	initializeParams *InitializeParams
+	logLevel         LoggingLevel
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
@@ -500,11 +518,10 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok {
+	if !ok || protocolVersion < protocolVersion20260630 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	// Notifications do not carry full client identity. In new protocol, only cancel notification
-	// is allowed in STDIO.
+	// Notifications do not carry full client identity.
 	if !req.IsCall() {
 		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
@@ -522,11 +539,12 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
 		}
 	}
+	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
 	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    capabilities,
 		ClientInfo:      clientInfo,
-	}}, nil
+	}, logLevel: logLevel}, nil
 }
 
 // A Request is a method request with parameters and additional information, such as the session.
@@ -567,6 +585,8 @@ type RequestExtra struct {
 	// to configure the reconnection delay.
 	//
 	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
+	// This mechanism is deprecated in protocol version 2026-06-30 as the resumability
+	// feature is removed.
 	CloseSSEStream func(CloseSSEStreamArgs)
 }
 
@@ -751,9 +771,20 @@ type keepaliveSession interface {
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
 //
-// logger must be non-nil; ping failures (which terminate the keepalive loop and
-// close the session) are reported via logger so they are not silently dropped.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+// failureThreshold is the number of consecutive ping failures tolerated before
+// the session is closed; a value below 1 is treated as 1 (close on the first
+// failure). A successful ping resets the counter. This mirrors the spec's
+// "multiple failed pings MAY trigger a connection reset" language, letting a
+// transient miss pass without tearing down an otherwise live session.
+//
+// logger must be non-nil; ping failures (both the tolerated ones and the final
+// one that closes the session) are reported via logger so they are not silently
+// dropped.
+func startKeepalive(session keepaliveSession, interval time.Duration, failureThreshold int, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+	if failureThreshold < 1 {
+		failureThreshold = 1
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -764,6 +795,7 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -772,17 +804,32 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
-				if err != nil {
-					if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
-						// Peer doesn't support ping, stop the keepalive process.
-						return
-					}
-					// Ping failed; log it before closing the session so the
-					// failure is observable to operators. See #218.
-					logger.Error("keepalive ping failed; closing session", "error", err)
-					_ = session.Close()
+				if err == nil {
+					consecutiveFailures = 0
+					continue
+				}
+				if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
+					// Peer doesn't support ping, stop the keepalive process.
 					return
 				}
+				consecutiveFailures++
+				if consecutiveFailures < failureThreshold {
+					// Tolerate transient failures below the threshold; log so
+					// the misses are still observable to operators. See #218.
+					logger.Warn("keepalive ping failed; tolerating below threshold",
+						"error", err,
+						"consecutiveFailures", consecutiveFailures,
+						"failureThreshold", failureThreshold)
+					continue
+				}
+				// Threshold reached; log before closing the session so the
+				// failure is observable to operators. See #218.
+				logger.Error("keepalive ping failed; closing session",
+					"error", err,
+					"consecutiveFailures", consecutiveFailures,
+					"failureThreshold", failureThreshold)
+				_ = session.Close()
+				return
 			}
 		}
 	}()

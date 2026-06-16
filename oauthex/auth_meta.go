@@ -12,7 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 )
 
 // AuthServerMeta represents the metadata for an OAuth 2.0 authorization server,
@@ -153,8 +154,7 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 		}
 		return nil, fmt.Errorf("%v", err) // Do not expose error types.
 	}
-	if strings.TrimRight(asm.Issuer, "/") != strings.TrimRight(issuer, "/") {
-		// Validate the Issuer field (see RFC 8414, section 3.3).
+	if !authutil.IssuersEqual(asm.Issuer, issuer) {
 		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuer)
 	}
 

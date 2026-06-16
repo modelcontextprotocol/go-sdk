@@ -79,6 +79,13 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 	// Function called when a client session subscribes to a resource.
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
@@ -187,7 +194,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Server{
+	s := &Server{
 		impl:                    impl,
 		opts:                    opts,
 		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
@@ -199,6 +206,8 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
 	}
+	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
@@ -370,8 +379,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
+		// Skip when the handler returned input requests (multi round-trip): content and
+		// inputRequests are mutually exclusive on the wire.
 		var outval any = out
-		if elemZero != nil {
+		if res.InputRequests != nil {
+			outval = nil
+		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the unpointered type.
 			var z Out
@@ -742,7 +755,56 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
-	return prompt.handler(ctx, req)
+	res, err := prompt.handler(ctx, req)
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, err
+}
+
+// discover is the server-side handler for the SEP-2575 "server/discover" RPC.
+//
+// It returns the protocol versions supported by the underlying transport,
+// the server's capabilities, the server's identity, and the server's
+// instructions, allowing clients to negotiate without performing the legacy
+// initialize handshake.
+func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	versions := req.Session.supportedVersions
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	}
+	req.Session.updateState(func(state *ServerSessionState) {
+		state.InitializeParams = &InitializeParams{
+			ProtocolVersion: req.ProtocolVersion(),
+			Capabilities:    req.ClientCapabilities(),
+			ClientInfo:      req.ClientInfo(),
+		}
+	})
+	return &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		ServerInfo:        s.impl,
+		Instructions:      s.opts.Instructions,
+	}, nil
+}
+
+// filterSupportedVersions returns the subset of [supportedProtocolVersions]
+// that the Transport can serve. If t does not implement [ProtocolVersionSupporter], every
+// SDK-supported version is included.
+func filterSupportedVersions(t Transport) []string {
+	pvs, ok := t.(ProtocolVersionSupporter)
+	if !ok {
+		return slices.Clone(supportedProtocolVersions)
+	}
+	out := make([]string, 0, len(supportedProtocolVersions))
+	for _, v := range supportedProtocolVersions {
+		if pvs.SupportsProtocolVersion(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
@@ -775,10 +837,15 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil && res.Content == nil {
-		res2 := *res
-		res2.Content = []Content{} // avoid "null"
-		res = &res2
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+		if res.Content == nil && res.resultType != resultTypeInputRequired {
+			res2 := *res
+			res2.Content = []Content{} // avoid "null"
+			res = &res2
+		}
 	}
 	return res, err
 }
@@ -825,6 +892,12 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	res, err := handler(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		return nil, err
+	}
+	if res.resultType == resultTypeInputRequired {
+		return res, nil
 	}
 	if res == nil || res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
@@ -1056,6 +1129,11 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		return nil, err
 	}
 
+	// Compute the protocol versions this session can serve, filtered by the
+	// transport's capabilities (if it implements [ProtocolVersionSupporter]).
+	// The list is consumed by the SEP-2575 server/discover handler.
+	ss.supportedVersions = filterSupportedVersions(t)
+
 	// Start keepalive before returning the session to avoid race conditions with Close.
 	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
 	if s.opts.KeepAlive > 0 {
@@ -1139,6 +1217,12 @@ type ServerSession struct {
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
 	keepaliveCancel context.CancelFunc
+
+	// supportedVersions is the subset of [supportedProtocolVersions] that the
+	// transport can actually serve, computed once at connection time from
+	// [ProtocolVersionSupporter] (if implemented by the transport) and used by
+	// the SEP-2575 server/discover handler.
+	supportedVersions []string
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1330,13 +1414,28 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	return res, nil
 }
 
+// logLevelContextKey carries the per-request log level from
+// [ServerSession.handle] to [ServerSession.Log] for new-protocol
+// (>= 2026-06-30) requests. The level is scoped to a single in-flight request
+// — including handler goroutines that call [ServerSession.Log] concurrently —
+// rather than to the session, which avoids races between concurrent requests
+// and aligns with SEP-2575's per-request opt-in model. The value type is
+// [LoggingLevel]; an empty string means the request opted out of log messages.
+type logLevelContextKey struct{}
+
 // Log sends a log message to the client.
-// The message is not sent if the client has not called SetLevel, or if its level
-// is below that of the last SetLevel.
+//
+// For new-protocol (>= 2026-06-30) requests, the level is taken from the
+// originating request's `_meta` field (SEP-2575); an absent or empty value
+// suppresses the message per spec. For old-protocol requests, the level is
+// taken from the session state set via `logging/setLevel`.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
-	ss.mu.Unlock()
+	logLevel, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
+	if !ok {
+		ss.mu.Lock()
+		logLevel = ss.state.LogLevel
+		ss.mu.Unlock()
+	}
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1386,6 +1485,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 // curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
 	methodComplete:               newServerMethodInfo(serverMethod((*Server).complete), 0),
+	methodDiscover:               newServerMethodInfo(serverMethod((*Server).discover), missingParamsOK),
 	methodInitialize:             initializeMethodInfo(),
 	methodPing:                   newServerMethodInfo(serverSessionMethod((*ServerSession).ping), missingParamsOK),
 	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
@@ -1459,14 +1559,21 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
-		ss.updateState(func(state *ServerSessionState) {
-			state.InitializeParams = validatedMeta.initializeParams
+	if validatedMeta.usesNewProtocol &&
+		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedProtocolVersions,
+			Requested: validatedMeta.initializeParams.ProtocolVersion,
 		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		}
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, methodSetLevel:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
@@ -1474,10 +1581,19 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
 			}
 		}
+	case methodDiscover:
+		// In case of methodDiscover call the state.initializeParams is populated
+		// within the discover handle function to make sure the method is supported
+		// when the user is probing a pre-2026-06-30 server.
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		}
+		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+			ss.updateState(func(state *ServerSessionState) {
+				state.InitializeParams = validatedMeta.initializeParams
+			})
 		}
 	}
 
@@ -1492,6 +1608,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// For new-protocol requests, propagate the per-request log level.
+	if validatedMeta.usesNewProtocol {
+		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
+	}
 	return handleReceive(ctx, ss, req)
 }
 
@@ -1582,7 +1702,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
+	startKeepalive(ss, interval, ss.server.opts.KeepAliveFailureThreshold, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

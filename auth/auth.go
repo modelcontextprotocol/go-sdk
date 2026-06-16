@@ -47,6 +47,34 @@ type RequireBearerTokenOptions struct {
 	ResourceMetadataURL string
 	// The required scopes.
 	Scopes []string
+	// AllowMissingExpiration opts the middleware out of the
+	// `tokenInfo.Expiration.IsZero()` reject. Default false preserves the
+	// existing strict behaviour (every TokenInfo must carry an Expiration).
+	//
+	// Some IdPs emit session-bound bearer tokens that do not carry a standalone
+	// `exp` claim — the token's lifetime is bounded by an external session and
+	// is not advertised in-band. Resource servers integrating with such IdPs
+	// need to opt in to validating the rest of the token (scopes, signature
+	// via the verifier callback, etc.) without requiring the expiration field
+	// to be present.
+	//
+	// When enabled, the verifier is still responsible for any session-level
+	// validity check it can perform; this option only relaxes the middleware's
+	// own expiration enforcement.
+	AllowMissingExpiration bool
+	// ClockSkew bounds the tolerance applied to a token's Expiration when
+	// deciding whether it has elapsed. A token is rejected only if
+	// Expiration + ClockSkew is before the current time. Zero (the default)
+	// preserves strict comparison: any expired token is rejected immediately.
+	//
+	// Resource servers running behind a CDN, in distributed deployments, or
+	// communicating with an authorization server whose clock drifts a few
+	// seconds (common with cloud-managed IdPs) need a small positive value
+	// here to avoid rejecting tokens that are valid by the issuer's clock
+	// but momentarily appear expired by the verifier's. The same tolerance
+	// guards against an issuer's clock running slightly fast at /token
+	// issuance time.
+	ClockSkew time.Duration
 }
 
 type tokenInfoKey struct{}
@@ -129,11 +157,17 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		}
 	}
 
-	// Check expiration.
-	if tokenInfo.Expiration.IsZero() {
-		return nil, "token missing expiration", http.StatusUnauthorized
+	if opts == nil {
+		opts = &RequireBearerTokenOptions{}
 	}
-	if tokenInfo.Expiration.Before(time.Now()) {
+	// Check expiration, with optional clock-skew tolerance. Skew only applies
+	// when an expiration is present; a missing expiration is governed solely by
+	// AllowMissingExpiration.
+	if tokenInfo.Expiration.IsZero() {
+		if !opts.AllowMissingExpiration {
+			return nil, "token missing expiration", http.StatusUnauthorized
+		}
+	} else if tokenInfo.Expiration.Add(opts.ClockSkew).Before(time.Now()) {
 		return nil, "token expired", http.StatusUnauthorized
 	}
 	return tokenInfo, "", 0
