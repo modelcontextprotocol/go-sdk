@@ -1554,11 +1554,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	stream.done = done
 	stream.protocolVersion = effectiveVersion
 
-	// Register the stream before publishing incoming messages so the server
-	// can route responses back to this HTTP request. Reject any call whose ID
-	// is already in flight on this session, atomically and without partial
-	// registration: pass 1 checks all IDs, pass 2 mutates only if all are
-	// fresh.
+	// Reject any call whose ID is already in flight on this session,
+	// atomically and without partial registration.
 	c.mu.Lock()
 	for reqID := range calls {
 		if _, ok := c.requestStreams[reqID]; ok {
