@@ -2227,6 +2227,20 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
 		})
 
+	// Install a receiving middleware on the server that opts the tools/list
+	// response caching by setting a positive ttlMs.
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			res, err := next(ctx, method, req)
+			if err == nil && method == methodListTools {
+				if r, ok := res.(*ListToolsResult); ok {
+					r.TTLMs = 60_000
+				}
+			}
+			return res, err
+		}
+	})
+
 	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
 		Stateless: true,
 	})

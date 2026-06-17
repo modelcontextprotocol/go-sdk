@@ -54,10 +54,14 @@ func (mc *methodCache[R]) put(key string, result R) {
 	}
 }
 
-func (mc *methodCache[R]) forEach(f func(R)) {
+func (mc *methodCache[R]) forEachValid(f func(R)) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
-	for _, entry := range mc.cachedValues {
+	for key, entry := range mc.cachedValues {
+		if !entry.isValid() {
+			delete(mc.cachedValues, key)
+			continue
+		}
 		f(entry.result)
 	}
 }

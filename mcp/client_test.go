@@ -514,7 +514,10 @@ func TestLookupTool(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := &ClientSession{}
 			for _, p := range tc.pages {
-				cs.toolsCache.put(p.cursor, &ListToolsResult{Tools: p.tools})
+				cs.toolsCache.put(p.cursor, &ListToolsResult{
+					Cacheable: Cacheable{TTLMs: 60_000},
+					Tools:     p.tools,
+				})
 			}
 			got := cs.lookupTool(tc.lookup)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
