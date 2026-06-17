@@ -70,8 +70,7 @@ func compareLevels(l1, l2 LoggingLevel) int {
 
 // LoggingHandlerOptions are options for a LoggingHandler.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 type LoggingHandlerOptions struct {
 	// The value for the "logger" field of logging notifications.
 	LoggerName string
@@ -83,8 +82,7 @@ type LoggingHandlerOptions struct {
 
 // A LoggingHandler is a [slog.Handler] for MCP.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 type LoggingHandler struct {
 	opts LoggingHandlerOptions
 	ss   *ServerSession
@@ -108,8 +106,7 @@ func ensureLogger(l *slog.Logger) *slog.Logger {
 // NewLoggingHandler creates a [LoggingHandler] that logs to the given [ServerSession] using a
 // [slog.JSONHandler].
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingHandler {
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{

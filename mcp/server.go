@@ -71,8 +71,7 @@ type ServerOptions struct {
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
 	//
-	// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-	// This API may be removed in a future release of this SDK.
+	// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
@@ -1294,8 +1293,7 @@ func (ss *ServerSession) listRoots(ctx context.Context, params *ListRootsParams)
 
 // ListRoots lists the client roots.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	return ss.listRoots(ctx, params)
 }
@@ -1306,8 +1304,7 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
 // for tool-enabled sampling.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	return ss.createMessage(ctx, params)
 }
@@ -1350,8 +1347,7 @@ func (ss *ServerSession) createMessage(ctx context.Context, params *CreateMessag
 // (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
 // when the request includes tools.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
 	return ss.createMessageWithTools(ctx, params)
 }
@@ -1458,8 +1454,7 @@ type logLevelContextKey struct{}
 // suppresses the message per spec. For old-protocol requests, the level is
 // taken from the session state set via `logging/setLevel`.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	return ss.log(ctx, params)
 }

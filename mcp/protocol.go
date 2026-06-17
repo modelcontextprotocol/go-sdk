@@ -1189,9 +1189,6 @@ type ListResourcesResult struct {
 func (x *ListResourcesResult) isResult()              {}
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
-// ListRootsParams holds parameters for a roots/list request.
-//
-// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type ListRootsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1647,9 +1644,6 @@ type Root struct {
 	URI string `json:"uri"`
 }
 
-// RootsListChangedParams holds parameters for a roots/list_changed notification.
-//
-// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type RootsListChangedParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1732,9 +1726,6 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SetLoggingLevelParams holds parameters for a logging/setLevel request.
-//
-// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.

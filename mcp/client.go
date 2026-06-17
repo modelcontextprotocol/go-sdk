@@ -83,8 +83,7 @@ type ClientOptions struct {
 	// non nil value for [ClientCapabilities.Sampling], that value overrides the
 	// inferred capability.
 	//
-	// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-	// This API may be removed in a future release of this SDK.
+	// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// CreateMessageWithToolsHandler handles incoming sampling/createMessage
 	// requests that may involve tool use. It returns
@@ -99,8 +98,7 @@ type ClientOptions struct {
 	// It is a panic to set both CreateMessageHandler and
 	// CreateMessageWithToolsHandler.
 	//
-	// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-	// This API may be removed in a future release of this SDK.
+	// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 	CreateMessageWithToolsHandler func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error)
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
@@ -162,8 +160,7 @@ type ClientOptions struct {
 	PromptListChangedHandler   func(context.Context, *PromptListChangedRequest)
 	ResourceListChangedHandler func(context.Context, *ResourceListChangedRequest)
 	ResourceUpdatedHandler     func(context.Context, *ResourceUpdatedNotificationRequest)
-	// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-	// This API may be removed in a future release of this SDK.
+	// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
 	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
@@ -585,8 +582,7 @@ func (cs *ClientSession) startKeepalive(interval time.Duration) {
 // replacing any with the same URIs,
 // and notifies any connected servers.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (c *Client) AddRoots(roots ...*Root) {
 	// Only notify if something could change.
 	if len(roots) == 0 {
@@ -600,8 +596,7 @@ func (c *Client) AddRoots(roots ...*Root) {
 // and notifies any connected servers if the list has changed.
 // It is not an error to remove a nonexistent root.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (c *Client) RemoveRoots(uris ...string) {
 	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { return c.roots.remove(uris...) })
@@ -1200,8 +1195,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 
 // SetLoggingLevel sets the minimum log level for the server session.
 //
-// Deprecated: Deprecated by SEP-2577 (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
-// This API may be removed in a future release of this SDK.
+// Deprecated: SEP-2577 deprecates this API. It may be removed in a future release of this SDK.
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
