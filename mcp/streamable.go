@@ -271,6 +271,12 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // the client always attempts to surface the underlying JSON-RPC error.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
+// disablecontenttypecheck is a compatibility parameter that allows to disable
+// Content-Type validation on POST requests.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.8.0 version of the SDK.
+var disablecontenttypecheck = mcpgodebug.Value("disablecontenttypecheck")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -342,7 +348,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -560,7 +566,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 // ID, a new session is created (this is the normal path for the first
 // initialize request).
 func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *http.Request) {
-	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -1553,6 +1559,30 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	done := make(chan struct{})
 	stream.done = done
 	stream.protocolVersion = effectiveVersion
+
+	// Reject any call whose ID is already in flight on this session,
+	// atomically and without partial registration.
+	c.mu.Lock()
+	for reqID := range calls {
+		if _, ok := c.requestStreams[reqID]; ok {
+			c.mu.Unlock()
+			writeJSONRPCError(w, http.StatusBadRequest, reqID, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidRequest,
+				Message: fmt.Sprintf("duplicate in-flight request ID %v", reqID.Raw()),
+			})
+			return
+		}
+	}
+	c.streams[stream.id] = stream
+	for reqID := range calls {
+		c.requestStreams[reqID] = stream.id
+	}
+	c.mu.Unlock()
+
+	// TODO(rfindley): if we have no event store, we should really cancel all
+	// remaining requests here, since the client will never get the results.
+	defer stream.release()
+
 	if c.jsonResponse {
 		// JSON mode: collect messages in pendingJSONMessages until done.
 		// Set pendingJSONMessages to a non-nil value to signal that this is an
@@ -1580,20 +1610,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 	}
-
-	// TODO(rfindley): if we have no event store, we should really cancel all
-	// remaining requests here, since the client will never get the results.
-	defer stream.release()
-
-	// The stream is now set up to deliver messages.
-	//
-	// Register it before publishing incoming messages.
-	c.mu.Lock()
-	c.streams[stream.id] = stream
-	for reqID := range calls {
-		c.requestStreams[reqID] = stream.id
-	}
-	c.mu.Unlock()
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
