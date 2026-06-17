@@ -10,6 +10,9 @@
 
 ## Roots
 
+> **Note:** The roots feature is deprecated by [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
+> The SDK continues to support roots for compatibility.
+
 MCP allows clients to specify a set of filesystem
 ["roots"](https://modelcontextprotocol.io/specification/2025-06-18/client/roots).
 The SDK supports this as follows:
@@ -76,6 +79,9 @@ func Example_roots() {
 ```
 
 ## Sampling
+
+> **Note:** The sampling feature is deprecated by [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
+> The SDK continues to support sampling for compatibility.
 
 [Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
 is a way for servers to leverage the client's AI capabilities. It is

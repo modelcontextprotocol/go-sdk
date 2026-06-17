@@ -474,6 +474,9 @@ _ = mcp.NewServer(&mcp.Implementation{Name: "server"}, &mcp.ServerOptions{
 
 ### Logging
 
+> **Note:** The logging feature is deprecated by [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
+> The SDK continues to support logging for compatibility.
+
 MCP servers can send logging messages to MCP clients.
 (This form of logging is distinct from server-side logging, where the
 server produces logs that remain server-side, for use by server maintainers.)

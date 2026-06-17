@@ -439,6 +439,8 @@ func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // RootCapabilities describes a client's support for roots.
+//
+// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type RootCapabilities struct {
 	// ListChanged reports whether the client supports notifications for
 	// changes to the roots list.
@@ -466,6 +468,8 @@ type ClientCapabilities struct {
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
 	// pointer to a RootCapabilities value. Roots will be continue to be
 	// populated, but any new fields will only be added in the RootsV2 field.
+	//
+	// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 	Roots struct {
 		// ListChanged reports whether the client supports notifications for
 		// changes to the roots list.
@@ -474,6 +478,8 @@ type ClientCapabilities struct {
 	// RootsV2 is present if the client supports roots. When capabilities are explicitly configured via [ClientOptions.Capabilities]
 	RootsV2 *RootCapabilities `json:"-"`
 	// Sampling is present if the client supports sampling from an LLM.
+	//
+	// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
@@ -641,6 +647,9 @@ type CompleteResult struct {
 
 func (*CompleteResult) isResult() {}
 
+// CreateMessageParams holds parameters for a sampling/create_message request.
+//
+// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 type CreateMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -681,6 +690,8 @@ func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // and messages that support array content (for parallel tool calls).
 //
 // Use with [ServerSession.CreateMessageWithTools].
+//
+// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 type CreateMessageWithToolsParams struct {
 	Meta           `json:"_meta,omitempty"`
 	IncludeContext string `json:"includeContext,omitempty"`
@@ -782,6 +793,8 @@ func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
 // The client should inform the user before returning the sampled message, to
 // allow them to inspect the response (human in the loop) and decide whether to
 // allow the server to see it.
+//
+// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 type CreateMessageResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -828,6 +841,8 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 //
 // When unmarshaling, a single JSON content object is accepted and wrapped in a
 // one-element slice, for compatibility with clients that return a single block.
+//
+// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 type CreateMessageWithToolsResult struct {
 	Meta    `json:"_meta,omitempty"`
 	Content []Content `json:"content"`
@@ -1174,6 +1189,9 @@ type ListResourcesResult struct {
 func (x *ListResourcesResult) isResult()              {}
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
+// ListRootsParams holds parameters for a roots/list request.
+//
+// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type ListRootsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1189,6 +1207,8 @@ func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // The client's response to a roots/list request from the server. This result
 // contains an array of Root objects, each representing a root directory or file
 // that the server can operate on.
+//
+// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type ListRootsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1232,8 +1252,13 @@ func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 //
 // These map to syslog message severities, as specified in RFC-5424:
 // https://datatracker.ietf.org/doc/html/rfc5424#section-6.2.1
+//
+// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 type LoggingLevel string
 
+// LoggingMessageParams holds parameters for a logging notification.
+//
+// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 type LoggingMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1606,6 +1631,8 @@ type ResourceTemplate struct {
 type Role string
 
 // Represents a root directory or file that the server can operate on.
+//
+// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type Root struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
 	// usage.
@@ -1620,6 +1647,9 @@ type Root struct {
 	URI string `json:"uri"`
 }
 
+// RootsListChangedParams holds parameters for a roots/list_changed notification.
+//
+// Part of the deprecated roots feature (SEP-2577). Remains on the wire for compatibility.
 type RootsListChangedParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1635,6 +1665,8 @@ func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t
 // below directly above ClientCapabilities.
 
 // SamplingCapabilities describes the client's support for sampling.
+//
+// Part of the deprecated sampling feature (SEP-2577). Remains on the wire for compatibility.
 type SamplingCapabilities struct {
 	// Context indicates the client supports includeContext values other than "none".
 	Context *SamplingContextCapabilities `json:"context,omitempty"`
@@ -1700,6 +1732,9 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SetLoggingLevelParams holds parameters for a logging/setLevel request.
+//
+// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1982,6 +2017,8 @@ type Implementation struct {
 type CompletionCapabilities struct{}
 
 // LoggingCapabilities describes the server's support for sending log messages to the client.
+//
+// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 type LoggingCapabilities struct{}
 
 // PromptCapabilities describes the server's support for prompts.
@@ -2025,6 +2062,8 @@ type ServerCapabilities struct {
 	// suggestions.
 	Completions *CompletionCapabilities `json:"completions,omitempty"`
 	// Logging is present if the server supports log messages.
+	//
+	// Part of the deprecated logging feature (SEP-2577). Remains on the wire for compatibility.
 	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Prompts is present if the server supports prompts.
 	Prompts *PromptCapabilities `json:"prompts,omitempty"`

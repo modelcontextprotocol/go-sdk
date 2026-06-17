@@ -3,6 +3,8 @@
 // license that can be found in the LICENSE file.
 
 // The everything server implements all supported features of an MCP server.
+//
+//lint:file-ignore SA1019 example server exercises deprecated SEP-2577 APIs
 package main
 
 import (

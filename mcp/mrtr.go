@@ -185,11 +185,11 @@ func fulfillServerInputRequest(ctx context.Context, ss *ServerSession, ir InputR
 	case *ElicitParams:
 		return ss.Elicit(ctx, p)
 	case *CreateMessageParams:
-		return ss.CreateMessageWithTools(ctx, createMessageParamsToWithTools(p))
+		return ss.createMessageWithTools(ctx, createMessageParamsToWithTools(p))
 	case *CreateMessageWithToolsParams:
-		return ss.CreateMessageWithTools(ctx, p)
+		return ss.createMessageWithTools(ctx, p)
 	case *ListRootsParams:
-		return ss.ListRoots(ctx, p)
+		return ss.listRoots(ctx, p)
 	default:
 		return nil, fmt.Errorf("unknown input request type: %T", ir)
 	}

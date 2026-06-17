@@ -21,6 +21,9 @@ SDK, as well as inspecting MCP traffic.
 
 ## Collecting MCP logs
 
+> **Note:** `LoggingTransport` is deprecated by [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577).
+> It remains available for debugging.
+
 For [stdio](protocol.md#stdio-transport) transport connections, you can also
 inspect MCP traffic using a `LoggingTransport`:
 

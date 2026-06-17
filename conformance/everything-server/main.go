@@ -5,6 +5,8 @@
 // The conformance server implements features required for MCP conformance testing.
 // It mirrors the functionality of the TypeScript conformance server at
 // https://github.com/modelcontextprotocol/conformance/blob/main/examples/servers/typescript/everything-server.ts
+//
+//lint:file-ignore SA1019 conformance server exercises deprecated SEP-2577 APIs
 package main
 
 import (
