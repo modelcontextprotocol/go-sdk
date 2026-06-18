@@ -315,10 +315,11 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					}
 				}
 			}
-			// Fallback to the legacy initialize handshake in case of any error.
+			// Per the spec, fall back to the legacy initialize handshake on any
+			// non-modern error from server/discover.
 			break
 		}
-		// Set legacy protocol version for the fallback initialize.
+		// Use the latest legacy protocol version for the fallback initialize.
 		protocolVersion = protocolVersion20251125
 	}
 

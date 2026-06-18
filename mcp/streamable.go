@@ -2186,17 +2186,15 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-		// Only fail the connection for non-transient errors.
-		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		// In case of failure on discover request, do not close the connection to
-		// trigger the initialize fallback.
-		if !errors.Is(err, jsonrpc2.ErrRejected) && requestMethod != methodDiscover {
-			c.fail(err)
-		}
-		// Wrap the error as rejected for 'server/discover' to avoid closing the jsonrpc.Conn,
-		// which would prevent the fallback to the legacy initialize call.
 		if requestMethod == methodDiscover {
+			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
+			// doesn't set writeErr, which would prevent the legacy initialize
+			// fallback from succeeding on the same connection.
 			err = fmt.Errorf("%w: %w", jsonrpc2.ErrRejected, err)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
+			// Only fail the connection for non-transient errors.
+			// Transient errors (wrapped with ErrRejected) should not break the connection.
+			c.fail(err)
 		}
 		return err
 	}
