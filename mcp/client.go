@@ -303,13 +303,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				return cs, nil
 			}
 
-			var werr *jsonrpc.Error
-			if !errors.As(err, &werr) {
-				return nil, err
-			}
 			// Try to negotiate a mutually supported version if the server
 			// reports an UnsupportedProtocolVersionError with a supported version.
-			if werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
+			var werr *jsonrpc.Error
+			if errors.As(err, &werr) && werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
 				var data UnsupportedProtocolVersionData
 				if err := json.Unmarshal(werr.Data, &data); err == nil {
 					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260630 {
@@ -318,13 +315,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					}
 				}
 			}
-			// MethodNotFound and UnsupportedProtocolVersion trigger a fallback to legacy initialize.
-			if werr.Code == jsonrpc.CodeMethodNotFound || werr.Code == CodeUnsupportedProtocolVersion {
-				break
-			}
-			return nil, err
+			// Fallback to the legacy initialize handshake in case of any error.
+			break
 		}
-		// Fallback to the legacy initialize handshake with the legacy protocol version.
+		// Set legacy protocol version for the fallback initialize.
 		protocolVersion = protocolVersion20251125
 	}
 
