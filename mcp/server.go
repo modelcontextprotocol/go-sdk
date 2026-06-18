@@ -694,22 +694,21 @@ func (s *Server) notifySessions(n string) {
 
 	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
 	var legacySessions []*ServerSession
-	for _, session := range sessions {
-		if session.InitializeParams().isNil() || session.InitializeParams().ProtocolVersion < protocolVersion20260630 {
-			legacySessions = append(legacySessions, session)
+	for _, sess := range sessions {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260630 {
+			legacySessions = append(legacySessions, sess)
 		}
 	}
 	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, session := range sessions {
-		for _, reqID := range session.subscribedListenIDs(n) {
+	for _, sess := range sessions {
+		for _, reqID := range sess.subscribedListenIDs(n) {
 			params := changeNotificationParams[n]()
 			injectMetaSubscriptionID(params, reqID)
-			req := newRequest(session, params)
-			reqCtx := context.WithValue(ctx, idContextKey{}, reqID)
-			if err := handleNotify(reqCtx, n, req); err != nil {
+			req := newRequest(sess, params)
+			if err := handleNotify(ctx, n, req); err != nil {
 				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
 			}
 		}

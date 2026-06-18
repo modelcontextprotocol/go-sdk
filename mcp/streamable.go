@@ -908,6 +908,12 @@ type stream struct {
 	// the spec and earlier there was a concept of batching, in which POST
 	// payloads could hold multiple requests or responses.
 	requests map[jsonrpc.ID]struct{}
+
+	// isListen reports whether this stream was opened by a
+	// subscriptions/listen request. Listen streams are always SSE, live for
+	// the duration of the subscription, and act as the target for
+	// out-of-band notifications routed through this connection.
+	isListen bool
 }
 
 // close sends a 'close' event to the client (if protocolVersion >= 2025-11-25
@@ -1539,6 +1545,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("storing stream: %v", err), http.StatusInternalServerError)
 		return
 	}
+	stream.isListen = isSubscriptionsListen
 
 	// subscriptions/listen is inherently a long-lived SSE endpoint (SEP-2575):
 	// it has no synchronous result, the response stream stays open until the
@@ -1718,6 +1725,15 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			s = c.streams[streamID]
 		}
 	} else {
+		// In stateless mode there will always be only one stream per connection.
+		for _, stream := range c.streams {
+			if stream.isListen {
+				s = stream
+				break
+			}
+		}
+	}
+	if s == nil {
 		s = c.streams[""] // standalone SSE stream
 	}
 	if responseTo.IsValid() {
