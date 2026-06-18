@@ -2103,12 +2103,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	var requestSummary string
+	var requestMethod string
 	var forCall *jsonrpc.Request
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
 		requestSummary = fmt.Sprintf("sending %q", msg.Method)
 		if msg.IsCall() {
 			forCall = msg
+			requestMethod = msg.Method
 		}
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
@@ -2184,10 +2186,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-		// Only fail the connection for non-transient errors.
-		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		// ErrMethodNotFound and ErrUnsupportedProtocolVersion should not break the connection as they trigger the initialize fallback.
-		if !errors.Is(err, jsonrpc2.ErrRejected) && !errors.Is(err, jsonrpc2.ErrMethodNotFound) && !errors.Is(err, jsonrpc2.ErrUnsupportedProtocolVersion) {
+		if requestMethod == methodDiscover {
+			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
+			// doesn't set writeErr, which would prevent the legacy initialize
+			// fallback from succeeding on the same connection.
+			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
+			// Only fail the connection for non-transient errors.
+			// Transient errors (wrapped with ErrRejected) should not break the connection.
 			c.fail(err)
 		}
 		return err
@@ -2400,10 +2406,8 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// By default, always try to decode the body and surface the underlying
-		// JSON-RPC error (or detect vPre servers that reject "server/discover"
-		// as an unsupported method with a plain HTTP 400) regardless of the
-		// negotiated protocol version. Setting MCPGODEBUG=noprotocolerrorbody=1
-		// restores the previous behavior.
+		// JSON-RPC error.
+		// Setting MCPGODEBUG=noprotocolerrorbody=1 restores the previous behavior.
 		if noprotocolerrorbody == "1" {
 			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 		}
@@ -2411,12 +2415,6 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		msg, _ := jsonrpc.DecodeMessage(body)
 		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
 			return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
-		}
-		if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
-			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
-		}
-		if strings.Contains(string(body), "Unsupported protocol version") {
-			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
 		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}

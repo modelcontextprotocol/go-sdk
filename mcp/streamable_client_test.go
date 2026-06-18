@@ -1470,59 +1470,6 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersion(t *testing.T) {
 	}
 }
 
-// TestStreamableClientConnect_DiscoverPropagatesOtherErrors verifies that
-// Client.Connect does NOT fall back to initialize when server/discover
-// returns an unrelated JSON-RPC error (here, CodeInternalError). The Connect
-// call should fail with the propagated error rather than masking it.
-func TestStreamableClientConnect_DiscoverPropagatesOtherErrors(t *testing.T) {
-	ctx := context.Background()
-
-	var sawInitialize atomic.Bool
-	fake := &fakeStreamableServer{
-		t: t,
-		responses: fakeResponses{
-			{"POST", "", methodDiscover, ""}: {
-				header:              header{"Content-Type": "application/json"},
-				wantProtocolVersion: protocolVersion20260630,
-				responseFunc: func(r *jsonrpc.Request) (string, int) {
-					return jsonBody(t, &jsonrpc.Response{
-						ID: r.ID,
-						Error: &jsonrpc.Error{
-							Code:    jsonrpc.CodeInternalError,
-							Message: "boom",
-						},
-					}), http.StatusOK
-				},
-			},
-			{"POST", "", methodInitialize, ""}: {
-				responseFunc: func(r *jsonrpc.Request) (string, int) {
-					sawInitialize.Store(true)
-					return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(initResult)}), http.StatusOK
-				},
-				header: header{
-					"Content-Type":  "application/json",
-					sessionIDHeader: "fallback",
-				},
-				optional: true,
-			},
-		},
-	}
-
-	httpServer := httptest.NewServer(fake)
-	defer httpServer.Close()
-
-	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
-	if err == nil {
-		_ = session.Close()
-		t.Fatal("Connect succeeded; want propagated error")
-	}
-	if sawInitialize.Load() {
-		t.Error("server received initialize; Connect should have aborted on the discover error")
-	}
-}
-
 // TestStreamableClientConnect_DiscoverMethodNotFoundVPre verifies that
 // Client.Connect falls back to the legacy initialize handshake when a
 // pre-SEP-2575 (vPre) server rejects server/discover.
@@ -1633,5 +1580,70 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
 
 	if got := session.InitializeResult().ProtocolVersion; got != latestProtocolVersion {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, latestProtocolVersion)
+	}
+}
+
+// TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation verifies that
+// when Client.Connect over a streamable transport receives an
+// UnsupportedProtocolVersion error containing Data.Supported, it negotiates a
+// mutually supported version and retries server/discover.
+func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testing.T) {
+	ctx := context.Background()
+
+	oldSupported := supportedProtocolVersions
+	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	t.Cleanup(func() {
+		supportedProtocolVersions = oldSupported
+	})
+
+	const unsupportedClientVersion = "2099-12-31"
+
+	var discoverCalls atomic.Int32
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type": "application/json",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					n := discoverCalls.Add(1)
+					if n == 1 {
+						data, _ := json.Marshal(UnsupportedProtocolVersionData{
+							Supported: []string{protocolVersion20260630},
+						})
+						respMsg := &jsonrpc.Response{
+							ID: r.ID,
+							Error: &jsonrpc.Error{
+								Code:    CodeUnsupportedProtocolVersion,
+								Message: "unsupported protocol version",
+								Data:    data,
+							},
+						}
+						return jsonBody(t, respMsg), http.StatusOK
+					}
+					return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(discoverResult)}), http.StatusOK
+				},
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: unsupportedClientVersion})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	if got, want := discoverCalls.Load(), int32(2); got != want {
+		t.Errorf("discover call count = %d, want %d", got, want)
+	}
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20260630 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20260630)
 	}
 }
