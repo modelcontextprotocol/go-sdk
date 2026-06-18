@@ -422,16 +422,16 @@ type ClientSession struct {
 	// only set synchronously during Client.Connect.
 	state clientSessionState
 
+	// Per-method TTL caches for list results (SEP-2549).
+	toolsCache             methodCache[*ListToolsResult]
+	promptsCache           methodCache[*ListPromptsResult]
+	resourcesCache         methodCache[*ListResourcesResult]
+	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
+	readResourceCache      methodCache[*ReadResourceResult]
+
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
-
-	// toolCacheMu guards toolCache.
-	toolCacheMu sync.RWMutex
-	// toolCache stores tool definitions keyed by name.
-	// It is used to look up x-mcp-header annotations when
-	// constructing Mcp-Param-* headers for tools/call requests.
-	toolCache map[string]*Tool
 }
 
 type clientSessionState struct {
@@ -513,19 +513,25 @@ func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
 }
 
-func (cs *ClientSession) cacheTools(tools []*Tool) {
-	cs.toolCacheMu.Lock()
-	defer cs.toolCacheMu.Unlock()
-	cs.toolCache = make(map[string]*Tool, len(tools))
-	for _, tool := range tools {
-		cs.toolCache[tool.Name] = tool
-	}
-}
-
-func (cs *ClientSession) getCachedTool(name string) *Tool {
-	cs.toolCacheMu.RLock()
-	defer cs.toolCacheMu.RUnlock()
-	return cs.toolCache[name]
+// lookupTool returns the most recently seen definition of the tool with the
+// given name across all cached ListTools results, or nil if no such tool has
+// been seen. It is used by CallTool to inject the tool definition into the
+// outgoing request context for transport-layer features (e.g. x-mcp-header
+// param annotations).
+func (cs *ClientSession) lookupTool(name string) *Tool {
+	var found *Tool
+	cs.toolsCache.forEachValid(func(r *ListToolsResult) {
+		if found != nil {
+			return
+		}
+		for _, t := range r.Tools {
+			if t.Name == name {
+				found = t
+				return
+			}
+		}
+	})
+	return found
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -1135,11 +1141,24 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 }
 
 // ListPrompts lists prompts that are currently available on the server.
+//
+// Results may be served from a client-side TTL cache populated by previous
+// calls; see SEP-2549.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.promptsCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.promptsCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // GetPrompt gets a prompt from the server.
@@ -1153,6 +1172,9 @@ func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams)
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.toolsCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
@@ -1160,7 +1182,9 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
-	cs.cacheTools(result.Tools)
+	if cs.usesNewProtocol() {
+		cs.toolsCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
@@ -1175,7 +1199,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.getCachedTool(params.Name); tool != nil {
+	if tool := cs.lookupTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	if cs.usesNewProtocol() {
@@ -1192,25 +1216,59 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourcesCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.resourcesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
 	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourceTemplatesCache, params); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.resourceTemplatesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
 	if cs.usesNewProtocol() {
+		var uri string
+		if params != nil {
+			uri = params.URI
+		}
+		if result, ok := cs.readResourceCache.get(uri); ok {
+			return result, nil
+		}
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.readResourceCache.put(params.URI, result)
+	}
+	return result, nil
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
@@ -1235,6 +1293,9 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.toolsCache.invalidate()
+	}
 	if h := c.opts.ToolListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1242,6 +1303,9 @@ func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChange
 }
 
 func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.promptsCache.invalidate()
+	}
 	if h := c.opts.PromptListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1249,6 +1313,10 @@ func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListCh
 }
 
 func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.resourcesCache.invalidate()
+		cs.resourceTemplatesCache.invalidate()
+	}
 	if h := c.opts.ResourceListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1256,6 +1324,9 @@ func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceLi
 }
 
 func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ResourceUpdatedNotificationRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok && req.Params != nil {
+		cs.readResourceCache.invalidateKey(req.Params.URI)
+	}
 	if h := c.opts.ResourceUpdatedHandler; h != nil {
 		h(ctx, req)
 	}
