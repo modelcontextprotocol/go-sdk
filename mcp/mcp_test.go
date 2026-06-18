@@ -2650,3 +2650,110 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 	case <-time.After(notificationDelay * 10):
 	}
 }
+
+// resourceSubServer builds a server that advertises resource subscriptions
+// and records every Subscribe/Unsubscribe handler invocation through chans.
+func resourceSubServer(t *testing.T, subCh, unsubCh chan string) *Server {
+	t.Helper()
+	s := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler: func(_ context.Context, r *SubscribeRequest) error {
+			subCh <- r.Params.URI
+			return nil
+		},
+		UnsubscribeHandler: func(_ context.Context, r *UnsubscribeRequest) error {
+			unsubCh <- r.Params.URI
+			return nil
+		},
+	})
+	s.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+	return s
+}
+
+// resourceSubEvent is one delivered notifications/resources/updated.
+type resourceSubEvent struct {
+	uri string
+	id  string // _meta subscription ID, stringified
+}
+
+// TestResourceSubscriptionsSEP2575_Streamable verifies the Subscribe ->
+// ResourceUpdated path on a stateless Streamable HTTP server.
+//
+// Caveat: per-subscription Unsubscribe is intentionally NOT verified here.
+// In stateless Streamable HTTP mode the subscriptions/listen handler blocks
+// on its request context, and neither the HTTP POST disconnect nor the
+// separate notifications/cancelled POST currently propagates to that
+// handler's context. The handler only unwinds when the server next attempts
+// a write to the (now-dead) SSE stream and the writeErr branch in the
+// jsonrpc2 layer cancels the in-flight request. To keep the test
+// hermetic we therefore trigger a write at the end by adding a resource,
+// which fires notifications/resources/list_changed on the auto-listen path
+// (if any) and on the per-URI listen, causing the listen handler to unwind.
+// The spec-correct fix is to plumb the POST's request context down to the
+// subscriptionsListen handler so HTTP disconnect is observed directly; this
+// is tracked separately.
+func TestResourceSubscriptions_Streamable(t *testing.T) {
+	enableNewProtocol(t)
+
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+	events := make(chan resourceSubEvent, 16)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			id := ""
+			if req.Params != nil && req.Params.Meta != nil {
+				id = fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])
+			}
+			events <- resourceSubEvent{uri: req.Params.URI, id: id}
+		},
+	})
+	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("subscribe r1: %v", err)
+	}
+	select {
+	case got := <-subCh:
+		if got != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", got, "file:///r1")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for SubscribeHandler")
+	}
+
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	select {
+	case e := <-events:
+		if e.uri != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", e.uri, "file:///r1")
+		}
+		if e.id == "" || e.id == "<nil>" {
+			t.Fatalf("missing subscription ID on update (got %q)", e.id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for resource update")
+	}
+
+	// See test header comment for the explanation of this teardown ritual:
+	// close the client, then drop server-side TCP, then drive a write that
+	// will fail (any extra ResourceUpdated for our URI), to unblock the
+	// in-flight listen handler so httpServer.Close can return.
+	_ = cs.Close()
+	httpServer.CloseClientConnections()
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	httpServer.Close()
+}

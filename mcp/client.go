@@ -455,6 +455,15 @@ type ClientSession struct {
 	// It is used to look up x-mcp-header annotations when
 	// constructing Mcp-Param-* headers for tools/call requests.
 	toolCache map[string]*Tool
+
+	// resourceSubsMu guards resourceSubs.
+	resourceSubsMu sync.Mutex
+	// resourceSubs maps a subscribed resource URI to the cancel func of the
+	// goroutine running its dedicated subscriptions/listen stream. Populated
+	// only under SEP-2575; the legacy protocol routes Subscribe and
+	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
+	// RPCs and leaves this map untouched.
+	resourceSubs map[string]context.CancelFunc
 }
 
 type clientSessionState struct {
@@ -524,6 +533,7 @@ func (cs *ClientSession) Close() error {
 	if cs.listenCancel != nil {
 		cs.listenCancel()
 	}
+	cs.cancelAllResourceSubscriptions()
 	err := cs.conn.Close()
 
 	if cs.onClose != nil && cs.calledOnClose.CompareAndSwap(false, true) {
@@ -1250,15 +1260,73 @@ func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (
 // Subscribe sends a "resources/subscribe" request to the server, asking for
 // notifications when the specified resource changes.
 func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
-	return err
+	if !cs.usesNewProtocol() {
+		_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
+		return err
+	}
+	if params == nil || params.URI == "" {
+		return fmt.Errorf("Subscribe: missing URI")
+	}
+	uri := params.URI
+
+	cs.resourceSubsMu.Lock()
+	if _, exists := cs.resourceSubs[uri]; exists {
+		cs.resourceSubsMu.Unlock()
+		return nil
+	}
+	listenCtx, cancel := context.WithCancel(context.Background())
+	if cs.resourceSubs == nil {
+		cs.resourceSubs = make(map[string]context.CancelFunc)
+	}
+	cs.resourceSubs[uri] = cancel
+	cs.resourceSubsMu.Unlock()
+
+	go func() {
+		_ = cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+			Notifications: NotificationSubscriptions{
+				ResourceSubscriptions: []string{uri},
+			},
+		})
+	}()
+	return nil
 }
 
-// Unsubscribe sends a "resources/unsubscribe" request to the server, cancelling
-// a previous subscription.
+// Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
+//
+// Under the legacy protocol it sends a "resources/unsubscribe" request.
+//
+// Under SEP-2575 it cancels the background "subscriptions/listen" stream
+// opened by Subscribe for the URI. Unsubscribe is idempotent: calling it for
+// a URI that is not currently subscribed is a no-op.
 func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
-	return err
+	if !cs.usesNewProtocol() {
+		_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
+		return err
+	}
+	if params == nil || params.URI == "" {
+		return fmt.Errorf("Unsubscribe: missing URI")
+	}
+	cs.resourceSubsMu.Lock()
+	cancel, ok := cs.resourceSubs[params.URI]
+	delete(cs.resourceSubs, params.URI)
+	cs.resourceSubsMu.Unlock()
+	if ok {
+		cancel()
+	}
+	return nil
+}
+
+// cancelAllResourceSubscriptions cancels every active SEP-2575 resource
+// subscription opened via Subscribe. The listen goroutines exit
+// asynchronously as their contexts unwind. Called from Close.
+func (cs *ClientSession) cancelAllResourceSubscriptions() {
+	cs.resourceSubsMu.Lock()
+	subs := cs.resourceSubs
+	cs.resourceSubs = nil
+	cs.resourceSubsMu.Unlock()
+	for _, cancel := range subs {
+		cancel()
+	}
 }
 
 // SubscriptionsListen opens a SEP-2575 "subscriptions/listen" stream and
