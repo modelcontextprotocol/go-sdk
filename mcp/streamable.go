@@ -2190,7 +2190,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
 			// doesn't set writeErr, which would prevent the legacy initialize
 			// fallback from succeeding on the same connection.
-			err = fmt.Errorf("%w: %w", jsonrpc2.ErrRejected, err)
+			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
 			// Transient errors (wrapped with ErrRejected) should not break the connection.
