@@ -447,13 +447,6 @@ type ClientSession struct {
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// toolCacheMu guards toolCache.
-	toolCacheMu sync.RWMutex
-	// toolCache stores tool definitions keyed by name.
-	// It is used to look up x-mcp-header annotations when
-	// constructing Mcp-Param-* headers for tools/call requests.
-	toolCache map[string]*Tool
-
 	// resourceSubsMu guards resourceSubs.
 	resourceSubsMu sync.Mutex
 	// resourceSubs maps a subscribed resource URI to the cancel func of the
