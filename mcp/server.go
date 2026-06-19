@@ -742,12 +742,17 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if req.Params == nil {
 		req.Params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
+	res, err := paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
 			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
@@ -819,12 +824,17 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
+	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
 			res.Tools = append(res.Tools, t.tool)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 // getServerTool looks up a server tool by name.
@@ -862,12 +872,17 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
+	res, err := paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
 			res.Resources = append(res.Resources, r.resource)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
@@ -876,13 +891,18 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if req.Params == nil {
 		req.Params = &ListResourceTemplatesParams{}
 	}
-	return paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
+	res, err := paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
 		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
 				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
@@ -902,6 +922,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}

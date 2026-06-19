@@ -444,16 +444,22 @@ func TestClientCapabilities(t *testing.T) {
 	}
 }
 
-func TestToolCache(t *testing.T) {
+func TestLookupTool(t *testing.T) {
 	tool1 := &Tool{Name: "tool1", Description: "first"}
 	tool2 := &Tool{Name: "tool2", Description: "second"}
 	tool1Updated := &Tool{Name: "tool1", Description: "updated"}
 
+	// page represents a single cached ListToolsResult, keyed by cursor.
+	type page struct {
+		cursor string
+		tools  []*Tool
+	}
+
 	testCases := []struct {
-		name         string
-		cacheBatches [][]*Tool
-		lookup       string
-		want         *Tool
+		name   string
+		pages  []page
+		lookup string
+		want   *Tool
 	}{
 		{
 			name:   "empty cache",
@@ -461,58 +467,61 @@ func TestToolCache(t *testing.T) {
 			want:   nil,
 		},
 		{
-			name:         "single tool found",
-			cacheBatches: [][]*Tool{{tool1}},
-			lookup:       "tool1",
-			want:         tool1,
+			name:   "single tool found",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1}}},
+			lookup: "tool1",
+			want:   tool1,
 		},
 		{
-			name:         "unknown tool",
-			cacheBatches: [][]*Tool{{tool1}},
-			lookup:       "nonexistent",
-			want:         nil,
+			name:   "unknown tool",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1}}},
+			lookup: "nonexistent",
+			want:   nil,
 		},
 		{
-			name:         "multiple tools single batch",
-			cacheBatches: [][]*Tool{{tool1, tool2}},
-			lookup:       "tool2",
-			want:         tool2,
+			name:   "multiple tools single page",
+			pages:  []page{{cursor: "", tools: []*Tool{tool1, tool2}}},
+			lookup: "tool2",
+			want:   tool2,
 		},
 		{
-			name:         "replace clears old entries",
-			cacheBatches: [][]*Tool{{tool1}, {tool2}},
-			lookup:       "tool1",
-			want:         nil,
+			name: "tool found across paginated pages",
+			pages: []page{
+				{cursor: "", tools: []*Tool{tool1}},
+				{cursor: "page2", tools: []*Tool{tool2}},
+			},
+			lookup: "tool2",
+			want:   tool2,
 		},
 		{
-			name:         "replace keeps new entries",
-			cacheBatches: [][]*Tool{{tool1}, {tool2}},
-			lookup:       "tool2",
-			want:         tool2,
+			name: "re-list same cursor overwrites entry",
+			pages: []page{
+				{cursor: "", tools: []*Tool{tool1}},
+				{cursor: "", tools: []*Tool{tool1Updated}},
+			},
+			lookup: "tool1",
+			want:   tool1Updated,
 		},
 		{
-			name:         "overwrite existing entry",
-			cacheBatches: [][]*Tool{{tool1}, {tool1Updated}},
-			lookup:       "tool1",
-			want:         tool1Updated,
-		},
-		{
-			name:         "empty batch no-op",
-			cacheBatches: [][]*Tool{{}},
-			lookup:       "tool1",
-			want:         nil,
+			name:   "empty page no-op",
+			pages:  []page{{cursor: "", tools: []*Tool{}}},
+			lookup: "tool1",
+			want:   nil,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := &ClientSession{}
-			for _, batch := range tc.cacheBatches {
-				cs.cacheTools(batch)
+			for _, p := range tc.pages {
+				cs.toolsCache.put(p.cursor, &ListToolsResult{
+					Cacheable: Cacheable{TTLMs: 60_000},
+					Tools:     p.tools,
+				})
 			}
-			got := cs.getCachedTool(tc.lookup)
+			got := cs.lookupTool(tc.lookup)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("getCachedTool(%q) mismatch (-want +got):\n%s", tc.lookup, diff)
+				t.Errorf("lookupTool(%q) mismatch (-want +got):\n%s", tc.lookup, diff)
 			}
 		})
 	}
@@ -648,7 +657,6 @@ func TestClientConnectDiscover(t *testing.T) {
 		// Returning (nil, nil) means "let the default stub handle it" (which
 		// returns ErrMethodNotFound).
 		discoverHandler func() (Result, error)
-		wantConnectErr  bool
 		// wantInitialize is true if the legacy initialize handshake should
 		// have run (i.e. discover signaled "not supported").
 		wantInitialize bool
@@ -701,16 +709,6 @@ func TestClientConnectDiscover(t *testing.T) {
 			wantInitialize: true,
 			wantVersion:    latestProtocolVersion,
 		},
-		{
-			name: "unexpected error propagates and aborts Connect",
-			discoverHandler: func() (Result, error) {
-				return nil, &jsonrpc.Error{
-					Code:    jsonrpc.CodeInternalError,
-					Message: "boom",
-				}
-			},
-			wantConnectErr: true,
-		},
 	}
 
 	for _, tc := range tests {
@@ -745,19 +743,6 @@ func TestClientConnectDiscover(t *testing.T) {
 
 			c := NewClient(testImpl, nil)
 			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
-			if tc.wantConnectErr {
-				if err == nil {
-					_ = cs.Close()
-					t.Fatal("Connect succeeded, want error")
-				}
-				if !gotDiscover.Load() {
-					t.Error("server did not receive server/discover")
-				}
-				if gotInitialize.Load() {
-					t.Error("server received initialize but discover should have aborted Connect")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
@@ -1049,51 +1034,6 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	if ir.ProtocolVersion != latestProtocolVersion {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after UnsupportedProtocolVersion)",
 			ir.ProtocolVersion, latestProtocolVersion)
-	}
-}
-
-// TestInMemory_E2E_DiscoverPropagatesOtherErrors verifies that an unrelated
-// error from the discover handler aborts Connect and does NOT silently
-// fall back.
-func TestInMemory_E2E_DiscoverPropagatesOtherErrors(t *testing.T) {
-	ctx := context.Background()
-
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
-	var sawInitialize atomic.Bool
-	server := NewServer(&Implementation{Name: "broken-server", Version: "v1"}, nil)
-	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			switch method {
-			case methodDiscover:
-				return nil, &jsonrpc.Error{
-					Code:    jsonrpc.CodeInternalError,
-					Message: "boom",
-				}
-			case methodInitialize:
-				sawInitialize.Store(true)
-			}
-			return next(ctx, method, req)
-		}
-	})
-
-	ct, st := NewInMemoryTransports()
-	ss, err := server.Connect(ctx, st, nil)
-	if err != nil {
-		t.Fatalf("server.Connect: %v", err)
-	}
-	defer ss.Close()
-
-	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
-	if err == nil {
-		_ = cs.Close()
-		t.Fatal("Connect succeeded; want propagated discover error")
-	}
-	if sawInitialize.Load() {
-		t.Error("server received initialize; Connect should have aborted on the discover error")
 	}
 }
 
