@@ -230,6 +230,33 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 	return nil, jsonrpc2.ErrNotHandled
 }
 
+func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
+	// The "%w"s in this function expose jsonrpc.Error as part of the API.
+	call := conn.Call(ctx, method, params)
+
+	go func() {
+		<-ctx.Done()
+		notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
+		defer cancelNotify()
+		_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+			Reason:    ctx.Err().Error(),
+			RequestID: call.ID().Raw(),
+		})
+		// By default, the jsonrpc2 library waits for graceful shutdown when the
+		// connection is closed, meaning it expects all outgoing and incoming
+		// requests to complete. However, for MCP this expectation is unrealistic,
+		// and can lead to hanging shutdown. For example, if a streamable client is
+		// killed, the server will not be able to detect this event, except via
+		// keepalive pings (if they are configured), and so outgoing calls may hang
+		// indefinitely.
+		//
+		// Therefore, we choose to eagerly retire calls, removing them from the
+		// outgoingCalls map, when the caller context is cancelled: if the caller
+		// will never receive the response, there's no need to track it.
+		conn.Retire(call, ctx.Err())
+	}()
+}
+
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {

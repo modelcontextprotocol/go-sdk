@@ -210,10 +210,14 @@ type ConnectionConfig struct {
 	OnInternalError func(error)               // optional
 }
 
+type IsSubscriptionsListenContextKey struct{}
+
 // NewConnection creates a new [Connection] object and starts processing
 // incoming messages.
 func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
-	ctx = notDone{ctx}
+	if val, _ := ctx.Value(IsSubscriptionsListenContextKey{}).(bool); !val {
+		ctx = notDone{ctx}
+	}
 
 	c := &Connection{
 		state:           inFlightState{closer: cfg.Closer},

@@ -3305,7 +3305,7 @@ func TestEphemeralConnectOpts(t *testing.T) {
 			}
 			req.Header.Set(protocolVersionHeader, pver)
 			req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, pver))
-			opts, usesNew, err := h.ephemeralConnectOpts(req)
+			opts, usesNew, _, err := h.ephemeralConnectOpts(req)
 			if err != nil {
 				t.Fatal(err)
 			}

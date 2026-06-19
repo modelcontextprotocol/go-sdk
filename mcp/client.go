@@ -313,14 +313,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				if subscribeParams.Notifications.ToolsListChanged ||
 					subscribeParams.Notifications.PromptsListChanged ||
 					subscribeParams.Notifications.ResourcesListChanged {
-					// The listen blocks until the server cancels it. Run it in
-					// a goroutine so Connect can return; ClientSession.Close
-					// cancels its context to send notifications/cancelled.
+					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
 					listenCtx, cancelListen := context.WithCancel(context.Background())
 					cs.listenCancel = cancelListen
-					go func() {
-						_ = cs.subscriptionsListen(listenCtx, subscribeParams)
-					}()
+					cs.subscriptionsListen(listenCtx, subscribeParams)
 				}
 				return cs, nil
 			}
@@ -1281,14 +1277,11 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	cs.resourceSubs[uri] = cancel
 	cs.resourceSubsMu.Unlock()
 
-	go func() {
-		_ = cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
-			Notifications: NotificationSubscriptions{
-				ResourceSubscriptions: []string{uri},
-			},
-		})
-	}()
-	return nil
+	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+		Notifications: NotificationSubscriptions{
+			ResourceSubscriptions: []string{uri},
+		},
+	})
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
@@ -1329,10 +1322,10 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 	}
 }
 
-// SubscriptionsListen opens a SEP-2575 "subscriptions/listen" stream and
-// blocks for the lifetime of the subscription. The server's first message on
-// the stream is "notifications/subscriptions/acknowledged"; subsequent
-// opted-in notifications (e.g. tools/list_changed) are delivered through the
+// SubscriptionsListen opens a SEP-2575 "subscriptions/listen" stream.
+//
+// The server's first message on the stream is "notifications/subscriptions/acknowledged";
+// subsequent opted-in notifications (e.g. tools/list_changed) are delivered through the
 // usual handlers registered in [ClientOptions].
 func (cs *ClientSession) subscriptionsListen(ctx context.Context, params *SubscriptionsListenParams) error {
 	params = injectRequestMeta(cs, params)

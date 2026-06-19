@@ -360,7 +360,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	connectOpts, usesNewProtocol, err := h.ephemeralConnectOpts(req)
+	connectOpts, usesNewProtocol, hasSubscriptionsListen, err := h.ephemeralConnectOpts(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -382,7 +382,11 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		logger:       h.opts.Logger,
 	}
 
-	session, err := connectStreamable(req.Context(), server, transport, connectOpts)
+	ctx := req.Context()
+	if hasSubscriptionsListen && usesNewProtocol {
+		ctx = context.WithValue(ctx, jsonrpc2.IsSubscriptionsListenContextKey{}, true)
+	}
+	session, err := connectStreamable(ctx, server, transport, connectOpts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 		http.Error(w, "failed connection", http.StatusInternalServerError)
@@ -417,7 +421,7 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 //
 // The returned usesNewProtocol bool reports whether the protocol version
 // header indicates a protocol version >= 2026-06-30 (SEP-2575).
-func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, err error) {
+func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, isSubscriptionsListen bool, err error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
@@ -426,7 +430,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	var hasInitialize, hasInitialized bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read body")
+		return nil, false, false, fmt.Errorf("failed to read body")
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -439,6 +443,8 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 					hasInitialize = true
 				case notificationInitialized:
 					hasInitialized = true
+				case methodSubscriptionsListen:
+					isSubscriptionsListen = true
 				}
 				if protocolVersion >= protocolVersion20260630 {
 					usesNewProtocol = true
@@ -463,7 +469,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	}
 	return &ServerSessionOptions{
 		State: state,
-	}, usesNewProtocol, nil
+	}, usesNewProtocol, isSubscriptionsListen, nil
 }
 
 func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
@@ -608,7 +614,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// that arrives before a session exists (e.g. initialize or ping) on a
 	// server configured this way.
 	if sessionID == "" {
-		connectOpts, _, err := h.ephemeralConnectOpts(req)
+		connectOpts, _, _, err := h.ephemeralConnectOpts(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1726,15 +1732,17 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	} else {
 		// In stateless mode there will always be only one stream per connection.
+		// If that stream was open to listen for subscription notifications,
+		// automatically select as the one to write the notification to.
 		for _, stream := range c.streams {
 			if stream.isListen {
 				s = stream
 				break
 			}
 		}
-	}
-	if s == nil {
-		s = c.streams[""] // standalone SSE stream
+		if s == nil {
+			s = c.streams[""] // standalone SSE stream
+		}
 	}
 	if responseTo.IsValid() {
 		// Once we've responded to a request, disallow related messages by removing
