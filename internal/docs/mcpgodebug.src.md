@@ -49,6 +49,15 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   restoring the previous behavior. The default behavior was changed so that
   the client always attempts to surface the underlying JSON-RPC error.
 
+### 1.6.1
+
+Options listed below were added and will be removed in the 1.8.0 version of the SDK.
+
+- `disablecontenttypecheck` added. If set to `1`, Content-Type validation on
+  HTTP POST requests will be disabled, allowing requests with non-JSON or missing
+  Content-Type headers. The default behavior is to validate that HTTP POST
+  requests have Content-Type: application/json.
+
 ### 1.6.0
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.

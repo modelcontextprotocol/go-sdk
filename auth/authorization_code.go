@@ -605,7 +605,17 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
-	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	// The token source outlives this authorization request: it is stored on the
+	// handler and used by the transport for the lifetime of the connection. The
+	// oauth2 library captures the context passed to TokenSource and reuses it for
+	// every subsequent token refresh (see golang.org/x/oauth2: tokenRefresher
+	// retains the context and passes it to each refresh round-trip). Binding it to
+	// the per-request ctx makes all later refreshes fail with "context canceled"
+	// once that request (or the connect operation that triggered authorization)
+	// completes. Use a background context that still carries the configured HTTP
+	// client so refreshes keep working for the life of the token source.
+	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
+	h.tokenSource = cfg.TokenSource(refreshCtx, token)
 	return nil
 }
 

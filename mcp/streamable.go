@@ -271,6 +271,12 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // the client always attempts to surface the underlying JSON-RPC error.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
+// disablecontenttypecheck is a compatibility parameter that allows to disable
+// Content-Type validation on POST requests.
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in the 1.8.0 version of the SDK.
+var disablecontenttypecheck = mcpgodebug.Value("disablecontenttypecheck")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -342,7 +348,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -566,7 +572,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 // ID, a new session is created (this is the normal path for the first
 // initialize request).
 func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *http.Request) {
-	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -1577,6 +1583,30 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	done := make(chan struct{})
 	stream.done = done
 	stream.protocolVersion = effectiveVersion
+
+	// Reject any call whose ID is already in flight on this session,
+	// atomically and without partial registration.
+	c.mu.Lock()
+	for reqID := range calls {
+		if _, ok := c.requestStreams[reqID]; ok {
+			c.mu.Unlock()
+			writeJSONRPCError(w, http.StatusBadRequest, reqID, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidRequest,
+				Message: fmt.Sprintf("duplicate in-flight request ID %v", reqID.Raw()),
+			})
+			return
+		}
+	}
+	c.streams[stream.id] = stream
+	for reqID := range calls {
+		c.requestStreams[reqID] = stream.id
+	}
+	c.mu.Unlock()
+
+	// TODO(rfindley): if we have no event store, we should really cancel all
+	// remaining requests here, since the client will never get the results.
+	defer stream.release()
+
 	if !useSSE {
 		// JSON mode: collect messages in pendingJSONMessages until done.
 		// Set pendingJSONMessages to a non-nil value to signal that this is an
@@ -1604,20 +1634,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 		}
 	}
-
-	// TODO(rfindley): if we have no event store, we should really cancel all
-	// remaining requests here, since the client will never get the results.
-	defer stream.release()
-
-	// The stream is now set up to deliver messages.
-	//
-	// Register it before publishing incoming messages.
-	c.mu.Lock()
-	c.streams[stream.id] = stream
-	for reqID := range calls {
-		c.requestStreams[reqID] = stream.id
-	}
-	c.mu.Unlock()
 
 	// Publish incoming messages.
 	for _, msg := range incoming {
@@ -2122,12 +2138,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	var requestSummary string
+	var requestMethod string
 	var forCall *jsonrpc.Request
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
 		requestSummary = fmt.Sprintf("sending %q", msg.Method)
 		if msg.IsCall() {
 			forCall = msg
+			requestMethod = msg.Method
 		}
 	case *jsonrpc.Response:
 		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
@@ -2203,10 +2221,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-		// Only fail the connection for non-transient errors.
-		// Transient errors (wrapped with ErrRejected) should not break the connection.
-		// ErrMethodNotFound and ErrUnsupportedProtocolVersion should not break the connection as they trigger the initialize fallback.
-		if !errors.Is(err, jsonrpc2.ErrRejected) && !errors.Is(err, jsonrpc2.ErrMethodNotFound) && !errors.Is(err, jsonrpc2.ErrUnsupportedProtocolVersion) {
+		if requestMethod == methodDiscover {
+			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
+			// doesn't set writeErr, which would prevent the legacy initialize
+			// fallback from succeeding on the same connection.
+			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
+			// Only fail the connection for non-transient errors.
+			// Transient errors (wrapped with ErrRejected) should not break the connection.
 			c.fail(err)
 		}
 		return err
@@ -2419,10 +2441,8 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// By default, always try to decode the body and surface the underlying
-		// JSON-RPC error (or detect vPre servers that reject "server/discover"
-		// as an unsupported method with a plain HTTP 400) regardless of the
-		// negotiated protocol version. Setting MCPGODEBUG=noprotocolerrorbody=1
-		// restores the previous behavior.
+		// JSON-RPC error.
+		// Setting MCPGODEBUG=noprotocolerrorbody=1 restores the previous behavior.
 		if noprotocolerrorbody == "1" {
 			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 		}
@@ -2430,12 +2450,6 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		msg, _ := jsonrpc.DecodeMessage(body)
 		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
 			return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
-		}
-		if strings.Contains(string(body), fmt.Sprintf("%s: %q unsupported", jsonrpc2.ErrNotHandled, methodDiscover)) {
-			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrMethodNotFound, http.StatusText(resp.StatusCode))
-		}
-		if strings.Contains(string(body), "Unsupported protocol version") {
-			return fmt.Errorf("%s: %w: %v", requestSummary, jsonrpc2.ErrUnsupportedProtocolVersion, http.StatusText(resp.StatusCode))
 		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}

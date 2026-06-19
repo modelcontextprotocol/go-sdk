@@ -739,7 +739,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 
 	// For cancelled or rejected requests, we don't set the writeErr (which would
 	// break the connection). They can just be returned to the caller.
-	if err != nil && ctx.Err() == nil && !errors.Is(err, ErrRejected) && !errors.Is(err, ErrUnsupportedProtocolVersion) && !errors.Is(err, ErrMethodNotFound) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, ErrRejected) {
 		// The call to Write failed, and since ctx.Err() is nil we can't attribute
 		// the failure (even indirectly) to Context cancellation. The writer appears
 		// to be broken, and future writes are likely to also fail.

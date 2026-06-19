@@ -238,7 +238,8 @@ func (s *Server) RemovePrompts(names ...string) {
 // that takes no input, or one where any input is valid, set [Tool.InputSchema] to
 // `{"type": "object"}`, using your preferred library or `json.RawMessage`.
 //
-// If present, [Tool.OutputSchema] must also have type "object".
+// If present, [Tool.OutputSchema] may be any valid JSON Schema (object, array,
+// primitive, or composition).
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage.
@@ -285,16 +286,10 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 			if s == nil {
 				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
 			}
-			if s.Type != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
-			}
 		} else {
-			var m map[string]any
+			var m any
 			if err := remarshal(t.OutputSchema, &m); err != nil {
-				panic(fmt.Errorf("AddTool %q: can't marshal output schema to a JSON object: %v", t.Name, err))
-			}
-			if typ := m["type"]; typ != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
+				panic(fmt.Errorf("AddTool %q: can't marshal output schema to JSON: %v", t.Name, err))
 			}
 		}
 	}
@@ -346,7 +341,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 		// Validate input and apply defaults.
 		var err error
-		input, err = applySchema(input, inputResolved)
+		input, err = applySchema(input, inputResolved, false)
 		if err != nil {
 			var errRes CallToolResult
 			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
@@ -408,7 +403,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			//
 			// We validate against the JSON, rather than the output value, as
 			// some types may have custom JSON marshalling (issue #447).
-			outJSON, err = applySchema(outJSON, outputResolved)
+			outJSON, err = applySchema(outJSON, outputResolved, true)
 			if err != nil {
 				return nil, fmt.Errorf("validating tool output: %w", err)
 			}
@@ -417,10 +412,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			// If the Content field isn't being used, return the serialized JSON in a
 			// TextContent block, as the spec suggests:
 			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+			//
+			// Ensure a serialized-JSON TextContent fallback is present in case of servers using array
+			// or primitive structuredContent, so that pre-SEP-2106 clients can recover the structured
+			// payload from unstructured content.
 			if res.Content == nil {
 				res.Content = []Content{&TextContent{
 					Text: string(outJSON),
 				}}
+			} else if !isObjectJSON(outJSON) {
+				res.Content = append(res.Content, &TextContent{
+					Text: string(outJSON),
+				})
 			}
 		}
 		return res, nil
@@ -531,9 +534,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 // empty object schema value.
 //
 // If the tool's output schema is nil, and the Out type is not 'any', the
-// output schema is set to the schema inferred from the Out type argument,
-// which must also be a map or struct. If the Out type is 'any', the output
-// schema is omitted.
+// output schema is set to the schema inferred from the Out type argument.
+// Per SEP-2106, the Out type may be any Go type whose inferred schema is a
+// valid JSON Schema (struct, map, slice, primitive, etc.). If the Out type is
+// 'any', the output schema is omitted.
 //
 // Unlike [Server.AddTool], AddTool does a lot automatically, and forces
 // tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
@@ -785,12 +789,17 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if req.Params == nil {
 		req.Params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
+	res, err := paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
 			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
@@ -862,12 +871,17 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
+	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
 			res.Tools = append(res.Tools, t.tool)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 // getServerTool looks up a server tool by name.
@@ -905,12 +919,17 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
+	res, err := paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
 			res.Resources = append(res.Resources, r.resource)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
@@ -919,13 +938,18 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if req.Params == nil {
 		req.Params = &ListResourceTemplatesParams{}
 	}
-	return paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
+	res, err := paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
 		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
 				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
@@ -945,6 +969,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
+	res.setDefaultCacheableValues()
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}

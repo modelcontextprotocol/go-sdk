@@ -124,3 +124,26 @@ func TestIOConnRead(t *testing.T) {
 		})
 	}
 }
+
+// go-sdk#976: stdio must surface empty-method calls as requests, not responses.
+func TestIOConnRead_EmptyMethod(t *testing.T) {
+	tr := newIOConn(rwc{
+		rc: io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":5,"method":"","params":{}}`)),
+	})
+	t.Cleanup(func() { tr.Close() })
+
+	msg, err := tr.Read(context.Background())
+	if err != nil {
+		t.Fatalf("ioConn.Read() error = %v", err)
+	}
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok {
+		t.Fatalf("message type = %T, want *jsonrpc.Request", msg)
+	}
+	if req.Method != "" {
+		t.Errorf("Method = %q, want empty string", req.Method)
+	}
+	if req.ID != jsonrpc2.Int64ID(5) {
+		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+}

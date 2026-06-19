@@ -270,7 +270,9 @@ type CallToolResult struct {
 	Content []Content `json:"content"`
 
 	// StructuredContent is an optional value that represents the structured
-	// result of the tool call. It must marshal to a JSON object.
+	// result of the tool call. Per SEP-2106, it may marshal to any valid JSON
+	// value (object, array, or primitive) conforming to the tool's
+	// [Tool.OutputSchema].
 	//
 	// When using a [ToolHandlerFor] with structured output, you should not
 	// populate this field. It will be automatically populated with the typed Out
@@ -1100,11 +1102,53 @@ func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x)
 func (x *ListPromptsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
 
+// CacheableResult is a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type CacheableResult interface {
+	Result
+	GetTTLMs() int
+	GetCacheScope() string
+}
+
+// Cacheable describes a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type Cacheable struct {
+	// A hint from the server indicating how long (in milliseconds) the
+	// client MAY cache this response before re-fetching. Semantics are
+	// analogous to HTTP Cache-Control max-age.
+	//
+	// If 0, the response SHOULD be considered immediately stale.
+	// If positive, the client SHOULD consider the result fresh for this
+	// many milliseconds after receiving the response.
+	TTLMs int `json:"ttlMs"`
+
+	// Indicates the intended scope of the cached response, analogous to
+	// HTTP Cache-Control: public vs Cache-Control: private.
+	//
+	// "public": Any client or intermediary MAY cache and serve the response.
+	// "private": Only the requesting user's client MAY cache the response.
+	//
+	// Defaults to "public" if absent.
+	CacheScope string `json:"cacheScope"`
+}
+
+// GetTTLMs returns the TTL hint in milliseconds.
+func (c Cacheable) GetTTLMs() int { return c.TTLMs }
+
+// GetCacheScope returns the cache scope.
+func (c Cacheable) GetCacheScope() string { return c.CacheScope }
+
+// setDefaultCacheableValues sets the default values for the cacheable fields.
+func (c *Cacheable) setDefaultCacheableValues() {
+	c.CacheScope = "public"
+}
+
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string    `json:"nextCursor,omitempty"`
@@ -1134,6 +1178,7 @@ type ListResourceTemplatesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor        string              `json:"nextCursor,omitempty"`
@@ -1163,6 +1208,7 @@ type ListResourcesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string      `json:"nextCursor,omitempty"`
@@ -1217,6 +1263,7 @@ type ListToolsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string  `json:"nextCursor,omitempty"`
@@ -1458,7 +1505,8 @@ func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 type ReadResourceResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta     `json:"_meta,omitempty"`
+	Meta `json:"_meta,omitempty"`
+	Cacheable
 	Contents []*ResourceContents `json:"contents"`
 
 	// InputRequests is populated when ResultType is ResultTypeInputRequired.

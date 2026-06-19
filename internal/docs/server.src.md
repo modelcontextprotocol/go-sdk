@@ -165,9 +165,13 @@ mcp.AddTool(server, &mcp.Tool{Name: "my_tool"}, handler)
 
 This does the following automatically:
 
-- If `Tool.InputSchema` or `Tool.OutputSchema` are unset, the input and output
-  schemas are inferred from the `In` type, which must be a struct or map.
-  Optional `jsonschema` struct tags provide argument descriptions.
+- If `Tool.InputSchema` is unset, the input schema is inferred from the `In`
+  type, which must be a struct or map.
+- If `Tool.OutputSchema` is unset and the `Out` type is not `any`, the output
+  schema is inferred from the `Out` type. Per SEP-2106, `Out` may be any Go
+  type whose inferred schema is a valid JSON Schema (struct, map, slice,
+  primitive, etc.).
+- Optional `jsonschema` struct tags provide argument and output descriptions.
 - Tool arguments are validated against the input schema.
 - Tool arguments are marshaled into the `In` value.
 - Tool output (the `Out` value) is marshaled into the result's
