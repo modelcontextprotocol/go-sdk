@@ -653,7 +653,9 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 	return s.opts.CompletionHandler(ctx, req)
 }
 
-// Map from notification name to its corresponding params.
+// Map from notification name to a function creating its corresponding Params.
+// We need to create a fresh one each time to add the jsonrpc ID. See
+// [injectMetaSubscriptionID].
 var changeNotificationParams = map[string]func() Params{
 	notificationToolListChanged:     func() Params { return &ToolListChangedParams{} },
 	notificationPromptListChanged:   func() Params { return &PromptListChangedParams{} },
@@ -698,8 +700,15 @@ func (s *Server) changeAndNotify(notification string, change func() bool) {
 // notification type.
 func (s *Server) notifySessions(n string) {
 	s.mu.Lock()
-	sessions := slices.Clone(s.sessions)
 	s.pendingNotifications[n] = nil
+	// Legacy (pre-SEP-2575) sessions receive list-changed notifications on the
+	// shared session channel without opt-in; collect them while we hold the lock.
+	var legacySessions []*ServerSession
+	for _, sess := range s.sessions {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260630 {
+			legacySessions = append(legacySessions, sess)
+		}
+	}
 	var subscribers map[*ServerSession]jsonrpc.ID
 	switch n {
 	case notificationToolListChanged:
@@ -711,13 +720,6 @@ func (s *Server) notifySessions(n string) {
 	}
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 
-	// Legacy sessions receive list-changed notifications on the shared session channel without opt-in.
-	var legacySessions []*ServerSession
-	for _, sess := range sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260630 {
-			legacySessions = append(legacySessions, sess)
-		}
-	}
 	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
 
 	// Sessions receive the notification only if they opened a
@@ -734,6 +736,12 @@ func (s *Server) notifySessions(n string) {
 	}
 }
 
+// injectMetaSubscriptionID stamps the listen request's JSON-RPC ID into the
+// params' _meta under [MetaKeySubscriptionID], so the receiving client can
+// correlate the notification with the [subscriptions/listen] stream it
+// originated.
+//
+// [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
 func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
 	m := params.GetMeta()
 	if m == nil {

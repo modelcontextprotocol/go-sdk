@@ -316,7 +316,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
 					listenCtx, cancelListen := context.WithCancel(context.Background())
 					cs.listenCancel = cancelListen
-					cs.subscriptionsListen(listenCtx, subscribeParams)
+					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
+						cancelListen()
+						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
+					}
 				}
 				return cs, nil
 			}
