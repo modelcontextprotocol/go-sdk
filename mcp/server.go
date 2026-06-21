@@ -1076,7 +1076,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
 	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for _, sess := range newSessions {
 		reqID := subscribedSessions[sess]
@@ -1420,14 +1420,6 @@ type ServerSession struct {
 
 	mu    sync.Mutex
 	state ServerSessionState
-}
-
-// listenSubscription records the notification types a single
-// subscriptions/listen stream has opted in to.
-type listenSubscription struct {
-	toolsListChanged     bool
-	promptsListChanged   bool
-	resourcesListChanged bool
 }
 
 func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
