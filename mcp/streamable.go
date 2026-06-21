@@ -366,14 +366,14 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	connectOpts, usesNewProtocol, hasSubscriptionsListen, err := h.ephemeralConnectOpts(req)
+	info, err := h.ephemeralConnectOpts(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var sessionID string
-	if legacySessions && !usesNewProtocol {
+	if legacySessions && !info.usesNewProtocol {
 		sessionID = req.Header.Get(sessionIDHeader)
 		if sessionID == "" {
 			sessionID = server.opts.GetSessionID()
@@ -389,10 +389,10 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	ctx := req.Context()
-	if hasSubscriptionsListen && usesNewProtocol {
+	if info.isSubscriptionsListen && info.usesNewProtocol {
 		ctx = context.WithValue(ctx, jsonrpc2.IsSubscriptionsListenContextKey{}, true)
 	}
-	session, err := connectStreamable(ctx, server, transport, connectOpts)
+	session, err := connectStreamable(ctx, server, transport, info.opts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 		http.Error(w, "failed connection", http.StatusInternalServerError)
@@ -416,27 +416,29 @@ func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ephemeralConnectOpts peeks at the request body to determine whether it
-// contains an initialize or initialized message or whether the protocol version
-// header indicates a protocol version >= 2026-06-30 (SEP-2575).
+type ephemeralConnectInfo struct {
+	opts                  *ServerSessionOptions
+	usesNewProtocol       bool
+	isSubscriptionsListen bool
+}
+
+// ephemeralConnectOpts peeks at the request body to determine connection
+// parameters and whether protocol version >= 2026-06-30 (SEP-2575).
 //
 // For old-protocol requests, default session state is synthesized so that
 // the session's init gate doesn't reject the request.
 //
 // It is used for both stateless servers and stateful servers with no session ID.
-//
-// The returned usesNewProtocol bool reports whether the protocol version
-// header indicates a protocol version >= 2026-06-30 (SEP-2575).
-func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *ServerSessionOptions, usesNewProtocol bool, isSubscriptionsListen bool, err error) {
+func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*ephemeralConnectInfo, error) {
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
 		protocolVersion = protocolVersion20250326
 	}
 
-	var hasInitialize, hasInitialized bool
+	var hasInitialize, hasInitialized, usesNewProtocol, isSubscriptionsListen bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, false, false, fmt.Errorf("failed to read body")
+		return nil, fmt.Errorf("failed to read body")
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -473,9 +475,13 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (opts *S
 	if !usesNewProtocol {
 		state.LogLevel = "info"
 	}
-	return &ServerSessionOptions{
-		State: state,
-	}, usesNewProtocol, isSubscriptionsListen, nil
+	return &ephemeralConnectInfo{
+		opts: &ServerSessionOptions{
+			State: state,
+		},
+		usesNewProtocol:       usesNewProtocol,
+		isSubscriptionsListen: isSubscriptionsListen,
+	}, nil
 }
 
 func connectStreamable(ctx context.Context, server *Server, transport *StreamableServerTransport, opts *ServerSessionOptions) (*ServerSession, error) {
@@ -620,12 +626,12 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	// that arrives before a session exists (e.g. initialize or ping) on a
 	// server configured this way.
 	if sessionID == "" {
-		connectOpts, _, _, err := h.ephemeralConnectOpts(req)
+		info, err := h.ephemeralConnectOpts(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		session, err := connectStreamable(req.Context(), server, transport, connectOpts)
+		session, err := connectStreamable(req.Context(), server, transport, info.opts)
 		if err != nil {
 			h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 			http.Error(w, "failed connection", http.StatusInternalServerError)
