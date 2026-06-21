@@ -20,6 +20,12 @@ SDK, as well as inspecting MCP traffic.
 
 ## Collecting MCP logs
 
+> **Note:** `LoggingTransport` is a debugging tool that records JSON-RPC
+> traffic; it is **not** the deprecated MCP logging feature
+> ([SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)),
+> which concerns `logging/setLevel` and `notifications/message`.
+> `LoggingTransport` is unaffected by that deprecation.
+
 For [stdio](protocol.md#stdio-transport) transport connections, you can also
 inspect MCP traffic using a `LoggingTransport`:
 

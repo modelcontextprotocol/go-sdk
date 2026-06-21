@@ -4,6 +4,13 @@
 
 ## Roots
 
+> **Note:** The roots feature is deprecated as of protocol version 2026-07-28
+> ([SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)).
+> It remains fully functional during the deprecation window (at least twelve
+> months). The SDK continues to support roots for compatibility. New code
+> should pass paths via tool parameters, resource URIs, or configuration
+> instead.
+
 MCP allows clients to specify a set of filesystem
 ["roots"](https://modelcontextprotocol.io/specification/2025-06-18/client/roots).
 The SDK supports this as follows:
@@ -25,6 +32,13 @@ method. To receive notifications about root changes, set
 %include ../../mcp/client_example_test.go roots -
 
 ## Sampling
+
+> **Note:** The sampling feature is deprecated as of protocol version
+> 2026-07-28
+> ([SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)).
+> It remains fully functional during the deprecation window (at least twelve
+> months). The SDK continues to support sampling for compatibility. Servers
+> that need LLM completions should call LLM provider APIs directly.
 
 [Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
 is a way for servers to leverage the client's AI capabilities. It is

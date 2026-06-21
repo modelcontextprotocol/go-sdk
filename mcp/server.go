@@ -70,6 +70,12 @@ type ServerOptions struct {
 	// If zero, defaults to [DefaultPageSize].
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
+	//
+	// Deprecated: the roots feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to passing paths via tool
+	// parameters, resource URIs, or configuration. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
@@ -979,7 +985,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 		defer util.Wrapf(&err, "reading resource %s", req.Params.URI)
 
 		// TODO(#25): use a memoizing API here.
-		rootRes, err := req.Session.ListRoots(ctx, nil)
+		rootRes, err := req.Session.listRoots(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("listing roots: %w", err)
 		}
@@ -1304,7 +1310,20 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 }
 
 // ListRoots lists the client roots.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
+	return ss.listRoots(ctx, params)
+}
+
+// listRoots is the unexported implementation of ListRoots, used by the SDK's
+// own call sites so they don't trip staticcheck SA1019 on the deprecated
+// public method.
+func (ss *ServerSession) listRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
 		return nil, err
 	}
@@ -1316,6 +1335,12 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // If the client returns multiple content blocks (e.g. parallel tool calls),
 // CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
 // for tool-enabled sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to calling LLM provider APIs directly
+// from your server. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
@@ -1353,7 +1378,20 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // returning a [CreateMessageWithToolsResult] that supports array content
 // (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
 // when the request includes tools.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to calling LLM provider APIs directly
+// from your server. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
+	return ss.createMessageWithTools(ctx, params)
+}
+
+// createMessageWithTools is the unexported implementation of
+// CreateMessageWithTools, used by the SDK's own call sites so they don't trip
+// staticcheck SA1019 on the deprecated public method.
+func (ss *ServerSession) createMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
@@ -1454,7 +1492,20 @@ type logLevelContextKey struct{}
 // originating request's `_meta` field (SEP-2575); an absent or empty value
 // suppresses the message per spec. For old-protocol requests, the level is
 // taken from the session state set via `logging/setLevel`.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to stderr logging (for STDIO servers) or
+// OpenTelemetry. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
+	return ss.log(ctx, params)
+}
+
+// log is the unexported implementation of Log, used by the SDK's own call
+// sites (notably [LoggingHandler]) so they don't trip staticcheck SA1019 on
+// the deprecated public method.
+func (ss *ServerSession) log(ctx context.Context, params *LoggingMessageParams) error {
 	logLevel, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
 	if !ok {
 		ss.mu.Lock()
