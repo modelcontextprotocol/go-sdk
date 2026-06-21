@@ -534,6 +534,14 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 			ac.retire(&Response{ID: id, Error: err})
 		}
 		s.outgoingCalls = nil
+
+		// Cancel any incoming requests still in flight: with the reader gone we
+		// cannot receive cancellation notifications, and likely cannot write a
+		// response either, so parked handlers have nothing useful left to do.
+		// Mirrors the equivalent cleanup on write failure.
+		for _, r := range s.incomingByID {
+			r.cancel()
+		}
 	})
 }
 
@@ -728,10 +736,13 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 	var err error
 	// Fail writes immediately if the connection is shutting down.
 	//
-	// TODO(rfindley): should we allow cancellation notifications through? It
-	// could be the case that writes can still succeed.
+	// Allow outgoing "notifications/cancelled" to allow the remote end
+	// to cancel in-flight calls.
 	c.updateInFlight(func(s *inFlightState) {
-		err = s.shuttingDown(ErrServerClosing)
+		req, ok := msg.(*Request)
+		if !ok || req.Method != "notifications/cancelled" {
+			err = s.shuttingDown(ErrServerClosing)
+		}
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
