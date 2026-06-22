@@ -201,14 +201,29 @@ type Writer interface {
 
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
 type ConnectionConfig struct {
-	Reader                Reader                    // required
-	Writer                Writer                    // required
-	Closer                io.Closer                 // required
-	Preempter             Preempter                 // optional
-	Bind                  func(*Connection) Handler // required
-	OnDone                func()                    // optional
-	OnInternalError       func(error)               // optional
-	PropagateCancellation bool                      // optional
+	Reader          Reader                    // required
+	Writer          Writer                    // required
+	Closer          io.Closer                 // required
+	Preempter       Preempter                 // optional
+	Bind            func(*Connection) Handler // required
+	OnDone          func()                    // optional
+	OnInternalError func(error)               // optional
+
+	// PropagateCancellation controls whether cancellation of the context
+	// passed to [NewConnection] is observable by request handlers.
+	//
+	// By default (false), the connection wraps that context (see [notDone])
+	// so handlers' Done channels do not fire when the connection's root
+	// context is cancelled. Cancellation of an in-flight handler is then
+	// expected to flow only through the jsonrpc2 layer's explicit channels
+	// (the [Preempter] reacting to the peer's cancel notification, or a
+	// transport read/write failure cancelling every in-flight request).
+	//
+	// Set this true when cancellation of the connection's context is itself
+	// a meaningful signal that handlers should react to (for example, when
+	// the connection is tied to a carrier that owns it and whose end means
+	// the request is cancelled).
+	PropagateCancellation bool // optional
 }
 
 // NewConnection creates a new [Connection] object and starts processing
