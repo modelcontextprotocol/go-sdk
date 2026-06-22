@@ -355,15 +355,15 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 
 // MCP-specific error codes.
 const (
-	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
-	// SEP-2575 for MissingRequiredClientCapabilitiesError.
-	CodeMissingRequiredClientCapabilities = -32003
-	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
-	// SEP-2575 for UnsupportedProtocolVersionError.
-	CodeUnsupportedProtocolVersion = -32004
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
-	CodeHeaderMismatch = -32001
+	CodeHeaderMismatch = -32020
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32021
+	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
+	// SEP-2575 for UnsupportedProtocolVersionError.
+	CodeUnsupportedProtocolVersion = -32022
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation
 	// before processing the request. The client should execute the elicitation handler
 	// with the elicitations provided in the error data.

@@ -2050,7 +2050,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 }
 
 // TestStreamableMcpHeaderValidationErrorFormat verifies that header
-// validation errors return a JSON-RPC error with code -32001 and
+// validation errors return a JSON-RPC error with code -32020 and
 // Content-Type application/json, per SEP-2243.
 func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	orig := supportedProtocolVersions
@@ -2125,7 +2125,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", baseMediaType(toolCallResp.Header.Get("Content-Type")), "application/json")
 	}
 
-	// Verify JSON-RPC error body contains error code -32001.
+	// Verify JSON-RPC error body contains error code -32020.
 	msg, err := jsonrpc2.DecodeMessage(toolCallRespBody)
 	if err != nil {
 		t.Fatalf("failed to decode message: %v", err)
@@ -2138,8 +2138,8 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	if !errors.As(resp.Error, &wireErr) {
 		t.Fatalf("expected *jsonrpc2.WireError, got %T", resp.Error)
 	}
-	if wireErr.Code != -32001 {
-		t.Errorf("wireErr.Code = %d, want -32001", wireErr.Code)
+	if wireErr.Code != CodeHeaderMismatch {
+		t.Errorf("wireErr.Code = %d, want %d", wireErr.Code, CodeHeaderMismatch)
 	}
 	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
 		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
