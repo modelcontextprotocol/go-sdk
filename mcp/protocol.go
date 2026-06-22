@@ -712,15 +712,7 @@ func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageWithToolsParams struct {
-	Meta `json:"_meta,omitempty"`
-	// IncludeContext requests inclusion of context from one or more MCP servers.
-	//
-	// The default is "none". The values "thisServer" and "allServers" are
-	// deprecated as of protocol version 2025-11-25 (SEP-2596) and will be
-	// removed no later than the sampling feature itself (SEP-2577). Servers
-	// SHOULD omit this field or use "none", and SHOULD only use the deprecated
-	// values if the client declares ClientCapabilities.Sampling.Context. See
-	// https://modelcontextprotocol.io/seps/2596-feature-lifecycle-and-deprecation-policy.
+	Meta           `json:"_meta,omitempty"`
 	IncludeContext string `json:"includeContext,omitempty"`
 	MaxTokens      int64  `json:"maxTokens"`
 	// Messages supports array content for tool_use and tool_result blocks.

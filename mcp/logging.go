@@ -72,8 +72,7 @@ func compareLevels(l1, l2 LoggingLevel) int {
 //
 // Deprecated: the logging feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
-// (at least twelve months). Migrate to stderr logging (for STDIO servers) or
-// OpenTelemetry. See
+// (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingHandlerOptions struct {
 	// The value for the "logger" field of logging notifications.
@@ -88,8 +87,7 @@ type LoggingHandlerOptions struct {
 //
 // Deprecated: the logging feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
-// (at least twelve months). Migrate to stderr logging (for STDIO servers) or
-// OpenTelemetry. See
+// (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingHandler struct {
 	opts LoggingHandlerOptions
@@ -116,8 +114,7 @@ func ensureLogger(l *slog.Logger) *slog.Logger {
 //
 // Deprecated: the logging feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
-// (at least twelve months). Migrate to stderr logging (for STDIO servers) or
-// OpenTelemetry. See
+// (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingHandler {
 	var buf bytes.Buffer

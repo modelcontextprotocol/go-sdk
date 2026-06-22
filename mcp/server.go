@@ -1472,8 +1472,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 //
 // Deprecated: the logging feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
-// (at least twelve months). Migrate to stderr logging (for STDIO servers) or
-// OpenTelemetry. See
+// (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()

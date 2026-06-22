@@ -173,8 +173,7 @@ type ClientOptions struct {
 	//
 	// Deprecated: the logging feature is deprecated as of protocol version
 	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
-	// window (at least twelve months). Migrate to consuming stderr output
-	// (for STDIO servers) or OpenTelemetry. See
+	// window (at least twelve months). See
 	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
