@@ -36,7 +36,7 @@ const (
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
 	latestProtocolVersion   = protocolVersion20251125
-	protocolVersion20260630 = "2026-06-30"
+	protocolVersion20260728 = "2026-07-28"
 	protocolVersion20251125 = "2025-11-25"
 	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
@@ -504,7 +504,7 @@ type validatedMeta struct {
 }
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
-// the >= 2026-06-30 protocol via the `_meta` field.
+// the >= 2026-07-28 protocol via the `_meta` field.
 // If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
 // validatedMeta with usesNewProtocol set to false, and a nil error.
 // If the request has a protocolVersion in _meta:
@@ -518,7 +518,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok || protocolVersion < protocolVersion20260630 {
+	if !ok || protocolVersion < protocolVersion20260728 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	// Notifications do not carry full client identity.
@@ -585,7 +585,7 @@ type RequestExtra struct {
 	// to configure the reconnection delay.
 	//
 	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
-	// This mechanism is deprecated in protocol version 2026-06-30 as the resumability
+	// This mechanism is deprecated in protocol version 2026-07-28 as the resumability
 	// feature is removed.
 	CloseSSEStream func(CloseSSEStreamArgs)
 }
@@ -611,7 +611,7 @@ func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
 
 // ProtocolVersion returns the protocol version negotiated for this request.
 //
-// For requests following the >= 2026-06-30 protocol, the value is read from
+// For requests following the >= 2026-07-28 protocol, the value is read from
 // the per-request `_meta` field. For older protocol requests, the value falls
 // back to the session-level [InitializeParams] established during the
 // initialize handshake.
@@ -631,7 +631,7 @@ func (r *ServerRequest[P]) ProtocolVersion() string {
 
 // ClientInfo returns the [Implementation] identifying the calling client.
 //
-// For requests following the >= 2026-06-30 protocol, the value is read from
+// For requests following the >= 2026-07-28 protocol, the value is read from
 // the per-request `_meta` field. For older protocol requests, the value falls
 // back to the session-level [InitializeParams].
 func (r *ServerRequest[P]) ClientInfo() *Implementation {
@@ -650,7 +650,7 @@ func (r *ServerRequest[P]) ClientInfo() *Implementation {
 
 // ClientCapabilities returns the [ClientCapabilities] of the calling client.
 //
-// For requests following the >= 2026-06-30 protocol, the value is read from
+// For requests following the >= 2026-07-28 protocol, the value is read from
 // the per-request `_meta` field. For older protocol requests, the value falls
 // back to the session-level [InitializeParams].
 func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {

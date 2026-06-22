@@ -67,7 +67,7 @@ func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
 	if iparams := ss.InitializeParams(); iparams != nil {
 		protocolVersion = iparams.ProtocolVersion
 	}
-	return protocolVersion >= protocolVersion20260630
+	return protocolVersion >= protocolVersion20260728
 }
 
 func clientMultiRoundTripMiddleware() Middleware {

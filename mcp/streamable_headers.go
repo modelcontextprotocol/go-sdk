@@ -27,7 +27,7 @@ const (
 	methodHeader                 = "Mcp-Method"
 	nameHeader                   = "Mcp-Name"
 	paramHeaderPrefix            = "Mcp-Param-"
-	minVersionForStandardHeaders = protocolVersion20260630
+	minVersionForStandardHeaders = protocolVersion20260728
 	base64Prefix                 = "=?base64?"
 	base64Suffix                 = "?="
 )

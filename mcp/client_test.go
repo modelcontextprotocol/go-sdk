@@ -642,9 +642,9 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 // don't overlap with the SDK. The test then asserts the resulting session
 // state and whether the legacy initialize handshake ran.
 func TestClientConnectDiscover(t *testing.T) {
-	// Temporarily enable 2026-06-30 support in the SDK for this test
+	// Temporarily enable 2026-07-28 support in the SDK for this test
 	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
 	t.Cleanup(func() {
 		supportedProtocolVersions = oldSupported
 	})
@@ -668,7 +668,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			name: "discover success skips initialize",
 			discoverHandler: func() (Result, error) {
 				return &DiscoverResult{
-					SupportedVersions: []string{protocolVersion20260630},
+					SupportedVersions: []string{protocolVersion20260728},
 					Capabilities: &ServerCapabilities{
 						Tools: &ToolCapabilities{ListChanged: true},
 					},
@@ -676,7 +676,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}, nil
 			},
 			wantInitialize: false,
-			wantVersion:    protocolVersion20260630,
+			wantVersion:    protocolVersion20260728,
 		},
 		{
 			name: "method not found falls back to initialize",
@@ -742,7 +742,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			defer ss.Close()
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
@@ -770,7 +770,7 @@ func TestClientConnectDiscover(t *testing.T) {
 // protocolVersion, clientInfo, and clientCapabilities.
 func TestClientConnectDiscover_RequestContents(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	ctx := context.Background()
@@ -811,7 +811,7 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 			return nil, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -822,8 +822,8 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 	}
 
 	meta := got.params.GetMeta()
-	if v, _ := meta[MetaKeyProtocolVersion].(string); v != protocolVersion20260630 {
-		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, protocolVersion20260630)
+	if v, _ := meta[MetaKeyProtocolVersion].(string); v != protocolVersion20260728 {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, protocolVersion20260728)
 	}
 	// _meta values round-trip through JSON, so on the server side they
 	// arrive as map[string]any rather than the typed Go pointers we sent.
@@ -849,7 +849,7 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
 
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "stdio-like-server", Version: "v1"}, nil)
@@ -861,7 +861,7 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "stdio-like-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -871,9 +871,9 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil; discover should have populated it")
 	}
-	if ir.ProtocolVersion != protocolVersion20260630 {
+	if ir.ProtocolVersion != protocolVersion20260728 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (negotiated via discover, no initialize)",
-			ir.ProtocolVersion, protocolVersion20260630)
+			ir.ProtocolVersion, protocolVersion20260728)
 	}
 	if ir.ServerInfo == nil || ir.ServerInfo.Name != "stdio-like-server" {
 		t.Errorf("InitializeResult.ServerInfo = %+v, want name=stdio-like-server", ir.ServerInfo)
@@ -887,13 +887,13 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 
 // TestInMemory_E2E_DiscoverFallback_NoOverlap verifies the fallback path
 // over an InMemory (STDIO-equivalent) transport: the client probes with
-// _meta.protocolVersion = 2026-06-30, but the server's supported list does
+// _meta.protocolVersion = 2026-07-28, but the server's supported list does
 // NOT include that version (the default for an SDK server that hasn't
 // shimmed supportedProtocolVersions).
 func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	ctx := context.Background()
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "vpre-like-server", Version: "v1"}, nil)
@@ -920,7 +920,7 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -948,7 +948,7 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "vpre-server", Version: "v1"}, nil)
@@ -969,7 +969,7 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -997,7 +997,7 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	ctx := context.Background()
 
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "strict-server", Version: "v1"}, nil)
@@ -1021,7 +1021,7 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -1044,7 +1044,7 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 // selects a mutually supported version from that list and retries.
 func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(oldSupported)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(oldSupported)...)
 	t.Cleanup(func() { supportedProtocolVersions = oldSupported })
 
 	ctx := context.Background()
@@ -1095,8 +1095,8 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	if got, want := discoverCalls.Load(), int32(1); got != want {
 		t.Errorf("server/discover handler call count = %d, want %d (first probe is rejected by the dispatcher; only the retry reaches the handler)", got, want)
 	}
-	if got, _ := observedDiscoverVersion.Load().(string); got != protocolVersion20260630 {
-		t.Errorf("retry discover requested version = %q, want %q (highest mutually supported version)", got, protocolVersion20260630)
+	if got, _ := observedDiscoverVersion.Load().(string); got != protocolVersion20260728 {
+		t.Errorf("retry discover requested version = %q, want %q (highest mutually supported version)", got, protocolVersion20260728)
 	}
 	if gotInitialize.Load() {
 		t.Error("legacy initialize handshake ran, but negotiated discover should have succeeded")
@@ -1106,7 +1106,7 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after Connect")
 	}
-	if got, want := ir.ProtocolVersion, protocolVersion20260630; got != want {
+	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 	}
 }

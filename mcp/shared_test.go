@@ -50,7 +50,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 					MetaKeyClientCapabilities: map[string]any{},
 				},
@@ -63,7 +63,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientCapabilities: map[string]any{},
 				},
 				"name": "x",
@@ -76,7 +76,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion: protocolVersion20260630,
+					MetaKeyProtocolVersion: protocolVersion20260728,
 					MetaKeyClientInfo:      map[string]any{"name": "c", "version": "1"},
 				},
 				"name": "x",
@@ -90,7 +90,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			isNotification: true,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion: protocolVersion20260630,
+					MetaKeyProtocolVersion: protocolVersion20260728,
 				},
 				"requestId": "r1",
 			},
@@ -107,7 +107,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 					MetaKeyClientCapabilities: map[string]any{},
 					MetaKeyLogLevel:           "warning",
@@ -122,7 +122,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 					MetaKeyClientCapabilities: map[string]any{},
 				},
@@ -190,15 +190,15 @@ func TestServerRequest_PerRequestAccessors(t *testing.T) {
 	info := &Implementation{Name: "c", Version: "1"}
 	params := &CallToolParamsRaw{
 		Meta: Meta{
-			MetaKeyProtocolVersion:    protocolVersion20260630,
+			MetaKeyProtocolVersion:    protocolVersion20260728,
 			MetaKeyClientInfo:         info,
 			MetaKeyClientCapabilities: caps,
 		},
 		Name: "x",
 	}
 	req := &ServerRequest[*CallToolParamsRaw]{Params: params}
-	if got := req.ProtocolVersion(); got != protocolVersion20260630 {
-		t.Errorf("ProtocolVersion = %q, want %q", got, protocolVersion20260630)
+	if got := req.ProtocolVersion(); got != protocolVersion20260728 {
+		t.Errorf("ProtocolVersion = %q, want %q", got, protocolVersion20260728)
 	}
 	if got := req.ClientInfo(); got == nil || got.Name != "c" {
 		t.Errorf("ClientInfo = %+v, want Name=c", got)
@@ -213,7 +213,7 @@ func TestServerRequest_PerRequestAccessors_FromJSON(t *testing.T) {
 	// re-decode them into typed Go values.
 	raw := json.RawMessage(`{
 		"_meta": {
-			"io.modelcontextprotocol/protocolVersion": "2026-06-30",
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
 			"io.modelcontextprotocol/clientInfo": {"name": "wire-client", "version": "9"},
 			"io.modelcontextprotocol/clientCapabilities": {"sampling": {}}
 		},
@@ -224,7 +224,7 @@ func TestServerRequest_PerRequestAccessors_FromJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := &ServerRequest[*CallToolParamsRaw]{Params: &params}
-	if got, want := req.ProtocolVersion(), protocolVersion20260630; got != want {
+	if got, want := req.ProtocolVersion(), protocolVersion20260728; got != want {
 		t.Errorf("ProtocolVersion = %q, want %q", got, want)
 	}
 	gotInfo := req.ClientInfo()
