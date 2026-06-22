@@ -19,6 +19,7 @@ type (
 	ReadResourceRequest               = ServerRequest[*ReadResourceParams]
 	RootsListChangedRequest           = ServerRequest[*RootsListChangedParams]
 	SubscribeRequest                  = ServerRequest[*SubscribeParams]
+	SubscriptionsListenRequest        = ServerRequest[*SubscriptionsListenParams]
 	UnsubscribeRequest                = ServerRequest[*UnsubscribeParams]
 )
 

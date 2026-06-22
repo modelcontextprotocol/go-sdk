@@ -3319,20 +3319,20 @@ func TestEphemeralConnectOpts(t *testing.T) {
 			}
 			req.Header.Set(protocolVersionHeader, pver)
 			req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, pver))
-			opts, usesNew, err := h.ephemeralConnectOpts(req)
+			info, err := h.ephemeralConnectOpts(req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if usesNew != tt.wantUsesNew {
-				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tt.wantUsesNew)
+			if info.usesNewProtocol != tt.wantUsesNew {
+				t.Errorf("usesNewProtocol = %v, want %v", info.usesNewProtocol, tt.wantUsesNew)
 			}
-			if got := opts.State.InitializeParams != nil; got != tt.wantInitializeParams {
+			if got := info.opts.State.InitializeParams != nil; got != tt.wantInitializeParams {
 				t.Errorf("InitializeParams non-nil = %v, want %v (value = %+v)",
-					got, tt.wantInitializeParams, opts.State.InitializeParams)
+					got, tt.wantInitializeParams, info.opts.State.InitializeParams)
 			}
-			if got := opts.State.InitializedParams != nil; got != tt.wantInitializedParams {
+			if got := info.opts.State.InitializedParams != nil; got != tt.wantInitializedParams {
 				t.Errorf("InitializedParams non-nil = %v, want %v (value = %+v)",
-					got, tt.wantInitializedParams, opts.State.InitializedParams)
+					got, tt.wantInitializedParams, info.opts.State.InitializedParams)
 			}
 		})
 	}

@@ -1931,6 +1931,49 @@ type ResourceUpdatedNotificationParams struct {
 func (x *ResourceUpdatedNotificationParams) isParams()   {}
 func (x *ResourceUpdatedNotificationParams) isNil() bool { return x == nil }
 
+// NotificationSubscriptions describes the set of server-to-client
+// notifications a client wishes to receive on a [SubscriptionsListenParams]
+// stream. Each field is an explicit opt-in: a server MUST NOT push
+// notifications of a type the client did not request.
+type NotificationSubscriptions struct {
+	// ToolsListChanged opts in to "notifications/tools/list_changed".
+	ToolsListChanged bool `json:"toolsListChanged,omitempty"`
+	// PromptsListChanged opts in to "notifications/prompts/list_changed".
+	PromptsListChanged bool `json:"promptsListChanged,omitempty"`
+	// ResourcesListChanged opts in to "notifications/resources/list_changed".
+	ResourcesListChanged bool `json:"resourcesListChanged,omitempty"`
+	// ResourceSubscriptions enumerates the resource URIs for which the client
+	// wants "notifications/resources/updated". Replaces the legacy
+	// resources/subscribe RPC.
+	ResourceSubscriptions []string `json:"resourceSubscriptions,omitempty"`
+}
+
+// SubscriptionsListenParams are the parameters for the
+// "subscriptions/listen" RPC.
+type SubscriptionsListenParams struct {
+	// Meta carries the per-request `_meta` triple.
+	Meta `json:"_meta,omitempty"`
+	// Notifications declares which notification types the client wants to
+	// receive on this stream.
+	Notifications NotificationSubscriptions `json:"notifications"`
+}
+
+func (x *SubscriptionsListenParams) isParams()   {}
+func (x *SubscriptionsListenParams) isNil() bool { return x == nil }
+
+// SubscriptionsAcknowledgedParams are the parameters for the
+// "notifications/subscriptions/acknowledged" notification, which the server
+// MUST send as the first message on a subscriptions/listen stream. It carries
+// the subset of the requested [NotificationSubscriptions] that the server has
+// agreed to honor.
+type SubscriptionsAcknowledgedParams struct {
+	Meta          `json:"_meta,omitempty"`
+	Notifications NotificationSubscriptions `json:"notifications"`
+}
+
+func (x *SubscriptionsAcknowledgedParams) isParams()   {}
+func (x *SubscriptionsAcknowledgedParams) isNil() bool { return x == nil }
+
 // TODO(jba): add CompleteRequest and related types.
 
 // A request from the server to elicit additional information from the user via the client.
@@ -2134,8 +2177,10 @@ const (
 	notificationRootsListChanged    = "notifications/roots/list_changed"
 	methodSetLevel                  = "logging/setLevel"
 	methodSubscribe                 = "resources/subscribe"
+	methodSubscriptionsListen       = "subscriptions/listen"
 	notificationToolListChanged     = "notifications/tools/list_changed"
 	methodUnsubscribe               = "resources/unsubscribe"
+	notificationSubscriptionsAck    = "notifications/subscriptions/acknowledged"
 )
 
 // Per-request _meta field names for the >= 2026-07-28 protocol version.
@@ -2152,6 +2197,9 @@ const (
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	// MetaKeyLogLevel identifies the desired log level for the request.
 	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
+	// MetaKeySubscriptionID identifies the subscriptions/listen request that an
+	// out-of-band notification belongs to.
+	MetaKeySubscriptionID = "io.modelcontextprotocol/subscriptionId"
 )
 
 // UnsupportedProtocolVersionData is the SEP-2575 payload carried in the
