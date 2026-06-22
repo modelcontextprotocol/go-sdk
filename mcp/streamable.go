@@ -955,7 +955,8 @@ func (s *stream) release() {
 //
 // Per SEP-2575:
 //   - MethodNotFound (-32601) MUST return HTTP 404.
-//   - InvalidParams (-32602) and UnsupportedProtocolVersion (-32004) MUST
+//   - InvalidParams (-32602), UnsupportedProtocolVersion (-32022) and
+//     CodeMissingRequiredClientCapabilities (-32021) MUST
 //     return HTTP 400.
 func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 	if protocolVersionFromContext(ctx) < protocolVersion20260728 {

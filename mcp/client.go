@@ -306,7 +306,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			// Try to negotiate a mutually supported version if the server
 			// reports an UnsupportedProtocolVersionError with a supported version.
 			var werr *jsonrpc.Error
-			if errors.As(err, &werr) && werr.Code == CodeUnsupportedProtocolVersion && werr.Data != nil {
+			if errors.As(err, &werr) && werr.Code == CodeUnsupportedProtocolVersion && len(werr.Data) > 0 {
 				var data UnsupportedProtocolVersionData
 				if err := json.Unmarshal(werr.Data, &data); err == nil {
 					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260728 {
@@ -384,7 +384,10 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	if negotiated == "" || negotiated < protocolVersion20260728 {
 		// If there is no overlap, fall back to initialize so version
 		// negotiation can happen via the legacy path.
-		return nil, jsonrpc2.ErrUnsupportedProtocolVersion
+		return nil, &jsonrpc2.WireError{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+		}
 	}
 
 	return &InitializeResult{
