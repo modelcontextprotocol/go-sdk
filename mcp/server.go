@@ -985,7 +985,7 @@ func fileResourceHandler(dir string) ResourceHandler {
 		defer util.Wrapf(&err, "reading resource %s", req.Params.URI)
 
 		// TODO(#25): use a memoizing API here.
-		rootRes, err := req.Session.listRoots(ctx, nil)
+		rootRes, err := req.Session.ListRoots(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("listing roots: %w", err)
 		}
@@ -1317,13 +1317,6 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 // resource URIs, or configuration. See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
-	return ss.listRoots(ctx, params)
-}
-
-// listRoots is the unexported implementation of ListRoots, used by the SDK's
-// own call sites so they don't trip staticcheck SA1019 on the deprecated
-// public method.
-func (ss *ServerSession) listRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
 		return nil, err
 	}
@@ -1385,13 +1378,6 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // from your server. See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
-	return ss.createMessageWithTools(ctx, params)
-}
-
-// createMessageWithTools is the unexported implementation of
-// CreateMessageWithTools, used by the SDK's own call sites so they don't trip
-// staticcheck SA1019 on the deprecated public method.
-func (ss *ServerSession) createMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
@@ -1477,15 +1463,6 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	return res, nil
 }
 
-// logLevelContextKey carries the per-request log level from
-// [ServerSession.handle] to [ServerSession.Log] for new-protocol
-// (>= 2026-06-30) requests. The level is scoped to a single in-flight request
-// — including handler goroutines that call [ServerSession.Log] concurrently —
-// rather than to the session, which avoids races between concurrent requests
-// and aligns with SEP-2575's per-request opt-in model. The value type is
-// [LoggingLevel]; an empty string means the request opted out of log messages.
-type logLevelContextKey struct{}
-
 // Log sends a log message to the client.
 //
 // For new-protocol (>= 2026-06-30) requests, the level is taken from the
@@ -1499,19 +1476,9 @@ type logLevelContextKey struct{}
 // OpenTelemetry. See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	return ss.log(ctx, params)
-}
-
-// log is the unexported implementation of Log, used by the SDK's own call
-// sites (notably [LoggingHandler]) so they don't trip staticcheck SA1019 on
-// the deprecated public method.
-func (ss *ServerSession) log(ctx context.Context, params *LoggingMessageParams) error {
-	logLevel, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
-	if !ok {
-		ss.mu.Lock()
-		logLevel = ss.state.LogLevel
-		ss.mu.Unlock()
-	}
+	ss.mu.Lock()
+	logLevel := ss.state.LogLevel
+	ss.mu.Unlock()
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1686,7 +1653,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
 	// For new-protocol requests, propagate the per-request log level.
 	if validatedMeta.usesNewProtocol {
-		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
+		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
 	}
 	return handleReceive(ctx, ss, req)
 }

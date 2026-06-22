@@ -212,5 +212,5 @@ func (h *LoggingHandler) handle(ctx context.Context, r slog.Record) error {
 	// documentation says not to.
 	// In this case logging is a service to clients, not a means for debugging the
 	// server, so we want to cancel the log message.
-	return h.ss.log(ctx, params)
+	return h.ss.Log(ctx, params)
 }
