@@ -1234,7 +1234,7 @@ func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
 // discoverResult is the canned successful DiscoverResult returned by
 // fakeStreamableServer setups in the tests below.
 var discoverResult = &DiscoverResult{
-	SupportedVersions: []string{protocolVersion20260630},
+	SupportedVersions: []string{protocolVersion20260728},
 	Capabilities: &ServerCapabilities{
 		Tools: &ToolCapabilities{ListChanged: true},
 	},
@@ -1244,7 +1244,7 @@ var discoverResult = &DiscoverResult{
 
 // TestStreamableClientConnect_DiscoverSuccess verifies that Client.Connect on
 // the streamable transport:
-//   - sends a POST server/discover with Mcp-Protocol-Version: 2026-06-30 and
+//   - sends a POST server/discover with Mcp-Protocol-Version: 2026-07-28 and
 //     the SEP-2575 per-request _meta triple in the body,
 //   - on a successful DiscoverResult, skips the legacy initialize handshake
 //     entirely, and
@@ -1253,9 +1253,9 @@ var discoverResult = &DiscoverResult{
 func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
 
-	// Temporarily enable 2026-06-30 support in the SDK for this test
+	// Temporarily enable 2026-07-28 support in the SDK for this test
 	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
 	t.Cleanup(func() {
 		supportedProtocolVersions = oldSupported
 	})
@@ -1273,7 +1273,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 					"Content-Type":  "application/json",
 					sessionIDHeader: "sess-1",
 				},
-				wantProtocolVersion: protocolVersion20260630,
+				wantProtocolVersion: protocolVersion20260728,
 				responseFunc: func(r *jsonrpc.Request) (string, int) {
 					gotDiscoverMu.Lock()
 					gotDiscover = r
@@ -1290,7 +1290,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1313,8 +1313,8 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	if err := json.Unmarshal(gotDiscover.Params, &body); err != nil {
 		t.Fatalf("decoding discover params: %v", err)
 	}
-	if v, _ := body.Meta[MetaKeyProtocolVersion].(string); v != protocolVersion20260630 {
-		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, protocolVersion20260630)
+	if v, _ := body.Meta[MetaKeyProtocolVersion].(string); v != protocolVersion20260728 {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, protocolVersion20260728)
 	}
 	if _, ok := body.Meta[MetaKeyClientInfo]; !ok {
 		t.Errorf("_meta[%s] missing", MetaKeyClientInfo)
@@ -1327,7 +1327,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after Connect")
 	}
-	if got, want := ir.ProtocolVersion, protocolVersion20260630; got != want {
+	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 	}
 	if ir.ServerInfo == nil || ir.ServerInfo.Name != "discoverServer" {
@@ -1363,7 +1363,7 @@ func TestStreamableClientConnect_DiscoverMethodNotFound(t *testing.T) {
 		responses: fakeResponses{
 			{"POST", "", methodDiscover, ""}: {
 				header:              header{"Content-Type": "application/json"},
-				wantProtocolVersion: protocolVersion20260630,
+				wantProtocolVersion: protocolVersion20260728,
 				responseFunc: echoErr(&jsonrpc.Error{
 					Code:    jsonrpc.CodeMethodNotFound,
 					Message: "method not found",
@@ -1428,7 +1428,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersion(t *testing.T) {
 		responses: fakeResponses{
 			{"POST", "", methodDiscover, ""}: {
 				header:              header{"Content-Type": "application/json"},
-				wantProtocolVersion: protocolVersion20260630,
+				wantProtocolVersion: protocolVersion20260728,
 				responseFunc: echoErr(&jsonrpc.Error{
 					Code:    CodeUnsupportedProtocolVersion,
 					Message: "unsupported protocol version",
@@ -1486,7 +1486,7 @@ func TestStreamableClientConnect_DiscoverMethodNotFoundVPre(t *testing.T) {
 		t: t,
 		responses: fakeResponses{
 			{"POST", "", methodDiscover, ""}: {
-				wantProtocolVersion: protocolVersion20260630,
+				wantProtocolVersion: protocolVersion20260728,
 				// Reproduce the exact body a vPre server produces via
 				// http.Error(w, err.Error(), 400) where err comes from
 				// checkRequest. http.Error appends a trailing newline.
@@ -1517,7 +1517,7 @@ func TestStreamableClientConnect_DiscoverMethodNotFoundVPre(t *testing.T) {
 		DisableStandaloneSSE: true,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1544,7 +1544,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
 		t: t,
 		responses: fakeResponses{
 			{"POST", "", methodDiscover, ""}: {
-				wantProtocolVersion: protocolVersion20260630,
+				wantProtocolVersion: protocolVersion20260728,
 				body:                "Bad Request: Unsupported protocol version\n",
 				status:              http.StatusBadRequest,
 				header:              header{"Content-Type": "text/plain; charset=utf-8"},
@@ -1572,7 +1572,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
 		DisableStandaloneSSE: true,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1591,7 +1591,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testin
 	ctx := context.Background()
 
 	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, supportedProtocolVersions...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
 	t.Cleanup(func() {
 		supportedProtocolVersions = oldSupported
 	})
@@ -1611,7 +1611,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testin
 					n := discoverCalls.Add(1)
 					if n == 1 {
 						data, _ := json.Marshal(UnsupportedProtocolVersionData{
-							Supported: []string{protocolVersion20260630},
+							Supported: []string{protocolVersion20260728},
 						})
 						respMsg := &jsonrpc.Response{
 							ID: r.ID,
@@ -1643,7 +1643,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testin
 	if got, want := discoverCalls.Load(), int32(2); got != want {
 		t.Errorf("discover call count = %d, want %d", got, want)
 	}
-	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20260630 {
-		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20260630)
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20260728 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20260728)
 	}
 }

@@ -165,7 +165,7 @@ type ClientOptions struct {
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
-	// NOTE: The keepalive feature is only available for protocol versions < 2026-06-30
+	// NOTE: The keepalive feature is only available for protocol versions < 2026-07-28
 	KeepAlive time.Duration
 	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
 	// failures tolerated before the session is closed. A value of 0 or 1
@@ -285,7 +285,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		protocolVersion = opts.protocolVersion
 	}
 
-	if protocolVersion >= protocolVersion20260630 {
+	if protocolVersion >= protocolVersion20260728 {
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
 		// signals it doesn't support it, fall back to the legacy initialize
 		// handshake.
@@ -309,7 +309,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if errors.As(err, &werr) && werr.Code == CodeUnsupportedProtocolVersion && len(werr.Data) > 0 {
 				var data UnsupportedProtocolVersionData
 				if err := json.Unmarshal(werr.Data, &data); err == nil {
-					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260630 {
+					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260728 {
 						discoverCtx = context.WithValue(ctx, protocolVersionContextKey{}, negotiatedVersion)
 						continue
 					}
@@ -381,7 +381,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 	} else {
 		negotiated = negotiateMutuallySupportedVersion(res.SupportedVersions)
 	}
-	if negotiated == "" || negotiated < protocolVersion20260630 {
+	if negotiated == "" || negotiated < protocolVersion20260728 {
 		// If there is no overlap, fall back to initialize so version
 		// negotiation can happen via the legacy path.
 		return nil, &jsonrpc2.WireError{
@@ -439,11 +439,11 @@ type clientSessionState struct {
 func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
 
 // usesNewProtocol reports whether this session has negotiated a protocol
-// version >= 2026-06-30, which requires the SEP-2575 per-request `_meta`
+// version >= 2026-07-28, which requires the SEP-2575 per-request `_meta`
 // triple on every outgoing request.
 func (cs *ClientSession) usesNewProtocol() bool {
 	res := cs.state.InitializeResult
-	return res != nil && res.ProtocolVersion >= protocolVersion20260630
+	return res != nil && res.ProtocolVersion >= protocolVersion20260728
 }
 
 // injectRequestMeta populates the SEP-2575 per-request `_meta` triple
