@@ -2052,7 +2052,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 }
 
 // TestStreamableMcpHeaderValidationErrorFormat verifies that header
-// validation errors return a JSON-RPC error with code -32001 and
+// validation errors return a JSON-RPC error with code -32020 and
 // Content-Type application/json, per SEP-2243.
 func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	orig := supportedProtocolVersions
@@ -2127,7 +2127,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", baseMediaType(toolCallResp.Header.Get("Content-Type")), "application/json")
 	}
 
-	// Verify JSON-RPC error body contains error code -32001.
+	// Verify JSON-RPC error body contains error code -32020.
 	msg, err := jsonrpc2.DecodeMessage(toolCallRespBody)
 	if err != nil {
 		t.Fatalf("failed to decode message: %v", err)
@@ -2140,8 +2140,8 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	if !errors.As(resp.Error, &wireErr) {
 		t.Fatalf("expected *jsonrpc2.WireError, got %T", resp.Error)
 	}
-	if wireErr.Code != -32001 {
-		t.Errorf("wireErr.Code = %d, want -32001", wireErr.Code)
+	if wireErr.Code != CodeHeaderMismatch {
+		t.Errorf("wireErr.Code = %d, want %d", wireErr.Code, CodeHeaderMismatch)
 	}
 	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
 		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
@@ -3225,7 +3225,7 @@ func TestStandaloneSSEEmitsCommentForHTTP2Flush(t *testing.T) {
 }
 
 // newProtocolBody builds a raw JSON body for a tools/call request that
-// carries the >= 2026-06-30 per-request _meta fields.
+// carries the >= 2026-07-28 per-request _meta fields.
 func newProtocolBody(t *testing.T, toolName string, args any) []byte {
 	t.Helper()
 	rawArgs, err := json.Marshal(args)
@@ -3238,7 +3238,7 @@ func newProtocolBody(t *testing.T, toolName string, args any) []byte {
 		"method":  "tools/call",
 		"params": map[string]any{
 			"_meta": map[string]any{
-				MetaKeyProtocolVersion:    protocolVersion20260630,
+				MetaKeyProtocolVersion:    protocolVersion20260728,
 				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
 				MetaKeyClientCapabilities: map[string]any{"sampling": map[string]any{}},
 			},
@@ -3315,7 +3315,7 @@ func TestEphemeralConnectOpts(t *testing.T) {
 			req := mkReq(tt.body)
 			var pver string
 			if tt.wantUsesNew {
-				pver = protocolVersion20260630
+				pver = protocolVersion20260728
 			} else {
 				pver = protocolVersion20250326
 			}
@@ -3353,10 +3353,10 @@ type statelessHandlerCapture struct {
 
 func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	// SEP-2575: the MCP-Protocol-Version header is mandatory for new-protocol
-	// requests and must be a supported version. The 2026-06-30 version is
+	// requests and must be a supported version. The 2026-07-28 version is
 	// not yet in the global list, so register it for the duration of the test.
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	capture := &statelessHandlerCapture{}
@@ -3386,8 +3386,8 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	httpReq.Header.Set(protocolVersionHeader, protocolVersion20260630)
-	// >= 2026-06-30 also requires the Mcp-Method and Mcp-Name standard
+	httpReq.Header.Set(protocolVersionHeader, protocolVersion20260728)
+	// >= 2026-07-28 also requires the Mcp-Method and Mcp-Name standard
 	// headers (see streamable_headers.go).
 	httpReq.Header.Set(methodHeader, "tools/call")
 	httpReq.Header.Set(nameHeader, "capture")
@@ -3407,14 +3407,14 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	if capture.sessionInitParams == nil {
 		t.Errorf("Session.InitializeParams() is nil, want populated initializeParams for new-protocol session")
 	} else {
-		if got, want := capture.sessionInitParams.ProtocolVersion, protocolVersion20260630; got != want {
+		if got, want := capture.sessionInitParams.ProtocolVersion, protocolVersion20260728; got != want {
 			t.Errorf("Session.InitializeParams().ProtocolVersion = %q, want %q", got, want)
 		}
 		if got, want := capture.sessionInitParams.ClientInfo.Name, "new-proto-client"; got != want {
 			t.Errorf("Session.InitializeParams().ClientInfo.Name = %q, want %q", got, want)
 		}
 	}
-	if got, want := capture.reqProtocolVersion, protocolVersion20260630; got != want {
+	if got, want := capture.reqProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("req.ProtocolVersion() = %q, want %q", got, want)
 	}
 	if capture.reqClientInfo == nil || capture.reqClientInfo.Name != "new-proto-client" {
@@ -3426,14 +3426,14 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 }
 
 // TestStreamableStateful_RejectsNewProtocol verifies that a stateful HTTP
-// server rejects requests carrying _meta.protocolVersion (i.e. >= 2026-06-30
+// server rejects requests carrying _meta.protocolVersion (i.e. >= 2026-07-28
 // requests) with HTTP 400. The new protocol is
 // supported on HTTP only when StreamableHTTPOptions.Stateless=true.
 func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
-	// Make 2026-06-30 a "known" version so that the request reaches servePOST
+	// Make 2026-07-28 a "known" version so that the request reaches servePOST
 	// (otherwise the early header validation at ServeHTTP rejects it).
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
@@ -3474,7 +3474,7 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set(sessionIDHeader, sessionID)
-	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
 	req.Header.Set(methodHeader, "tools/call")
 	req.Header.Set(nameHeader, "noop")
 
@@ -3498,7 +3498,7 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 // fire on Stateless: true).
 func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
@@ -3520,7 +3520,7 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
 	req.Header.Set(methodHeader, "tools/call")
 	req.Header.Set(nameHeader, "noop")
 
@@ -3536,7 +3536,7 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 }
 
 // TestStreamableClientUnsupportedVersionFallback exercises the full
-// SEP-2575 fallback. The client requests protocolVersion20260630, which the server does
+// SEP-2575 fallback. The client requests protocolVersion20260728, which the server does
 // not advertise in supportedProtocolVersions. The server therefore rejects
 // the server/discover POST at the transport-level header validation with a
 // plain HTTP 400 ("Bad Request: Unsupported protocol version ..."). The
@@ -3558,7 +3558,7 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	client := NewClient(testImpl, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -3581,14 +3581,14 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 }
 
 // TestStreamableStateful_AcceptsDiscover verifies that a stateful HTTP server
-// accepts a server/discover probe carrying MCP-Protocol-Version: 2026-06-30
+// accepts a server/discover probe carrying MCP-Protocol-Version: 2026-07-28
 // (and the matching _meta.protocolVersion), instead of rejecting it with the
 // "stateless required" 400. The SEP-2575 client flow has the client probing
 // the server with the new protocol version to learn which versions are
 // supported.
 func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260630)
+	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
@@ -3602,7 +3602,7 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 		"method":  methodDiscover,
 		"params": map[string]any{
 			"_meta": map[string]any{
-				MetaKeyProtocolVersion:    protocolVersion20260630,
+				MetaKeyProtocolVersion:    protocolVersion20260728,
 				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
 				MetaKeyClientCapabilities: map[string]any{"sampling": map[string]any{}},
 			},
@@ -3617,7 +3617,7 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set(protocolVersionHeader, protocolVersion20260630)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
 	req.Header.Set(methodHeader, methodDiscover)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -3653,9 +3653,9 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	if rpcResp.Result == nil {
 		t.Fatalf("discover returned no result; body = %s", respBody)
 	}
-	if slices.Contains(rpcResp.Result.SupportedVersions, protocolVersion20260630) {
+	if slices.Contains(rpcResp.Result.SupportedVersions, protocolVersion20260728) {
 		t.Errorf("DiscoverResult.SupportedVersions = %v, must not include %q on a stateful transport",
-			rpcResp.Result.SupportedVersions, protocolVersion20260630)
+			rpcResp.Result.SupportedVersions, protocolVersion20260728)
 	}
 	if len(rpcResp.Result.SupportedVersions) == 0 {
 		t.Errorf("DiscoverResult.SupportedVersions is empty; want at least one legacy version")
@@ -3667,7 +3667,7 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "e2e-server", Version: "v1"}, nil)
@@ -3691,7 +3691,7 @@ func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "e2e-client", Version: "v1"}, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -3701,9 +3701,9 @@ func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after Connect; discover should have populated it")
 	}
-	if ir.ProtocolVersion != protocolVersion20260630 {
+	if ir.ProtocolVersion != protocolVersion20260728 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (negotiated via discover)",
-			ir.ProtocolVersion, protocolVersion20260630)
+			ir.ProtocolVersion, protocolVersion20260728)
 	}
 	if ir.ServerInfo == nil || ir.ServerInfo.Name != "e2e-server" {
 		t.Errorf("InitializeResult.ServerInfo = %+v, want name=e2e-server", ir.ServerInfo)

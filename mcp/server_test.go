@@ -1291,7 +1291,7 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 // rejected with `Method not found` (-32601).
 func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	tests := []struct {
@@ -1303,11 +1303,11 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 			name: "initialize with new-protocol _meta is rejected",
 			params: map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 					MetaKeyClientCapabilities: map[string]any{},
 				},
-				"protocolVersion": protocolVersion20260630,
+				"protocolVersion": protocolVersion20260728,
 			},
 			wantReject: true,
 		},
@@ -1372,11 +1372,11 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 			Method: methodInitialize,
 			Params: mustMarshal(map[string]any{
 				"_meta": map[string]any{
-					MetaKeyProtocolVersion:    protocolVersion20260630,
+					MetaKeyProtocolVersion:    protocolVersion20260728,
 					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 					MetaKeyClientCapabilities: map[string]any{},
 				},
-				"protocolVersion": protocolVersion20260630,
+				"protocolVersion": protocolVersion20260728,
 			}),
 		}
 		_, handleErr := ss.handle(context.Background(), req)
@@ -1408,12 +1408,12 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 // protocol via `_meta.protocolVersion`.
 func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	newProtoMeta := map[string]any{
 		"_meta": map[string]any{
-			MetaKeyProtocolVersion:    protocolVersion20260630,
+			MetaKeyProtocolVersion:    protocolVersion20260728,
 			MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 			MetaKeyClientCapabilities: map[string]any{},
 		},

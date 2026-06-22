@@ -2277,7 +2277,7 @@ const (
 	methodUnsubscribe               = "resources/unsubscribe"
 )
 
-// Per-request _meta field names for the >= 2026-06-30 protocol version.
+// Per-request _meta field names for the >= 2026-07-28 protocol version.
 //
 // These keys appear inside a Params._meta map and carry information that
 // previously came from the initialization handshake (SEP-2575).
