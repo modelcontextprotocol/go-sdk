@@ -705,7 +705,7 @@ func (s *Server) notifySessions(n string) {
 	// shared session channel without opt-in; collect them while we hold the lock.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260630 {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
@@ -1067,7 +1067,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	var legacySessions []*ServerSession
 	var newSessions []*ServerSession
 	for _, sess := range sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260630 {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
 			legacySessions = append(legacySessions, sess)
 		} else {
 			newSessions = append(newSessions, sess)
@@ -1185,7 +1185,7 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		Notifications: allowed,
 		Meta:          Meta{MetaKeySubscriptionID: requestID.Raw()},
 	}
-	if err := req.Session.NotifySubscriptionAcked(ctx, ackParams); err != nil {
+	if err := req.Session.notifySubscriptionAcked(ctx, ackParams); err != nil {
 		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
 	}
 
@@ -1384,9 +1384,10 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
-// NotifySubscriptionAcked sends a subscription acknowledged notification from the server to the client
-// associated with this session.
-func (ss *ServerSession) NotifySubscriptionAcked(ctx context.Context, params *SubscriptionsAcknowledgedParams) error {
+// notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
+// notification on the listen stream represented by this session, indicating
+// the subscription filter the server accepted (SEP-2575).
+func (ss *ServerSession) notifySubscriptionAcked(ctx context.Context, params *SubscriptionsAcknowledgedParams) error {
 	return handleNotify(ctx, notificationSubscriptionsAck, newServerRequest(ss, orZero[Params](params)))
 }
 

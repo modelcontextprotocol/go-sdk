@@ -2468,7 +2468,7 @@ func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct
 	ctx, topCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer topCancel()
 
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2571,7 +2571,7 @@ func newSubListenServer() *Server {
 func enableNewProtocol(t *testing.T) {
 	t.Helper()
 	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260630}, slices.Clone(orig)...)
+	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
 	t.Cleanup(func() { supportedProtocolVersions = orig })
 }
 
@@ -2636,7 +2636,7 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 			return next(ctx, method, req)
 		}
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2718,7 +2718,7 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 		},
 	})
 	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
-		&ClientSessionOptions{protocolVersion: protocolVersion20260630})
+		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2788,7 +2788,7 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2866,7 +2866,7 @@ func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
 	c := NewClient(testImpl, &ClientOptions{
 		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2939,7 +2939,7 @@ func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3045,7 +3045,7 @@ func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
 		}
 		c := newSubListenClient(events)
 		cs, err := c.Connect(context.Background(), ct,
-			&ClientSessionOptions{protocolVersion: protocolVersion20260630})
+			&ClientSessionOptions{protocolVersion: protocolVersion20260728})
 		if err != nil {
 			t.Fatalf("client connect: %v", err)
 		}
@@ -3146,7 +3146,7 @@ func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260630})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3191,7 +3191,7 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 	c := newSubListenClient(events)
 	cs, err := c.Connect(context.Background(), ct,
-		&ClientSessionOptions{protocolVersion: protocolVersion20260630})
+		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}

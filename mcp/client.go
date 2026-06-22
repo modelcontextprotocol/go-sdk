@@ -1324,17 +1324,21 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	}
 	uri := params.URI
 
+	var listenCtx context.Context
 	cs.resourceSubsMu.Lock()
-	if _, exists := cs.resourceSubs[uri]; exists {
-		cs.resourceSubsMu.Unlock()
+	if _, exists := cs.resourceSubs[uri]; !exists {
+		var cancel context.CancelFunc
+		listenCtx, cancel = context.WithCancel(context.Background())
+		if cs.resourceSubs == nil {
+			cs.resourceSubs = make(map[string]context.CancelFunc)
+		}
+		cs.resourceSubs[uri] = cancel
+	}
+	cs.resourceSubsMu.Unlock()
+	if listenCtx == nil {
+		// Already subscribed to this URI
 		return nil
 	}
-	listenCtx, cancel := context.WithCancel(context.Background())
-	if cs.resourceSubs == nil {
-		cs.resourceSubs = make(map[string]context.CancelFunc)
-	}
-	cs.resourceSubs[uri] = cancel
-	cs.resourceSubsMu.Unlock()
 
 	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
 		Notifications: NotificationSubscriptions{

@@ -381,18 +381,15 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	transport := &StreamableServerTransport{
-		SessionID:    sessionID,
-		Stateless:    true,
-		EventStore:   h.opts.EventStore,
-		jsonResponse: h.opts.JSONResponse,
-		logger:       h.opts.Logger,
+		SessionID:                   sessionID,
+		Stateless:                   true,
+		EventStore:                  h.opts.EventStore,
+		jsonResponse:                h.opts.JSONResponse,
+		logger:                      h.opts.Logger,
+		shouldPropagateCancellation: info.isSubscriptionsListen && info.usesNewProtocol,
 	}
 
-	ctx := req.Context()
-	if info.isSubscriptionsListen && info.usesNewProtocol {
-		ctx = context.WithValue(ctx, jsonrpc2.IsSubscriptionsListenContextKey{}, true)
-	}
-	session, err := connectStreamable(ctx, server, transport, info.opts)
+	session, err := connectStreamable(req.Context(), server, transport, info.opts)
 	if err != nil {
 		h.opts.Logger.Error(fmt.Sprintf("failed to connect: %v", err))
 		http.Error(w, "failed connection", http.StatusInternalServerError)
@@ -787,6 +784,10 @@ type StreamableServerTransport struct {
 	// to write their own streamable HTTP handler.
 	logger *slog.Logger
 
+	// shouldPropagateCancellation is forwarded to the underlying
+	// [streamableServerConn]. See its docstring.
+	shouldPropagateCancellation bool
+
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
 }
@@ -797,15 +798,16 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		return nil, fmt.Errorf("transport already connected")
 	}
 	t.connection = &streamableServerConn{
-		sessionID:      t.SessionID,
-		stateless:      t.Stateless,
-		eventStore:     t.EventStore,
-		jsonResponse:   t.jsonResponse,
-		logger:         ensureLogger(t.logger), // see #556: must be non-nil
-		incoming:       make(chan jsonrpc.Message, 10),
-		done:           make(chan struct{}),
-		streams:        make(map[string]*stream),
-		requestStreams: make(map[jsonrpc.ID]string),
+		sessionID:                   t.SessionID,
+		stateless:                   t.Stateless,
+		eventStore:                  t.EventStore,
+		jsonResponse:                t.jsonResponse,
+		logger:                      ensureLogger(t.logger), // see #556: must be non-nil
+		shouldPropagateCancellation: t.shouldPropagateCancellation,
+		incoming:                    make(chan jsonrpc.Message, 10),
+		done:                        make(chan struct{}),
+		streams:                     make(map[string]*stream),
+		requestStreams:              make(map[jsonrpc.ID]string),
 	}
 	// Stream 0 corresponds to the standalone SSE stream.
 	//
@@ -834,6 +836,13 @@ type streamableServerConn struct {
 	stateless    bool
 	jsonResponse bool
 	eventStore   EventStore
+
+	// shouldPropagateCancellation is true when the underlying HTTP request's
+	// lifetime IS the connection's cancellation signal (e.g., a stateless
+	// POST that owns a long-lived subscriptions/listen stream). It is read
+	// by the [cancellationPropagator] interface so the jsonrpc2 layer wires
+	// handler contexts to observe the carrier's cancellation.
+	shouldPropagateCancellation bool
 
 	logger *slog.Logger
 
@@ -870,6 +879,15 @@ type streamableServerConn struct {
 
 func (c *streamableServerConn) SessionID() string {
 	return c.sessionID
+}
+
+// propagateCancellation implements [cancellationPropagator]. It returns true
+// when this connection is bound to a single HTTP request whose lifetime
+// should drive request-handler cancellation — for example, a stateless POST
+// carrying a long-lived subscriptions/listen stream that must unwind when
+// the client TCP-disconnects.
+func (c *streamableServerConn) propagateCancellation() bool {
+	return c.shouldPropagateCancellation
 }
 
 // A stream is a single logical stream of SSE events within a server session.

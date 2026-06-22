@@ -201,21 +201,20 @@ type Writer interface {
 
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
 type ConnectionConfig struct {
-	Reader          Reader                    // required
-	Writer          Writer                    // required
-	Closer          io.Closer                 // required
-	Preempter       Preempter                 // optional
-	Bind            func(*Connection) Handler // required
-	OnDone          func()                    // optional
-	OnInternalError func(error)               // optional
+	Reader                Reader                    // required
+	Writer                Writer                    // required
+	Closer                io.Closer                 // required
+	Preempter             Preempter                 // optional
+	Bind                  func(*Connection) Handler // required
+	OnDone                func()                    // optional
+	OnInternalError       func(error)               // optional
+	PropagateCancellation bool                      // optional
 }
-
-type IsSubscriptionsListenContextKey struct{}
 
 // NewConnection creates a new [Connection] object and starts processing
 // incoming messages.
 func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
-	if val, _ := ctx.Value(IsSubscriptionsListenContextKey{}).(bool); !val {
+	if !cfg.PropagateCancellation {
 		ctx = notDone{ctx}
 	}
 
@@ -736,13 +735,13 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 	var err error
 	// Fail writes immediately if the connection is shutting down.
 	//
-	// Allow outgoing "notifications/cancelled" to allow the remote end
-	// to cancel in-flight calls.
+	// Allow outgoing "notifications" forwarded by the Notify method.
+	// This will allow to send the cancelled notification when the client is shutting down.
 	c.updateInFlight(func(s *inFlightState) {
-		req, ok := msg.(*Request)
-		if !ok || req.Method != "notifications/cancelled" {
-			err = s.shuttingDown(ErrServerClosing)
+		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
+			return
 		}
+		err = s.shuttingDown(ErrServerClosing)
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
@@ -786,6 +785,15 @@ func (c *Connection) internalErrorf(format string, args ...any) error {
 }
 
 // notDone is a context.Context wrapper that returns a nil Done channel.
+//
+// Request handlers' contexts are derived from the connection's root context,
+// which by default is wrapped in notDone so a transport-level cancellation
+// does not implicitly cancel every in-flight handler. Cancellation of an
+// in-flight handler is instead expected to flow only through the jsonrpc2
+// layer's explicit channels: the [Preempter] calling [Connection.Cancel] in
+// response to the peer's cancel notification, or the transport itself
+// failing (the read loop exits on EOF or a write fails) — both of which
+// cancel every in-flight incoming request in turn.
 type notDone struct{ ctx context.Context }
 
 func (ic notDone) Value(key any) any {

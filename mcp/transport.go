@@ -191,6 +191,13 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		preempter.conn = conn
 		return jsonrpc2.HandlerFunc(h.handle)
 	}
+	// Transports may opt in to propagating cancellation of ctx into request
+	// handler contexts when their own lifecycle IS the cancellation signal
+	// (e.g., a connection bound to a single HTTP request).
+	var propagateCancellation bool
+	if cp, ok := mcpConn.(cancellationPropagator); ok {
+		propagateCancellation = cp.propagateCancellation()
+	}
 	_ = jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
 		Reader:    reader,
 		Writer:    writer,
@@ -203,9 +210,20 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnInternalError: func(err error) {
 			logger.Error("jsonrpc2 internal error", "error", err)
 		},
+		PropagateCancellation: propagateCancellation,
 	})
 	assert(preempter.conn != nil, "unbound preempter")
 	return h, nil
+}
+
+// cancellationPropagator is an optional interface implemented by a
+// [Connection] whose own lifecycle should propagate cancellation into request
+// handler contexts. The default jsonrpc2 behavior is to suppress propagation;
+// transports that bind a connection to a single short-lived carrier (such as
+// a one-shot HTTP request) should return true here so that handlers unwind
+// when the carrier observes the peer going away.
+type cancellationPropagator interface {
+	propagateCancellation() bool
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
