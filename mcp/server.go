@@ -1610,7 +1610,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 
 // logLevelContextKey carries the per-request log level from
 // [ServerSession.handle] to [ServerSession.Log] for new-protocol
-// (>= 2026-06-30) requests. The level is scoped to a single in-flight request
+// (>= 2026-07-28) requests. The level is scoped to a single in-flight request
 // — including handler goroutines that call [ServerSession.Log] concurrently —
 // rather than to the session, which avoids races between concurrent requests
 // and aligns with SEP-2575's per-request opt-in model. The value type is
@@ -1619,7 +1619,7 @@ type logLevelContextKey struct{}
 
 // Log sends a log message to the client.
 //
-// For new-protocol (>= 2026-06-30) requests, the level is taken from the
+// For new-protocol (>= 2026-07-28) requests, the level is taken from the
 // originating request's `_meta` field (SEP-2575); an absent or empty value
 // suppresses the message per spec. For old-protocol requests, the level is
 // taken from the session state set via `logging/setLevel`.
@@ -1779,7 +1779,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	case methodDiscover:
 		// In case of methodDiscover call the state.initializeParams is populated
 		// within the discover handle function to make sure the method is supported
-		// when the user is probing a pre-2026-06-30 server.
+		// when the user is probing a pre-2026-07-28 server.
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
