@@ -2570,18 +2570,10 @@ func newSubListenServer() *Server {
 	return s
 }
 
-func enableNewProtocol(t *testing.T) {
-	t.Helper()
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-}
-
 // TestSubscriptionsListen_InMemory exercises the listen flow over the
 // session-shared in-memory transport (semantically equivalent to STDIO).
 // Cancellation here propagates via notifications/cancelled.
 func TestSubscriptionsListen_InMemory(t *testing.T) {
-	enableNewProtocol(t)
 	events := make(chan subListenEvent, 64)
 	server := newSubListenServer()
 	ct, st := NewInMemoryTransports()
@@ -2597,7 +2589,6 @@ func TestSubscriptionsListen_InMemory(t *testing.T) {
 // stateless HTTP server (SEP-2575). Each listen rides its own SSE response
 // stream; cs.Close() tears it down.
 func TestSubscriptionsListen_Streamable(t *testing.T) {
-	enableNewProtocol(t)
 	events := make(chan subListenEvent, 64)
 	server := newSubListenServer()
 	handler := NewStreamableHTTPHandler(
@@ -2615,7 +2606,6 @@ func TestSubscriptionsListen_Streamable(t *testing.T) {
 // auto-listen on connect, and therefore does not receive any acknowledgment
 // or downstream notifications.
 func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
-	enableNewProtocol(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2694,7 +2684,6 @@ type resourceSubEvent struct {
 // subscriptionsListen handler so HTTP disconnect is observed directly; this
 // is tracked separately.
 func TestResourceSubscriptions_Streamable(t *testing.T) {
-	enableNewProtocol(t)
 
 	subCh := make(chan string, 8)
 	unsubCh := make(chan string, 8)
@@ -2764,7 +2753,6 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 // over an in-memory (stdio-equivalent) transport: the per-URI Subscribe path
 // uses notifications/cancelled rather than HTTP disconnect for teardown.
 func TestResourceSubscriptions_InMemory(t *testing.T) {
-	enableNewProtocol(t)
 
 	subCh := make(chan string, 8)
 	unsubCh := make(chan string, 8)
@@ -2849,7 +2837,6 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 // second call: it returns nil without invoking SubscribeHandler again and
 // without opening a second listen stream.
 func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
-	enableNewProtocol(t)
 
 	subCh := make(chan string, 8)
 	unsubCh := make(chan string, 8)
@@ -2914,7 +2901,6 @@ func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
 // stream with a distinct subscription ID. Unsubscribing one does not affect
 // the other.
 func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
-	enableNewProtocol(t)
 
 	subCh := make(chan string, 8)
 	unsubCh := make(chan string, 8)
@@ -3032,7 +3018,6 @@ func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
 // notification is fanned out to BOTH sessions, each with its own subscription
 // ID; closing one session does not affect deliveries to the other.
 func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
-	enableNewProtocol(t)
 
 	server := newSubListenServer()
 
@@ -3110,7 +3095,6 @@ func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
 // auto-listen branch (the other two list-changed types are covered by
 // runSubscriptionsListenTest, but resources is not).
 func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
-	enableNewProtocol(t)
 	events := make(chan subListenEvent, 16)
 
 	server := NewServer(testImpl, nil)
@@ -3182,7 +3166,6 @@ func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
 // session removes its entries from the server's three per-type subscription
 // maps via Server.disconnect.
 func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
-	enableNewProtocol(t)
 	events := make(chan subListenEvent, 16)
 	server := newSubListenServer()
 

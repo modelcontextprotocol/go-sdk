@@ -1253,13 +1253,6 @@ var discoverResult = &DiscoverResult{
 func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
 
-	// Temporarily enable 2026-07-28 support in the SDK for this test
-	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
-	t.Cleanup(func() {
-		supportedProtocolVersions = oldSupported
-	})
-
 	var (
 		gotDiscoverMu sync.Mutex
 		gotDiscover   *jsonrpc.Request
@@ -1589,12 +1582,6 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
 // mutually supported version and retries server/discover.
 func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testing.T) {
 	ctx := context.Background()
-
-	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
-	t.Cleanup(func() {
-		supportedProtocolVersions = oldSupported
-	})
 
 	const unsupportedClientVersion = "2099-12-31"
 

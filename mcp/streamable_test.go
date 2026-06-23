@@ -1904,9 +1904,6 @@ func TestStreamableGET(t *testing.T) {
 // as specified in SEP-2243.
 func TestStreamableMcpHeaderValidation(t *testing.T) {
 	// Temporarily register the future version so the handler accepts it.
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
@@ -2055,9 +2052,6 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 // validation errors return a JSON-RPC error with code -32020 and
 // Content-Type application/json, per SEP-2243.
 func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
@@ -2204,9 +2198,6 @@ func TestStreamableMcpHeaderVersionGating(t *testing.T) {
 // TestStreamableParamHeadersClientSetsHeaders verifies that the client sets
 // Mcp-Param-* headers on tool calls when the tool has x-mcp-header annotations.
 func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	server.AddTool(
@@ -2306,9 +2297,6 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 // tools with invalid x-mcp-header annotations at registration time, and
 // that valid tools are returned by ListTools.
 func TestStreamableFilterValidToolsIntegration(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), minVersionForStandardHeaders)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
 	noop := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
@@ -3355,9 +3343,6 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 	// SEP-2575: the MCP-Protocol-Version header is mandatory for new-protocol
 	// requests and must be a supported version. The 2026-07-28 version is
 	// not yet in the global list, so register it for the duration of the test.
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	capture := &statelessHandlerCapture{}
 	mcpServer := NewServer(testImpl, nil)
@@ -3432,9 +3417,6 @@ func TestStreamableStateless_NewProtocolSession_NoFakeInit(t *testing.T) {
 func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 	// Make 2026-07-28 a "known" version so that the request reaches servePOST
 	// (otherwise the early header validation at ServeHTTP rejects it).
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "noop"},
@@ -3497,9 +3479,6 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 // (the rejection in TestStreamableStateful_RejectsNewProtocol must not
 // fire on Stateless: true).
 func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
 	AddTool(server, &Tool{Name: "noop"},
@@ -3536,15 +3515,22 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 }
 
 // TestStreamableClientUnsupportedVersionFallback exercises the full
-// SEP-2575 fallback. The client requests protocolVersion20260728, which the server does
-// not advertise in supportedProtocolVersions. The server therefore rejects
-// the server/discover POST at the transport-level header validation with a
-// plain HTTP 400 ("Bad Request: Unsupported protocol version ..."). The
-// streamable client must recognize this body, keep the connection alive, and
-// successfully complete the legacy initialize handshake.
-//
-// TODO: once 20260630 is part of supportedProtocolVersion on server side, modify the list in the test to keep it consistent.
+// SEP-2575 fallback. The client requests protocolVersion20260728, which the
+// server is configured to NOT advertise in supportedProtocolVersions for the
+// duration of this test. The server therefore rejects the server/discover
+// POST at the transport-level header validation with a plain HTTP 400 ("Bad
+// Request: Unsupported protocol version ..."). The streamable client must
+// recognize this body, keep the connection alive, and successfully complete
+// the legacy initialize handshake.
 func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
+	// Remove protocolVersion20260728 from the server-side supported list so
+	// the fallback path is exercised.
+	orig := supportedProtocolVersions
+	supportedProtocolVersions = slices.DeleteFunc(slices.Clone(orig), func(v string) bool {
+		return v == protocolVersion20260728
+	})
+	t.Cleanup(func() { supportedProtocolVersions = orig })
+
 	ctx := context.Background()
 
 	server := NewServer(testImpl, nil)
@@ -3587,9 +3573,6 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 // the server with the new protocol version to learn which versions are
 // supported.
 func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(testImpl, nil)
 	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
@@ -3666,10 +3649,6 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 // SEP-2575 over the streamable HTTP transport.
 func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
 	server := NewServer(&Implementation{Name: "e2e-server", Version: "v1"}, nil)
 	// Register a simple tool so we can prove the session is usable end-to-end.
 	AddTool(server, &Tool{Name: "echo", Description: "echoes its input"},
