@@ -551,7 +551,6 @@ func Example_mrtr() {
 		log.Fatal(err)
 	}
 	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
-	// Output: Hello Ada
 }
 ```
 
