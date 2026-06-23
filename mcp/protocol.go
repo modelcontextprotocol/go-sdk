@@ -439,6 +439,11 @@ func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // RootCapabilities describes a client's support for roots.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type RootCapabilities struct {
 	// ListChanged reports whether the client supports notifications for
 	// changes to the roots list.
@@ -466,14 +471,27 @@ type ClientCapabilities struct {
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
 	// pointer to a RootCapabilities value. Roots will be continue to be
 	// populated, but any new fields will only be added in the RootsV2 field.
+	//
+	// The roots feature itself is also deprecated by SEP-2577; see RootsV2.
 	Roots struct {
 		// ListChanged reports whether the client supports notifications for
 		// changes to the roots list.
 		ListChanged bool `json:"listChanged,omitempty"`
 	} `json:"roots,omitempty"`
-	// RootsV2 is present if the client supports roots. When capabilities are explicitly configured via [ClientOptions.Capabilities]
+	// RootsV2 is present if the client supports roots. When capabilities are
+	// explicitly configured via [ClientOptions.Capabilities].
+	//
+	// Deprecated: the roots feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	RootsV2 *RootCapabilities `json:"-"`
 	// Sampling is present if the client supports sampling from an LLM.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
@@ -641,6 +659,12 @@ type CompleteResult struct {
 
 func (*CompleteResult) isResult() {}
 
+// CreateMessageParams holds parameters for a sampling/createMessage request.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -648,10 +672,11 @@ type CreateMessageParams struct {
 	// A request to include context from one or more MCP servers (including the
 	// caller), to be attached to the prompt. The client may ignore this request.
 	//
-	// The default is "none". Values "thisServer" and
-	// "allServers" are soft-deprecated. Servers SHOULD only use these values if
-	// the client declares ClientCapabilities.sampling.context. These values may
-	// be removed in future spec releases.
+	// The default is "none". The values "thisServer" and "allServers" are
+	// deprecated as of protocol version 2025-11-25 (SEP-2596) and will be
+	// removed no later than the sampling feature itself (SEP-2577). Servers
+	// SHOULD omit this field or use "none". See
+	// https://modelcontextprotocol.io/seps/2596-feature-lifecycle-and-deprecation-policy.
 	IncludeContext string `json:"includeContext,omitempty"`
 	// The maximum number of tokens to sample, as requested by the server. The
 	// client may choose to sample fewer tokens than requested.
@@ -681,6 +706,11 @@ func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // and messages that support array content (for parallel tool calls).
 //
 // Use with [ServerSession.CreateMessageWithTools].
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageWithToolsParams struct {
 	Meta           `json:"_meta,omitempty"`
 	IncludeContext string `json:"includeContext,omitempty"`
@@ -741,6 +771,11 @@ func (p *CreateMessageWithToolsParams) toBase() (*CreateMessageParams, error) {
 // object for compatibility with pre-2025-11-25 implementations. When
 // unmarshaling, a single JSON content object is accepted and wrapped in a
 // one-element slice.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingMessageV2 struct {
 	Content []Content `json:"content"`
 	Role    Role      `json:"role"`
@@ -782,6 +817,11 @@ func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
 // The client should inform the user before returning the sampled message, to
 // allow them to inspect the response (human in the loop) and decide whether to
 // allow the server to see it.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -828,6 +868,11 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 //
 // When unmarshaling, a single JSON content object is accepted and wrapped in a
 // one-element slice, for compatibility with clients that return a single block.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageWithToolsResult struct {
 	Meta    `json:"_meta,omitempty"`
 	Content []Content `json:"content"`
@@ -1218,6 +1263,12 @@ type ListResourcesResult struct {
 func (x *ListResourcesResult) isResult()              {}
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
+// ListRootsParams holds parameters for a roots/list request.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ListRootsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1233,6 +1284,11 @@ func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // The client's response to a roots/list request from the server. This result
 // contains an array of Root objects, each representing a root directory or file
 // that the server can operate on.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ListRootsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1277,8 +1333,20 @@ func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 //
 // These map to syslog message severities, as specified in RFC-5424:
 // https://datatracker.ietf.org/doc/html/rfc5424#section-6.2.1
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingLevel string
 
+// LoggingMessageParams holds the parameters for a notifications/message
+// notification.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1301,6 +1369,11 @@ func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) 
 //
 // Keys not declared here are currently left unspecified by the spec and are up
 // to the client to interpret.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ModelHint struct {
 	// A hint for a model name.
 	//
@@ -1327,6 +1400,11 @@ type ModelHint struct {
 // These preferences are always advisory. The client may ignore them. It is also
 // up to the client to decide how to interpret these preferences and how to
 // balance them against other considerations.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ModelPreferences struct {
 	// How much to prioritize cost when selecting a model. A value of 0 means cost
 	// is not important, while a value of 1 means cost is the most important factor.
@@ -1652,6 +1730,11 @@ type ResourceTemplate struct {
 type Role string
 
 // Represents a root directory or file that the server can operate on.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type Root struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
 	// usage.
@@ -1666,6 +1749,13 @@ type Root struct {
 	URI string `json:"uri"`
 }
 
+// RootsListChangedParams holds parameters for a notifications/roots/list_changed
+// notification.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type RootsListChangedParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1681,6 +1771,11 @@ func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t
 // below directly above ClientCapabilities.
 
 // SamplingCapabilities describes the client's support for sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingCapabilities struct {
 	// Context indicates the client supports includeContext values other than "none".
 	Context *SamplingContextCapabilities `json:"context,omitempty"`
@@ -1689,12 +1784,27 @@ type SamplingCapabilities struct {
 }
 
 // SamplingContextCapabilities indicates the client supports context inclusion.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingContextCapabilities struct{}
 
 // SamplingToolsCapabilities indicates the client supports tool use in sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingToolsCapabilities struct{}
 
 // ToolChoice controls how the model uses tools during sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ToolChoice struct {
 	// Mode controls tool invocation behavior:
 	//  - "auto": Model decides whether to use tools (default)
@@ -1721,6 +1831,11 @@ type URLElicitationCapabilities struct{}
 //
 // For assistant messages, Content may be text, image, audio, or tool_use.
 // For user messages, Content may be text, image, audio, or tool_result.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingMessage struct {
 	Content Content `json:"content"`
 	Role    Role    `json:"role"`
@@ -1746,6 +1861,12 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SetLoggingLevelParams holds parameters for a logging/setLevel request.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -2071,6 +2192,11 @@ type Implementation struct {
 type CompletionCapabilities struct{}
 
 // LoggingCapabilities describes the server's support for sending log messages to the client.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingCapabilities struct{}
 
 // PromptCapabilities describes the server's support for prompts.
@@ -2114,6 +2240,11 @@ type ServerCapabilities struct {
 	// suggestions.
 	Completions *CompletionCapabilities `json:"completions,omitempty"`
 	// Logging is present if the server supports log messages.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Prompts is present if the server supports prompts.
 	Prompts *PromptCapabilities `json:"prompts,omitempty"`
@@ -2196,6 +2327,11 @@ const (
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	// MetaKeyLogLevel identifies the desired log level for the request.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
 	// MetaKeySubscriptionID identifies the subscriptions/listen request that an
 	// out-of-band notification belongs to.
