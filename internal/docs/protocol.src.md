@@ -6,15 +6,21 @@
 
 The SDK provides an API for defining both MCP clients and servers, and
 connecting them over various transports. When a client and server are
-connected, it creates a logical session, which follows the MCP spec's
-[lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle).
+connected, it creates a logical session.
 
-In this SDK, both a
-[`Client`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Client)
-and
-[`Server`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server)
-can handle multiple peers. Every time a new peer is connected, it creates a new
-session.
+The MCP specification defines two lifecycle models, and the SDK supports both
+transparently based on the negotiated protocol version:
+
+- The **legacy `initialize` handshake**
+  ([lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle))
+  used by protocol versions through `2025-11-25`.
+- A **stateless** model introduced in `2026-07-28` by
+  [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
+  in which there is no `initialize`/`notifications/initialized` handshake, and
+  each request carries its protocol version, client identity, and client
+  capabilities in `_meta`.
+
+In both models, the SDK exposes the same API:
 
 - A `Client` is a logical MCP client, configured with various
   [`ClientOptions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions).
@@ -30,17 +36,57 @@ session.
   [`Server.Connect`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.Connect),
   it creates a
   [`ServerSession`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession).
-  This session is not initialized until the client sends the
-  `notifications/initialized` message. Use `ServerOptions.InitializedHandler`
-  to listen for this event, or just use the session through various feature
-  handlers (such as a `ToolHandler`). Requests to the server are rejected until
-  the client has initialized the session.
+
+In the legacy model, the server session is not considered initialized until
+the client sends the `notifications/initialized` message. Use
+`ServerOptions.InitializedHandler` to listen for this event, or just use the
+session through various feature handlers (such as a `ToolHandler`). Requests
+to the server are rejected until the client has initialized the session.
+
+In the stateless model (`2026-07-28`+), there is no handshake. The server
+processes the first request the moment it arrives, validates the per-request
+`_meta` fields.
 
 Both `ClientSession` and `ServerSession` have a `Close` method to terminate the
 session, and a `Wait` method to await session termination by the peer. Typically,
 it is the client's responsibility to end the session.
 
 %include ../../mcp/mcp_example_test.go lifecycle -
+
+### Discovery (`server/discover`)
+
+Introduced in `2026-07-28` by
+[SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
+the `server/discover` RPC lets a client discover a server's supported
+protocol versions, capabilities, and identity before issuing any other
+request. Servers implementing `2026-07-28` MUST implement it.
+
+- **Server**: `Server.Connect` registers the
+  `server/discover` handler automatically; the response is computed from the
+  server's static configuration (capabilities, server info, instructions) and
+  the transport-filtered list of supported protocol versions.
+- **Client**: `Client.Connect` calls `server/discover` first and
+  uses the result to negotiate a mutually supported version. If discovery
+  fails or the server does not support the latest version, the client falls back to the
+  legacy `initialize` handshake.
+
+### Per-request `_meta` keys
+
+When the negotiated protocol version is `2026-07-28` or later, every request
+carries these keys inside its `_meta` map (constants live in
+[`mcp/protocol.go`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#pkg-constants)):
+
+| Constant | Wire key | Type |
+|---|---|---|
+| `MetaKeyProtocolVersion` | `io.modelcontextprotocol/protocolVersion` | `string` |
+| `MetaKeyClientInfo` | `io.modelcontextprotocol/clientInfo` | `*Implementation` |
+| `MetaKeyClientCapabilities` | `io.modelcontextprotocol/clientCapabilities` | `*ClientCapabilities` |
+| `MetaKeyLogLevel` | `io.modelcontextprotocol/logLevel` | `LoggingLevel` (deprecated by SEP-2577) |
+
+The client populates these keys automatically on every outgoing request.
+Server-side handlers can read them
+through `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`,
+and `ServerRequest[P].ClientCapabilities()`.
 
 ## Transports
 
@@ -112,6 +158,39 @@ client, err := mcp.Connect(ctx, transport, &mcp.ClientOptions{...})
 The `StreamableClientTransport` handles the HTTP requests and communicates with
 the server using the streamable transport protocol.
 
+#### HTTP Headers
+
+[SEP-2243](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2243)
+standardises a small set of MCP-specific HTTP headers, sent and validated by
+the SDK only for sessions negotiated on protocol version `2026-07-28` or
+later.
+
+| Header | Direction | Purpose |
+|---|---|---|
+| `Mcp-Protocol-Version` | request | Mirrors `_meta.io.modelcontextprotocol/protocolVersion` from the body |
+| `Mcp-Session-Id` | request/response | Logical session identifier (removed in stateless mode) |
+| `Mcp-Method` | request | Mirrors the JSON-RPC `method` field; mismatch ⇒ `-32020` |
+| `Mcp-Name` | request | Mirrors the request's principal name (`tools/call.params.name`, `prompts/get.params.name`, `resources/read.params.uri`); mismatch ⇒ `-32020` |
+| `Mcp-Param-{Header}` | request | Per-tool parameter passthrough; see below |
+
+The header-name set is exhaustive: for protocol versions earlier than
+`2026-07-28`, only `Mcp-Protocol-Version` and `Mcp-Session-Id` are recognised.
+
+**Body↔header mirroring.** When `Mcp-Method` or `Mcp-Name` is present but
+does not match the JSON-RPC body, the server returns
+[`CodeHeaderMismatch`](#error-codes) (`-32020`). The same applies to a
+mismatch between `Mcp-Protocol-Version` and the body's
+`_meta.io.modelcontextprotocol/protocolVersion`.
+
+**`Mcp-Param-*` passthrough.** A tool may annotate properties of its
+`InputSchema` with `x-mcp-header: "<HeaderName>"`. When a client invokes that
+tool over HTTP, the SDK serializes the matching argument(s) as
+`Mcp-Param-<HeaderName>` request headers (using `=?base64?...?=` encoding for
+non-ASCII values). On the server, the headers are validated against the body
+and either accepted or rejected with `-32020`. Properties so annotated must
+be typed `string`, `integer`, or `boolean`; tools that fail validation at
+registration time are silently dropped from `tools/list`.
+
 #### Resumability and Redelivery
 
 By default, the streamable server does not support [resumability or
@@ -124,6 +203,13 @@ To enable resumability, set `StreamableHTTPOptions.EventStore` to a non-nil
 value. The SDK provides a `MemoryEventStore` for testing or simple use cases;
 for production use it is generally advisable to use a more sophisticated
 implementation.
+
+> **Note**: [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575)
+> removes SSE stream resumability (`Last-Event-ID`, SSE event IDs) for protocol
+> version `2026-07-28`. The SDK preserves the `EventStore` and `Last-Event-ID`
+> code paths for backward compatibility with `2025-11-25` and earlier; on
+> `2026-07-28` sessions, a broken response stream loses the in-flight request
+> and the client must re-issue it as a new request with a new ID.
 
 #### Stateless Mode
 
@@ -142,6 +228,10 @@ to see the logical session
 > defined. See modelcontextprotocol/modelcontextprotocol#1364,
 > modelcontextprotocol/modelcontextprotocol#1372, or
 > modelcontextprotocol/modelcontextprotocol#1442 for potential refinements.
+
+> **Required for `2026-07-28`**: the streamable HTTP transport accepts
+> requests at protocol version `2026-07-28` **only** when `Stateless = true`.
+> Requests at that version against a non-stateless handler are rejected.
 
 _See [examples/server/distributed](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/distributed/main.go) for
 an example using stateless mode to implement a server distributed across
@@ -463,6 +553,13 @@ session if the ping fails, set
 or
 [`ServerOptions.KeepAlive`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.KeepAlive).
 
+> **Note**: `ping` is removed from the protocol as of `2026-07-28` by
+> [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
+> The SDK preserves the API for backward compatibility with legacy clients;
+> when both peers negotiate `2026-07-28`, the server returns
+> `MethodNotFound` (`-32601`) for `ping` and `KeepAlive` should not be
+> enabled.
+
 ### Progress
 
 [Progress](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress)
@@ -480,3 +577,22 @@ Issue #460 discusses some potential ergonomic improvements to this API.
 
 %include ../../mcp/mcp_example_test.go progress -
 
+### Error codes
+
+The SDK uses the standard JSON-RPC base codes (parse error `-32700`,
+invalid request `-32600`, method not found `-32601`, invalid params
+`-32602`, internal error `-32603`) plus the following MCP-specific codes:
+
+| Constant | Code | Meaning |
+|---|---|---|
+| [`CodeHeaderMismatch`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CodeHeaderMismatch) | `-32020` | An MCP HTTP header (`Mcp-Method`, `Mcp-Name`, `Mcp-Protocol-Version`, or `Mcp-Param-*`) does not match the JSON-RPC body |
+| [`CodeMissingRequiredClientCapabilities`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CodeMissingRequiredClientCapabilities) | `-32021` | Server requires client capabilities the client did not declare |
+| [`CodeUnsupportedProtocolVersion`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CodeUnsupportedProtocolVersion) | `-32022` | Requested protocol version not supported. Data: `UnsupportedProtocolVersionData{Supported []string, Requested string}` |
+| [`CodeResourceNotFound`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CodeResourceNotFound) | `-32602` | Resource URI not found (variable; was `-32002` before SEP-2164) |
+
+The error code allocation policy defined in `2026-07-28`
+([SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575))
+partitions the JSON-RPC server-error range:
+
+- `-32000` to `-32019`: implementation-defined; existing SDK usage is grandfathered.
+- `-32020` to `-32099`: reserved for the MCP specification.
