@@ -82,6 +82,12 @@ type ClientOptions struct {
 	// &SamplingCapabilities{}. If [ClientOptions.Capabilities] is set and has a
 	// non nil value for [ClientCapabilities.Sampling], that value overrides the
 	// inferred capability.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to calling LLM provider APIs
+	// directly from your server. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// CreateMessageWithToolsHandler handles incoming sampling/createMessage
 	// requests that may involve tool use. It returns
@@ -95,6 +101,12 @@ type ClientOptions struct {
 	//
 	// It is a panic to set both CreateMessageHandler and
 	// CreateMessageWithToolsHandler.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to calling LLM provider APIs
+	// directly from your server. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	CreateMessageWithToolsHandler func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error)
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
@@ -152,10 +164,17 @@ type ClientOptions struct {
 	// ElicitationCompleteHandler handles incoming notifications for notifications/elicitation/complete.
 	ElicitationCompleteHandler func(context.Context, *ElicitationCompleteNotificationRequest)
 	// Handlers for notifications from the server.
-	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
-	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
-	ResourceListChangedHandler  func(context.Context, *ResourceListChangedRequest)
-	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
+	ToolListChangedHandler     func(context.Context, *ToolListChangedRequest)
+	PromptListChangedHandler   func(context.Context, *PromptListChangedRequest)
+	ResourceListChangedHandler func(context.Context, *ResourceListChangedRequest)
+	ResourceUpdatedHandler     func(context.Context, *ResourceUpdatedNotificationRequest)
+	// LoggingMessageHandler handles incoming notifications/message
+	// notifications from the server.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
 	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
@@ -615,6 +634,12 @@ func (cs *ClientSession) startKeepalive(interval time.Duration) {
 // AddRoots adds the given roots to the client,
 // replacing any with the same URIs,
 // and notifies any connected servers.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (c *Client) AddRoots(roots ...*Root) {
 	// Only notify if something could change.
 	if len(roots) == 0 {
@@ -627,6 +652,12 @@ func (c *Client) AddRoots(roots ...*Root) {
 // RemoveRoots removes the roots with the given URIs,
 // and notifies any connected servers if the list has changed.
 // It is not an error to remove a nonexistent root.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (c *Client) RemoveRoots(uris ...string) {
 	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { return c.roots.remove(uris...) })
@@ -1242,6 +1273,14 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
+// SetLoggingLevel sets the minimum severity level for log messages sent by
+// the server.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to consuming stderr output (for STDIO
+// servers) or OpenTelemetry. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
