@@ -720,18 +720,31 @@ func (s *Server) notifySessions(n string) {
 	}
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 
+	// Notify legacy sessions on the shared session channel regardless of
+	// their subscription status.
 	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
 
-	// Sessions receive the notification only if they opened a
-	// subscriptions/listen stream that opted in to this notification type.
+	// Notify modern sessions only if they have an active subscription for
+	// this notification type.
+	s.notifySubscribedSessions(subscribers, n, changeNotificationParams[n])
+}
+
+// notifySubscribedSessions delivers a list-changed or resource-updated
+// notification to each session in subscribers, stamping the session's
+// listen-request ID into the params' _meta so the receiving client can demultiplex
+// notifications belonging to different concurrent listens.
+func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc.ID, method string, makeParams func() Params) {
+	if len(subscribers) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for sess, reqID := range subscribers {
-		params := changeNotificationParams[n]()
+		params := makeParams()
 		injectMetaSubscriptionID(params, reqID)
 		req := newRequest(sess, params)
-		if err := handleNotify(ctx, n, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", n, err))
+		if err := handleNotify(ctx, method, req); err != nil {
+			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
 		}
 	}
 }
@@ -1061,32 +1074,28 @@ func fileResourceHandler(dir string) ResourceHandler {
 func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
 	s.mu.Lock()
 	subscribedSessions := s.resourceSubscriptions[params.URI]
-	sessions := slices.Collect(maps.Keys(subscribedSessions))
-	s.mu.Unlock()
 	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
 	var legacySessions []*ServerSession
-	var newSessions []*ServerSession
-	for _, sess := range sessions {
+	newSessions := make(map[*ServerSession]jsonrpc.ID)
+	for sess, reqID := range subscribedSessions {
 		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
 			legacySessions = append(legacySessions, sess)
 		} else {
-			newSessions = append(newSessions, sess)
+			newSessions[sess] = reqID
 		}
 	}
-	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
-	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
+	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	for _, sess := range newSessions {
-		reqID := subscribedSessions[sess]
+	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
+
+	// Notify modern sessions, injecting the per-session subscription ID into the notification's metadata.
+	s.notifySubscribedSessions(newSessions, notificationResourceUpdated, func() Params {
 		p := *params
-		injectMetaSubscriptionID(&p, reqID)
-		req := newRequest(sess, &p)
-		if err := handleNotify(ctx, notificationResourceUpdated, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", notificationResourceUpdated, err))
-		}
-	}
+		return &p
+	})
+	s.opts.Logger.Info("resource updated notification sent",
+		"uri", params.URI,
+		"subscriber_count", len(legacySessions)+len(newSessions))
 	return nil
 }
 
