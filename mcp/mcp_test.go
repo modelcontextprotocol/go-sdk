@@ -171,7 +171,10 @@ func TestEndToEnd(t *testing.T) {
 		c.AddRoots(&Root{URI: "file://" + rootAbs})
 
 		// Connect the client.
-		cs, err := c.Connect(ctx, ct, nil)
+		//
+		// Pin the session to 2025-11-25 so the legacy
+		// semantics apply.
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -758,7 +761,10 @@ func TestMiddleware(t *testing.T) {
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
-	cs, err := c.Connect(ctx, ct, nil)
+	// Pin to 2025-11-25 because the test's expected wire sequence asserts
+	// the legacy initialize / notifications/initialized handshake, which
+	// 2026-07-28 replaces with server/discover.
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1903,7 +1909,10 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
 		}
 		c := NewClient(testImpl, clientOpts)
-		cs, err := c.Connect(ctx, ct, nil)
+		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
+		// in 2026-07-28, so keepalive is only meaningful on legacy protocol
+		// versions.
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}

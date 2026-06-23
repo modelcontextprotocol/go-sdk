@@ -182,7 +182,11 @@ func TestStreamableTransports(t *testing.T) {
 			if sid == "" {
 				t.Fatalf("empty session ID")
 			}
-			if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, latestProtocolVersion; g != w {
+			// Stateful HTTP servers reject 2026-07-28 (which requires
+			// StreamableHTTPOptions.Stateless = true), so the client falls
+			// back to the legacy initialize handshake which explicitly
+			// requests 2025-11-25.
+			if g, w := session.mcpConn.(*streamableClientConn).initializedResult.ProtocolVersion, protocolVersion20251125; g != w {
 				t.Fatalf("got protocol version %q, want %q", g, w)
 			}
 
@@ -200,7 +204,10 @@ func TestStreamableTransports(t *testing.T) {
 			if g := session.ID(); g != sid {
 				t.Errorf("session ID: got %q, want %q", g, sid)
 			}
-			if g, w := lastHeader.Get(protocolVersionHeader), latestProtocolVersion; g != w {
+			// Stateful HTTP requires the legacy protocol (see the earlier
+			// initializeResult assertion); the client sends the matching
+			// MCP-Protocol-Version header.
+			if g, w := lastHeader.Get(protocolVersionHeader), protocolVersion20251125; g != w {
 				t.Errorf("got protocol version header %q, want %q", g, w)
 			}
 			want := &CallToolResult{
@@ -332,10 +339,15 @@ func TestStreamableServerShutdown(t *testing.T) {
 				opts.KeepAlive = 50 * time.Millisecond
 			}
 			client := NewClient(testImpl, &opts)
+			// Pin to 2025-11-25: this test relies on the legacy hanging GET
+			// (stateful case) or Ping-based keepalive (stateless case) for
+			// the client to notice the server shutdown. Both mechanisms are
+			// removed in 2026-07-28 (SEP-2575), so the new protocol would
+			// leave the client waiting forever.
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint:   httpServer.URL,
 				MaxRetries: -1, // avoid slow tests during exponential retries
-			}, nil)
+			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -680,7 +692,12 @@ func TestServerTransportCleanup(t *testing.T) {
 			}
 		}
 		client.AddReceivingMiddleware(pingMiddleware)
-		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+		// Pin to 2025-11-25: this test counts server-side sessions, but
+		// the 2026-07-28 client probes server/discover first against a
+		// stateful HTTP server (which rejects the new protocol), opening
+		// an extra HTTP connection and therefore an extra session. Pinning
+		// to 2025-11-25 skips the discover probe.
+		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatalf("client.Connect() failed: %v", err)
 		}
@@ -2612,8 +2629,12 @@ func TestStreamableSessionTimeout(t *testing.T) {
 	defer httpServer.Close()
 
 	// Connect a client to create a session.
+	// Pin to 2025-11-25: under 2026-07-28 the client probes server/discover
+	// first against a stateful HTTP server (which rejects the new
+	// protocol), opening an extra HTTP connection and therefore an extra
+	// session. Pinning to 2025-11-25 skips the discover probe.
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -2903,7 +2924,11 @@ func Test_ExportErrSessionMissing(t *testing.T) {
 		Endpoint: ts.URL,
 	}
 	client := NewClient(impl, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
+	// Pin to 2025-11-25: under 2026-07-28 the client probes server/discover
+	// first against a stateful HTTP server (which rejects the new
+	// protocol), opening an extra HTTP connection and therefore an extra
+	// session. Pinning to 2025-11-25 skips the discover probe.
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -3554,9 +3579,11 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil; expected legacy initialize to populate it")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 
 	// Verify the session is fully usable after the fallback by issuing a

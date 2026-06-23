@@ -678,7 +678,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				return nil, jsonrpc2.ErrMethodNotFound
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 		{
 			name: "unsupported protocol version falls back to initialize",
@@ -689,7 +689,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 		{
 			name: "no overlapping supported version falls back to initialize",
@@ -701,7 +701,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}, nil
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 	}
 
@@ -912,9 +912,11 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after no-overlap discover)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 
 	// Prove the session is usable after fallback.
@@ -957,9 +959,11 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after MethodNotFound)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 
 	if _, err := cs.ListTools(ctx, nil); err != nil {
@@ -1005,9 +1009,11 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after UnsupportedProtocolVersion)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 }
 
