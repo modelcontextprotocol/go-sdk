@@ -28,6 +28,10 @@ client, a call to `AddRoot` or `RemoveRoots` will result in a
 [`ServerSession.ListRoots`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.ListRoots)
 method. To receive notifications about root changes, set
 [`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler).
+For protocol versions `2026-07-28` and later, `ListRoots` requests are
+delivered via the
+[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+pattern.
 
 %include ../../mcp/client_example_test.go roots -
 
@@ -51,6 +55,11 @@ This function is invoked whenever the server requests sampling.
 **Server-side**: To use sampling from the server, call
 [`ServerSession.CreateMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.CreateMessage).
 
+For protocol versions `2026-07-28` and later, sampling requests are
+delivered via the
+[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+pattern.
+
 %include ../../mcp/client_example_test.go sampling -
 
 ## Elicitation
@@ -68,7 +77,43 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 **Server-side**: To use elicitation from the server, call
 [`ServerSession.Elicit`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Elicit).
 
+For protocol versions `2026-07-28` and later, elicitation requests are
+delivered via the
+[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+pattern.
+
 %include ../../mcp/client_example_test.go elicitation -
+
+## Multi Round-Trip Requests (MRTR)
+
+[SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
+introduces the MRTR pattern: server-to-client requests for sampling,
+elicitation, and roots are no longer issued as fresh JSON-RPC requests but
+are carried inside the in-flight reply of a `tools/call`, `prompts/get`, or
+`resources/read`. The client must respond by retrying the original request
+with the produced responses.
+
+The SDK installs `clientMultiRoundTripMiddleware` for every client by
+default. The middleware:
+
+1. Inspects each `tools/call`/`prompts/get`/`resources/read` reply.
+2. If the result's `NeedsInput()` is true, fans out the `InputRequests` map
+   concurrently, calling the configured handler for each (`elicit`,
+   `createMessage`/`createMessageWithTools`, or `listRoots`).
+3. Threads the server-supplied opaque `RequestState` back unchanged.
+4. Retries the original request with the responses set, repeating until the
+   result no longer needs input.
+
+The middleware is enabled by default. To opt out, set
+[`ClientOptions.MultiRoundTrip.Disabled = true`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MultiRoundTripOptions);
+the client will then surface `InputRequiredResult` values directly to the
+caller and your code must fulfil the requests manually.
+
+For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
+requests on the legacy server-initiated channel; the MRTR machinery is a
+no-op in that direction. For legacy clients talking to MRTR-style servers,
+the server SDK applies the inverse compatibility shim — see the
+[server-side documentation](server.md#multi-round-trip-requests-mrtr).
 
 ## Capabilities
 
@@ -125,4 +170,12 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
     ElicitationHandler: handler,
 })
 ```
+
+### Extensions
+
+[SEP-2133](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2133)
+adds an `extensions` map to `ClientCapabilities` and `ServerCapabilities` so
+that optional capabilities outside the core protocol can be declared on the
+wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
+are per-extension settings objects.
 
