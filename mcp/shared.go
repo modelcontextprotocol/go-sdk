@@ -35,7 +35,7 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion   = protocolVersion20251125
+	latestProtocolVersion   = protocolVersion20260728
 	protocolVersion20260728 = "2026-07-28"
 	protocolVersion20251125 = "2025-11-25"
 	protocolVersion20250618 = "2025-06-18"
@@ -44,6 +44,7 @@ const (
 )
 
 var supportedProtocolVersions = []string{
+	protocolVersion20260728,
 	protocolVersion20251125,
 	protocolVersion20250618,
 	protocolVersion20250326,

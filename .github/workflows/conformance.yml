@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  server-conformance:
+  server-conformance-stateful:
+    name: Server conformance (stateful, 2025-11-25)
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -23,13 +24,35 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: "^1.26"
-      - name: Start everything-server
+      - name: Start everything-server (stateful)
         run: |
-          go run ./conformance/everything-server/main.go -http=":3001" &
-          # Wait for the server to be ready.
+          go run ./conformance/everything-server/main.go -http=":3001" -stateless=false &
           timeout 30 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
-      - name: "Run conformance tests" 
-        uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
+      - name: Run conformance tests
+        uses: modelcontextprotocol/conformance@65fcd39617d7acac3c27c22f1514b072202082c5 # 0.2.0-alpha.5
+        with:
+          mode: server
+          url: http://localhost:3001/mcp
+          suite: active
+          expected-failures: ./conformance/baseline.yml
+          node-version: 22
+
+  server-conformance-stateless:
+    name: Server conformance (stateless, 2026-07-28)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "^1.26"
+      - name: Start everything-server (stateless)
+        run: |
+          go run ./conformance/everything-server/main.go -http=":3001" -stateless &
+          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
+      - name: Run conformance tests
+        uses: modelcontextprotocol/conformance@65fcd39617d7acac3c27c22f1514b072202082c5 # 0.2.0-alpha.5
         with:
           mode: server
           url: http://localhost:3001/mcp
@@ -38,6 +61,7 @@ jobs:
           node-version: 22
 
   client-conformance:
+    name: Client conformance
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -46,10 +70,10 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: "^1.26"
-      - name: "Run conformance tests" 
-        uses: modelcontextprotocol/conformance@a2855b03582a6c0b31065ad4d9af248316ce61a3 # v0.1.15
+      - name: Run conformance tests
+        uses: modelcontextprotocol/conformance@65fcd39617d7acac3c27c22f1514b072202082c5 # 0.2.0-alpha.5
         with:
-          mode: client 
+          mode: client
           command: go run ./conformance/everything-client
           suite: core
           expected-failures: ./conformance/baseline.yml
