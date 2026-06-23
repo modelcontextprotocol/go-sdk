@@ -59,8 +59,11 @@ func negotiatedVersion(clientVersion string) string {
 	//
 	// This handles the case where a new spec version is released, and the SDK
 	// does not support it yet.
+	// Cap the supported versions at the legacy protocolVersion20251125, as this
+	// method is used by the initialize method which is deprecated in
+	// version protocolVersion20260728.
 	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return latestProtocolVersion
+		return protocolVersion20251125
 	}
 	return clientVersion
 }
