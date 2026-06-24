@@ -214,6 +214,80 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+## Multi Round-Trip Requests (MRTR)
+
+[SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
+defines a new pattern for server-to-client requests (sampling, elicitation,
+roots). Instead of issuing a fresh JSON-RPC request mid-flight, the server
+returns an `InputRequiredResult` from its in-flight handler — the
+`InputRequests` field of `CallToolResult`, `GetPromptResult`, or
+`ReadResourceResult` carries the requests for additional information. The
+client responds by retrying the original call with `InputResponses` set.
+
+The SDK supports this pattern from both sides without requiring callers to
+choose:
+
+- **Returning input requests from a handler.** Set `InputRequests` on the
+  result you return.
+  Leave `Content` / `StructuredContent` empty — returning
+  both at once is a server bug and the SDK returns `-32603 InternalError`.
+- **Calling the legacy APIs.** `ServerSession.Elicit`,
+  `ServerSession.CreateMessage(WithTools)`, and `ServerSession.ListRoots`
+  remain available and work for both new and legacy clients.
+
+### Talking to legacy clients
+
+The server installs `serverMultiRoundTripMiddleware` automatically. For
+clients on a protocol version earlier than `2026-07-28`, the middleware
+intercepts any `InputRequiredResult` your handler returns, fulfils each
+input request itself by calling the legacy server-initiated APIs
+(`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
+exactly once with the responses already populated. This means a handler
+written in the MRTR style works against both old and new clients without
+code changes.
+
+### Example
+
+The following example shows a "greet" tool whose handler asks the user
+for their name via elicitation before producing the final greeting. The
+handler runs twice — once to issue the elicitation, once to consume the
+response — but the client call site sees a single `CallTool` returning the
+final result, because the SDK's MRTR middleware handles the round trip on
+either side of the wire (depending on the negotiated protocol version).
+
+%include ../../mcp/server_example_test.go mrtr -
+
+## Cacheable list results
+
+[SEP-2549](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2549)
+adds `ttlMs` and `cacheScope` fields to the results of `tools/list`,
+`prompts/list`, `resources/list`, `resources/templates/list`, and
+`resources/read`. Both fields complement existing list
+results: clients use `ttlMs` as a freshness hint to reduce polling,
+and `cacheScope` (`"public"` or `"private"`) controls whether shared
+intermediaries may cache the response.
+
+**Server-side defaults.** After paginating, the SDK sets `CacheScope = "public"`
+and leaves `TTLMs = 0` (which the client cache treats as "immediately
+stale"). A handler that wants its responses cached must set `TTLMs`
+explicitly on the returned result.
+
+```go
+mcp.AddTool(server, &mcp.Tool{Name: "expensive"}, func(...) (*mcp.CallToolResult, any, error) {
+    // ...
+})
+// Override the default for tools/list:
+server.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+    return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+        res, err := next(ctx, method, req)
+        if lr, ok := res.(*mcp.ListToolsResult); ok {
+            lr.TTLMs = 30_000 // 30s cache freshness hint
+        }
+        return res, err
+    }
+})
+```
+
 ## Utilities
 
 ### Completion
@@ -317,6 +391,14 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 
 **Deprecated**: The `HasPrompts`, `HasResources`, and `HasTools` fields on
 `ServerOptions` are deprecated. Use `Capabilities` instead.
+
+### Extensions
+
+[SEP-2133](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2133)
+adds an `extensions` map to `ServerCapabilities` so that optional
+capabilities outside the core protocol can be declared on the wire. Keys
+are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
+per-extension settings objects.
 
 ### Pagination
 
