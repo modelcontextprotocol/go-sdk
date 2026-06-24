@@ -21,6 +21,8 @@ supports, its capabilities, and its identity.
 	"jsonrpc": "2.0",
 	"id": 1,
 	"result": {
+		"ttlMs": 0,
+		"cacheScope": "public",
 		"supportedVersions": [
 			"2026-07-28",
 			"2025-11-25",
