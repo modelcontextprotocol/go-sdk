@@ -30,32 +30,30 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 22
+      - name: Build everything-server
+        run: go build -o everything-server ./conformance/everything-server
       - name: Run conformance tests (stateful, legacy spec versions)
         run: |
-          go run ./conformance/everything-server/main.go -http=":3001" -stateless=false &
+          ./everything-server -http=":3001" -stateless=false &
           SERVER_PID=$!
-          trap "kill -9 $SERVER_PID 2>/dev/null || true" EXIT
-          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
+          trap "kill -9 $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true" EXIT
+          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp > /dev/null; do sleep 0.5; done'
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
             --url http://localhost:3001/mcp \
             --suite active \
             --spec-version 2025-11-25 \
             --expected-failures ./conformance/baseline.yml
-          kill -9 $SERVER_PID 2>/dev/null || true
-          trap - EXIT
       - name: Run conformance tests (stateless, 2026-07-28)
         run: |
-          go run ./conformance/everything-server/main.go -http=":3001" -stateless &
+          ./everything-server -http=":3001" -stateless &
           SERVER_PID=$!
-          trap "kill -9 $SERVER_PID 2>/dev/null || true" EXIT
-          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp; do sleep 0.5; done'
+          trap "kill -9 $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true" EXIT
+          timeout 30 bash -c 'until curl -s http://localhost:3001/mcp > /dev/null; do sleep 0.5; done'
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
             --url http://localhost:3001/mcp \
             --suite active \
             --spec-version 2026-07-28 \
             --expected-failures ./conformance/baseline.yml
-          kill -9 $SERVER_PID 2>/dev/null || true
-          trap - EXIT
 
   client-conformance:
     runs-on: ubuntu-latest
