@@ -867,12 +867,14 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 			ClientInfo:      req.ClientInfo(),
 		}
 	})
-	return &DiscoverResult{
+	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
 		ServerInfo:        s.impl,
 		Instructions:      s.opts.Instructions,
-	}, nil
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 // filterSupportedVersions returns the subset of [supportedProtocolVersions]
