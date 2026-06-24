@@ -214,7 +214,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## Multi Round-Trip Requests (MRTR)
+## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 defines a new pattern for server-to-client requests (sampling, elicitation,

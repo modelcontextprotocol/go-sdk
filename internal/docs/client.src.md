@@ -84,7 +84,7 @@ pattern.
 
 %include ../../mcp/client_example_test.go elicitation -
 
-## Multi Round-Trip Requests (MRTR)
+## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 introduces the MRTR pattern: server-to-client requests for sampling,

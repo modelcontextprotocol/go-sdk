@@ -4,7 +4,7 @@
 1. [Roots](#roots)
 1. [Sampling](#sampling)
 1. [Elicitation](#elicitation)
-1. [Multi Round-Trip Requests (MRTR)](#multi-round-trip-requests-(mrtr))
+1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 1. [Capabilities](#capabilities)
 	1. [Capability inference](#capability-inference)
 	1. [Explicit capabilities](#explicit-capabilities)
@@ -207,7 +207,7 @@ func Example_elicitation() {
 }
 ```
 
-## Multi Round-Trip Requests (MRTR)
+## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 introduces the MRTR pattern: server-to-client requests for sampling,

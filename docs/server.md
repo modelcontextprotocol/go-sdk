@@ -4,7 +4,7 @@
 1. [Prompts](#prompts)
 1. [Resources](#resources)
 1. [Tools](#tools)
-1. [Multi Round-Trip Requests (MRTR)](#multi-round-trip-requests-(mrtr))
+1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 	1. [Talking to legacy clients](#talking-to-legacy-clients)
 	1. [Example](#example)
 1. [Cacheable list results](#cacheable-list-results)
@@ -429,7 +429,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## Multi Round-Trip Requests (MRTR)
+## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 defines a new pattern for server-to-client requests (sampling, elicitation,
