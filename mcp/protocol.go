@@ -1129,6 +1129,7 @@ func (x *DiscoverParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type DiscoverResult struct {
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// The versions of the Model Context Protocol that the server supports.
 	SupportedVersions []string `json:"supportedVersions"`
 	// The server's capabilities.

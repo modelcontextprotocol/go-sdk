@@ -531,7 +531,7 @@ func Example_mrtr() {
 	// uses it to fulfil any input request the tool handler returns.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
 		ElicitationHandler: func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
-			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"name": "Ada"}}, nil
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"name": "MCP Go"}}, nil
 		},
 	})
 

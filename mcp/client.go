@@ -403,7 +403,7 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		Meta: Meta{
 			MetaKeyProtocolVersion:    protocolVersion,
 			MetaKeyClientInfo:         c.impl,
-			MetaKeyClientCapabilities: caps,
+			MetaKeyClientCapabilities: caps.toV2(),
 		},
 	}
 	req := &DiscoverRequest{Session: cs, Params: params}
@@ -518,7 +518,7 @@ func injectRequestMeta[T any, P interface {
 		m[MetaKeyClientInfo] = cs.client.impl
 	}
 	if _, ok := m[MetaKeyClientCapabilities]; !ok {
-		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion)
+		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion).toV2()
 	}
 	params.SetMeta(m)
 	return params

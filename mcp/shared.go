@@ -35,7 +35,7 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion   = protocolVersion20251125
+	latestProtocolVersion   = protocolVersion20260728
 	protocolVersion20260728 = "2026-07-28"
 	protocolVersion20251125 = "2025-11-25"
 	protocolVersion20250618 = "2025-06-18"
@@ -44,6 +44,7 @@ const (
 )
 
 var supportedProtocolVersions = []string{
+	protocolVersion20260728,
 	protocolVersion20251125,
 	protocolVersion20250618,
 	protocolVersion20250326,
@@ -58,8 +59,11 @@ func negotiatedVersion(clientVersion string) string {
 	//
 	// This handles the case where a new spec version is released, and the SDK
 	// does not support it yet.
+	// Cap the supported versions at the legacy protocolVersion20251125, as this
+	// method is used by the initialize method which is deprecated in
+	// version protocolVersion20260728.
 	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return latestProtocolVersion
+		return protocolVersion20251125
 	}
 	return clientVersion
 }
@@ -536,7 +540,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientInfo),
 		}
 	}
-	capabilities, ok := decodeMetaValue[*ClientCapabilities](meta, MetaKeyClientCapabilities)
+	capabilities, ok := decodeMetaValue[*clientCapabilitiesV2](meta, MetaKeyClientCapabilities)
 	if !ok {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeInvalidParams,
@@ -546,7 +550,7 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
 	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    capabilities,
+		Capabilities:    capabilities.toV1(),
 		ClientInfo:      clientInfo,
 	}, logLevel: logLevel}, nil
 }
@@ -659,8 +663,8 @@ func (r *ServerRequest[P]) ClientInfo() *Implementation {
 // back to the session-level [InitializeParams].
 func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
 	if m := getRequestMeta(r); m != nil {
-		if v, ok := decodeMetaValue[*ClientCapabilities](m, MetaKeyClientCapabilities); ok {
-			return v
+		if v, ok := decodeMetaValue[*clientCapabilitiesV2](m, MetaKeyClientCapabilities); ok {
+			return v.toV1()
 		}
 	}
 	if r.Session != nil {
