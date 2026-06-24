@@ -1290,9 +1290,6 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 // that opts into the new protocol via `_meta.protocolVersion` must be
 // rejected with `Method not found` (-32601).
 func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	tests := []struct {
 		name       string
@@ -1407,9 +1404,6 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 // `ping`) all return Method not found when the request opts into the new
 // protocol via `_meta.protocolVersion`.
 func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	newProtoMeta := map[string]any{
 		"_meta": map[string]any{

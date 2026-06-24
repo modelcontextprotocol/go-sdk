@@ -143,6 +143,31 @@ func incTool(_ context.Context, _ *CallToolRequest, args incInput) (*CallToolRes
 	return nil, incOutput{args.X + 1}, nil
 }
 
+// confirmThenGreet exercises the multi-round-trip pattern in
+// conformance fixtures.
+func confirmThenGreet(_ context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+	if len(req.Params.InputResponses) == 0 {
+		return &CallToolResult{
+			InputRequests: InputRequestMap{
+				"who": &ElicitParams{
+					Message: "What is your name?",
+					RequestedSchema: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"name": {Type: "string"},
+						},
+					},
+				},
+			},
+			RequestState: "step=1",
+		}, nil, nil
+	}
+	name := req.Params.InputResponses["who"].(*ElicitResult).Content["name"].(string)
+	return &CallToolResult{
+		Content: []Content{&TextContent{Text: "hello " + name}},
+	}, nil, nil
+}
+
 var iconObj = Icon{
 	Source:   "foobar",
 	MIMEType: "image/png",
@@ -193,6 +218,11 @@ func runServerTest(t *testing.T, test *conformanceTest) {
 				Title:       "contentTool",
 				Description: "return resourceLink content with Icon",
 			}, contentTool)
+		case "confirmThenGreet":
+			AddTool(s, &Tool{
+				Name:        "confirmThenGreet",
+				Description: "ask the user for their name via elicitation, then greet them",
+			}, confirmThenGreet)
 		default:
 			t.Fatalf("unknown tool %q", tn)
 		}

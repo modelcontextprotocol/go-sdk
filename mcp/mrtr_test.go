@@ -23,10 +23,6 @@ func TestMultiRoundTrip_ManualRetry(t *testing.T) {
 		Reason   string `json:"reason,omitempty"`
 	}
 
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
 	ctx := context.Background()
 
 	srv := NewServer(testImpl, nil)
@@ -95,9 +91,6 @@ func TestMultiRoundTrip_ManualRetry(t *testing.T) {
 }
 
 func TestMultiRoundTrip_AutoRetry(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	tests := []struct {
 		name          string
@@ -220,9 +213,6 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 			wantRetries: maxMultiRoundTripRetries,
 		},
 	}
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,7 +312,7 @@ func TestMultiRoundTrip_ServerMiddleware(t *testing.T) {
 				},
 			})
 			c.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
-			cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{})
+			cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() error = %v", err)
 			}
@@ -340,9 +330,6 @@ func TestMultiRoundTrip_ServerMiddleware(t *testing.T) {
 }
 
 func TestMultiRoundTrip_GetPrompt_AutoRetry(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	ctx := context.Background()
 
@@ -382,9 +369,6 @@ func TestMultiRoundTrip_GetPrompt_AutoRetry(t *testing.T) {
 }
 
 func TestMultiRoundTrip_GetPrompt_ManualRetry(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	ctx := context.Background()
 
@@ -434,9 +418,6 @@ func TestMultiRoundTrip_GetPrompt_ManualRetry(t *testing.T) {
 }
 
 func TestMultiRoundTrip_ReadResource_AutoRetry(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	ctx := context.Background()
 
@@ -475,9 +456,6 @@ func TestMultiRoundTrip_ReadResource_AutoRetry(t *testing.T) {
 }
 
 func TestMultiRoundTrip_ReadResource_ManualRetry(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append(slices.Clone(orig), protocolVersion20260728)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	ctx := context.Background()
 

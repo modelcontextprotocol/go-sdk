@@ -27,8 +27,12 @@ func TestServerListChangedNotifications(t *testing.T) {
 		wantNotifyCount int64
 	}{
 		{
-			name:            "Default: notification sent",
-			serverOpts:      nil,
+			name: "Default: notification sent",
+			serverOpts: &ServerOptions{
+				Capabilities: &ServerCapabilities{
+					Tools: &ToolCapabilities{ListChanged: true},
+				},
+			},
 			wantNotifyCount: 1,
 		},
 		{
