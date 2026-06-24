@@ -77,19 +77,13 @@ it is the client's responsibility to end the session.
 func Example_lifecycle() {
 	ctx := context.Background()
 
-	// Create a client and server.
-	// Wait for the client to initialize the session.
+	// Create a client and server. Under protocol version 2026-07-28, there
+	// is no dedicated initialize/initialized handshake: the session is
+	// implicitly live the moment the client issues its first request.
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
-		InitializedHandler: func(context.Context, *mcp.InitializedRequest) {
-			fmt.Println("initialized!")
-		},
-	})
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
 
 	// Connect the server and client using in-memory transports.
-	//
-	// Connect the server first so that it's ready to receive initialization
-	// messages from the client.
 	t1, t2 := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, t1, nil)
 	if err != nil {
@@ -108,7 +102,7 @@ func Example_lifecycle() {
 	if err := serverSession.Wait(); err != nil {
 		log.Fatal(err)
 	}
-	// Output: initialized!
+	// Output:
 }
 ```
 
@@ -213,7 +207,7 @@ func ExampleStreamableHTTPHandler() {
 	defer httpServer.Close()
 
 	// The SDK is currently permissive of some missing keys in "params".
-	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
+	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {"protocolVersion":"2025-11-25"}}`, httpServer.URL)
 	fmt.Println(resp)
 	// Output:
 	// {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-11-25","serverInfo":{"name":"server","version":"v0.1.0"}}}

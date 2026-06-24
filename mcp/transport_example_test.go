@@ -42,7 +42,7 @@ func ExampleLoggingTransport() {
 	}
 
 	// Output:
-	// read: {"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"],"capabilities":{"logging":{}},"serverInfo":{"name":"server","version":"v0.0.1"}}}
+	// read: {"jsonrpc":"2.0","id":1,"result":{"ttlMs":0,"cacheScope":"public","supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"],"capabilities":{"logging":{}},"serverInfo":{"name":"server","version":"v0.0.1"}}}
 	// write: {"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{"roots":{"listChanged":true}},"io.modelcontextprotocol/clientInfo":{"name":"client","version":"v0.0.1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
 }
 
