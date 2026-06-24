@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -644,13 +643,6 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 // don't overlap with the SDK. The test then asserts the resulting session
 // state and whether the legacy initialize handshake ran.
 func TestClientConnectDiscover(t *testing.T) {
-	// Temporarily enable 2026-07-28 support in the SDK for this test
-	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, supportedProtocolVersions...)
-	t.Cleanup(func() {
-		supportedProtocolVersions = oldSupported
-	})
-
 	const otherVersionsOnly = "1999-01-01"
 
 	tests := []struct {
@@ -686,7 +678,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				return nil, jsonrpc2.ErrMethodNotFound
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 		{
 			name: "unsupported protocol version falls back to initialize",
@@ -697,7 +689,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 		{
 			name: "no overlapping supported version falls back to initialize",
@@ -709,7 +701,7 @@ func TestClientConnectDiscover(t *testing.T) {
 				}, nil
 			},
 			wantInitialize: true,
-			wantVersion:    latestProtocolVersion,
+			wantVersion:    protocolVersion20251125,
 		},
 	}
 
@@ -771,10 +763,6 @@ func TestClientConnectDiscover(t *testing.T) {
 // request sent by Client.Connect carries the SEP-2575 per-request _meta triple:
 // protocolVersion, clientInfo, and clientCapabilities.
 func TestClientConnectDiscover_RequestContents(t *testing.T) {
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
 	ctx := context.Background()
 
 	type captured struct {
@@ -850,10 +838,6 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	ctx := context.Background()
 
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
 	server := NewServer(&Implementation{Name: "stdio-like-server", Version: "v1"}, nil)
 	ct, st := NewInMemoryTransports()
 	ss, err := server.Connect(ctx, st, nil)
@@ -889,15 +873,11 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 
 // TestInMemory_E2E_DiscoverFallback_NoOverlap verifies the fallback path
 // over an InMemory (STDIO-equivalent) transport: the client probes with
-// _meta.protocolVersion = 2026-07-28, but the server's supported list does
-// NOT include that version (the default for an SDK server that hasn't
-// shimmed supportedProtocolVersions).
+// _meta.protocolVersion = 2026-07-28, but the server overrides discover via
+// middleware to advertise only legacy versions, so the client must fall
+// back to the legacy initialize handshake.
 func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	ctx := context.Background()
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
-
 	server := NewServer(&Implementation{Name: "vpre-like-server", Version: "v1"}, nil)
 	// Intercept discover and reply as if we were a server that only
 	// supports legacy versions.
@@ -932,9 +912,11 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after no-overlap discover)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 
 	// Prove the session is usable after fallback.
@@ -948,10 +930,6 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 // all (simulating a true pre-SEP-2575 server).
 func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	ctx := context.Background()
-
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "vpre-server", Version: "v1"}, nil)
 	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
@@ -981,9 +959,11 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after MethodNotFound)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 
 	if _, err := cs.ListTools(ctx, nil); err != nil {
@@ -997,10 +977,6 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 // exercises Path A of the fallback logic in client.go.
 func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) {
 	ctx := context.Background()
-
-	orig := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(orig)...)
-	t.Cleanup(func() { supportedProtocolVersions = orig })
 
 	server := NewServer(&Implementation{Name: "strict-server", Version: "v1"}, nil)
 	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
@@ -1033,9 +1009,11 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	if ir == nil {
 		t.Fatal("InitializeResult is nil after fallback initialize")
 	}
-	if ir.ProtocolVersion != latestProtocolVersion {
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if ir.ProtocolVersion != protocolVersion20251125 {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback after UnsupportedProtocolVersion)",
-			ir.ProtocolVersion, latestProtocolVersion)
+			ir.ProtocolVersion, protocolVersion20251125)
 	}
 }
 
@@ -1045,10 +1023,6 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 // UnsupportedProtocolVersionError carries Data.Supported, and the client
 // selects a mutually supported version from that list and retries.
 func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
-	oldSupported := supportedProtocolVersions
-	supportedProtocolVersions = append([]string{protocolVersion20260728}, slices.Clone(oldSupported)...)
-	t.Cleanup(func() { supportedProtocolVersions = oldSupported })
-
 	ctx := context.Background()
 
 	const unsupportedClientVersion = "2099-12-31"

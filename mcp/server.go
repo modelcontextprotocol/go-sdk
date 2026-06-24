@@ -856,7 +856,9 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 // instructions, allowing clients to negotiate without performing the legacy
 // initialize handshake.
 func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	req.Session.mu.Lock()
 	versions := req.Session.supportedVersions
+	req.Session.mu.Unlock()
 	if versions == nil {
 		versions = slices.Clone(supportedProtocolVersions)
 	}
@@ -1335,7 +1337,17 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 	// Compute the protocol versions this session can serve, filtered by the
 	// transport's capabilities (if it implements [ProtocolVersionSupporter]).
 	// The list is consumed by the SEP-2575 server/discover handler.
+	//
+	// The write is guarded by ss.mu to establish a happens-before edge with
+	// the matching read in Server.discover, which runs on the jsonrpc2 read
+	// goroutine spawned inside connect(). The two are not concurrent in
+	// wall-clock terms (no incoming message is dispatched until the caller
+	// has fed the transport, which happens after Server.Connect returns),
+	// but without the lock the Go memory model gives the read goroutine no
+	// guarantee of seeing this write, and -race flags it.
+	ss.mu.Lock()
 	ss.supportedVersions = filterSupportedVersions(t)
+	ss.mu.Unlock()
 
 	// Start keepalive before returning the session to avoid race conditions with Close.
 	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
@@ -1795,7 +1807,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized, methodSetLevel, methodSubscribe, methodUnsubscribe:
+	case methodInitialize, methodPing, notificationInitialized, notificationRootsListChanged, methodSetLevel, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
