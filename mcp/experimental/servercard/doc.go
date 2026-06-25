@@ -12,13 +12,13 @@
 // it near its Streamable HTTP endpoint:
 //
 //	impl := &mcp.Implementation{
-//		Name:        "dice-roller",
-//		Title:       "Dice Roller",
-//		Description: "Rolls dice for tabletop games.",
-//		Version:     "1.0.0",
+//		Name:    "dice-roller",
+//		Title:   "Dice Roller",
+//		Version: "1.0.0",
 //	}
 //	card, err := servercard.BuildServerCard(impl,
 //		servercard.WithName("com.example/dice-roller"),
+//		servercard.WithDescription("Rolls dice for tabletop games."),
 //		servercard.WithRemotes(servercard.Remote{
 //			Type: servercard.RemoteTypeStreamableHTTP,
 //			URL:  "https://dice.example.com/mcp",
