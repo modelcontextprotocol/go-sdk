@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +34,11 @@ type Client struct {
 	sessions                []*ClientSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	// sendMethods is the list of methods this client may send to a
+	// server: it always contains the standard server methods (from
+	// serverMethodInfos) plus any custom methods registered via
+	// [AddSendingCustomMethod].
+	sendMethods map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -58,12 +65,16 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		opts.Logger = ensureLogger(nil)
 	}
 
+	sendMethods := make(map[string]methodInfo, len(serverMethodInfos))
+	maps.Copy(sendMethods, serverMethodInfos)
+
 	c := &Client{
 		impl:                    impl,
 		opts:                    opts,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
+		sendMethods:             sendMethods,
 	}
 	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
 		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
@@ -504,7 +515,7 @@ func injectRequestMeta[T any, P interface {
 	Params
 }](cs *ClientSession, params P) P {
 	res := cs.state.InitializeResult
-	if params.isNil() {
+	if params == nil {
 		params = new(T)
 	}
 	m := params.GetMeta()
@@ -1153,7 +1164,9 @@ var clientMethodInfos = map[string]methodInfo{
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
-	return serverMethodInfos
+	cs.client.mu.Lock()
+	defer cs.client.mu.Unlock()
+	return cs.client.sendMethods
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
@@ -1596,4 +1609,68 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			*params.cursorPtr() = *nextCursorVal
 		}
 	}
+}
+
+// AddSendingCustomMethod registers a custom JSON-RPC method
+// that the client may send to the server.
+//
+// Registration is decoupled from invocation: extensions typically call this
+// during setup, while the actual call site uses [CallCustomMethod].
+//
+//	if err := mcp.AddSendingCustomMethod[*SearchParams, *SearchResult](c, "acme/search"); err != nil {
+//	    return err
+//	}
+//	// ... later, anywhere a *ClientSession is available:
+//	result, err := mcp.CallCustomMethod[*SearchParams, *SearchResult](
+//	    ctx, cs, "acme/search", &SearchParams{Query: "hello"})
+//
+// AddSendingCustomMethod returns an error if method is the name of a standard
+// MCP method. Registering the same method twice replaces the previous
+// registration.
+func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
+	c *Client,
+	method string,
+) error {
+	if _, ok := serverMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddSendingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
+	mi := methodInfo{
+		newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		},
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendMethods[method] = mi
+	return nil
+}
+
+// CallCustomMethod sends a custom (non-standard) JSON-RPC method to the
+// server and decodes the response into R.
+//
+// The method must have been registered on the session's client via
+// [AddSendingCustomMethod].
+func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
+	ctx context.Context,
+	cs *ClientSession,
+	method string,
+	params P,
+) (R, error) {
+	c := cs.client
+	c.mu.Lock()
+	_, ok := c.sendMethods[method]
+	c.mu.Unlock()
+	if !ok {
+		var zero R
+		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
+	}
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
+	return handleSend[R](ctx, method, &ClientRequest[P]{
+		Session: cs,
+		Params:  params,
+	})
 }

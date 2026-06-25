@@ -486,6 +486,7 @@ func connectStreamable(ctx context.Context, server *Server, transport *Streamabl
 	if err != nil {
 		return nil, err
 	}
+	transport.connection.server = server
 	transport.connection.toolLookup = server.getServerTool
 	return s, nil
 }
@@ -846,6 +847,7 @@ type streamableServerConn struct {
 
 	logger *slog.Logger
 
+	server     *Server
 	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
@@ -1415,7 +1417,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// Preemptively check that this is a valid request, so that we can fail
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
-			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
+			// Use the server's receiving method infos (which include any custom
+			// methods registered via AddReceivingCustomMethod) when available;
+			// fall back to the standard methods otherwise, e.g. in tests that
+			// exercise streamableServerConn directly without a server.
+			methodInfos := serverMethodInfos
+			if c.server != nil {
+				methodInfos = c.server.receivingMethodInfos()
+			}
+			if _, err := checkRequest(jreq, methodInfos); err != nil {
 				if protocolVersion >= protocolVersion20260728 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
 					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
 						Code:    jsonrpc.CodeMethodNotFound,

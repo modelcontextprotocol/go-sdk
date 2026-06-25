@@ -3233,3 +3233,145 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestCustomMethods(t *testing.T) {
+	type searchParams struct {
+		ParamsBase
+		Query string `json:"query"`
+		Limit int    `json:"limit,omitempty"`
+	}
+
+	type searchResult struct {
+		ResultBase
+		Hits  []string `json:"hits"`
+		Total int      `json:"total"`
+	}
+
+	callCustom := func(ctx context.Context, conn *jsonrpc2.Connection, method string, params, result any) error {
+		return conn.Call(ctx, method, params).Await(ctx, result)
+	}
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+
+	if err := AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
+		hits := []string{"result for " + params.Query}
+		return &searchResult{
+			Hits:  hits,
+			Total: len(hits),
+		}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search"); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	// Test raw JSON-RPC call.
+	var result1 searchResult
+	if err := callCustom(ctx, cs.getConn(), "acme/search", &searchParams{Query: "hello", Limit: 10}, &result1); err != nil {
+		t.Fatal(err)
+	}
+	if len(result1.Hits) != 1 || result1.Hits[0] != "result for hello" {
+		t.Errorf("raw call: unexpected hits: %v", result1.Hits)
+	}
+	if result1.Total != 1 {
+		t.Errorf("raw call: unexpected total: %d", result1.Total)
+	}
+
+	// Test the typed CallCustomMethod helper.
+	result2, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/search", &searchParams{Query: "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result2.Hits) != 1 || result2.Hits[0] != "result for world" {
+		t.Errorf("CallCustomMethod: unexpected hits: %v", result2.Hits)
+	}
+	if result2.Total != 1 {
+		t.Errorf("CallCustomMethod: unexpected total: %d", result2.Total)
+	}
+
+	// CallCustomMethod must reject methods that were never registered.
+	if _, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/unregistered", &searchParams{Query: "x"}); err == nil {
+		t.Error("CallCustomMethod: expected error for unregistered method, got nil")
+	}
+}
+
+func TestAddCustomMethodRejectsStandardMethods(t *testing.T) {
+	type params struct{ ParamsBase }
+	type result struct{ ResultBase }
+
+	t.Run("server", func(t *testing.T) {
+		s := NewServer(testImpl, nil)
+		err := AddReceivingCustomMethod(s, "tools/call",
+			func(ctx context.Context, ss *ServerSession, p *params) (*result, error) {
+				return &result{}, nil
+			})
+		if err == nil {
+			t.Fatal("AddReceivingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
+
+	t.Run("client", func(t *testing.T) {
+		c := NewClient(testImpl, nil)
+		if err := AddSendingCustomMethod[*params, *result](c, "tools/call"); err == nil {
+			t.Fatal("AddSendingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
+}
+
+// TestCallCustomMethodTypedNilParams exercises the typed-nil params path.
+// User param types embed ParamsBase, so the inherited isNil forwarder would
+// dereference a typed-nil outer if injectRequestMeta were called with it.
+// CallCustomMethod must allocate a fresh value before the meta-injection step.
+func TestCallCustomMethodTypedNilParams(t *testing.T) {
+	type pingParams struct{ ParamsBase }
+	type pingResult struct{ ResultBase }
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(s, "acme/ping",
+		func(ctx context.Context, ss *ServerSession, p *pingParams) (*pingResult, error) {
+			return &pingResult{}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	var typedNil *pingParams
+	if _, err := CallCustomMethod[*pingParams, *pingResult](ctx, cs, "acme/ping", typedNil); err != nil {
+		t.Fatalf("CallCustomMethod with typed-nil params: %v", err)
+	}
+}

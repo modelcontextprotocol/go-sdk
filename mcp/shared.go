@@ -727,6 +727,22 @@ type Params interface {
 	isNil() bool
 }
 
+// ParamsBase can be embedded in custom parameter structs to satisfy the
+// [Params] interface. It provides the required [Meta] field and the unexported
+// isParams marker method.
+//
+//	type SearchParams struct {
+//	    mcp.ParamsBase
+//	    Query string `json:"query"`
+//	}
+type ParamsBase struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (*ParamsBase) isParams() {}
+
+func (p *ParamsBase) isNil() bool { return p == nil }
+
 // RequestParams is a parameter (input) type for an MCP request.
 type RequestParams interface {
 	Params
@@ -750,6 +766,20 @@ type Result interface {
 	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
 }
+
+// ResultBase can be embedded in custom result structs to satisfy the
+// [Result] interface. It provides the required [Meta] field and the unexported
+// isResult marker method.
+//
+//	type SearchResult struct {
+//	    mcp.ResultBase
+//	    Hits []string `json:"hits"`
+//	}
+type ResultBase struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (*ResultBase) isResult() {}
 
 // emptyResult is returned by methods that have no result, like ping.
 // Those methods cannot return nil, because jsonrpc2 cannot handle nils.
