@@ -27,6 +27,38 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   Params), restoring the previous behavior. The default behavior was changed to
   align with SEP-2164 and the JSON-RPC specification.
 
+- `hintomitempty` added. If set to `1`, `ToolAnnotations` JSON marshaling
+  will omit `ReadOnlyHint` and `IdempotentHint` when their value is `false`,
+  restoring the previous behavior. The default behavior was changed to always
+  serialize these fields, since their Go types are bare `bool` (not `*bool`)
+  and omitting `false` made it indistinguishable from unset.
+  
+- `allowsessionsinstateless` added. If set to `1`, stateless streamable HTTP
+  servers will read the `Mcp-Session-Id` request header (or generate one via
+  `GetSessionID`), set it on response headers, and accept `DELETE` requests,
+  restoring the previous behavior. The default behavior was changed so that
+  stateless servers ignore session IDs entirely and reject `DELETE` with 405.
+
+- `nomethodnotfoundcodeinerror` added. If set to `1`, the jsonrpc2 layer will not
+  include the MethodNotFound Error (`-32601`) in the error response when the 
+  requested method in STDIO transport is not found. The default behavior was
+  changed to include the MethodNotFound Error in the error response when the
+  requested method in STDIO transport is not found.
+
+- `noprotocolerrorbody` added. If set to `1`, the streamable HTTP client will
+  not attempt to decode the JSON-RPC error body of a non-2xx HTTP response, 
+  restoring the previous behavior. The default behavior was changed so that
+  the client always attempts to surface the underlying JSON-RPC error.
+
+### 1.6.1
+
+Options listed below were added and will be removed in the 1.8.0 version of the SDK.
+
+- `disablecontenttypecheck` added. If set to `1`, Content-Type validation on
+  HTTP POST requests will be disabled, allowing requests with non-JSON or missing
+  Content-Type headers. The default behavior is to validate that HTTP POST
+  requests have Content-Type: application/json.
+
 ### 1.6.0
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.

@@ -44,21 +44,24 @@ type Server struct {
 	impl *Implementation
 	opts ServerOptions
 
-	mu                      sync.Mutex
-	prompts                 *featureSet[*serverPrompt]
-	tools                   *featureSet[*serverTool]
-	resources               *featureSet[*serverResource]
-	resourceTemplates       *featureSet[*serverResourceTemplate]
-	sessions                []*ServerSession
-	sendingMethodHandler_   MethodHandler
-	receivingMethodHandler_ MethodHandler
+	mu                          sync.Mutex
+	prompts                     *featureSet[*serverPrompt]
+	tools                       *featureSet[*serverTool]
+	resources                   *featureSet[*serverResource]
+	resourceTemplates           *featureSet[*serverResourceTemplate]
+	sessions                    []*ServerSession
+	sendingMethodHandler_       MethodHandler
+	receivingMethodHandler_     MethodHandler
+	toolChangeSubscriptions     map[*ServerSession]jsonrpc.ID            // session -> requestID for "tools/changed"
+	promptChangeSubscriptions   map[*ServerSession]jsonrpc.ID            // session -> requestID for "prompts/changed"
+	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID            // session -> requestID for "resources/changed"
+	resourceSubscriptions       map[string]map[*ServerSession]jsonrpc.ID // uri -> session -> requestID
+	pendingNotifications        map[string]*time.Timer                   // notification name -> timer for pending notification send
 	// receiveMethods is the merged map of methods this server may receive
 	// from a client: it always contains the standard server methods (from
 	// serverMethodInfos) plus any custom methods registered via
 	// [AddReceivingCustomMethod].
-	receiveMethods        map[string]methodInfo
-	resourceSubscriptions map[string]map[*ServerSession]bool // uri -> session -> bool
-	pendingNotifications  map[string]*time.Timer             // notification name -> timer for pending notification send
+	receiveMethods map[string]methodInfo
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -75,6 +78,12 @@ type ServerOptions struct {
 	// If zero, defaults to [DefaultPageSize].
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
+	//
+	// Deprecated: the roots feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to passing paths via tool
+	// parameters, resource URIs, or configuration. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
@@ -84,6 +93,13 @@ type ServerOptions struct {
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 	// Function called when a client session subscribes to a resource.
 	SubscribeHandler func(context.Context, *SubscribeRequest) error
 	// Function called when a client session unsubscribes from a resource.
@@ -148,6 +164,9 @@ type ServerOptions struct {
 	//
 	// As a special case, if GetSessionID returns the empty string, the
 	// Mcp-Session-Id header will not be set.
+	//
+	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
+	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
 }
 
@@ -192,19 +211,24 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	receiveMethods := make(map[string]methodInfo, len(serverMethodInfos))
 	maps.Copy(receiveMethods, serverMethodInfos)
 
-	return &Server{
-		impl:                    impl,
-		opts:                    opts,
-		prompts:                 newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
-		tools:                   newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
-		resources:               newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
-		resourceTemplates:       newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
-		sendingMethodHandler_:   defaultSendingMethodHandler,
-		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
-		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
-		pendingNotifications:    make(map[string]*time.Timer),
-		receiveMethods:          receiveMethods,
+	s := &Server{
+		impl:                        impl,
+		opts:                        opts,
+		prompts:                     newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
+		tools:                       newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
+		resources:                   newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
+		resourceTemplates:           newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
+		sendingMethodHandler_:       defaultSendingMethodHandler,
+		receivingMethodHandler_:     defaultReceivingMethodHandler[*ServerSession],
+		toolChangeSubscriptions:     make(map[*ServerSession]jsonrpc.ID),
+		promptChangeSubscriptions:   make(map[*ServerSession]jsonrpc.ID),
+		resourceChangeSubscriptions: make(map[*ServerSession]jsonrpc.ID),
+		resourceSubscriptions:       make(map[string]map[*ServerSession]jsonrpc.ID),
+		pendingNotifications:        make(map[string]*time.Timer),
+		receiveMethods:              receiveMethods,
 	}
+	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	return s
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
@@ -229,7 +253,8 @@ func (s *Server) RemovePrompts(names ...string) {
 // that takes no input, or one where any input is valid, set [Tool.InputSchema] to
 // `{"type": "object"}`, using your preferred library or `json.RawMessage`.
 //
-// If present, [Tool.OutputSchema] must also have type "object".
+// If present, [Tool.OutputSchema] may be any valid JSON Schema (object, array,
+// primitive, or composition).
 //
 // When the handler is invoked as part of a CallTool request, req.Params.Arguments
 // will be a json.RawMessage.
@@ -276,16 +301,10 @@ func (s *Server) AddTool(t *Tool, h ToolHandler) {
 			if s == nil {
 				panic(fmt.Errorf("AddTool %q: output schema is nil", t.Name))
 			}
-			if s.Type != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object"`, t.Name))
-			}
 		} else {
-			var m map[string]any
+			var m any
 			if err := remarshal(t.OutputSchema, &m); err != nil {
-				panic(fmt.Errorf("AddTool %q: can't marshal output schema to a JSON object: %v", t.Name, err))
-			}
-			if typ := m["type"]; typ != "object" {
-				panic(fmt.Errorf(`AddTool %q: output schema must have type "object" (got %v)`, t.Name, typ))
+				panic(fmt.Errorf("AddTool %q: can't marshal output schema to JSON: %v", t.Name, err))
 			}
 		}
 	}
@@ -337,7 +356,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 		// Validate input and apply defaults.
 		var err error
-		input, err = applySchema(input, inputResolved)
+		input, err = applySchema(input, inputResolved, false)
 		if err != nil {
 			var errRes CallToolResult
 			errRes.SetError(fmt.Errorf("validating \"arguments\": %v", err))
@@ -376,8 +395,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
+		// Skip when the handler returned input requests (multi round-trip): content and
+		// inputRequests are mutually exclusive on the wire.
 		var outval any = out
-		if elemZero != nil {
+		if res.InputRequests != nil {
+			outval = nil
+		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
 			// Instead, use the zero value of the unpointered type.
 			var z Out
@@ -395,7 +418,7 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			//
 			// We validate against the JSON, rather than the output value, as
 			// some types may have custom JSON marshalling (issue #447).
-			outJSON, err = applySchema(outJSON, outputResolved)
+			outJSON, err = applySchema(outJSON, outputResolved, true)
 			if err != nil {
 				return nil, fmt.Errorf("validating tool output: %w", err)
 			}
@@ -404,10 +427,18 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 			// If the Content field isn't being used, return the serialized JSON in a
 			// TextContent block, as the spec suggests:
 			// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content.
+			//
+			// Ensure a serialized-JSON TextContent fallback is present in case of servers using array
+			// or primitive structuredContent, so that pre-SEP-2106 clients can recover the structured
+			// payload from unstructured content.
 			if res.Content == nil {
 				res.Content = []Content{&TextContent{
 					Text: string(outJSON),
 				}}
+			} else if !isObjectJSON(outJSON) {
+				res.Content = append(res.Content, &TextContent{
+					Text: string(outJSON),
+				})
 			}
 		}
 		return res, nil
@@ -518,9 +549,10 @@ func setSchema[T any](sfield *any, rfield **jsonschema.Resolved, cache *SchemaCa
 // empty object schema value.
 //
 // If the tool's output schema is nil, and the Out type is not 'any', the
-// output schema is set to the schema inferred from the Out type argument,
-// which must also be a map or struct. If the Out type is 'any', the output
-// schema is omitted.
+// output schema is set to the schema inferred from the Out type argument.
+// Per SEP-2106, the Out type may be any Go type whose inferred schema is a
+// valid JSON Schema (struct, map, slice, primitive, etc.). If the Out type is
+// 'any', the output schema is omitted.
 //
 // Unlike [Server.AddTool], AddTool does a lot automatically, and forces
 // tools to conform to the MCP spec. See [ToolHandlerFor] for a detailed
@@ -636,12 +668,13 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 	return s.opts.CompletionHandler(ctx, req)
 }
 
-// Map from notification name to its corresponding params. The params have no fields,
-// so a single struct can be reused.
-var changeNotificationParams = map[string]Params{
-	notificationToolListChanged:     &ToolListChangedParams{},
-	notificationPromptListChanged:   &PromptListChangedParams{},
-	notificationResourceListChanged: &ResourceListChangedParams{},
+// Map from notification name to a function creating its corresponding Params.
+// We need to create a fresh one each time to add the jsonrpc ID. See
+// [injectMetaSubscriptionID].
+var changeNotificationParams = map[string]func() Params{
+	notificationToolListChanged:     func() Params { return &ToolListChangedParams{} },
+	notificationPromptListChanged:   func() Params { return &PromptListChangedParams{} },
+	notificationResourceListChanged: func() Params { return &ResourceListChangedParams{} },
 }
 
 // How long to wait before sending a change notification.
@@ -675,12 +708,75 @@ func (s *Server) changeAndNotify(notification string, change func() bool) {
 
 // notifySessions sends the notification n to all existing sessions.
 // It is called asynchronously by changeAndNotify.
+//
+// Legacy (pre-SEP-2575) sessions receive the notification on the shared
+// session channel. Sessions speaking the new protocol receive it only if they
+// have an active subscriptions/listen stream that opted in to this
+// notification type.
 func (s *Server) notifySessions(n string) {
 	s.mu.Lock()
-	sessions := slices.Clone(s.sessions)
 	s.pendingNotifications[n] = nil
+	// Legacy (pre-SEP-2575) sessions receive list-changed notifications on the
+	// shared session channel without opt-in; collect them while we hold the lock.
+	var legacySessions []*ServerSession
+	for _, sess := range s.sessions {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+			legacySessions = append(legacySessions, sess)
+		}
+	}
+	var subscribers map[*ServerSession]jsonrpc.ID
+	switch n {
+	case notificationToolListChanged:
+		subscribers = maps.Clone(s.toolChangeSubscriptions)
+	case notificationPromptListChanged:
+		subscribers = maps.Clone(s.promptChangeSubscriptions)
+	case notificationResourceListChanged:
+		subscribers = maps.Clone(s.resourceChangeSubscriptions)
+	}
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
-	notifySessions(sessions, n, changeNotificationParams[n], s.opts.Logger)
+
+	// Notify legacy sessions on the shared session channel regardless of
+	// their subscription status.
+	notifySessions(legacySessions, n, changeNotificationParams[n](), s.opts.Logger)
+
+	// Notify modern sessions only if they have an active subscription for
+	// this notification type.
+	s.notifySubscribedSessions(subscribers, n, changeNotificationParams[n])
+}
+
+// notifySubscribedSessions delivers a list-changed or resource-updated
+// notification to each session in subscribers, stamping the session's
+// listen-request ID into the params' _meta so the receiving client can demultiplex
+// notifications belonging to different concurrent listens.
+func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc.ID, method string, makeParams func() Params) {
+	if len(subscribers) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for sess, reqID := range subscribers {
+		params := makeParams()
+		injectMetaSubscriptionID(params, reqID)
+		req := newRequest(sess, params)
+		if err := handleNotify(ctx, method, req); err != nil {
+			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+		}
+	}
+}
+
+// injectMetaSubscriptionID stamps the listen request's JSON-RPC ID into the
+// params' _meta under [MetaKeySubscriptionID], so the receiving client can
+// correlate the notification with the [subscriptions/listen] stream it
+// originated.
+//
+// [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
+func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
+	m := params.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	m[MetaKeySubscriptionID] = reqID.Raw()
+	params.SetMeta(m)
 }
 
 // shouldSendListChangedNotification checks if the server's capabilities allow
@@ -729,12 +825,17 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if req.Params == nil {
 		req.Params = &ListPromptsParams{}
 	}
-	return paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
+	res, err := paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
 			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
@@ -748,7 +849,60 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
-	return prompt.handler(ctx, req)
+	res, err := prompt.handler(ctx, req)
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, err
+}
+
+// discover is the server-side handler for the SEP-2575 "server/discover" RPC.
+//
+// It returns the protocol versions supported by the underlying transport,
+// the server's capabilities, the server's identity, and the server's
+// instructions, allowing clients to negotiate without performing the legacy
+// initialize handshake.
+func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+	req.Session.mu.Lock()
+	versions := req.Session.supportedVersions
+	req.Session.mu.Unlock()
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	}
+	req.Session.updateState(func(state *ServerSessionState) {
+		state.InitializeParams = &InitializeParams{
+			ProtocolVersion: req.ProtocolVersion(),
+			Capabilities:    req.ClientCapabilities(),
+			ClientInfo:      req.ClientInfo(),
+		}
+	})
+	res := &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		ServerInfo:        s.impl,
+		Instructions:      s.opts.Instructions,
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
+}
+
+// filterSupportedVersions returns the subset of [supportedProtocolVersions]
+// that the Transport can serve. If t does not implement [ProtocolVersionSupporter], every
+// SDK-supported version is included.
+func filterSupportedVersions(t Transport) []string {
+	pvs, ok := t.(ProtocolVersionSupporter)
+	if !ok {
+		return slices.Clone(supportedProtocolVersions)
+	}
+	out := make([]string, 0, len(supportedProtocolVersions))
+	for _, v := range supportedProtocolVersions {
+		if pvs.SupportsProtocolVersion(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
@@ -757,12 +911,17 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	return paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
+	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
 			res.Tools = append(res.Tools, t.tool)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 // getServerTool looks up a server tool by name.
@@ -781,10 +940,15 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil && res.Content == nil {
-		res2 := *res
-		res2.Content = []Content{} // avoid "null"
-		res = &res2
+	if err == nil && res != nil {
+		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+			return nil, err
+		}
+		if res.Content == nil && res.resultType != resultTypeInputRequired {
+			res2 := *res
+			res2.Content = []Content{} // avoid "null"
+			res = &res2
+		}
 	}
 	return res, err
 }
@@ -795,12 +959,17 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	return paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
+	res, err := paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
 			res.Resources = append(res.Resources, r.resource)
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
@@ -809,13 +978,18 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if req.Params == nil {
 		req.Params = &ListResourceTemplatesParams{}
 	}
-	return paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
+	res, err := paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
 		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
 			for _, rt := range rts {
 				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	return res, nil
 }
 
 func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
@@ -831,6 +1005,13 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	res, err := handler(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		return nil, err
+	}
+	res.setDefaultCacheableValues()
+	if res.resultType == resultTypeInputRequired {
+		return res, nil
 	}
 	if res == nil || res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
@@ -912,14 +1093,36 @@ func fileResourceHandler(dir string) ResourceHandler {
 func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
 	s.mu.Lock()
 	subscribedSessions := s.resourceSubscriptions[params.URI]
-	sessions := slices.Collect(maps.Keys(subscribedSessions))
+	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
+	var legacySessions []*ServerSession
+	newSessions := make(map[*ServerSession]jsonrpc.ID)
+	for sess, reqID := range subscribedSessions {
+		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+			legacySessions = append(legacySessions, sess)
+		} else {
+			newSessions[sess] = reqID
+		}
+	}
 	s.mu.Unlock()
-	notifySessions(sessions, notificationResourceUpdated, params, s.opts.Logger)
-	s.opts.Logger.Info("resource updated notification sent", "uri", params.URI, "subscriber_count", len(sessions))
+
+	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
+
+	// Notify modern sessions, injecting the per-session subscription ID into the notification's metadata.
+	s.notifySubscribedSessions(newSessions, notificationResourceUpdated, func() Params {
+		p := *params
+		return &p
+	})
+	s.opts.Logger.Info("resource updated notification sent",
+		"uri", params.URI,
+		"subscriber_count", len(legacySessions)+len(newSessions))
 	return nil
 }
 
 func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyResult, error) {
+	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
+	if !ok || !requestID.IsValid() {
+		return nil, fmt.Errorf("%w: subscribe requires a request ID", jsonrpc2.ErrInvalidRequest)
+	}
 	if s.opts.SubscribeHandler == nil {
 		return nil, fmt.Errorf("%w: server does not support resource subscriptions", jsonrpc2.ErrMethodNotFound)
 	}
@@ -930,10 +1133,10 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.resourceSubscriptions[req.Params.URI] == nil {
-		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]bool)
+		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]jsonrpc.ID)
 	}
-	s.resourceSubscriptions[req.Params.URI][req.Session] = true
-	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
+	s.resourceSubscriptions[req.Params.URI][req.Session] = requestID
+	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID(), "request_id", requestID)
 
 	return &emptyResult{}, nil
 }
@@ -958,6 +1161,82 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	s.opts.Logger.Info("resource unsubscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
+}
+
+func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*emptyResult, error) {
+	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
+	if !ok || !requestID.IsValid() {
+		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
+	}
+
+	allowed := s.allowedSubscriptions(req.Params.Notifications)
+	s.mu.Lock()
+	if allowed.ToolsListChanged {
+		s.toolChangeSubscriptions[req.Session] = requestID
+	}
+	if allowed.PromptsListChanged {
+		s.promptChangeSubscriptions[req.Session] = requestID
+	}
+	if allowed.ResourcesListChanged {
+		s.resourceChangeSubscriptions[req.Session] = requestID
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.toolChangeSubscriptions, req.Session)
+		delete(s.promptChangeSubscriptions, req.Session)
+		delete(s.resourceChangeSubscriptions, req.Session)
+		s.mu.Unlock()
+	}()
+
+	for _, uri := range allowed.ResourceSubscriptions {
+		_, err := s.subscribe(ctx, &SubscribeRequest{
+			Session: req.Session,
+			Params: &SubscribeParams{
+				URI:  uri,
+				Meta: req.Params.GetMeta(),
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		defer s.unsubscribe(ctx, &UnsubscribeRequest{
+			Session: req.Session,
+			Params: &UnsubscribeParams{
+				URI:  uri,
+				Meta: req.Params.GetMeta(),
+			},
+		})
+	}
+
+	ackParams := &SubscriptionsAcknowledgedParams{
+		Notifications: allowed,
+		Meta:          Meta{MetaKeySubscriptionID: requestID.Raw()},
+	}
+	if err := req.Session.notifySubscriptionAcked(ctx, ackParams); err != nil {
+		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
+	}
+
+	<-ctx.Done()
+	return &emptyResult{}, nil
+}
+
+func (s *Server) allowedSubscriptions(want NotificationSubscriptions) NotificationSubscriptions {
+	caps := s.capabilities()
+	agreed := NotificationSubscriptions{}
+	if want.ToolsListChanged && caps.Tools != nil && caps.Tools.ListChanged {
+		agreed.ToolsListChanged = true
+	}
+	if want.PromptsListChanged && caps.Prompts != nil && caps.Prompts.ListChanged {
+		agreed.PromptsListChanged = true
+	}
+	if want.ResourcesListChanged && caps.Resources != nil && caps.Resources.ListChanged {
+		agreed.ResourcesListChanged = true
+	}
+	if len(want.ResourceSubscriptions) > 0 && caps.Resources != nil && caps.Resources.Subscribe {
+		agreed.ResourceSubscriptions = slices.Clone(want.ResourceSubscriptions)
+	}
+	return agreed
 }
 
 // Run runs the server over the given transport, which must be persistent.
@@ -1029,6 +1308,10 @@ func (s *Server) disconnect(cc *ServerSession) {
 	for _, subscribedSessions := range s.resourceSubscriptions {
 		delete(subscribedSessions, cc)
 	}
+	delete(s.toolChangeSubscriptions, cc)
+	delete(s.promptChangeSubscriptions, cc)
+	delete(s.resourceChangeSubscriptions, cc)
+
 	s.opts.Logger.Info("server session disconnected", "session_id", cc.ID())
 }
 
@@ -1061,6 +1344,21 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
 	}
+
+	// Compute the protocol versions this session can serve, filtered by the
+	// transport's capabilities (if it implements [ProtocolVersionSupporter]).
+	// The list is consumed by the SEP-2575 server/discover handler.
+	//
+	// The write is guarded by ss.mu to establish a happens-before edge with
+	// the matching read in Server.discover, which runs on the jsonrpc2 read
+	// goroutine spawned inside connect(). The two are not concurrent in
+	// wall-clock terms (no incoming message is dispatched until the caller
+	// has fed the transport, which happens after Server.Connect returns),
+	// but without the lock the Go memory model gives the read goroutine no
+	// guarantee of seeing this write, and -race flags it.
+	ss.mu.Lock()
+	ss.supportedVersions = filterSupportedVersions(t)
+	ss.mu.Unlock()
 
 	// Start keepalive before returning the session to avoid race conditions with Close.
 	// This is safe because the spec allows sending pings before initialization (see ServerSession.handle for details).
@@ -1124,6 +1422,13 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
+// notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
+// notification on the listen stream represented by this session, indicating
+// the subscription filter the server accepted (SEP-2575).
+func (ss *ServerSession) notifySubscriptionAcked(ctx context.Context, params *SubscriptionsAcknowledgedParams) error {
+	return handleNotify(ctx, notificationSubscriptionsAck, newServerRequest(ss, orZero[Params](params)))
+}
+
 func newServerRequest[P Params](ss *ServerSession, params P) *ServerRequest[P] {
 	return &ServerRequest[P]{Session: ss, Params: params}
 }
@@ -1145,6 +1450,12 @@ type ServerSession struct {
 	conn            *jsonrpc2.Connection
 	mcpConn         Connection
 	keepaliveCancel context.CancelFunc
+
+	// supportedVersions is the subset of [supportedProtocolVersions] that the
+	// transport can actually serve, computed once at connection time from
+	// [ProtocolVersionSupporter] (if implemented by the transport) and used by
+	// the SEP-2575 server/discover handler.
+	supportedVersions []string
 
 	mu    sync.Mutex
 	state ServerSessionState
@@ -1201,6 +1512,12 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 }
 
 // ListRoots lists the client roots.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
 		return nil, err
@@ -1213,6 +1530,12 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // If the client returns multiple content blocks (e.g. parallel tool calls),
 // CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
 // for tool-enabled sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to calling LLM provider APIs directly
+// from your server. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
@@ -1250,6 +1573,12 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // returning a [CreateMessageWithToolsResult] that supports array content
 // (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
 // when the request includes tools.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to calling LLM provider APIs directly
+// from your server. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *CreateMessageWithToolsParams) (*CreateMessageWithToolsResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
@@ -1337,8 +1666,16 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 }
 
 // Log sends a log message to the client.
-// The message is not sent if the client has not called SetLevel, or if its level
-// is below that of the last SetLevel.
+//
+// For new-protocol (>= 2026-07-28) requests, the level is taken from the
+// originating request's `_meta` field (SEP-2575); an absent or empty value
+// suppresses the message per spec. For old-protocol requests, the level is
+// taken from the session state set via `logging/setLevel`.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
 	ss.mu.Lock()
 	logLevel := ss.state.LogLevel
@@ -1392,6 +1729,7 @@ func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 // curating these method flags.
 var serverMethodInfos = map[string]methodInfo{
 	methodComplete:               newServerMethodInfo(serverMethod((*Server).complete), 0),
+	methodDiscover:               newServerMethodInfo(serverMethod((*Server).discover), missingParamsOK),
 	methodInitialize:             initializeMethodInfo(),
 	methodPing:                   newServerMethodInfo(serverSessionMethod((*ServerSession).ping), missingParamsOK),
 	methodListPrompts:            newServerMethodInfo(serverMethod((*Server).listPrompts), missingParamsOK),
@@ -1403,6 +1741,7 @@ var serverMethodInfos = map[string]methodInfo{
 	methodReadResource:           newServerMethodInfo(serverMethod((*Server).readResource), 0),
 	methodSetLevel:               newServerMethodInfo(serverSessionMethod((*ServerSession).setLevel), 0),
 	methodSubscribe:              newServerMethodInfo(serverMethod((*Server).subscribe), 0),
+	methodSubscriptionsListen:    newServerMethodInfo(serverMethod((*Server).subscriptionsListen), 0),
 	methodUnsubscribe:            newServerMethodInfo(serverMethod((*Server).unsubscribe), 0),
 	notificationCancelled:        newServerMethodInfo(serverSessionMethod((*ServerSession).cancel), notification|missingParamsOK),
 	notificationInitialized:      newServerMethodInfo(serverSessionMethod((*ServerSession).initialized), notification|missingParamsOK),
@@ -1464,15 +1803,50 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	initialized := ss.state.InitializeParams != nil
 	ss.mu.Unlock()
 
-	// From the spec:
-	// "The client SHOULD NOT send requests other than pings before the server
-	// has responded to the initialize request."
+	// Per-request protocol detection (SEP-2575): if the request carries
+	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
+	// follows the new sessionless protocol. The initialization gate is
+	// skipped for such requests.
+	validatedMeta, perRequestErr := validateRequestMeta(req)
+	if perRequestErr != nil {
+		return nil, perRequestErr
+	}
+
+	if validatedMeta.usesNewProtocol &&
+		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedProtocolVersions,
+			Requested: validatedMeta.initializeParams.ProtocolVersion,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		}
+	}
+
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized:
+	case methodInitialize, methodPing, notificationInitialized, notificationRootsListChanged, methodSetLevel, methodSubscribe, methodUnsubscribe:
+		if validatedMeta.usesNewProtocol {
+			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
+		}
+	case methodDiscover:
+		// In case of methodDiscover call the state.initializeParams is populated
+		// within the discover handle function to make sure the method is supported
+		// when the user is probing a pre-2026-07-28 server.
 	default:
-		if !initialized {
+		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		}
+		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
+			ss.updateState(func(state *ServerSessionState) {
+				state.InitializeParams = validatedMeta.initializeParams
+			})
 		}
 	}
 
@@ -1487,6 +1861,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
+	// For new-protocol requests, propagate the per-request log level.
+	if validatedMeta.usesNewProtocol {
+		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
+	}
 	return handleReceive(ctx, ss, req)
 }
 
@@ -1502,9 +1880,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	var wasInit bool
 	ss.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = params
+		wasInit = state.InitializeParams != nil
+		if !wasInit {
+			state.InitializeParams = params
+		}
 	})
+	if wasInit {
+		ss.server.opts.Logger.Error("duplicate initialize request")
+		return nil, fmt.Errorf("duplicate %q received", methodInitialize)
+	}
 
 	s := ss.server
 	return &InitializeResult{
@@ -1569,7 +1955,7 @@ func (ss *ServerSession) Wait() error {
 
 // startKeepalive starts the keepalive mechanism for this server session.
 func (ss *ServerSession) startKeepalive(interval time.Duration) {
-	startKeepalive(ss, interval, &ss.keepaliveCancel, ss.server.opts.Logger)
+	startKeepalive(ss, interval, ss.server.opts.KeepAliveFailureThreshold, &ss.keepaliveCancel, ss.server.opts.Logger)
 }
 
 // pageToken is the internal structure for the opaque pagination cursor.

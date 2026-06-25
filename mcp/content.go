@@ -189,6 +189,11 @@ func (c *EmbeddedResource) fromWire(wire *wireContent) {
 
 // ToolUseContent represents a request from the assistant to invoke a tool.
 // This content type is only valid in sampling messages.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ToolUseContent struct {
 	// ID is a unique identifier for this tool use, used to match with ToolResultContent.
 	ID string
@@ -229,12 +234,19 @@ func (c *ToolUseContent) fromWire(wire *wireContent) {
 
 // ToolResultContent represents the result of a tool invocation.
 // This content type is only valid in sampling messages with role "user".
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ToolResultContent struct {
 	// ToolUseID references the ID from the corresponding ToolUseContent.
 	ToolUseID string
 	// Content holds the unstructured result of the tool call.
 	Content []Content
-	// StructuredContent holds an optional structured result as a JSON object.
+	// StructuredContent holds an optional structured result. Per SEP-2106, it
+	// may be any valid JSON value (object, array, or primitive) conforming to
+	// the tool's output schema.
 	StructuredContent any
 	// IsError indicates whether the tool call ended in an error.
 	IsError bool

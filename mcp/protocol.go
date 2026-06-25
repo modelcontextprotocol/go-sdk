@@ -13,6 +13,178 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
 
+// resultType indicates whether a result is complete or requires further input
+// from the client via the multi round-trip request protocol.
+type resultType string
+
+const (
+	// resultTypeComplete indicates the result is final.
+	// This is the default when ResultType is empty.
+	resultTypeComplete resultType = "complete"
+
+	// resultTypeInputRequired indicates the server needs additional client
+	// input before it can complete the request. The client should fulfill the
+	// InputRequests and retry the call with the responses.
+	resultTypeInputRequired resultType = "input_required"
+)
+
+// InputRequest is a type for parameters that a server can include in the response
+// to request input from client (SEP-2322). Implementations are [*ElicitParams],
+// [*CreateMessageParams], and [*ListRootsParams].
+type InputRequest interface{ isInputRequest() }
+
+// InputRequestMap maps server-assigned request IDs to [InputRequest] values.
+// It is used in result types to tell the client what input the server needs.
+type InputRequestMap map[string]InputRequest
+
+func (m InputRequestMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]any(nil))
+	}
+	type wire struct {
+		Method string       `json:"method"`
+		Params InputRequest `json:"params,omitempty"`
+	}
+	typeToMethod := func(v InputRequest) (string, error) {
+		switch v.(type) {
+		case *ElicitParams:
+			return methodElicit, nil
+		case *CreateMessageParams, *CreateMessageWithToolsParams:
+			return methodCreateMessage, nil
+		case *ListRootsParams:
+			return methodListRoots, nil
+		default:
+			return "", fmt.Errorf("unsupported type: %T", v)
+		}
+	}
+	converted := map[string]*wire{}
+	for k, v := range m {
+		method, err := typeToMethod(v)
+		if err != nil {
+			return nil, err
+		}
+		converted[k] = &wire{Method: method, Params: v}
+	}
+	return json.Marshal(converted)
+}
+
+func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	var rawMap map[string]*raw
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+	if rawMap == nil {
+		return nil
+	}
+	result := make(InputRequestMap, len(rawMap))
+	for k, raw := range rawMap {
+		switch raw.Method {
+		case methodElicit:
+			var p ElicitParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodCreateMessage:
+			var p CreateMessageWithToolsParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodListRoots:
+			var p ListRootsParams
+			if err := json.Unmarshal(raw.Params, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		default:
+			return fmt.Errorf("unsupported InputRequest method: %q", raw.Method)
+		}
+	}
+	*m = result
+	return nil
+}
+
+// InputResponse is a type for results that a client sends back when fulfilling
+// a server input request (SEP-2322). Implementations are [*ElicitResult],
+// [*CreateMessageResult], and [*ListRootsResult].
+type InputResponse interface{ isInputResponse() }
+
+// InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
+// values. It is used in params types when retrying a call after an
+// input-required result.
+type InputResponseMap map[string]InputResponse
+
+func (m InputResponseMap) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Method string        `json:"method"`
+		Result InputResponse `json:"result,omitempty"`
+	}
+	typeToMethod := func(v InputResponse) (string, error) {
+		switch v.(type) {
+		case *ElicitResult:
+			return methodElicit, nil
+		case *CreateMessageResult, *CreateMessageWithToolsResult:
+			return methodCreateMessage, nil
+		case *ListRootsResult:
+			return methodListRoots, nil
+		default:
+			return "", fmt.Errorf("unsupported type: %T", v)
+		}
+	}
+	converted := map[string]*wire{}
+	for k, v := range m {
+		method, err := typeToMethod(v)
+		if err != nil {
+			return nil, err
+		}
+		converted[k] = &wire{Method: method, Result: v}
+	}
+	return json.Marshal(converted)
+}
+
+func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+	}
+	var rawMap map[string]*raw
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+	result := make(InputResponseMap, len(rawMap))
+	for k, raw := range rawMap {
+		switch raw.Method {
+		case methodElicit:
+			var p ElicitResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodCreateMessage:
+			var p CreateMessageWithToolsResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		case methodListRoots:
+			var p ListRootsResult
+			if err := json.Unmarshal(raw.Result, &p); err != nil {
+				return err
+			}
+			result[k] = &p
+		default:
+			return fmt.Errorf("unsupported InputResponse method: %q", raw.Method)
+		}
+	}
+	*m = result
+	return nil
+}
+
 // Optional annotations for the client. The client can use annotations to inform
 // how objects are used or displayed.
 type Annotations struct {
@@ -46,6 +218,14 @@ type CallToolParams struct {
 	// Arguments holds the tool arguments. It can hold any value that can be
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	// The client must echo this back when retrying.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // CallToolParamsRaw is passed to tool handlers on the server. Its arguments
@@ -61,6 +241,14 @@ type CallToolParamsRaw struct {
 	// is the responsibility of the tool handler to unmarshal and validate the
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	// The client must echo this back when retrying.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 // A CallToolResult is the server's response to a tool call.
@@ -82,7 +270,9 @@ type CallToolResult struct {
 	Content []Content `json:"content"`
 
 	// StructuredContent is an optional value that represents the structured
-	// result of the tool call. It must marshal to a JSON object.
+	// result of the tool call. Per SEP-2106, it may marshal to any valid JSON
+	// value (object, array, or primitive) conforming to the tool's
+	// [Tool.OutputSchema].
 	//
 	// When using a [ToolHandlerFor] with structured output, you should not
 	// populate this field. It will be automatically populated with the typed Out
@@ -107,6 +297,24 @@ type CallToolResult struct {
 	// the Content field.
 	IsError bool `json:"isError,omitempty"`
 
+	// InputRequests is a map of server-assigned IDs to input requests.
+	// Populated only when ResultType is ResultTypeInputRequired.
+	// The client must fulfill these and echo the IDs back in InputResponses
+	// when retrying the call.
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+
+	// RequestState is an opaque string the client must echo back when
+	// retrying after an input-required result. Servers use this to carry
+	// context between independent requests.
+	//
+	// Unauthenticated servers must encrypt, sign and verify this value.
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. Empty or ResultTypeComplete means the call succeeded
+	// normally. ResultTypeInputRequired means the client should fulfill the
+	// InputRequests and retry the call.
+	resultType resultType
 	// The error passed to setError, if any.
 	// It is not marshaled, and therefore it is only visible on the server.
 	// Its only use is in server sending middleware, where it can be accessed
@@ -145,13 +353,49 @@ func (r *CallToolResult) GetError() error {
 
 func (*CallToolResult) isResult() {}
 
-// UnmarshalJSON handles the unmarshalling of content into the Content
-// interface.
+func (r *CallToolResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *CallToolResult) requestState() string        { return r.RequestState }
+func (r *CallToolResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *CallToolResult) hasContent() bool {
+	return len(r.Content) > 0 || r.StructuredContent != nil
+}
+
+// NeedsInput reports whether this result requires further client input.
+// This is true when the server returned ResultType "input_required".
+// When NeedsInput returns true, check InputRequests for the set of
+// requests the server needs fulfilled before retrying the call.
+// An empty InputRequests with NeedsInput true indicates load-shedding.
+func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *CallToolResult) MarshalJSON() ([]byte, error) {
+	type res CallToolResult // avoid recursion
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
 func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	type res CallToolResult // avoid recursion
 	var wire struct {
 		res
-		Content []*wireContent `json:"content"`
+		Content    []*wireContent `json:"content"`
+		ResultType resultType     `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
@@ -160,15 +404,18 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
 		return err
 	}
+	wire.res.resultType = wire.ResultType
 	*x = CallToolResult(wire.res)
 	return nil
 }
 
 func (x *CallToolParams) isParams()              {}
+func (x *CallToolParams) isNil() bool            { return x == nil }
 func (x *CallToolParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 func (x *CallToolParamsRaw) isParams()              {}
+func (x *CallToolParamsRaw) isNil() bool            { return x == nil }
 func (x *CallToolParamsRaw) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CallToolParamsRaw) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -187,10 +434,16 @@ type CancelledParams struct {
 }
 
 func (x *CancelledParams) isParams()              {}
+func (x *CancelledParams) isNil() bool            { return x == nil }
 func (x *CancelledParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CancelledParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // RootCapabilities describes a client's support for roots.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type RootCapabilities struct {
 	// ListChanged reports whether the client supports notifications for
 	// changes to the roots list.
@@ -218,14 +471,27 @@ type ClientCapabilities struct {
 	// Deprecated: use RootsV2. As described in #607, Roots should have been a
 	// pointer to a RootCapabilities value. Roots will be continue to be
 	// populated, but any new fields will only be added in the RootsV2 field.
+	//
+	// The roots feature itself is also deprecated by SEP-2577; see RootsV2.
 	Roots struct {
 		// ListChanged reports whether the client supports notifications for
 		// changes to the roots list.
 		ListChanged bool `json:"listChanged,omitempty"`
 	} `json:"roots,omitempty"`
-	// RootsV2 is present if the client supports roots. When capabilities are explicitly configured via [ClientOptions.Capabilities]
+	// RootsV2 is present if the client supports roots. When capabilities are
+	// explicitly configured via [ClientOptions.Capabilities].
+	//
+	// Deprecated: the roots feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	RootsV2 *RootCapabilities `json:"-"`
 	// Sampling is present if the client supports sampling from an LLM.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	Sampling *SamplingCapabilities `json:"sampling,omitempty"`
 	// Elicitation is present if the client supports elicitation from the server.
 	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
@@ -374,7 +640,8 @@ type CompleteParams struct {
 	Ref      *CompleteReference     `json:"ref"`
 }
 
-func (*CompleteParams) isParams() {}
+func (x *CompleteParams) isParams()   {}
+func (x *CompleteParams) isNil() bool { return x == nil }
 
 type CompletionResultDetails struct {
 	HasMore bool     `json:"hasMore,omitempty"`
@@ -392,6 +659,12 @@ type CompleteResult struct {
 
 func (*CompleteResult) isResult() {}
 
+// CreateMessageParams holds parameters for a sampling/createMessage request.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -399,10 +672,11 @@ type CreateMessageParams struct {
 	// A request to include context from one or more MCP servers (including the
 	// caller), to be attached to the prompt. The client may ignore this request.
 	//
-	// The default is "none". Values "thisServer" and
-	// "allServers" are soft-deprecated. Servers SHOULD only use these values if
-	// the client declares ClientCapabilities.sampling.context. These values may
-	// be removed in future spec releases.
+	// The default is "none". The values "thisServer" and "allServers" are
+	// deprecated as of protocol version 2025-11-25 (SEP-2596) and will be
+	// removed no later than the sampling feature itself (SEP-2577). Servers
+	// SHOULD omit this field or use "none". See
+	// https://modelcontextprotocol.io/seps/2596-feature-lifecycle-and-deprecation-policy.
 	IncludeContext string `json:"includeContext,omitempty"`
 	// The maximum number of tokens to sample, as requested by the server. The
 	// client may choose to sample fewer tokens than requested.
@@ -422,6 +696,8 @@ type CreateMessageParams struct {
 }
 
 func (x *CreateMessageParams) isParams()              {}
+func (x *CreateMessageParams) isInputRequest()        {}
+func (x *CreateMessageParams) isNil() bool            { return x == nil }
 func (x *CreateMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -430,6 +706,11 @@ func (x *CreateMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 // and messages that support array content (for parallel tool calls).
 //
 // Use with [ServerSession.CreateMessageWithTools].
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageWithToolsParams struct {
 	Meta           `json:"_meta,omitempty"`
 	IncludeContext string `json:"includeContext,omitempty"`
@@ -448,6 +729,8 @@ type CreateMessageWithToolsParams struct {
 }
 
 func (x *CreateMessageWithToolsParams) isParams()              {}
+func (x *CreateMessageWithToolsParams) isInputRequest()        {}
+func (x *CreateMessageWithToolsParams) isNil() bool            { return x == nil }
 func (x *CreateMessageWithToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *CreateMessageWithToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -488,6 +771,11 @@ func (p *CreateMessageWithToolsParams) toBase() (*CreateMessageParams, error) {
 // object for compatibility with pre-2025-11-25 implementations. When
 // unmarshaling, a single JSON content object is accepted and wrapped in a
 // one-element slice.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingMessageV2 struct {
 	Content []Content `json:"content"`
 	Role    Role      `json:"role"`
@@ -529,6 +817,11 @@ func (m *SamplingMessageV2) UnmarshalJSON(data []byte) error {
 // The client should inform the user before returning the sampled message, to
 // allow them to inspect the response (human in the loop) and decide whether to
 // allow the server to see it.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -547,7 +840,8 @@ type CreateMessageResult struct {
 	StopReason string `json:"stopReason,omitempty"`
 }
 
-func (*CreateMessageResult) isResult() {}
+func (*CreateMessageResult) isResult()        {}
+func (*CreateMessageResult) isInputResponse() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
 	var wire struct {
@@ -574,6 +868,11 @@ func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 //
 // When unmarshaling, a single JSON content object is accepted and wrapped in a
 // one-element slice, for compatibility with clients that return a single block.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type CreateMessageWithToolsResult struct {
 	Meta    `json:"_meta,omitempty"`
 	Content []Content `json:"content"`
@@ -592,7 +891,8 @@ var createMessageWithToolsResultAllow = map[string]bool{
 	"tool_use": true,
 }
 
-func (*CreateMessageWithToolsResult) isResult() {}
+func (*CreateMessageWithToolsResult) isResult()        {}
+func (*CreateMessageWithToolsResult) isInputResponse() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
 // marshaled as a single object for compatibility with pre-2025-11-25
@@ -651,9 +951,17 @@ type GetPromptParams struct {
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// The name of the prompt or prompt template.
 	Name string `json:"name"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 func (x *GetPromptParams) isParams()              {}
+func (x *GetPromptParams) isNil() bool            { return x == nil }
 func (x *GetPromptParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *GetPromptParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -665,9 +973,66 @@ type GetPromptResult struct {
 	// An optional description for the prompt.
 	Description string           `json:"description,omitempty"`
 	Messages    []*PromptMessage `json:"messages"`
+
+	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// See [CallToolResult.InputRequests].
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+	// RequestState is the opaque state for multi-round-trip retries.
+	// See [CallToolResult.RequestState].
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. See [CallToolResult.ResultType] for details.
+	resultType resultType
 }
 
 func (*GetPromptResult) isResult() {}
+
+func (r *GetPromptResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *GetPromptResult) requestState() string        { return r.RequestState }
+func (r *GetPromptResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *GetPromptResult) hasContent() bool { return len(r.Messages) > 0 }
+
+// NeedsInput reports whether this result requires further client input.
+// See [CallToolResult.NeedsInput] for details.
+func (r *GetPromptResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *GetPromptResult) MarshalJSON() ([]byte, error) {
+	type res GetPromptResult
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
+func (x *GetPromptResult) UnmarshalJSON(data []byte) error {
+	type res GetPromptResult
+	var wire struct {
+		res
+		ResultType resultType `json:"resultType"`
+	}
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	wire.res.resultType = wire.ResultType
+	*x = GetPromptResult(wire.res)
+	return nil
+}
 
 // InitializeParams is sent by the client to initialize the session.
 type InitializeParams struct {
@@ -706,6 +1071,7 @@ func (p *initializeParamsV2) toV1() *InitializeParams {
 }
 
 func (x *InitializeParams) isParams()              {}
+func (x *InitializeParams) isNil() bool            { return x == nil }
 func (x *InitializeParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializeParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -739,6 +1105,7 @@ type InitializedParams struct {
 }
 
 func (x *InitializedParams) isParams()              {}
+func (x *InitializedParams) isNil() bool            { return x == nil }
 func (x *InitializedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *InitializedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -751,16 +1118,83 @@ type ListPromptsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+type DiscoverParams struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (x *DiscoverParams) isParams()              {}
+func (x *DiscoverParams) isNil() bool            { return x == nil }
+func (x *DiscoverParams) GetProgressToken() any  { return getProgressToken(x) }
+func (x *DiscoverParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+type DiscoverResult struct {
+	Meta `json:"_meta,omitempty"`
+	Cacheable
+	// The versions of the Model Context Protocol that the server supports.
+	SupportedVersions []string `json:"supportedVersions"`
+	// The server's capabilities.
+	Capabilities *ServerCapabilities `json:"capabilities"`
+	// Information about the server implementation.
+	ServerInfo *Implementation `json:"serverInfo"`
+	// Instructions describing how to use the server and its features.
+	Instructions string `json:"instructions,omitempty"`
+}
+
+func (*DiscoverResult) isResult() {}
+
 func (x *ListPromptsParams) isParams()              {}
+func (x *ListPromptsParams) isNil() bool            { return x == nil }
 func (x *ListPromptsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListPromptsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListPromptsParams) cursorPtr() *string     { return &x.Cursor }
+
+// CacheableResult is a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type CacheableResult interface {
+	Result
+	GetTTLMs() int
+	GetCacheScope() string
+}
+
+// Cacheable describes a result that supports a time-to-live (TTL) hint for
+// client-side caching.
+type Cacheable struct {
+	// A hint from the server indicating how long (in milliseconds) the
+	// client MAY cache this response before re-fetching. Semantics are
+	// analogous to HTTP Cache-Control max-age.
+	//
+	// If 0, the response SHOULD be considered immediately stale.
+	// If positive, the client SHOULD consider the result fresh for this
+	// many milliseconds after receiving the response.
+	TTLMs int `json:"ttlMs"`
+
+	// Indicates the intended scope of the cached response, analogous to
+	// HTTP Cache-Control: public vs Cache-Control: private.
+	//
+	// "public": Any client or intermediary MAY cache and serve the response.
+	// "private": Only the requesting user's client MAY cache the response.
+	//
+	// Defaults to "public" if absent.
+	CacheScope string `json:"cacheScope"`
+}
+
+// GetTTLMs returns the TTL hint in milliseconds.
+func (c Cacheable) GetTTLMs() int { return c.TTLMs }
+
+// GetCacheScope returns the cache scope.
+func (c Cacheable) GetCacheScope() string { return c.CacheScope }
+
+// setDefaultCacheableValues sets the default values for the cacheable fields.
+func (c *Cacheable) setDefaultCacheableValues() {
+	c.CacheScope = "public"
+}
 
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string    `json:"nextCursor,omitempty"`
@@ -780,6 +1214,7 @@ type ListResourceTemplatesParams struct {
 }
 
 func (x *ListResourceTemplatesParams) isParams()              {}
+func (x *ListResourceTemplatesParams) isNil() bool            { return x == nil }
 func (x *ListResourceTemplatesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourceTemplatesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourceTemplatesParams) cursorPtr() *string     { return &x.Cursor }
@@ -789,6 +1224,7 @@ type ListResourceTemplatesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor        string              `json:"nextCursor,omitempty"`
@@ -808,6 +1244,7 @@ type ListResourcesParams struct {
 }
 
 func (x *ListResourcesParams) isParams()              {}
+func (x *ListResourcesParams) isNil() bool            { return x == nil }
 func (x *ListResourcesParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListResourcesParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListResourcesParams) cursorPtr() *string     { return &x.Cursor }
@@ -817,6 +1254,7 @@ type ListResourcesResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string      `json:"nextCursor,omitempty"`
@@ -826,6 +1264,12 @@ type ListResourcesResult struct {
 func (x *ListResourcesResult) isResult()              {}
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
+// ListRootsParams holds parameters for a roots/list request.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ListRootsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -833,12 +1277,19 @@ type ListRootsParams struct {
 }
 
 func (x *ListRootsParams) isParams()              {}
+func (x *ListRootsParams) isInputRequest()        {}
+func (x *ListRootsParams) isNil() bool            { return x == nil }
 func (x *ListRootsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListRootsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // The client's response to a roots/list request from the server. This result
 // contains an array of Root objects, each representing a root directory or file
 // that the server can operate on.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ListRootsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -846,7 +1297,8 @@ type ListRootsResult struct {
 	Roots []*Root `json:"roots"`
 }
 
-func (*ListRootsResult) isResult() {}
+func (*ListRootsResult) isResult()        {}
+func (*ListRootsResult) isInputResponse() {}
 
 type ListToolsParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
@@ -858,6 +1310,7 @@ type ListToolsParams struct {
 }
 
 func (x *ListToolsParams) isParams()              {}
+func (x *ListToolsParams) isNil() bool            { return x == nil }
 func (x *ListToolsParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ListToolsParams) SetProgressToken(t any) { setProgressToken(x, t) }
 func (x *ListToolsParams) cursorPtr() *string     { return &x.Cursor }
@@ -867,6 +1320,7 @@ type ListToolsResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
+	Cacheable
 	// An opaque token representing the pagination position after the last returned
 	// result. If present, there may be more results available.
 	NextCursor string  `json:"nextCursor,omitempty"`
@@ -880,8 +1334,20 @@ func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 //
 // These map to syslog message severities, as specified in RFC-5424:
 // https://datatracker.ietf.org/doc/html/rfc5424#section-6.2.1
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingLevel string
 
+// LoggingMessageParams holds the parameters for a notifications/message
+// notification.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingMessageParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -896,6 +1362,7 @@ type LoggingMessageParams struct {
 }
 
 func (x *LoggingMessageParams) isParams()              {}
+func (x *LoggingMessageParams) isNil() bool            { return x == nil }
 func (x *LoggingMessageParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -903,6 +1370,11 @@ func (x *LoggingMessageParams) SetProgressToken(t any) { setProgressToken(x, t) 
 //
 // Keys not declared here are currently left unspecified by the spec and are up
 // to the client to interpret.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ModelHint struct {
 	// A hint for a model name.
 	//
@@ -929,6 +1401,11 @@ type ModelHint struct {
 // These preferences are always advisory. The client may ignore them. It is also
 // up to the client to decide how to interpret these preferences and how to
 // balance them against other considerations.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ModelPreferences struct {
 	// How much to prioritize cost when selecting a model. A value of 0 means cost
 	// is not important, while a value of 1 means cost is the most important factor.
@@ -958,6 +1435,7 @@ type PingParams struct {
 }
 
 func (x *PingParams) isParams()              {}
+func (x *PingParams) isNil() bool            { return x == nil }
 func (x *PingParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PingParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -978,7 +1456,8 @@ type ProgressNotificationParams struct {
 	Total float64 `json:"total,omitempty"`
 }
 
-func (*ProgressNotificationParams) isParams() {}
+func (x *ProgressNotificationParams) isParams()   {}
+func (x *ProgressNotificationParams) isNil() bool { return x == nil }
 
 // IconTheme specifies the theme an icon is designed for.
 type IconTheme string
@@ -1048,6 +1527,7 @@ type PromptListChangedParams struct {
 }
 
 func (x *PromptListChangedParams) isParams()              {}
+func (x *PromptListChangedParams) isNil() bool            { return x == nil }
 func (x *PromptListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *PromptListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1086,9 +1566,17 @@ type ReadResourceParams struct {
 	// The URI of the resource to read. The URI can use any protocol; it is up to
 	// the server how to interpret it.
 	URI string `json:"uri"`
+
+	// InputResponses maps input request IDs to responses, provided when
+	// retrying a call after receiving a result with ResultType
+	// ResultTypeInputRequired.
+	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
+	// RequestState is the opaque state from the previous input-required result.
+	RequestState string `json:"requestState,omitempty"`
 }
 
 func (x *ReadResourceParams) isParams()              {}
+func (x *ReadResourceParams) isNil() bool            { return x == nil }
 func (x *ReadResourceParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1096,11 +1584,69 @@ func (x *ReadResourceParams) SetProgressToken(t any) { setProgressToken(x, t) }
 type ReadResourceResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
-	Meta     `json:"_meta,omitempty"`
+	Meta `json:"_meta,omitempty"`
+	Cacheable
 	Contents []*ResourceContents `json:"contents"`
+
+	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// See [CallToolResult.InputRequests].
+	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
+	// RequestState is the opaque state for multi-round-trip retries.
+	// See [CallToolResult.RequestState].
+	RequestState string `json:"requestState,omitempty"`
+
+	// ResultType indicates whether this result is complete or requires further
+	// client input. See [CallToolResult.ResultType] for details.
+	resultType resultType
 }
 
 func (*ReadResourceResult) isResult() {}
+
+func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) requestState() string        { return r.RequestState }
+func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
+	if r == nil {
+		return nil
+	}
+	return r.InputRequests
+}
+func (r *ReadResourceResult) hasContent() bool { return len(r.Contents) > 0 }
+
+// NeedsInput reports whether this result requires further client input.
+// See [CallToolResult.NeedsInput] for details.
+func (r *ReadResourceResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+func (x *ReadResourceResult) MarshalJSON() ([]byte, error) {
+	type res ReadResourceResult
+	type wire struct {
+		res
+		ResultType    resultType      `json:"resultType,omitempty"`
+		InputRequests json.RawMessage `json:"inputRequests,omitempty"` // shadows res.InputRequests
+	}
+	w := wire{res: res(*x), ResultType: x.resultType}
+	if x.InputRequests != nil {
+		ir, err := json.Marshal(x.InputRequests)
+		if err != nil {
+			return nil, err
+		}
+		w.InputRequests = ir
+	}
+	return json.Marshal(w)
+}
+
+func (x *ReadResourceResult) UnmarshalJSON(data []byte) error {
+	type res ReadResourceResult
+	var wire struct {
+		res
+		ResultType resultType `json:"resultType"`
+	}
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	wire.res.resultType = wire.ResultType
+	*x = ReadResourceResult(wire.res)
+	return nil
+}
 
 // A known resource that the server is capable of reading.
 type Resource struct {
@@ -1145,6 +1691,7 @@ type ResourceListChangedParams struct {
 }
 
 func (x *ResourceListChangedParams) isParams()              {}
+func (x *ResourceListChangedParams) isNil() bool            { return x == nil }
 func (x *ResourceListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ResourceListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1184,6 +1731,11 @@ type ResourceTemplate struct {
 type Role string
 
 // Represents a root directory or file that the server can operate on.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type Root struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
 	// usage.
@@ -1198,6 +1750,13 @@ type Root struct {
 	URI string `json:"uri"`
 }
 
+// RootsListChangedParams holds parameters for a notifications/roots/list_changed
+// notification.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type RootsListChangedParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1205,6 +1764,7 @@ type RootsListChangedParams struct {
 }
 
 func (x *RootsListChangedParams) isParams()              {}
+func (x *RootsListChangedParams) isNil() bool            { return x == nil }
 func (x *RootsListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1212,6 +1772,11 @@ func (x *RootsListChangedParams) SetProgressToken(t any) { setProgressToken(x, t
 // below directly above ClientCapabilities.
 
 // SamplingCapabilities describes the client's support for sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingCapabilities struct {
 	// Context indicates the client supports includeContext values other than "none".
 	Context *SamplingContextCapabilities `json:"context,omitempty"`
@@ -1220,12 +1785,27 @@ type SamplingCapabilities struct {
 }
 
 // SamplingContextCapabilities indicates the client supports context inclusion.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingContextCapabilities struct{}
 
 // SamplingToolsCapabilities indicates the client supports tool use in sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingToolsCapabilities struct{}
 
 // ToolChoice controls how the model uses tools during sampling.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type ToolChoice struct {
 	// Mode controls tool invocation behavior:
 	//  - "auto": Model decides whether to use tools (default)
@@ -1252,6 +1832,11 @@ type URLElicitationCapabilities struct{}
 //
 // For assistant messages, Content may be text, image, audio, or tool_use.
 // For user messages, Content may be text, image, audio, or tool_result.
+//
+// Deprecated: the sampling feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SamplingMessage struct {
 	Content Content `json:"content"`
 	Role    Role    `json:"role"`
@@ -1277,6 +1862,12 @@ func (m *SamplingMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SetLoggingLevelParams holds parameters for a logging/setLevel request.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type SetLoggingLevelParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
@@ -1288,6 +1879,7 @@ type SetLoggingLevelParams struct {
 }
 
 func (x *SetLoggingLevelParams) isParams()              {}
+func (x *SetLoggingLevelParams) isNil() bool            { return x == nil }
 func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1346,6 +1938,13 @@ type Tool struct {
 	Icons []Icon `json:"icons,omitempty"`
 }
 
+// hintomitempty is a compatibility parameter that restores the pre-1.7.0
+// behavior of [ToolAnnotations] JSON marshaling, where false-valued bare bool
+// fields (ReadOnlyHint, IdempotentHint) were omitted from the output.
+// See the documentation for the mcpgodebug package for instructions on how to
+// enable it.
+var hintomitempty = mcpgodebug.Value("hintomitempty")
+
 // Additional properties describing a Tool to clients.
 //
 // NOTE: all properties in ToolAnnotations are hints. They are not
@@ -1368,7 +1967,7 @@ type ToolAnnotations struct {
 	// (This property is meaningful only when ReadOnlyHint == false.)
 	//
 	// Default: false
-	IdempotentHint bool `json:"idempotentHint,omitempty"`
+	IdempotentHint bool `json:"idempotentHint"`
 	// If true, this tool may interact with an "open world" of external entities. If
 	// false, the tool's domain of interaction is closed. For example, the world of
 	// a web search tool is open, whereas that of a memory tool is not.
@@ -1378,9 +1977,28 @@ type ToolAnnotations struct {
 	// If true, the tool does not modify its environment.
 	//
 	// Default: false
-	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
+	ReadOnlyHint bool `json:"readOnlyHint"`
 	// A human-readable title for the tool.
 	Title string `json:"title,omitempty"`
+}
+
+// MarshalJSON implements [json.Marshaler] for ToolAnnotations.
+//
+// To restore the previous behavior where false-valued ReadOnlyHint and
+// IdempotentHint were omitted, set MCPGODEBUG=hintomitempty=1.
+func (t ToolAnnotations) MarshalJSON() ([]byte, error) {
+	if hintomitempty == "1" {
+		type compat struct {
+			DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+			IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+			OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+			ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+			Title           string `json:"title,omitempty"`
+		}
+		return json.Marshal(compat(t))
+	}
+	type nomethod ToolAnnotations
+	return json.Marshal(nomethod(t))
 }
 
 type ToolListChangedParams struct {
@@ -1390,6 +2008,7 @@ type ToolListChangedParams struct {
 }
 
 func (x *ToolListChangedParams) isParams()              {}
+func (x *ToolListChangedParams) isNil() bool            { return x == nil }
 func (x *ToolListChangedParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ToolListChangedParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
@@ -1403,7 +2022,8 @@ type SubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (*SubscribeParams) isParams() {}
+func (x *SubscribeParams) isParams()   {}
+func (x *SubscribeParams) isNil() bool { return x == nil }
 
 // Sent from the client to request cancellation of resources/updated
 // notifications from the server. This should follow a previous
@@ -1416,7 +2036,8 @@ type UnsubscribeParams struct {
 	URI string `json:"uri"`
 }
 
-func (*UnsubscribeParams) isParams() {}
+func (x *UnsubscribeParams) isParams()   {}
+func (x *UnsubscribeParams) isNil() bool { return x == nil }
 
 // A notification from the server to the client, informing it that a resource
 // has changed and may need to be read again. This should only be sent if the
@@ -1429,7 +2050,51 @@ type ResourceUpdatedNotificationParams struct {
 	URI string `json:"uri"`
 }
 
-func (*ResourceUpdatedNotificationParams) isParams() {}
+func (x *ResourceUpdatedNotificationParams) isParams()   {}
+func (x *ResourceUpdatedNotificationParams) isNil() bool { return x == nil }
+
+// NotificationSubscriptions describes the set of server-to-client
+// notifications a client wishes to receive on a [SubscriptionsListenParams]
+// stream. Each field is an explicit opt-in: a server MUST NOT push
+// notifications of a type the client did not request.
+type NotificationSubscriptions struct {
+	// ToolsListChanged opts in to "notifications/tools/list_changed".
+	ToolsListChanged bool `json:"toolsListChanged,omitempty"`
+	// PromptsListChanged opts in to "notifications/prompts/list_changed".
+	PromptsListChanged bool `json:"promptsListChanged,omitempty"`
+	// ResourcesListChanged opts in to "notifications/resources/list_changed".
+	ResourcesListChanged bool `json:"resourcesListChanged,omitempty"`
+	// ResourceSubscriptions enumerates the resource URIs for which the client
+	// wants "notifications/resources/updated". Replaces the legacy
+	// resources/subscribe RPC.
+	ResourceSubscriptions []string `json:"resourceSubscriptions,omitempty"`
+}
+
+// SubscriptionsListenParams are the parameters for the
+// "subscriptions/listen" RPC.
+type SubscriptionsListenParams struct {
+	// Meta carries the per-request `_meta` triple.
+	Meta `json:"_meta,omitempty"`
+	// Notifications declares which notification types the client wants to
+	// receive on this stream.
+	Notifications NotificationSubscriptions `json:"notifications"`
+}
+
+func (x *SubscriptionsListenParams) isParams()   {}
+func (x *SubscriptionsListenParams) isNil() bool { return x == nil }
+
+// SubscriptionsAcknowledgedParams are the parameters for the
+// "notifications/subscriptions/acknowledged" notification, which the server
+// MUST send as the first message on a subscriptions/listen stream. It carries
+// the subset of the requested [NotificationSubscriptions] that the server has
+// agreed to honor.
+type SubscriptionsAcknowledgedParams struct {
+	Meta          `json:"_meta,omitempty"`
+	Notifications NotificationSubscriptions `json:"notifications"`
+}
+
+func (x *SubscriptionsAcknowledgedParams) isParams()   {}
+func (x *SubscriptionsAcknowledgedParams) isNil() bool { return x == nil }
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -1468,7 +2133,9 @@ type ElicitParams struct {
 	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
-func (x *ElicitParams) isParams() {}
+func (x *ElicitParams) isParams()       {}
+func (x *ElicitParams) isInputRequest() {}
+func (x *ElicitParams) isNil() bool     { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
@@ -1488,7 +2155,8 @@ type ElicitResult struct {
 	Content map[string]any `json:"content,omitempty"`
 }
 
-func (*ElicitResult) isResult() {}
+func (*ElicitResult) isResult()        {}
+func (*ElicitResult) isInputResponse() {}
 
 // ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
 type ElicitationCompleteParams struct {
@@ -1500,18 +2168,21 @@ type ElicitationCompleteParams struct {
 	ElicitationID string `json:"elicitationId"`
 }
 
-func (*ElicitationCompleteParams) isParams() {}
+func (x *ElicitationCompleteParams) isParams()   {}
+func (x *ElicitationCompleteParams) isNil() bool { return x == nil }
 
-// An Implementation describes the name and version of an MCP implementation, with an optional
-// title for UI representation.
+// An Implementation describes the name and version of an MCP implementation, with
+// optional display metadata.
 type Implementation struct {
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
 	Name string `json:"name"`
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
-	Title   string `json:"title,omitempty"`
-	Version string `json:"version"`
+	Title string `json:"title,omitempty"`
+	// A human-readable description of the implementation.
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version"`
 	// WebsiteURL for the server, if any.
 	WebsiteURL string `json:"websiteUrl,omitempty"`
 	// Icons for the Server, if any.
@@ -1522,6 +2193,11 @@ type Implementation struct {
 type CompletionCapabilities struct{}
 
 // LoggingCapabilities describes the server's support for sending log messages to the client.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingCapabilities struct{}
 
 // PromptCapabilities describes the server's support for prompts.
@@ -1565,6 +2241,11 @@ type ServerCapabilities struct {
 	// suggestions.
 	Completions *CompletionCapabilities `json:"completions,omitempty"`
 	// Logging is present if the server supports log messages.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	Logging *LoggingCapabilities `json:"logging,omitempty"`
 	// Prompts is present if the server supports prompts.
 	Prompts *PromptCapabilities `json:"prompts,omitempty"`
@@ -1606,6 +2287,7 @@ const (
 	methodCallTool                  = "tools/call"
 	notificationCancelled           = "notifications/cancelled"
 	methodComplete                  = "completion/complete"
+	methodDiscover                  = "server/discover"
 	methodCreateMessage             = "sampling/createMessage"
 	methodElicit                    = "elicitation/create"
 	notificationElicitationComplete = "notifications/elicitation/complete"
@@ -1627,6 +2309,58 @@ const (
 	notificationRootsListChanged    = "notifications/roots/list_changed"
 	methodSetLevel                  = "logging/setLevel"
 	methodSubscribe                 = "resources/subscribe"
+	methodSubscriptionsListen       = "subscriptions/listen"
 	notificationToolListChanged     = "notifications/tools/list_changed"
 	methodUnsubscribe               = "resources/unsubscribe"
+	notificationSubscriptionsAck    = "notifications/subscriptions/acknowledged"
 )
+
+// Per-request _meta field names for the >= 2026-07-28 protocol version.
+//
+// These keys appear inside a Params._meta map and carry information that
+// previously came from the initialization handshake (SEP-2575).
+const (
+	// MetaKeyProtocolVersion identifies the MCP protocol version that the
+	// request follows.
+	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
+	// MetaKeyClientInfo carries the client's [Implementation].
+	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
+	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	// MetaKeyLogLevel identifies the desired log level for the request.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
+	MetaKeyLogLevel = "io.modelcontextprotocol/logLevel"
+	// MetaKeySubscriptionID identifies the subscriptions/listen request that an
+	// out-of-band notification belongs to.
+	MetaKeySubscriptionID = "io.modelcontextprotocol/subscriptionId"
+)
+
+// UnsupportedProtocolVersionData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeUnsupportedProtocolVersion]. The server uses it to advertise which
+// versions it supports so the client can pick a mutually supported one.
+type UnsupportedProtocolVersionData struct {
+	// Supported is the list of protocol versions the server supports.
+	Supported []string `json:"supported"`
+	// Requested is the protocol version the client asked for.
+	Requested string `json:"requested"`
+}
+
+// MissingRequiredClientCapabilityData is the SEP-2575 payload carried in the
+// `data` field of a JSON-RPC error response with code
+// [CodeMissingRequiredClientCapabilities]. The server uses it to indicate
+// which client capabilities are required to process the request but were not
+// declared by the client in its per-request `_meta` field.
+//
+// Handlers that require a specific client capability should inspect the
+// per-request [ServerRequest.ClientCapabilities] and return a JSON-RPC error
+// populated with this structure when the required capability is missing.
+type MissingRequiredClientCapabilityData struct {
+	// RequiredCapabilities is the set of capabilities the server requires
+	// from the client to process the request.
+	RequiredCapabilities *ClientCapabilities `json:"requiredCapabilities"`
+}

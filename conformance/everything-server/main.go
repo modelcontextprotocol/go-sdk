@@ -5,6 +5,8 @@
 // The conformance server implements features required for MCP conformance testing.
 // It mirrors the functionality of the TypeScript conformance server at
 // https://github.com/modelcontextprotocol/conformance/blob/main/examples/servers/typescript/everything-server.ts
+//
+//lint:file-ignore SA1019 conformance server exercises deprecated SEP-2577 APIs (roots, sampling, logging).
 package main
 
 import (
@@ -25,7 +27,8 @@ import (
 )
 
 var (
-	httpAddr = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	httpAddr  = flag.String("http", "", "if set, use streamable HTTP at this address, instead of stdin/stdout")
+	stateless = flag.Bool("stateless", true, "use stateless streamable HTTP mode")
 )
 
 const watchedResourceURI = "test://watched-resource"
@@ -58,7 +61,7 @@ func main() {
 	if *httpAddr != "" {
 		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{Stateless: *stateless})
 		log.Printf("Conformance server listening at %s", *httpAddr)
 		log.Fatal(http.ListenAndServe(*httpAddr, handler))
 	} else {

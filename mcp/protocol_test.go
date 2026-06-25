@@ -1151,6 +1151,71 @@ func TestToWithTools_Conversion(t *testing.T) {
 	}
 }
 
+func TestInputRequestMapJSON(t *testing.T) {
+	t.Run("nil is omitted from JSON", func(t *testing.T) {
+		result := CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}
+		data, err := json.Marshal(&result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := raw["inputRequests"]; ok {
+			t.Errorf("nil InputRequests should be omitted, got %s", raw["inputRequests"])
+		}
+	})
+
+	t.Run("non-nil empty round-trips", func(t *testing.T) {
+		result := CallToolResult{
+			Content:       []Content{&TextContent{Text: "ok"}},
+			InputRequests: InputRequestMap{},
+		}
+		data, err := json.Marshal(&result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if string(raw["inputRequests"]) != "{}" {
+			t.Errorf("empty InputRequests should marshal to {}, got %s", raw["inputRequests"])
+		}
+		var got CallToolResult
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.InputRequests == nil {
+			t.Error("empty InputRequests should round-trip as non-nil")
+		}
+	})
+
+	t.Run("populated round-trips", func(t *testing.T) {
+		result := CallToolResult{
+			Content: []Content{&TextContent{Text: "ok"}},
+			InputRequests: InputRequestMap{
+				"r1": &ElicitParams{Message: "confirm?"},
+			},
+		}
+		data, err := json.Marshal(&result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got CallToolResult
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.InputRequests == nil {
+			t.Fatal("InputRequests should not be nil after round-trip")
+		}
+		if _, ok := got.InputRequests["r1"]; !ok {
+			t.Error("expected key r1 in InputRequests")
+		}
+	})
+}
+
 func TestContentUnmarshal(t *testing.T) {
 	// Verify that types with a Content field round-trip properly.
 	roundtrip := func(in, out any) {
@@ -1193,4 +1258,61 @@ func TestContentUnmarshal(t *testing.T) {
 	}
 	var gotpm PromptMessage
 	roundtrip(pm, &gotpm)
+}
+
+func TestToolAnnotations_MarshalJSON(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		in   ToolAnnotations
+		want string
+	}{
+		{
+			name: "ZeroValue",
+			in:   ToolAnnotations{},
+			want: `{"idempotentHint":false,"readOnlyHint":false}`,
+		},
+		{
+			name: "AllFalse",
+			in: ToolAnnotations{
+				DestructiveHint: boolPtr(false),
+				IdempotentHint:  false,
+				OpenWorldHint:   boolPtr(false),
+				ReadOnlyHint:    false,
+			},
+			want: `{"destructiveHint":false,"idempotentHint":false,"openWorldHint":false,"readOnlyHint":false}`,
+		},
+		{
+			name: "AllTrue",
+			in: ToolAnnotations{
+				DestructiveHint: boolPtr(true),
+				IdempotentHint:  true,
+				OpenWorldHint:   boolPtr(true),
+				ReadOnlyHint:    true,
+				Title:           "my tool",
+			},
+			want: `{"destructiveHint":true,"idempotentHint":true,"openWorldHint":true,"readOnlyHint":true,"title":"my tool"}`,
+		},
+		{
+			name: "MixedValues",
+			in: ToolAnnotations{
+				ReadOnlyHint: true,
+				Title:        "read tool",
+			},
+			want: `{"idempotentHint":false,"readOnlyHint":true,"title":"read tool"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.in)
+			if err != nil {
+				t.Fatalf("json.Marshal(%v) failed: %v", tt.in, err)
+			}
+			if diff := cmp.Diff(tt.want, string(got)); diff != "" {
+				t.Errorf("json.Marshal() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }

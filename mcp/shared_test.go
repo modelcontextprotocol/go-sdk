@@ -4,6 +4,313 @@
 
 package mcp
 
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+)
+
+func TestValidateRequestMeta(t *testing.T) {
+	tests := []struct {
+		name            string
+		method          string
+		isNotification  bool
+		params          any
+		wantUsesNew     bool
+		wantLogLevel    LoggingLevel
+		wantErrContains string
+	}{
+		{
+			name:        "no params: old protocol",
+			method:      methodListTools,
+			params:      nil,
+			wantUsesNew: false,
+		},
+		{
+			name:        "no _meta: old protocol",
+			method:      methodCallTool,
+			params:      map[string]any{"name": "x"},
+			wantUsesNew: false,
+		},
+		{
+			name:   "_meta without protocolVersion: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{"otherKey": "v"},
+				"name":  "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			name:   "new protocol with all required fields",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
+			name:   "new protocol missing clientInfo",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew:     false,
+			wantErrContains: MetaKeyClientInfo,
+		},
+		{
+			name:   "new protocol missing clientCapabilities",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20260728,
+					MetaKeyClientInfo:      map[string]any{"name": "c", "version": "1"},
+				},
+				"name": "x",
+			},
+			wantUsesNew:     false,
+			wantErrContains: MetaKeyClientCapabilities,
+		},
+		{
+			name:           "notifications exempt from required fields",
+			method:         notificationCancelled,
+			isNotification: true,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20260728,
+				},
+				"requestId": "r1",
+			},
+			wantUsesNew: true,
+		},
+		{
+			name:        "malformed _meta is ignored",
+			method:      methodCallTool,
+			params:      json.RawMessage(`{"_meta": "not an object", "name": "x"}`),
+			wantUsesNew: false,
+		},
+		{
+			name:   "new protocol with logLevel",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+					MetaKeyLogLevel:           "warning",
+				},
+				"name": "x",
+			},
+			wantUsesNew:  true,
+			wantLogLevel: "warning",
+		},
+		{
+			name:   "new protocol without logLevel",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew:  true,
+			wantLogLevel: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw json.RawMessage
+			switch p := tc.params.(type) {
+			case json.RawMessage:
+				raw = p
+			default:
+				raw = mustMarshal(tc.params)
+			}
+			req := &jsonrpc.Request{Method: tc.method, Params: raw}
+			if !tc.isNotification {
+				req.ID = jsonrpc.ID{}
+				// Give the request an ID by parsing one.
+				id, err := jsonrpc.MakeID("test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.ID = id
+			}
+
+			vmeta, err := validateRequestMeta(req)
+			usesNew := vmeta != nil && vmeta.usesNewProtocol
+			if usesNew != tc.wantUsesNew {
+				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
+			}
+			if vmeta != nil && vmeta.logLevel != tc.wantLogLevel {
+				t.Errorf("logLevel = %q, want %q", vmeta.logLevel, tc.wantLogLevel)
+			}
+			if tc.wantErrContains == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrContains)
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+			}
+			if jerr.Code != jsonrpc.CodeInvalidParams {
+				t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
+			}
+			if !strings.Contains(jerr.Message, tc.wantErrContains) {
+				t.Errorf("error message %q does not contain %q", jerr.Message, tc.wantErrContains)
+			}
+		})
+	}
+}
+
+func TestServerRequest_PerRequestAccessors(t *testing.T) {
+	// A request carrying the new-protocol _meta fields populates the
+	// accessors with values from _meta.
+	caps := &ClientCapabilities{Sampling: &SamplingCapabilities{}}
+	info := &Implementation{Name: "c", Version: "1"}
+	params := &CallToolParamsRaw{
+		Meta: Meta{
+			MetaKeyProtocolVersion:    protocolVersion20260728,
+			MetaKeyClientInfo:         info,
+			MetaKeyClientCapabilities: caps,
+		},
+		Name: "x",
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{Params: params}
+	if got := req.ProtocolVersion(); got != protocolVersion20260728 {
+		t.Errorf("ProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+	if got := req.ClientInfo(); got == nil || got.Name != "c" {
+		t.Errorf("ClientInfo = %+v, want Name=c", got)
+	}
+	if got := req.ClientCapabilities(); got == nil || got.Sampling == nil {
+		t.Errorf("ClientCapabilities = %+v, want non-nil Sampling", got)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_FromJSON(t *testing.T) {
+	// Values arriving over the wire are JSON maps; the accessors should
+	// re-decode them into typed Go values.
+	raw := json.RawMessage(`{
+		"_meta": {
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientInfo": {"name": "wire-client", "version": "9"},
+			"io.modelcontextprotocol/clientCapabilities": {"sampling": {}}
+		},
+		"name": "tool"
+	}`)
+	var params CallToolParamsRaw
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatal(err)
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{Params: &params}
+	if got, want := req.ProtocolVersion(), protocolVersion20260728; got != want {
+		t.Errorf("ProtocolVersion = %q, want %q", got, want)
+	}
+	gotInfo := req.ClientInfo()
+	wantInfo := &Implementation{Name: "wire-client", Version: "9"}
+	if diff := cmp.Diff(wantInfo, gotInfo); diff != "" {
+		t.Errorf("ClientInfo mismatch (-want +got):\n%s", diff)
+	}
+	gotCaps := req.ClientCapabilities()
+	if gotCaps == nil || gotCaps.Sampling == nil {
+		t.Errorf("ClientCapabilities = %+v, want non-nil Sampling", gotCaps)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_FallbackToInitializeParams(t *testing.T) {
+	// With no _meta on the request, accessors must fall back to the
+	// session's InitializeParams (the old-protocol path).
+	ss := &ServerSession{}
+	ss.state.InitializeParams = &InitializeParams{
+		ProtocolVersion: protocolVersion20251125,
+		ClientInfo:      &Implementation{Name: "old", Version: "0"},
+		Capabilities:    &ClientCapabilities{Elicitation: &ElicitationCapabilities{}},
+	}
+	req := &ServerRequest[*CallToolParamsRaw]{
+		Session: ss,
+		Params:  &CallToolParamsRaw{Name: "x"},
+	}
+	if got, want := req.ProtocolVersion(), protocolVersion20251125; got != want {
+		t.Errorf("ProtocolVersion fallback = %q, want %q", got, want)
+	}
+	if got := req.ClientInfo(); got == nil || got.Name != "old" {
+		t.Errorf("ClientInfo fallback = %+v, want Name=old", got)
+	}
+	if got := req.ClientCapabilities(); got == nil || got.Elicitation == nil {
+		t.Errorf("ClientCapabilities fallback = %+v, want non-nil Elicitation", got)
+	}
+}
+
+func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
+	// With no _meta and no session, accessors return zero values.
+	req := &ServerRequest[*CallToolParamsRaw]{
+		Params: &CallToolParamsRaw{Name: "x"},
+	}
+	if got := req.ProtocolVersion(); got != "" {
+		t.Errorf("ProtocolVersion = %q, want empty", got)
+	}
+	if got := req.ClientInfo(); got != nil {
+		t.Errorf("ClientInfo = %+v, want nil", got)
+	}
+	if got := req.ClientCapabilities(); got != nil {
+		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
+func TestImplementationDescriptionJSON(t *testing.T) {
+	impl := &Implementation{
+		Name:        "greeter",
+		Title:       "Greeter",
+		Description: "Example server for greeting tools",
+		Version:     "v1.0.0",
+	}
+	got, err := json.Marshal(impl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"name":"greeter","title":"Greeter","description":"Example server for greeting tools","version":"v1.0.0"}`
+	if string(got) != want {
+		t.Fatalf("Implementation JSON = %s, want %s", got, want)
+	}
+
+	var roundTrip Implementation
+	if err := json.Unmarshal(got, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(impl, &roundTrip); diff != "" {
+		t.Fatalf("Implementation round trip mismatch (-want +got):\n%s", diff)
+	}
+
+	got, err = json.Marshal(&Implementation{Name: "greeter", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "description") {
+		t.Fatalf("empty description should be omitted, got %s", got)
+	}
+}
+
 // TODO(v0.3.0): rewrite this test.
 // func TestToolValidate(t *testing.T) {
 // 	// Check that the tool returned from NewServerTool properly validates its input schema.

@@ -2,6 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//lint:file-ignore SA1019 tests exercise deprecated SEP-2577 sampling APIs.
+
 package mcp
 
 // TODO: move other sampling-related tests to this file.

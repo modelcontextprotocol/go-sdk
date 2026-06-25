@@ -2,6 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//lint:file-ignore SA1019 examples exercise deprecated SEP-2577 APIs (roots, sampling) for demonstration.
+
 package mcp_test
 
 import (

@@ -33,15 +33,23 @@ contains feature documentation, mapping the MCP spec to the packages above.
 
 The following table shows which versions of the Go SDK support which versions of the MCP specification:
 
-| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                            |
-|-----------------|-------------------|----------------------------------------------------|
-| v1.4.0+         | 2025-11-25\*      | 2025-11-25\*, 2025-06-18, 2025-03-26, 2024-11-05   |
-| v1.2.0 - v1.3.1 | 2025-11-25\*\*    | 2025-11-25\*\*, 2025-06-18, 2025-03-26, 2024-11-05 |
-| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05                 |
+| SDK Version     | Latest MCP Spec   | All Supported MCP Specs                                          |
+|-----------------|-------------------|------------------------------------------------------------------|
+| v1.7.0+         | 2026-07-28       | 2026-07-28, 2025-11-25\*, 2025-06-18, 2025-03-26, 2024-11-05    |
+| v1.4.0 - v1.6.1 | 2025-11-25\*      | 2025-11-25\*, 2025-06-18, 2025-03-26, 2024-11-05                 |
+| v1.2.0 - v1.3.1 | 2025-11-25\*\*    | 2025-11-25\*\*, 2025-06-18, 2025-03-26, 2024-11-05               |
+| v1.0.0 - v1.1.0 | 2025-06-18        | 2025-06-18, 2025-03-26, 2024-11-05                               |
 
 \* Client side OAuth has experimental support.
 
 \*\* Partial support for 2025-11-25 (client side OAuth and Sampling with tools not available).
+
+The roots, sampling, and logging features are deprecated as of protocol version
+2026-07-28 by
+[SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging).
+The SDK continues to support them for compatibility during the deprecation
+window (at least twelve months). See the individual feature documentation for
+migration guidance.
 
 New releases of the SDK target only supported versions of Go. See
 https://go.dev/doc/devel/release#policy for more information.

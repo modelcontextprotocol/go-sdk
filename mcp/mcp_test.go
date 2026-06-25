@@ -2,6 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//lint:file-ignore SA1019 tests exercise deprecated SEP-2577 APIs (roots, sampling, logging).
+
 package mcp
 
 import (
@@ -12,6 +14,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -24,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -166,7 +171,10 @@ func TestEndToEnd(t *testing.T) {
 		c.AddRoots(&Root{URI: "file://" + rootAbs})
 
 		// Connect the client.
-		cs, err := c.Connect(ctx, ct, nil)
+		//
+		// Pin the session to 2025-11-25 so the legacy
+		// semantics apply.
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -206,7 +214,7 @@ func TestEndToEnd(t *testing.T) {
 					Role:    "user",
 				}},
 			}
-			if diff := cmp.Diff(wantReview, gotReview); diff != "" {
+			if diff := cmp.Diff(wantReview, gotReview, ctrCmpOpts...); diff != "" {
 				t.Errorf("prompts/get 'code_review' mismatch (-want +got):\n%s", diff)
 			}
 
@@ -753,7 +761,10 @@ func TestMiddleware(t *testing.T) {
 	c.AddSendingMiddleware(traceCalls[*ClientSession](&cbuf, "S1"), traceCalls[*ClientSession](&cbuf, "S2"))
 	c.AddReceivingMiddleware(traceCalls[*ClientSession](&cbuf, "R1"), traceCalls[*ClientSession](&cbuf, "R2"))
 
-	cs, err := c.Connect(ctx, ct, nil)
+	// Pin to 2025-11-25 because the test's expected wire sequence asserts
+	// the legacy initialize / notifications/initialized handshake, which
+	// 2026-07-28 replaces with server/discover.
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1898,7 +1909,10 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
 		}
 		c := NewClient(testImpl, clientOpts)
-		cs, err := c.Connect(ctx, ct, nil)
+		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
+		// in 2026-07-28, so keepalive is only meaningful on legacy protocol
+		// versions.
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1915,6 +1929,82 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		got := buf.String() // slog serializes Write calls internally
 		if !strings.Contains(got, "keepalive ping failed") {
 			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		}
+	})
+}
+
+// scriptedKeepaliveSession is a keepaliveSession test double whose Ping
+// returns errors from a script (one entry consumed per call; the last entry
+// repeats once exhausted), and records how many times Close was called. Ping
+// returns immediately so the keepalive loop's pace is driven purely by the
+// ticker, making the test deterministic under synctest.
+type scriptedKeepaliveSession struct {
+	pingErrs   []error
+	pingCalls  atomic.Int64
+	closeCalls atomic.Int64
+}
+
+func (s *scriptedKeepaliveSession) Ping(context.Context, *PingParams) error {
+	n := int(s.pingCalls.Add(1)) - 1
+	if n >= len(s.pingErrs) {
+		n = len(s.pingErrs) - 1
+	}
+	return s.pingErrs[n]
+}
+
+func (s *scriptedKeepaliveSession) Close() error {
+	s.closeCalls.Add(1)
+	return nil
+}
+
+// TestStartKeepalive_FailureThreshold verifies that the session is kept alive
+// across consecutive ping failures below the threshold and only closed once the
+// threshold is reached.
+func TestStartKeepalive_FailureThreshold(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		sess := &scriptedKeepaliveSession{pingErrs: []error{errors.New("boom")}}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		var cancel context.CancelFunc
+		startKeepalive(sess, interval, 3, &cancel, logger)
+		defer cancel()
+
+		// After two ticks → two failures, still below threshold 3: not closed.
+		time.Sleep(2*interval + interval/2)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 0 {
+			t.Fatalf("session closed below threshold: closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
+		}
+
+		// Third tick → third failure reaches threshold: session closed.
+		time.Sleep(interval)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 1 {
+			t.Fatalf("expected one Close at threshold, got closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
+		}
+	})
+}
+
+// TestStartKeepalive_SuccessResetsFailures verifies that a successful ping
+// resets the consecutive-failure counter, so an isolated failure between
+// successes never accumulates toward the threshold.
+func TestStartKeepalive_SuccessResetsFailures(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		// fail, success, fail, fail, then success (the tail repeats): the run
+		// never has 3 consecutive failures, so the session is never closed.
+		sess := &scriptedKeepaliveSession{pingErrs: []error{
+			errors.New("boom"), nil, errors.New("boom"), errors.New("boom"), nil,
+		}}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		var cancel context.CancelFunc
+		startKeepalive(sess, interval, 3, &cancel, logger)
+		defer cancel()
+
+		time.Sleep(6 * interval)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 0 {
+			t.Fatalf("session closed despite a success resetting the counter: closeCalls=%d (pingCalls=%d)", got, sess.pingCalls.Load())
 		}
 	})
 }
@@ -2371,7 +2461,778 @@ func TestSetErrorPreservesContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmp.AllowUnexported(CallToolResult{})}
+var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
+
+// runSubscriptionsListenTest exercises the SEP-2575 auto-listen flow end-to-end
+// against the supplied transport pair. It captures every notification and the
+// acknowledgment the client sees, then asserts:
+//
+//   - the auto-listen issued by Client.Connect is acknowledged with a tagged
+//     subscription ID;
+//   - tool and prompt list-changed notifications are delivered to the matching
+//     handlers, each carrying the same subscription ID as the ack;
+//   - the subscription persists across multiple unrelated changes;
+//   - cs.Close() ends the subscription and further changes don't deliver.
+func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct Transport, events chan subListenEvent) {
+	t.Helper()
+
+	ctx, topCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer topCancel()
+
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	waitFor := func(kind string) subListenEvent {
+		t.Helper()
+		select {
+		case e := <-events:
+			if e.kind != kind {
+				t.Fatalf("got event %q (id=%s), want kind %q", e.kind, e.id, kind)
+			}
+			return e
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %q event", kind)
+			return subListenEvent{}
+		}
+	}
+	expectNoEvent := func(d time.Duration) {
+		t.Helper()
+		select {
+		case e := <-events:
+			t.Fatalf("unexpected event %q (id=%s)", e.kind, e.id)
+		case <-time.After(d):
+		}
+	}
+
+	ack := waitFor("ack")
+	if ack.id == "" {
+		t.Fatalf("acknowledgment missing subscription ID")
+	}
+
+	server.AddTool(&Tool{Name: "t2", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	if e := waitFor("tool"); e.id != ack.id {
+		t.Errorf("first tool notif id = %s, want %s", e.id, ack.id)
+	}
+
+	server.AddPrompt(&Prompt{Name: "p2"}, nil)
+	if e := waitFor("prompt"); e.id != ack.id {
+		t.Errorf("first prompt notif id = %s, want %s", e.id, ack.id)
+	}
+
+	server.AddTool(&Tool{Name: "t3", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	if e := waitFor("tool"); e.id != ack.id {
+		t.Errorf("second tool notif id = %s, want %s", e.id, ack.id)
+	}
+	server.AddPrompt(&Prompt{Name: "p3"}, nil)
+	if e := waitFor("prompt"); e.id != ack.id {
+		t.Errorf("second prompt notif id = %s, want %s", e.id, ack.id)
+	}
+	expectNoEvent(notificationDelay * 5)
+
+	cs.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	server.AddTool(&Tool{Name: "t4", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	server.AddPrompt(&Prompt{Name: "p4"}, nil)
+	expectNoEvent(notificationDelay * 20)
+}
+
+type subListenEvent struct {
+	kind string // "ack", "tool", "prompt"
+	id   string // subscription ID from _meta, stringified for cross-encoding equality
+}
+
+// newSubListenClient returns a client wired to push every ack and every
+// list-changed notification it receives into events, tagged with the kind
+// and the subscription ID extracted from _meta.
+func newSubListenClient(events chan subListenEvent) *Client {
+	asEvent := func(kind string, raw any) subListenEvent {
+		return subListenEvent{kind, fmt.Sprint(raw)}
+	}
+	c := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(_ context.Context, req *ToolListChangedRequest) {
+			events <- asEvent("tool", req.Params.Meta[MetaKeySubscriptionID])
+		},
+		PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
+			events <- asEvent("prompt", req.Params.Meta[MetaKeySubscriptionID])
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- asEvent("ack", cr.Params.Meta[MetaKeySubscriptionID])
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	return c
+}
+
+func newSubListenServer() *Server {
+	s := NewServer(testImpl, nil)
+	AddTool(s, &Tool{Name: "t1"}, sayHi)
+	s.AddPrompt(&Prompt{Name: "p1"}, nil)
+	return s
+}
+
+// TestSubscriptionsListen_InMemory exercises the listen flow over the
+// session-shared in-memory transport (semantically equivalent to STDIO).
+// Cancellation here propagates via notifications/cancelled.
+func TestSubscriptionsListen_InMemory(t *testing.T) {
+	events := make(chan subListenEvent, 64)
+	server := newSubListenServer()
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+	runSubscriptionsListenTest(t, newSubListenClient(events), server, ct, events)
+}
+
+// TestSubscriptionsListen_Streamable exercises the listen flow over a
+// stateless HTTP server (SEP-2575). Each listen rides its own SSE response
+// stream; cs.Close() tears it down.
+func TestSubscriptionsListen_Streamable(t *testing.T) {
+	events := make(chan subListenEvent, 64)
+	server := newSubListenServer()
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+	runSubscriptionsListenTest(t, newSubListenClient(events), server,
+		&StreamableClientTransport{Endpoint: httpServer.URL}, events)
+}
+
+// TestSubscriptionsListen_NoHandlersNoListen verifies that a new-protocol
+// client without any list-changed handlers registered does not open an
+// auto-listen on connect, and therefore does not receive any acknowledgment
+// or downstream notifications.
+func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	events := make(chan subListenEvent, 8)
+	server := newSubListenServer()
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				events <- subListenEvent{"ack", ""}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	server.AddTool(&Tool{Name: "t2", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+
+	select {
+	case e := <-events:
+		t.Fatalf("unexpected event %q on no-handler client", e.kind)
+	case <-time.After(notificationDelay * 10):
+	}
+}
+
+// resourceSubServer builds a server that advertises resource subscriptions
+// and records every Subscribe/Unsubscribe handler invocation through chans.
+func resourceSubServer(t *testing.T, subCh, unsubCh chan string) *Server {
+	t.Helper()
+	s := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler: func(_ context.Context, r *SubscribeRequest) error {
+			subCh <- r.Params.URI
+			return nil
+		},
+		UnsubscribeHandler: func(_ context.Context, r *UnsubscribeRequest) error {
+			unsubCh <- r.Params.URI
+			return nil
+		},
+	})
+	s.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+	return s
+}
+
+// resourceSubEvent is one delivered notifications/resources/updated.
+type resourceSubEvent struct {
+	uri string
+	id  string // _meta subscription ID, stringified
+}
+
+// TestResourceSubscriptionsSEP2575_Streamable verifies the Subscribe ->
+// ResourceUpdated path on a stateless Streamable HTTP server.
+//
+// Caveat: per-subscription Unsubscribe is intentionally NOT verified here.
+// In stateless Streamable HTTP mode the subscriptions/listen handler blocks
+// on its request context, and neither the HTTP POST disconnect nor the
+// separate notifications/cancelled POST currently propagates to that
+// handler's context. The handler only unwinds when the server next attempts
+// a write to the (now-dead) SSE stream and the writeErr branch in the
+// jsonrpc2 layer cancels the in-flight request. To keep the test
+// hermetic we therefore trigger a write at the end by adding a resource,
+// which fires notifications/resources/list_changed on the auto-listen path
+// (if any) and on the per-URI listen, causing the listen handler to unwind.
+// The spec-correct fix is to plumb the POST's request context down to the
+// subscriptionsListen handler so HTTP disconnect is observed directly; this
+// is tracked separately.
+func TestResourceSubscriptions_Streamable(t *testing.T) {
+
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+	events := make(chan resourceSubEvent, 16)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			id := ""
+			if req.Params != nil && req.Params.Meta != nil {
+				id = fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])
+			}
+			events <- resourceSubEvent{uri: req.Params.URI, id: id}
+		},
+	})
+	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("subscribe r1: %v", err)
+	}
+	select {
+	case got := <-subCh:
+		if got != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", got, "file:///r1")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for SubscribeHandler")
+	}
+
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	select {
+	case e := <-events:
+		if e.uri != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", e.uri, "file:///r1")
+		}
+		if e.id == "" || e.id == "<nil>" {
+			t.Fatalf("missing subscription ID on update (got %q)", e.id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for resource update")
+	}
+
+	// See test header comment for the explanation of this teardown ritual:
+	// close the client, then drop server-side TCP, then drive a write that
+	// will fail (any extra ResourceUpdated for our URI), to unblock the
+	// in-flight listen handler so httpServer.Close can return.
+	_ = cs.Close()
+	httpServer.CloseClientConnections()
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	httpServer.Close()
+}
+
+// TestResourceSubscriptions_InMemory mirrors TestResourceSubscriptions_Streamable
+// over an in-memory (stdio-equivalent) transport: the per-URI Subscribe path
+// uses notifications/cancelled rather than HTTP disconnect for teardown.
+func TestResourceSubscriptions_InMemory(t *testing.T) {
+
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+	events := make(chan resourceSubEvent, 16)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			id := ""
+			if req.Params != nil && req.Params.Meta != nil {
+				id = fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])
+			}
+			events <- resourceSubEvent{uri: req.Params.URI, id: id}
+		},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("subscribe r1: %v", err)
+	}
+	waitURI := func(ch chan string, want string) {
+		t.Helper()
+		select {
+		case got := <-ch:
+			if got != want {
+				t.Fatalf("got URI %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for URI %q", want)
+		}
+	}
+	waitURI(subCh, "file:///r1")
+
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	select {
+	case e := <-events:
+		if e.uri != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", e.uri, "file:///r1")
+		}
+		if e.id == "" || e.id == "<nil>" {
+			t.Fatalf("missing subscription ID on update (got %q)", e.id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for resource update")
+	}
+
+	// On stdio/in-memory, Unsubscribe sends notifications/cancelled which
+	// reaches the server preempter, cancels the listen handler ctx, and
+	// triggers the UnsubscribeHandler.
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("unsubscribe r1: %v", err)
+	}
+	waitURI(unsubCh, "file:///r1")
+
+	// Updates for an unsubscribed URI MUST NOT be delivered. Give the server
+	// a moment to process the cancellation first.
+	time.Sleep(50 * time.Millisecond)
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	select {
+	case e := <-events:
+		t.Fatalf("unexpected resource update after unsubscribe: %q (id=%s)", e.uri, e.id)
+	case <-time.After(notificationDelay * 10):
+	}
+}
+
+// TestResourceSubscriptions_Subscribe_Idempotent verifies that calling
+// Subscribe twice for the same URI in the same session is a no-op for the
+// second call: it returns nil without invoking SubscribeHandler again and
+// without opening a second listen stream.
+func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
+
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("first subscribe: %v", err)
+	}
+	select {
+	case got := <-subCh:
+		if got != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", got, "file:///r1")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first SubscribeHandler")
+	}
+
+	// Second Subscribe for the same URI returns nil and does NOT fire
+	// SubscribeHandler again.
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("second subscribe should be no-op, got error: %v", err)
+	}
+	select {
+	case got := <-subCh:
+		t.Fatalf("duplicate Subscribe should not re-invoke SubscribeHandler (got %q)", got)
+	case <-time.After(notificationDelay * 10):
+	}
+
+	// Subsequent Unsubscribe still works (verifies the URI is tracked
+	// correctly even though the second Subscribe was a no-op).
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	select {
+	case <-unsubCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for UnsubscribeHandler")
+	}
+}
+
+// TestResourceSubscriptions_MultipleURIs verifies that two concurrent
+// Subscribe calls on the same session each open their own independent listen
+// stream with a distinct subscription ID. Unsubscribing one does not affect
+// the other.
+func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
+
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+	events := make(chan resourceSubEvent, 16)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	server.AddResource(&Resource{Name: "r2", URI: "file:///r2"}, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			id := ""
+			if req.Params != nil && req.Params.Meta != nil {
+				id = fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])
+			}
+			events <- resourceSubEvent{uri: req.Params.URI, id: id}
+		},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("subscribe r1: %v", err)
+	}
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r2"}); err != nil {
+		t.Fatalf("subscribe r2: %v", err)
+	}
+
+	// Each Subscribe MUST fire its own SubscribeHandler invocation.
+	gotURIs := map[string]bool{}
+	for range 2 {
+		select {
+		case got := <-subCh:
+			gotURIs[got] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for SubscribeHandler")
+		}
+	}
+	if !gotURIs["file:///r1"] || !gotURIs["file:///r2"] {
+		t.Fatalf("missing SubscribeHandler invocation; got %v", gotURIs)
+	}
+
+	// Each update delivers exactly one event tagged with that URI's distinct
+	// subscription ID.
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	ev1 := <-events
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r2"})
+	ev2 := <-events
+	if ev1.uri != "file:///r1" || ev2.uri != "file:///r2" {
+		t.Fatalf("got URIs %q and %q, want r1 and r2", ev1.uri, ev2.uri)
+	}
+	if ev1.id == "" || ev2.id == "" {
+		t.Fatalf("missing subscription IDs: r1=%q r2=%q", ev1.id, ev2.id)
+	}
+	if ev1.id == ev2.id {
+		t.Fatalf("r1 and r2 should have distinct subscription IDs, both = %q", ev1.id)
+	}
+
+	// Unsubscribe r1 only. r2 keeps working.
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("unsubscribe r1: %v", err)
+	}
+	select {
+	case got := <-unsubCh:
+		if got != "file:///r1" {
+			t.Fatalf("got unsubscribe URI %q, want %q", got, "file:///r1")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for UnsubscribeHandler")
+	}
+	time.Sleep(50 * time.Millisecond) // let server-side cancellation settle
+
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r2"})
+
+	// Only the r2 update should arrive.
+	select {
+	case e := <-events:
+		if e.uri != "file:///r2" || e.id != ev2.id {
+			t.Fatalf("post-unsubscribe got %q (id=%s), want r2 (id=%s)", e.uri, e.id, ev2.id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for r2 update after r1 unsubscribe")
+	}
+	select {
+	case e := <-events:
+		t.Fatalf("unexpected event after r1 unsubscribe: %q (id=%s)", e.uri, e.id)
+	case <-time.After(notificationDelay * 10):
+	}
+
+	// Explicit Unsubscribe r2 to verify it still works independently.
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r2"}); err != nil {
+		t.Fatalf("unsubscribe r2: %v", err)
+	}
+	select {
+	case <-unsubCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for r2 UnsubscribeHandler")
+	}
+}
+
+// TestSubscriptionsListen_MultipleSessions verifies that two concurrent
+// client sessions on the same server are isolated: a list-changed
+// notification is fanned out to BOTH sessions, each with its own subscription
+// ID; closing one session does not affect deliveries to the other.
+func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
+
+	server := newSubListenServer()
+
+	// Open two clients on the same server.
+	open := func(t *testing.T) (*ClientSession, chan subListenEvent, *ServerSession) {
+		t.Helper()
+		events := make(chan subListenEvent, 16)
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(context.Background(), st, nil)
+		if err != nil {
+			t.Fatalf("server connect: %v", err)
+		}
+		c := newSubListenClient(events)
+		cs, err := c.Connect(context.Background(), ct,
+			&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		return cs, events, ss
+	}
+	csA, evA, ssA := open(t)
+	defer ssA.Close()
+	csB, evB, ssB := open(t)
+	defer ssB.Close()
+
+	waitFor := func(ch chan subListenEvent, kind string) subListenEvent {
+		t.Helper()
+		select {
+		case e := <-ch:
+			if e.kind != kind {
+				t.Fatalf("got event %q, want %q", e.kind, kind)
+			}
+			return e
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %q event", kind)
+			return subListenEvent{}
+		}
+	}
+	ackA := waitFor(evA, "ack")
+	ackB := waitFor(evB, "ack")
+	// Request IDs are per-connection, so both sessions may legitimately use
+	// the same ID number; we only require that each session's own
+	// notifications carry its own ack ID.
+
+	// A single change fans out to BOTH sessions, each tagged with that
+	// session's own ack ID.
+	server.AddTool(&Tool{Name: "t2", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	gotA := waitFor(evA, "tool")
+	gotB := waitFor(evB, "tool")
+	if gotA.id != ackA.id {
+		t.Errorf("session A: tool notif id=%s, want %s", gotA.id, ackA.id)
+	}
+	if gotB.id != ackB.id {
+		t.Errorf("session B: tool notif id=%s, want %s", gotB.id, ackB.id)
+	}
+
+	// Close A; B's subscription must keep delivering.
+	csA.Close()
+	time.Sleep(50 * time.Millisecond)
+	server.AddTool(&Tool{Name: "t3", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+	gotB2 := waitFor(evB, "tool")
+	if gotB2.id != ackB.id {
+		t.Errorf("session B after A closed: tool notif id=%s, want %s", gotB2.id, ackB.id)
+	}
+	select {
+	case e := <-evA:
+		t.Fatalf("session A unexpected event after Close: %q", e.kind)
+	case <-time.After(notificationDelay * 5):
+	}
+
+	csB.Close()
+}
+
+// TestSubscriptionsListen_ResourceListChanged covers the resources/list_changed
+// auto-listen branch (the other two list-changed types are covered by
+// runSubscriptionsListenTest, but resources is not).
+func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
+	events := make(chan subListenEvent, 16)
+
+	server := NewServer(testImpl, nil)
+	server.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	asEvent := func(kind string, raw any) subListenEvent {
+		return subListenEvent{kind, fmt.Sprint(raw)}
+	}
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceListChangedHandler: func(_ context.Context, req *ResourceListChangedRequest) {
+			id := any(nil)
+			if req.Params != nil && req.Params.Meta != nil {
+				id = req.Params.Meta[MetaKeySubscriptionID]
+			}
+			events <- asEvent("resource", id)
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- asEvent("ack", cr.Params.Meta[MetaKeySubscriptionID])
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	waitFor := func(kind string) subListenEvent {
+		t.Helper()
+		select {
+		case e := <-events:
+			if e.kind != kind {
+				t.Fatalf("got event %q, want %q", e.kind, kind)
+			}
+			return e
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %q", kind)
+			return subListenEvent{}
+		}
+	}
+	ack := waitFor("ack")
+	if ack.id == "" {
+		t.Fatal("acknowledgment missing subscription ID")
+	}
+	server.AddResource(&Resource{Name: "r2", URI: "file:///r2"}, nil)
+	got := waitFor("resource")
+	if got.id != ack.id {
+		t.Errorf("resource notif id=%s, want %s", got.id, ack.id)
+	}
+	cs.Close()
+}
+
+// TestSubscriptionsListen_DisconnectScrubsMaps verifies that closing a
+// session removes its entries from the server's three per-type subscription
+// maps via Server.disconnect.
+func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
+	events := make(chan subListenEvent, 16)
+	server := newSubListenServer()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	c := newSubListenClient(events)
+	cs, err := c.Connect(context.Background(), ct,
+		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	// Wait for the auto-listen to actually register on the server side.
+	select {
+	case e := <-events:
+		if e.kind != "ack" {
+			t.Fatalf("got %q, want ack", e.kind)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ack")
+	}
+
+	// Server should now have this session in tools+prompts maps (the fixture
+	// client opts in to both via newSubListenClient).
+	server.mu.Lock()
+	if _, ok := server.toolChangeSubscriptions[ss]; !ok {
+		server.mu.Unlock()
+		t.Fatal("session missing from toolChangeSubscriptions before close")
+	}
+	if _, ok := server.promptChangeSubscriptions[ss]; !ok {
+		server.mu.Unlock()
+		t.Fatal("session missing from promptChangeSubscriptions before close")
+	}
+	server.mu.Unlock()
+
+	cs.Close()
+	ss.Close()
+	// Closures complete asynchronously on the server side.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		server.mu.Lock()
+		_, inTool := server.toolChangeSubscriptions[ss]
+		_, inPrompt := server.promptChangeSubscriptions[ss]
+		_, inResource := server.resourceChangeSubscriptions[ss]
+		server.mu.Unlock()
+		if !inTool && !inPrompt && !inResource {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("subscription maps not scrubbed after Close: tool=%v prompt=%v resource=%v",
+				inTool, inPrompt, inResource)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestCustomMethods(t *testing.T) {
 	type searchParams struct {
