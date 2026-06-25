@@ -3336,3 +3336,42 @@ func TestAddCustomMethodRejectsStandardMethods(t *testing.T) {
 		}
 	})
 }
+
+// TestCallCustomMethodTypedNilParams exercises the typed-nil params path.
+// User param types embed ParamsBase, so the inherited isNil forwarder would
+// dereference a typed-nil outer if injectRequestMeta were called with it.
+// CallCustomMethod must allocate a fresh value before the meta-injection step.
+func TestCallCustomMethodTypedNilParams(t *testing.T) {
+	type pingParams struct{ ParamsBase }
+	type pingResult struct{ ResultBase }
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(s, "acme/ping",
+		func(ctx context.Context, ss *ServerSession, p *pingParams) (*pingResult, error) {
+			return &pingResult{}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	var typedNil *pingParams
+	if _, err := CallCustomMethod[*pingParams, *pingResult](ctx, cs, "acme/ping", typedNil); err != nil {
+		t.Fatalf("CallCustomMethod with typed-nil params: %v", err)
+	}
+}

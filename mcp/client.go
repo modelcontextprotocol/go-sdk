@@ -515,7 +515,7 @@ func injectRequestMeta[T any, P interface {
 	Params
 }](cs *ClientSession, params P) P {
 	res := cs.state.InitializeResult
-	if params.isNil() {
+	if params == nil {
 		params = new(T)
 	}
 	m := params.GetMeta()
@@ -1665,6 +1665,9 @@ func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	if !ok {
 		var zero R
 		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
+	}
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
 	}
 	return handleSend[R](ctx, method, &ClientRequest[P]{
 		Session: cs,
