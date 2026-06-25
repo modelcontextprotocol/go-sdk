@@ -741,13 +741,6 @@ type ParamsBase struct {
 
 func (*ParamsBase) isParams() {}
 
-// isNil reports whether the embedded ParamsBase pointer is nil. Custom
-// parameter types that embed [ParamsBase] inherit this method, which is
-// sufficient for the Params interface as long as callers already nil-check
-// the outer pointer before invoking it (see getRequestMeta).
-//
-// Concrete protocol params types in this package override isNil with their
-// own implementation that compares the outer pointer to nil.
 func (p *ParamsBase) isNil() bool { return p == nil }
 
 // RequestParams is a parameter (input) type for an MCP request.
