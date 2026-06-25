@@ -1405,6 +1405,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// 	return
 	// }
 
+	// Extract again the protcol version from the context to see what the client
+	// is advertising in the Mcp-Protocol-Version HTTP header.
+	headerVersion := protocolVersionFromContext(req.Context())
 	calls := make(map[jsonrpc.ID]struct{})
 	tokenInfo := auth.TokenInfoFromContext(req.Context())
 	isInitialize := false
@@ -1433,6 +1436,16 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				if err := internaljson.Unmarshal(jreq.Params, &params); err == nil {
 					initializeProtocolVersion = params.ProtocolVersion
 				}
+				if initializeProtocolVersion >= protocolVersion20251125 && headerVersion != initializeProtocolVersion {
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code: CodeHeaderMismatch,
+						Message: fmt.Sprintf(
+							"%s header %q does not match request %q",
+							protocolVersionHeader, headerVersion,
+							initializeProtocolVersion),
+					})
+					return
+				}
 			}
 			if jreq.Method == methodSubscriptionsListen {
 				isSubscriptionsListen = true
@@ -1449,9 +1462,6 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
-				// Extract again the protcol version from the context to see what the client
-				// is advertising in the Mcp-Protocol-Version HTTP header.
-				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
