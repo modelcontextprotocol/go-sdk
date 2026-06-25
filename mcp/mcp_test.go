@@ -2393,13 +2393,15 @@ func TestCustomMethods(t *testing.T) {
 	ctx := context.Background()
 	s := NewServer(testImpl, nil)
 
-	AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
+	if err := AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
 		hits := []string{"result for " + params.Query}
 		return &searchResult{
 			Hits:  hits,
 			Total: len(hits),
 		}, nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ct, st := NewInMemoryTransports()
 	ss, err := s.Connect(ctx, st, nil)
@@ -2409,7 +2411,9 @@ func TestCustomMethods(t *testing.T) {
 	t.Cleanup(func() { _ = ss.Close() })
 
 	c := NewClient(testImpl, nil)
-	callSearch := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search")
+	if err := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search"); err != nil {
+		t.Fatal(err)
+	}
 
 	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
@@ -2417,7 +2421,7 @@ func TestCustomMethods(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 
-	// Test raw JSON-RPC call
+	// Test raw JSON-RPC call.
 	var result1 searchResult
 	if err := callCustom(ctx, cs.getConn(), "acme/search", &searchParams{Query: "hello", Limit: 10}, &result1); err != nil {
 		t.Fatal(err)
@@ -2429,15 +2433,45 @@ func TestCustomMethods(t *testing.T) {
 		t.Errorf("raw call: unexpected total: %d", result1.Total)
 	}
 
-	// Test typed caller
-	result2, err := callSearch(ctx, cs, &searchParams{Query: "hello"})
+	// Test the typed CallCustomMethod helper.
+	result2, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/search", &searchParams{Query: "world"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result2.Hits) != 1 || result2.Hits[0] != "result for hello" {
-		t.Errorf("typed call: unexpected hits: %v", result2.Hits)
+	if len(result2.Hits) != 1 || result2.Hits[0] != "result for world" {
+		t.Errorf("CallCustomMethod: unexpected hits: %v", result2.Hits)
 	}
 	if result2.Total != 1 {
-		t.Errorf("typed call: unexpected total: %d", result2.Total)
+		t.Errorf("CallCustomMethod: unexpected total: %d", result2.Total)
 	}
+
+	// CallCustomMethod must reject methods that were never registered.
+	if _, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/unregistered", &searchParams{Query: "x"}); err == nil {
+		t.Error("CallCustomMethod: expected error for unregistered method, got nil")
+	}
+}
+
+func TestAddCustomMethodRejectsStandardMethods(t *testing.T) {
+	type params struct{ ParamsBase }
+	type result struct{ ResultBase }
+
+	t.Run("server", func(t *testing.T) {
+		s := NewServer(testImpl, nil)
+		err := AddReceivingCustomMethod(s, "tools/call",
+			func(ctx context.Context, ss *ServerSession, p *params) (*result, error) {
+				return &result{}, nil
+			})
+		if err == nil {
+			t.Fatal("AddReceivingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
+
+	t.Run("client", func(t *testing.T) {
+		c := NewClient(testImpl, nil)
+		if err := AddSendingCustomMethod[*params, *result](c, "tools/call"); err == nil {
+			t.Fatal("AddSendingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
 }

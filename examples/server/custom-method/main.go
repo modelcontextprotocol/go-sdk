@@ -59,7 +59,7 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "latin-server", Version: "v1.0.0"}, nil)
 
-	mcp.AddReceivingCustomMethod(server, "latin/translate",
+	if err := mcp.AddReceivingCustomMethod(server, "latin/translate",
 		func(ctx context.Context, ss *mcp.ServerSession, params *TranslateParams) (*TranslateResult, error) {
 			key := strings.ToLower(strings.TrimSpace(params.Text))
 			latin, ok := translations[key]
@@ -67,7 +67,9 @@ func main() {
 				latin = fmt.Sprintf("[unknown: %q — try: %s]", params.Text, knownPhrases())
 			}
 			return &TranslateResult{Latin: latin}, nil
-		})
+		}); err != nil {
+		log.Fatal(err)
+	}
 
 	ct, st := mcp.NewInMemoryTransports()
 
@@ -78,7 +80,9 @@ func main() {
 	defer ss.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "latin-client", Version: "v1.0.0"}, nil)
-	translate := mcp.AddSendingCustomMethod[*TranslateParams, *TranslateResult](client, "latin/translate")
+	if err := mcp.AddSendingCustomMethod[*TranslateParams, *TranslateResult](client, "latin/translate"); err != nil {
+		log.Fatal(err)
+	}
 
 	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
@@ -88,7 +92,8 @@ func main() {
 
 	phrases := []string{"Hello", "Seize the day", "Peace", "Truth", "I came I saw I conquered"}
 	for _, phrase := range phrases {
-		result, err := translate(ctx, cs, &TranslateParams{Text: phrase})
+		result, err := mcp.CallCustomMethod[*TranslateParams, *TranslateResult](
+			ctx, cs, "latin/translate", &TranslateParams{Text: phrase})
 		if err != nil {
 			log.Fatalf("translate %q: %v", phrase, err)
 		}

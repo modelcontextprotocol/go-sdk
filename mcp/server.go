@@ -52,9 +52,13 @@ type Server struct {
 	sessions                []*ServerSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
-	customMethods           map[string]methodInfo
-	resourceSubscriptions   map[string]map[*ServerSession]bool // uri -> session -> bool
-	pendingNotifications    map[string]*time.Timer             // notification name -> timer for pending notification send
+	// receiveMethods is the merged map of methods this server may receive
+	// from a client: it always contains the standard server methods (from
+	// serverMethodInfos) plus any custom methods registered via
+	// [AddReceivingCustomMethod].
+	receiveMethods        map[string]methodInfo
+	resourceSubscriptions map[string]map[*ServerSession]bool // uri -> session -> bool
+	pendingNotifications  map[string]*time.Timer             // notification name -> timer for pending notification send
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -185,6 +189,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
+	receiveMethods := make(map[string]methodInfo, len(serverMethodInfos))
+	maps.Copy(receiveMethods, serverMethodInfos)
+
 	return &Server{
 		impl:                    impl,
 		opts:                    opts,
@@ -196,7 +203,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ServerSession],
 		resourceSubscriptions:   make(map[string]map[*ServerSession]bool),
 		pendingNotifications:    make(map[string]*time.Timer),
-		customMethods:           make(map[string]methodInfo),
+		receiveMethods:          receiveMethods,
 	}
 }
 
@@ -1425,13 +1432,9 @@ func initializeMethodInfo() methodInfo {
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
 
 func (s *Server) receivingMethodInfos() map[string]methodInfo {
-	if len(s.customMethods) == 0 {
-		return serverMethodInfos
-	}
-	infos := make(map[string]methodInfo, len(serverMethodInfos)+len(s.customMethods))
-	maps.Copy(infos, serverMethodInfos)
-	maps.Copy(infos, s.customMethods)
-	return infos
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.receiveMethods
 }
 
 func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo {
@@ -1668,20 +1671,31 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 //	    Hits []string `json:"hits"`
 //	}
 //
-//	mcp.AddReceivingCustomMethod(server, "acme/search",
+//	if err := mcp.AddReceivingCustomMethod(server, "acme/search",
 //	    func(ctx context.Context, ss *mcp.ServerSession, params *SearchParams) (*SearchResult, error) {
 //	        return &SearchResult{Hits: []string{"result"}}, nil
-//	    })
+//	    }); err != nil {
+//	    return err
+//	}
+//
+// AddReceivingCustomMethod returns an error if method is the name of a
+// standard MCP method. Registering the same custom method twice replaces the
+// previous handler.
 func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
 	s *Server,
 	method string,
 	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
-) {
+) error {
+	if _, ok := serverMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddReceivingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
 	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
 		return handler(ctx, req.Session, req.Params)
 	})
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.customMethods[method] = newServerMethodInfo(typed, missingParamsOK)
+	s.receiveMethods[method] = newServerMethodInfo(typed, missingParamsOK)
+	return nil
 }
