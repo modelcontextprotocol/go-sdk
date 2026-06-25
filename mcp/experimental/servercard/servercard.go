@@ -5,6 +5,8 @@
 package servercard
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,11 +97,12 @@ type ServerCard struct {
 }
 
 type buildOptions struct {
-	name       string
-	schema     string
-	remotes    []Remote
-	repository *Repository
-	meta       map[string]any
+	name        string
+	description string
+	schema      string
+	remotes     []Remote
+	repository  *Repository
+	meta        map[string]any
 }
 
 // BuildOption configures [BuildServerCard].
@@ -109,6 +112,13 @@ type BuildOption func(*buildOptions)
 func WithName(name string) BuildOption {
 	return func(o *buildOptions) {
 		o.name = name
+	}
+}
+
+// WithDescription sets the Server Card's short user-facing description.
+func WithDescription(description string) BuildOption {
+	return func(o *buildOptions) {
+		o.description = description
 	}
 }
 
@@ -143,10 +153,10 @@ func WithMeta(meta map[string]any) BuildOption {
 // BuildServerCard builds a Server Card from MCP implementation identity
 // metadata.
 //
-// The implementation provides the title, description, version, website URL, and
-// icons. The card name is supplied with [WithName] because MCP implementation
-// names are free-form while Server Card names must be reverse-DNS namespace/name
-// identifiers.
+// The implementation provides the title, version, website URL, and icons. The
+// card name is supplied with [WithName] because MCP implementation names are
+// free-form while Server Card names must be reverse-DNS namespace/name
+// identifiers. The card description is supplied with [WithDescription].
 func BuildServerCard(impl *mcp.Implementation, opts ...BuildOption) (*ServerCard, error) {
 	if impl == nil {
 		return nil, errors.New("implementation must not be nil")
@@ -163,14 +173,14 @@ func BuildServerCard(impl *mcp.Implementation, opts ...BuildOption) (*ServerCard
 	if impl.Version == "" {
 		return nil, errors.New("implementation version must be set to build a Server Card")
 	}
-	if impl.Description == "" {
-		return nil, errors.New("implementation description must be set to build a Server Card")
+	if cfg.description == "" {
+		return nil, errors.New("server card description must be set")
 	}
 	card := &ServerCard{
 		Schema:      cfg.schema,
 		Name:        cfg.name,
 		Title:       impl.Title,
-		Description: impl.Description,
+		Description: cfg.description,
 		Version:     impl.Version,
 		WebsiteURL:  impl.WebsiteURL,
 		Icons:       append([]Icon(nil), impl.Icons...),
@@ -254,8 +264,8 @@ func (c *ServerCard) Validate() error {
 func Handler(card *ServerCard) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setDiscoveryHeaders(w.Header())
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -268,9 +278,18 @@ func Handler(card *ServerCard) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		sum := sha256.Sum256(body)
+		etag := `"` + hex.EncodeToString(sum[:]) + `"`
 		w.Header().Set("Content-Type", MediaType)
+		w.Header().Set("ETag", etag)
+		if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(body)
+		}
 	})
 }
 
@@ -288,6 +307,25 @@ func setDiscoveryHeaders(h http.Header) {
 	h.Set("Access-Control-Allow-Methods", http.MethodGet)
 	h.Set("Access-Control-Allow-Headers", "Content-Type")
 	h.Set("Cache-Control", "public, max-age=3600")
+}
+
+func ifNoneMatchMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.HasPrefix(candidate, "W/") || strings.HasPrefix(candidate, "w/") {
+			candidate = strings.TrimSpace(candidate[2:])
+		}
+		if candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func isVersionRange(version string) bool {
