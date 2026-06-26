@@ -740,6 +740,83 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 	}
 }
 
+// TestStreamableClientReconnectTransientErrors verifies that a transient HTTP
+// error on an SSE reconnect is retried rather than breaking the session (#683).
+func TestStreamableClientReconnectTransientErrors(t *testing.T) {
+	const tick = 10 * time.Millisecond
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(tick))
+
+	ctx := context.Background()
+
+	var callID atomic.Int64
+	var sentTransient atomic.Bool
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"GET", "123", "", ""}: {
+				status: http.StatusMethodNotAllowed,
+			},
+			{"POST", "123", methodCallTool, ""}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					callID.Store(r.ID.Raw().(int64))
+					return "id: evt_1\n" +
+						`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"progress"}}` +
+						"\n\n", http.StatusOK
+				},
+			},
+			{"GET", "123", "", "evt_1"}: {
+				header: header{
+					"Content-Type": "text/event-stream",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					if !sentTransient.Swap(true) {
+						return "", http.StatusServiceUnavailable
+					}
+					body := jsonBody(t, resp(callID.Load(), &CallToolResult{Content: []Content{}}, nil))
+					return "id: evt_2\ndata: " + body + "\n\n", http.StatusOK
+				},
+			},
+			{"DELETE", "123", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "test"}); err != nil {
+		t.Fatalf("CallTool failed after transient reconnect error: %v (session should survive)", err)
+	}
+	if !sentTransient.Load() {
+		t.Error("expected a transient error to be exercised on reconnect")
+	}
+}
+
 // TestStreamableClientRetryWithoutProgress verifies that the client fails after
 // exceeding the retry limit when no progress is made (Last-Event-ID does not advance).
 // This tests the fix for issue #679.

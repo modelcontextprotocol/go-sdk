@@ -2432,21 +2432,36 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		}
 
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
-		if err != nil {
-			// If the client didn't cancel this request, any failure to execute it
-			// breaks the logical MCP session.
-			if ctx.Err() == nil {
-				// All reconnection attempts failed: fail the connection.
-				c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+		for {
+			newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
+			if err != nil {
+				// If the client didn't cancel this request, any failure to execute it
+				// breaks the logical MCP session.
+				if ctx.Err() == nil {
+					// All reconnection attempts failed: fail the connection.
+					c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+				}
+				return
 			}
-			return
-		}
 
-		resp = newResp
-		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-			c.fail(err)
-			return
+			if err := c.checkResponse(ctx, requestSummary, newResp); err != nil {
+				if errors.Is(err, jsonrpc2.ErrRejected) {
+					retriesWithoutProgress++
+					if retriesWithoutProgress > c.maxRetries {
+						if ctx.Err() == nil {
+							c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
+						}
+						return
+					}
+					reconnectDelay = 0
+					continue
+				}
+				c.fail(err)
+				return
+			}
+
+			resp = newResp
+			break
 		}
 	}
 }
