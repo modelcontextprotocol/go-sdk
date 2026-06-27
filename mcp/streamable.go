@@ -51,6 +51,7 @@ type StreamableHTTPHandler struct {
 	onTransportDeletion func(sessionID string) // for testing
 
 	mu       sync.Mutex
+	closed   bool
 	sessions map[string]*sessionInfo // keyed by session ID
 }
 
@@ -219,27 +220,30 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 	return h
 }
 
-// closeAll closes all ongoing sessions, for tests.
+// Close closes the handler, closing and removing all connected sessions,
+// and preventing new sessions from being added.
 //
-// TODO(rfindley): investigate the best API for callers to configure their
-// session lifecycle. (?)
-//
-// Should we allow passing in a session store? That would allow the handler to
-// be stateless.
-func (h *StreamableHTTPHandler) closeAll() {
-	// TODO: if we ever expose this outside of tests, we'll need to do better
-	// than simply collecting sessions while holding the lock: we need to prevent
-	// new sessions from being added.
-	//
-	// Currently, sessions remove themselves from h.sessions when closed, so we
-	// can't call Close while holding the lock.
+// Close is idempotent.
+func (h *StreamableHTTPHandler) Close() error {
 	h.mu.Lock()
-	sessionInfos := slices.Collect(maps.Values(h.sessions))
-	h.sessions = nil
-	h.mu.Unlock()
-	for _, s := range sessionInfos {
-		s.session.Close()
+	if h.closed {
+		h.mu.Unlock()
+		return nil
 	}
+	h.closed = true
+	sessionInfos := slices.Collect(maps.Values(h.sessions))
+	h.sessions = make(map[string]*sessionInfo)
+	h.mu.Unlock()
+
+	for _, info := range sessionInfos {
+		info.session.Close()
+	}
+	return nil
+}
+
+// closeAll closes all ongoing sessions, for tests.
+func (h *StreamableHTTPHandler) closeAll() {
+	_ = h.Close()
 }
 
 // disablelocalhostprotection is a compatibility parameter that allows to disable
@@ -306,6 +310,14 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
+	}
+
+	h.mu.Lock()
+	closed := h.closed
+	h.mu.Unlock()
+	if closed {
+		http.Error(w, "handler closed", http.StatusServiceUnavailable)
+		return
 	}
 
 	// [§2.7] of the spec (2025-06-18): validate the MCP-Protocol-Version
