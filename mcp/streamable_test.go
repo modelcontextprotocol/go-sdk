@@ -641,6 +641,60 @@ func TestStreamableServerDisconnect(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTPHandlerClose(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := NewClient(testImpl, nil)
+	// Pin a pre-SEP-2575 protocol version so Connect performs a single
+	// legacy initialize handshake (one session). Under the modern protocol the
+	// client first issues a stateless server/discover probe, which—when the
+	// server falls back to the legacy handshake—transiently leaves an extra
+	// session and would make the exact count below nondeterministic. This test
+	// exercises Close, not protocol negotiation.
+	clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	handler.mu.Lock()
+	if len(handler.sessions) != 1 {
+		t.Fatalf("want 1 session before Close, got %d", len(handler.sessions))
+	}
+	handler.mu.Unlock()
+
+	if err := handler.Close(); err != nil {
+		t.Fatalf("Close() failed: %v", err)
+	}
+	if err := handler.Close(); err != nil {
+		t.Fatalf("second Close() failed: %v", err)
+	}
+
+	handler.mu.Lock()
+	if len(handler.sessions) != 0 {
+		t.Fatalf("want 0 sessions after Close, got %d", len(handler.sessions))
+	}
+	if !handler.closed {
+		t.Fatal("want handler.closed true after Close")
+	}
+	handler.mu.Unlock()
+
+	resp, err := http.Get(httpServer.URL)
+	if err != nil {
+		t.Fatalf("http.Get after Close failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("got status %d after Close, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
 func TestServerTransportCleanup(t *testing.T) {
 	nClient := 3
 
