@@ -39,6 +39,11 @@ type Client struct {
 	// serverMethodInfos) plus any custom methods registered via
 	// [AddSendingCustomMethod].
 	sendMethods map[string]methodInfo
+	// receiveMethods is the merged map of methods this client may receive from
+	// a server: it always contains the standard client methods (from
+	// clientMethodInfos) plus any custom methods registered via
+	// [AddClientReceivingCustomMethod].
+	receiveMethods map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -68,6 +73,9 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	sendMethods := make(map[string]methodInfo, len(serverMethodInfos))
 	maps.Copy(sendMethods, serverMethodInfos)
 
+	receiveMethods := make(map[string]methodInfo, len(clientMethodInfos))
+	maps.Copy(receiveMethods, clientMethodInfos)
+
 	c := &Client{
 		impl:                    impl,
 		opts:                    opts,
@@ -75,10 +83,13 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 		sendMethods:             sendMethods,
+		receiveMethods:          receiveMethods,
 	}
 	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
 		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
 	}
+	applyExtensionsToClient(c)
+	runExtensions(opts.Extensions, func(e Extension) func(*Client) error { return e.Client }, c)
 	return c
 }
 
@@ -204,6 +215,10 @@ type ClientOptions struct {
 	// reset" guidance, letting a transient miss pass without tearing down an
 	// otherwise live session. Has no effect unless KeepAlive is non-zero.
 	KeepAliveFailureThreshold int
+	// Extensions are applied to the client during [NewClient], after any
+	// globally registered extensions (see [RegisterExtension]). Per-client
+	// extensions override global ones for the same method names.
+	Extensions []Extension
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -1170,7 +1185,9 @@ func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
-	return clientMethodInfos
+	cs.client.mu.Lock()
+	defer cs.client.mu.Unlock()
+	return cs.client.receiveMethods
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
@@ -1673,4 +1690,36 @@ func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 		Session: cs,
 		Params:  params,
 	})
+}
+
+// AddClientReceivingCustomMethod registers a handler for a custom
+// (non-standard) JSON-RPC method that the client may receive from a server.
+//
+// When a server sends a request with the given method name, the params will be
+// unmarshaled into P, the handler will be called, and the returned R will be
+// marshaled as the JSON-RPC result.
+//
+// P and R must implement [Params] and [Result] respectively, which is most
+// easily done by embedding [ParamsBase] and [ResultBase].
+//
+// AddClientReceivingCustomMethod returns an error if method is the name of a
+// standard MCP method. Registering the same custom method twice replaces the
+// previous handler.
+func AddClientReceivingCustomMethod[P paramsPtr[T], R Result, T any](
+	c *Client,
+	method string,
+	handler func(ctx context.Context, cs *ClientSession, params P) (R, error),
+) error {
+	if _, ok := clientMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddClientReceivingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
+	typed := typedClientMethodHandler[P, R](func(ctx context.Context, req *ClientRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.receiveMethods[method] = newClientMethodInfo(typed, missingParamsOK)
+	return nil
 }

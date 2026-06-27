@@ -62,6 +62,11 @@ type Server struct {
 	// serverMethodInfos) plus any custom methods registered via
 	// [AddReceivingCustomMethod].
 	receiveMethods map[string]methodInfo
+	// sendMethods is the merged map of methods this server may send to a
+	// client: it always contains the standard client methods (from
+	// clientMethodInfos) plus any custom methods registered via
+	// [AddServerSendingCustomMethod].
+	sendMethods map[string]methodInfo
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -168,6 +173,10 @@ type ServerOptions struct {
 	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
+	// Extensions are applied to the server during [NewServer], after any
+	// globally registered extensions (see [RegisterExtension]). Per-server
+	// extensions override global ones for the same method names.
+	Extensions []Extension
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -211,6 +220,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	receiveMethods := make(map[string]methodInfo, len(serverMethodInfos))
 	maps.Copy(receiveMethods, serverMethodInfos)
 
+	sendMethods := make(map[string]methodInfo, len(clientMethodInfos))
+	maps.Copy(sendMethods, clientMethodInfos)
+
 	s := &Server{
 		impl:                        impl,
 		opts:                        opts,
@@ -226,8 +238,11 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceSubscriptions:       make(map[string]map[*ServerSession]jsonrpc.ID),
 		pendingNotifications:        make(map[string]*time.Timer),
 		receiveMethods:              receiveMethods,
+		sendMethods:                 sendMethods,
 	}
 	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	applyExtensionsToServer(s)
+	runExtensions(opts.Extensions, func(e Extension) func(*Server) error { return e.Server }, s)
 	return s
 }
 
@@ -1768,7 +1783,12 @@ func initializeMethodInfo() methodInfo {
 	return info
 }
 
-func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
+func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo {
+	s := ss.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sendMethods
+}
 
 func (s *Server) receivingMethodInfos() map[string]methodInfo {
 	s.mu.Lock()
@@ -2084,4 +2104,62 @@ func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
 	defer s.mu.Unlock()
 	s.receiveMethods[method] = newServerMethodInfo(typed, missingParamsOK)
 	return nil
+}
+
+// AddServerSendingCustomMethod registers a custom (non-standard) JSON-RPC
+// method that the server may send to clients.
+//
+// Registration is decoupled from invocation: extensions typically call this
+// during setup, while the actual call site uses [ServerCallCustomMethod].
+//
+//	if err := mcp.AddServerSendingCustomMethod[*PingParams, *PingResult](server, "acme/ping"); err != nil {
+//	    return err
+//	}
+//	// ... later, with a *ServerSession:
+//	result, err := mcp.ServerCallCustomMethod[*PingParams, *PingResult](
+//	    ctx, ss, "acme/ping", &PingParams{})
+//
+// AddServerSendingCustomMethod returns an error if method is the name of a
+// standard MCP method. Registering the same method twice replaces the
+// previous registration.
+func AddServerSendingCustomMethod[P paramsPtr[T], R Result, T any](
+	s *Server,
+	method string,
+) error {
+	if _, ok := clientMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddServerSendingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
+	mi := methodInfo{
+		newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		},
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendMethods[method] = mi
+	return nil
+}
+
+// ServerCallCustomMethod sends a custom (non-standard) JSON-RPC method to the
+// client and decodes the response into R.
+//
+// The method must have been registered on the session's server via
+// [AddServerSendingCustomMethod].
+func ServerCallCustomMethod[P paramsPtr[T], R Result, T any](
+	ctx context.Context,
+	ss *ServerSession,
+	method string,
+	params P,
+) (R, error) {
+	s := ss.server
+	s.mu.Lock()
+	_, ok := s.sendMethods[method]
+	s.mu.Unlock()
+	if !ok {
+		var zero R
+		return zero, fmt.Errorf("mcp: ServerCallCustomMethod: %q is not registered; call AddServerSendingCustomMethod first", method)
+	}
+	return handleSend[R](ctx, method, newServerRequest(ss, params))
 }
