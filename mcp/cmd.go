@@ -19,6 +19,10 @@ var defaultTerminateDuration = 5 * time.Second // mutable for testing
 // with it over stdin/stdout, using newline-delimited JSON.
 type CommandTransport struct {
 	Command *exec.Cmd
+	// MaxMessageBytes, if positive, rejects incoming JSON-RPC message payloads
+	// from the subprocess larger than this many bytes. The line ending is not
+	// counted.
+	MaxMessageBytes int64
 	// TerminateDuration controls how long Close waits after closing stdin
 	// for the process to exit before sending SIGTERM.
 	// If zero or negative, the default of 5s is used.
@@ -43,7 +47,7 @@ func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	if td <= 0 {
 		td = defaultTerminateDuration
 	}
-	return newIOConn(&pipeRWC{t.Command, stdout, stdin, td}), nil
+	return newIOConnWithOptions(&pipeRWC{t.Command, stdout, stdin, td}, t.MaxMessageBytes), nil
 }
 
 // A pipeRWC is an io.ReadWriteCloser that communicates with a subprocess over
