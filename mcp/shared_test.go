@@ -5,12 +5,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -180,6 +182,42 @@ func TestValidateRequestMeta(t *testing.T) {
 				t.Errorf("error message %q does not contain %q", jerr.Message, tc.wantErrContains)
 			}
 		})
+	}
+}
+
+func TestServerHandleNewProtocolNullID(t *testing.T) {
+	msg, err := jsonrpc.DecodeMessage([]byte(`{
+		"jsonrpc": "2.0",
+		"id": null,
+		"method": "completion/complete",
+		"params": {
+			"_meta": {
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientInfo": {"name": "repro", "version": "0.1.0"},
+				"io.modelcontextprotocol/clientCapabilities": {}
+			},
+			"ref": {"type": "ref/prompt", "name": "test"},
+			"argument": {"name": "arg", "value": "x"}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok {
+		t.Fatalf("message type = %T, want *jsonrpc.Request", msg)
+	}
+
+	ss := &ServerSession{server: NewServer(testImpl, nil)}
+	_, err = ss.handle(context.Background(), req)
+	if err == nil {
+		t.Fatal("handle returned nil error, want invalid request")
+	}
+	if !errors.Is(err, jsonrpc2.ErrInvalidRequest) {
+		t.Fatalf("handle error = %v, want invalid request", err)
+	}
+	if !strings.Contains(err.Error(), "missing id") {
+		t.Fatalf("handle error = %v, want missing id", err)
 	}
 }
 
