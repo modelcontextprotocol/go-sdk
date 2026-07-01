@@ -1222,6 +1222,107 @@ func TestAuthorize_OfflineAccessScope(t *testing.T) {
 	}
 }
 
+func TestAuthorize_ScopeFilter(t *testing.T) {
+	// advertised is delivered via the WWW-Authenticate "scope" challenge, which
+	// the handler treats as the discovered scopes passed to ScopeFilter.
+	const advertised = "gmail.metadata gmail.readonly gmail.compose"
+	tests := []struct {
+		name   string
+		filter func(discovered []string) []string
+		want   []string // requested scopes, order-independent
+	}{
+		{
+			name:   "nil filter leaves scopes unchanged",
+			filter: nil,
+			want:   []string{"gmail.metadata", "gmail.readonly", "gmail.compose"},
+		},
+		{
+			name: "filter drops a scope",
+			filter: func(d []string) []string {
+				return slices.DeleteFunc(slices.Clone(d), func(s string) bool { return s == "gmail.metadata" })
+			},
+			want: []string{"gmail.readonly", "gmail.compose"},
+		},
+		{
+			name:   "filter replaces the set entirely",
+			filter: func([]string) []string { return []string{"gmail.readonly"} },
+			want:   []string{"gmail.readonly"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+				RegistrationConfig: &oauthtest.RegistrationConfig{
+					PreregisteredClients: map[string]oauthtest.ClientInfo{
+						"test_client_id": {
+							Secret:       "test_client_secret",
+							RedirectURIs: []string{"http://localhost:12345/callback"},
+						},
+					},
+				},
+			})
+			authServer.Start(t)
+
+			resourceMux := http.NewServeMux()
+			resourceServer := httptest.NewServer(resourceMux)
+			t.Cleanup(resourceServer.Close)
+			resourceURL := resourceServer.URL + "/resource"
+			resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+				Resource:             resourceURL,
+				AuthorizationServers: []string{authServer.URL()},
+			}))
+
+			var capturedAuthURL string
+			handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+				RedirectURL: "http://localhost:12345/callback",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID:         "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+				},
+				ScopeFilter: tt.filter,
+				AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+					capturedAuthURL = args.URL
+					return nil, fmt.Errorf("stop after capturing URL")
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+			resp := &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+				Request:    req,
+			}
+			resp.Header.Set("WWW-Authenticate", fmt.Sprintf(
+				"Bearer resource_metadata=%s/.well-known/oauth-protected-resource/resource, scope=%q",
+				resourceServer.URL, advertised))
+
+			handler.Authorize(context.Background(), req, resp)
+
+			if capturedAuthURL == "" {
+				t.Fatal("AuthorizationCodeFetcher was not called")
+			}
+			u, err := url.Parse(capturedAuthURL)
+			if err != nil {
+				t.Fatalf("failed to parse captured auth URL: %v", err)
+			}
+			// Compare as a set: UnionScopes (applied downstream) returns map keys,
+			// so the order of the requested scope parameter is not deterministic.
+			got := strings.Fields(u.Query().Get("scope"))
+			want := slices.Clone(tt.want)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("requested scopes = %v, want %v (any order)", got, want)
+			}
+		})
+	}
+}
+
 // validConfig for test to create an AuthorizationCodeHandler using its constructor.
 // Values that are relevant to the test should be set explicitly.
 func validConfig() *AuthorizationCodeHandlerConfig {
