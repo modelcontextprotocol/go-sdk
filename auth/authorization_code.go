@@ -97,6 +97,15 @@ type AuthorizationCodeHandlerConfig struct {
 	// See [AuthorizationCodeFetcher] for details.
 	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
+	// Scopes optionally restricts the requested scopes to this allowlist,
+	// intersecting it with the scopes discovered from metadata/challenge
+	// (preserving order). This lets a client drop an advertised scope it does
+	// not want — e.g. Gmail's gmail.metadata, which the Gmail API refuses to
+	// combine with the search "q" parameter even alongside gmail.readonly. An
+	// allowlist matching nothing is ignored so the flow never requests an empty
+	// set; offline_access is exempt.
+	Scopes []string
+
 	// RequestRefreshToken indicates that the client intends to use refresh
 	// tokens and is capable of storing them securely.
 	//
@@ -293,6 +302,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		requestedScopes = prm.ScopesSupported
 	}
 
+	// Apply the configured allowlist before offline_access and the step-up
+	// union below so neither is affected.
+	if len(h.config.Scopes) > 0 {
+		requestedScopes = intersectScopes(requestedScopes, h.config.Scopes)
+	}
+
 	// SEP-2207: when the client desires refresh tokens and the Authorization
 	// Server advertises offline_access support, add it to the requested scopes.
 	if h.config.RequestRefreshToken &&
@@ -356,6 +371,22 @@ func scopesFromChallenges(cs []oauthex.Challenge) []string {
 		}
 	}
 	return nil
+}
+
+// intersectScopes returns the members of scopes also in allow, preserving order.
+// If nothing matches it returns scopes unchanged, so a bad allowlist cannot
+// leave the client requesting no scopes at all.
+func intersectScopes(scopes, allow []string) []string {
+	keep := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		if slices.Contains(allow, s) {
+			keep = append(keep, s)
+		}
+	}
+	if len(keep) == 0 {
+		return scopes
+	}
+	return keep
 }
 
 // errorFromChallenges returns the error from the given "WWW-Authenticate" header challenges.
