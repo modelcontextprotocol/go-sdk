@@ -1451,3 +1451,81 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 		})
 	}
 }
+
+// TestServerSessionHandle_NullIDWithNewProtocol_NoPanic verifies that sending
+// a request with id:null (which makes IsCall() return false, triggering the
+// notification path in validateRequestMeta) and per-request _meta for the new
+// protocol does not panic due to nil initializeParams dereference.
+//
+// Regression test for https://github.com/modelcontextprotocol/go-sdk/issues/1043.
+func TestServerSessionHandle_NullIDWithNewProtocol_NoPanic(t *testing.T) {
+	ss := &ServerSession{server: NewServer(testImpl, nil)}
+
+	tests := []struct {
+		name    string
+		method  string
+		params  any
+	}{
+		{
+			name:   "completion/complete with id:null and new-protocol _meta",
+			method: "completion/complete",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "repro", "version": "0.1.0"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"ref":      map[string]any{"type": "ref/prompt", "name": "test"},
+				"argument": map[string]any{"name": "arg", "value": "x"},
+			},
+		},
+		{
+			name:   "prompts/get with id:null and new-protocol _meta",
+			method: "prompts/get",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "repro", "version": "0.1.0"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "test",
+			},
+		},
+		{
+			name:   "tools/call with id:null and new-protocol _meta",
+			method: "tools/call",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "repro", "version": "0.1.0"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "test",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Use zero-value ID (id:null) — IsValid() returns false, IsCall() returns false.
+			req := &jsonrpc.Request{
+				ID:     jsonrpc.ID{}, // id:null
+				Method: tc.method,
+				Params: mustMarshal(tc.params),
+			}
+
+			// Verify IsCall() is false — this is the code path that triggers the bug.
+			if req.IsCall() {
+				t.Fatal("expected IsCall() to be false for zero-value ID")
+			}
+
+			_, err := ss.handle(context.Background(), req)
+
+			// The server should NOT panic. It may return an error, and that's fine —
+			// we just need to verify the nil-dereference crash is gone. Common
+			// error responses include "method invalid during initialization" since
+			// id:null is not a proper call.
+			_ = err // no panic = pass
+		})
+	}
+}
