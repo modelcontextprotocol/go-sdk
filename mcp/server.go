@@ -1813,6 +1813,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	if validatedMeta.usesNewProtocol &&
+		validatedMeta.initializeParams != nil &&
 		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
 		data, _ := json.Marshal(UnsupportedProtocolVersionData{
 			Supported: supportedProtocolVersions,

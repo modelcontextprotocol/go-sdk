@@ -1451,3 +1451,27 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 		})
 	}
 }
+
+// TestServerSessionHandle_NewProtocolNotificationWithoutParams verifies that
+// a notification carrying new-protocol _meta (id: null) does not panic when
+// the server dereferences initializeParams, which is nil for notifications.
+// Fixes https://github.com/modelcontextprotocol/go-sdk/issues/1043 and #1046.
+func TestServerSessionHandle_NewProtocolNotificationWithoutParams(t *testing.T) {
+	ss := &ServerSession{server: NewServer(testImpl, nil)}
+	req := &jsonrpc.Request{
+		Method: notificationCancelled,
+		Params: mustMarshal(map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion: protocolVersion20260728,
+			},
+			"requestId": "r1",
+		}),
+	}
+	// A notification with new-protocol _meta must not panic.
+	// The expected behavior is that it returns without error
+	// (notifications are fire-and-forget).
+	_, err := ss.handle(context.Background(), req)
+	if err != nil {
+		t.Fatalf("notification with new-protocol _meta: unexpected error: %v", err)
+	}
+}
