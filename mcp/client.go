@@ -330,7 +330,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
 					hc.sessionUpdated(cs.state)
 				}
-				subscribeParams := &SubscriptionsListenParams{}
+				subscribeParams := &SubscriptionsListenParams{
+					Notifications: &NotificationSubscriptions{},
+				}
 				if c.opts.ToolListChangedHandler != nil {
 					subscribeParams.Notifications.ToolsListChanged = true
 				}
@@ -1393,7 +1395,7 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	}
 
 	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
-		Notifications: NotificationSubscriptions{
+		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
 	})

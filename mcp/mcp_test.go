@@ -2652,6 +2652,48 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 	}
 }
 
+// TestSubscriptionsListen_MissingNotifications verifies that a
+// subscriptions/listen request without the required "notifications" field
+// is rejected with an invalid params error.
+func TestSubscriptionsListen_MissingNotifications(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server := newSubListenServer()
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// Invoke the server handler directly with a nil Notifications field,
+	// simulating a request whose params omit the required field on the wire.
+	// The client-side subscriptionsListen does not await the RPC response
+	// (the call's lifetime is the notification stream), so we assert the
+	// server-side behavior at the handler level.
+	id, err := jsonrpc.MakeID("test-1")
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+	reqCtx := context.WithValue(ctx, idContextKey{}, id)
+	req := &SubscriptionsListenRequest{
+		Session: ss,
+		Params:  &SubscriptionsListenParams{}, // Notifications is nil
+	}
+	_, err = server.subscriptionsListen(reqCtx, req)
+	if err == nil {
+		t.Fatal("expected error for missing notifications field, got nil")
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
+	}
+}
+
 // resourceSubServer builds a server that advertises resource subscriptions
 // and records every Subscribe/Unsubscribe handler invocation through chans.
 func resourceSubServer(t *testing.T, subCh, unsubCh chan string) *Server {

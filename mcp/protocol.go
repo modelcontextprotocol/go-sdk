@@ -2063,7 +2063,7 @@ type SubscriptionsListenParams struct {
 	Meta `json:"_meta,omitempty"`
 	// Notifications declares which notification types the client wants to
 	// receive on this stream.
-	Notifications NotificationSubscriptions `json:"notifications"`
+	Notifications *NotificationSubscriptions `json:"notifications"`
 }
 
 func (x *SubscriptionsListenParams) isParams()   {}
