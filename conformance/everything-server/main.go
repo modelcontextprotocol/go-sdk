@@ -200,6 +200,21 @@ func registerTools(server *mcp.Server) {
 		Description: "Tests SSE stream disconnection and client reconnection (SEP-1699). Server will close the stream mid-call and send the result after client reconnects.",
 	}, testReconnectionHandler)
 
+	// SEP-2243 x-mcp-header tool — arms the http-custom-header-server-validation
+	// conformance scenario (which skips when no tool with an x-mcp-header
+	// annotation is found).
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_x_mcp_header",
+		Description: "Tests SEP-2243 Mcp-Param-* server-side validation",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"region": { "type": "string", "description": "mirrored into Mcp-Param-Region", "x-mcp-header": "Region" },
+				"level": { "type": "integer", "description": "non-mirrored argument" }
+			}
+		}`),
+	}, testXMcpHeaderHandler)
+
 	// SEP-2575 diagnostic tools used by the stateless conformance scenario.
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "test_missing_capability",
@@ -527,6 +542,19 @@ func jsonSchema202012Handler(ctx context.Context, req *mcp.CallToolRequest, inpu
 			&mcp.TextContent{
 				Text: fmt.Sprintf("JSON Schema 2020-12 tool called with: %s", input),
 			},
+		},
+	}, nil, nil
+}
+
+type testXMcpHeaderInput struct {
+	Region string `json:"region,omitempty"`
+	Level  int    `json:"level,omitempty"`
+}
+
+func testXMcpHeaderHandler(ctx context.Context, req *mcp.CallToolRequest, input testXMcpHeaderInput) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("region=%s", input.Region)},
 		},
 	}, nil, nil
 }
