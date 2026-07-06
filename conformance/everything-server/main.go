@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/yosida95/uritemplate/v3"
 )
@@ -154,14 +155,19 @@ func registerTools(server *mcp.Server) {
 		Description: "Tests elicitation with enum schema improvements per SEP-1330",
 	}, testElicitationEnumsHandler)
 
+	// SEP-1613 / SEP-2106: JSON Schema 2020-12 conformance test tool.
+	// The scenario verifies that $schema/$defs/additionalProperties (SEP-1613)
+	// and the broader 2020-12 vocabulary — $anchor, allOf/anyOf, if/then/else —
+	// (SEP-2106) survive tools/list verbatim.
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "json_schema_2020_12_tool",
-		Description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613)",
+		Description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613, SEP-2106)",
 		InputSchema: json.RawMessage(`{
 			"$schema": "https://json-schema.org/draft/2020-12/schema",
 			"type": "object",
 			"$defs": {
 				"address": {
+					"$anchor": "addressDef",
 					"type": "object",
 					"properties": {
 						"street": { "type": "string" },
@@ -171,8 +177,20 @@ func registerTools(server *mcp.Server) {
 			},
 			"properties": {
 				"name": { "type": "string" },
-				"address": { "$ref": "#/$defs/address" }
+				"address": { "$ref": "#/$defs/address" },
+				"contactMethod": { "type": "string", "enum": ["phone", "email"] },
+				"phone": { "type": "string" },
+				"email": { "type": "string" }
 			},
+			"allOf": [
+				{ "anyOf": [{ "required": ["phone"] }, { "required": ["email"] }] }
+			],
+			"if": {
+				"properties": { "contactMethod": { "const": "phone" } },
+				"required": ["contactMethod"]
+			},
+			"then": { "required": ["phone"] },
+			"else": { "required": ["email"] },
 			"additionalProperties": false
 		}`),
 	}, jsonSchema202012Handler)
@@ -181,6 +199,32 @@ func registerTools(server *mcp.Server) {
 		Name:        "test_reconnection",
 		Description: "Tests SSE stream disconnection and client reconnection (SEP-1699). Server will close the stream mid-call and send the result after client reconnects.",
 	}, testReconnectionHandler)
+
+	// SEP-2575 diagnostic tools used by the stateless conformance scenario.
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_missing_capability",
+		Description: "Requires the sampling client capability; used to verify MissingRequiredClientCapabilityError (-32021) (SEP-2575)",
+	}, testMissingCapabilityHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_streaming_elicitation",
+		Description: "Streams progress notifications while a call is in flight; used to verify response streams carry only notifications, never independent JSON-RPC requests (SEP-2575)",
+	}, testStreamingElicitationHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_logging_tool",
+		Description: "Attempts to emit a log message; the framework must drop it when the client did not set _meta.../logLevel (SEP-2575)",
+	}, testLoggingToolHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_trigger_tool_change",
+		Description: "Mutates the tool list to trigger a notifications/tools/list_changed on active subscription streams (SEP-2575)",
+	}, makeTriggerToolChangeHandler(server))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_trigger_prompt_change",
+		Description: "Mutates the prompt list to trigger a notifications/prompts/list_changed on active subscription streams (SEP-2575)",
+	}, makeTriggerPromptChangeHandler(server))
 }
 
 // Tool handlers
@@ -477,31 +521,108 @@ func testElicitationEnumsHandler(ctx context.Context, req *mcp.CallToolRequest, 
 	}, nil, nil
 }
 
-type jsonSchemaAddress struct {
-	Street string `json:"street"`
-	City   string `json:"city"`
-}
-
-type jsonSchemaInput struct {
-	Name    string             `json:"name"`
-	Address *jsonSchemaAddress `json:"address"`
-}
-
-func jsonSchema202012Handler(ctx context.Context, req *mcp.CallToolRequest, input jsonSchemaInput) (*mcp.CallToolResult, any, error) {
-	// Echo back the arguments received
-	var addressStr string
-	if input.Address != nil {
-		addressStr = fmt.Sprintf("{street: %q, city: %q}", input.Address.Street, input.Address.City)
-	} else {
-		addressStr = "nil"
-	}
+func jsonSchema202012Handler(ctx context.Context, req *mcp.CallToolRequest, input json.RawMessage) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{
-				Text: fmt.Sprintf("Received: name=%q, address=%s", input.Name, addressStr),
+				Text: fmt.Sprintf("JSON Schema 2020-12 tool called with: %s", input),
 			},
 		},
 	}, nil, nil
+}
+
+// testMissingCapabilityHandler requires the client to have declared the
+// sampling capability. When absent, it returns a MissingRequiredClientCapabilityError
+// with data.requiredCapabilities = {"sampling": {}} per SEP-2575.
+func testMissingCapabilityHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	caps := req.ClientCapabilities()
+	if caps != nil && caps.Sampling != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "Client declared the sampling capability; tool executed."},
+			},
+		}, nil, nil
+	}
+	missingCapabilityData := mcp.MissingRequiredClientCapabilityData{
+		RequiredCapabilities: &mcp.ClientCapabilities{
+			Sampling: &mcp.SamplingCapabilities{},
+		},
+	}
+	dataBytes, err := json.Marshal(missingCapabilityData)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, nil, &jsonrpc.Error{
+		Code:    mcp.CodeMissingRequiredClientCapabilities,
+		Message: "sampling capability required but not declared by client",
+		Data:    dataBytes,
+	}
+}
+
+// testStreamingElicitationHandler returns a plain result. Per SEP-2575, the
+// response stream must carry no independent top-level JSON-RPC requests; a
+// plain response trivially satisfies this. The scenario declares no
+// `elicitation` capability, so this handler must not call req.Session.Elicit.
+func testStreamingElicitationHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "stream observed: result frames only, no top-level requests"},
+		},
+	}, nil, nil
+}
+
+// testLoggingToolHandler attempts to emit a log message. The SDK's
+// ServerSession.Log gates on the per-request _meta.../logLevel, so this is a
+// no-op notification-wise when the client did not opt in.
+func testLoggingToolHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	req.Session.Log(ctx, &mcp.LoggingMessageParams{
+		Level: "info",
+		Data:  "test_logging_tool executed",
+	})
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "Log attempted; framework gates on _meta.../logLevel."},
+		},
+	}, nil, nil
+}
+
+// makeTriggerToolChangeHandler returns a handler that (re-)registers a
+// no-op transient tool. Every call to Server.AddTool dispatches a
+// notifications/tools/list_changed to active subscription streams (even when
+// it replaces a tool with the same name), which is what the SEP-2575
+// subscription checks assert.
+func makeTriggerToolChangeHandler(server *mcp.Server) mcp.ToolHandlerFor[any, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "__transient_tool_for_list_changed",
+			Description: "Transient tool used to trigger tools/list_changed",
+		}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{}, nil, nil
+		})
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "tools_list_changed published"},
+			},
+		}, nil, nil
+	}
+}
+
+// makeTriggerPromptChangeHandler is the prompt analogue of
+// makeTriggerToolChangeHandler.
+func makeTriggerPromptChangeHandler(server *mcp.Server) mcp.ToolHandlerFor[any, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		server.AddPrompt(&mcp.Prompt{
+			Name:        "__transient_prompt_for_list_changed",
+			Description: "Transient prompt used to trigger prompts/list_changed",
+		}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{}, nil
+		})
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "prompts_list_changed published"},
+			},
+		}, nil, nil
+	}
 }
 
 func testReconnectionHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
