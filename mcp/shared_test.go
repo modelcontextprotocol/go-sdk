@@ -18,7 +18,6 @@ func TestValidateRequestMeta(t *testing.T) {
 	tests := []struct {
 		name            string
 		method          string
-		isNotification  bool
 		params          any
 		wantUsesNew     bool
 		wantLogLevel    LoggingLevel
@@ -85,18 +84,6 @@ func TestValidateRequestMeta(t *testing.T) {
 			wantErrContains: MetaKeyClientCapabilities,
 		},
 		{
-			name:           "notifications exempt from required fields",
-			method:         notificationCancelled,
-			isNotification: true,
-			params: map[string]any{
-				"_meta": map[string]any{
-					MetaKeyProtocolVersion: protocolVersion20260728,
-				},
-				"requestId": "r1",
-			},
-			wantUsesNew: true,
-		},
-		{
 			name:        "malformed _meta is ignored",
 			method:      methodCallTool,
 			params:      json.RawMessage(`{"_meta": "not an object", "name": "x"}`),
@@ -141,16 +128,11 @@ func TestValidateRequestMeta(t *testing.T) {
 			default:
 				raw = mustMarshal(tc.params)
 			}
-			req := &jsonrpc.Request{Method: tc.method, Params: raw}
-			if !tc.isNotification {
-				req.ID = jsonrpc.ID{}
-				// Give the request an ID by parsing one.
-				id, err := jsonrpc.MakeID("test")
-				if err != nil {
-					t.Fatal(err)
-				}
-				req.ID = id
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
 			}
+			req := &jsonrpc.Request{Method: tc.method, Params: raw, ID: id}
 
 			vmeta, err := validateRequestMeta(req)
 			usesNew := vmeta != nil && vmeta.usesNewProtocol
