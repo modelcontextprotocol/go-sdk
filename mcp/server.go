@@ -1173,7 +1173,7 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("%w: missing required 'notifications' field", jsonrpc2.ErrInvalidParams)
 	}
 
-	allowed := s.allowedSubscriptions(*req.Params.Notifications)
+	allowed := s.allowedSubscriptions(req.Params.Notifications)
 	s.mu.Lock()
 	if allowed.ToolsListChanged {
 		s.toolChangeSubscriptions[req.Session] = requestID
@@ -1228,7 +1228,7 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	return &emptyResult{}, nil
 }
 
-func (s *Server) allowedSubscriptions(want NotificationSubscriptions) NotificationSubscriptions {
+func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {
 	caps := s.capabilities()
 	agreed := NotificationSubscriptions{}
 	if want.ToolsListChanged && caps.Tools != nil && caps.Tools.ListChanged {
