@@ -57,15 +57,13 @@ func negotiatedVersion(clientVersion string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version.
 	//
-	// This handles the case where a new spec version is released, and the SDK
-	// does not support it yet.
 	// Cap the supported versions at the legacy protocolVersion20251125, as this
 	// method is used by the initialize method which is deprecated in
 	// version protocolVersion20260728.
-	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return protocolVersion20251125
+	if slices.Contains(supportedProtocolVersions, clientVersion) && clientVersion < protocolVersion20260728 {
+		return clientVersion
 	}
-	return clientVersion
+	return protocolVersion20251125
 }
 
 // negotiateMutuallySupportedVersion returns a protocol version that is supported
