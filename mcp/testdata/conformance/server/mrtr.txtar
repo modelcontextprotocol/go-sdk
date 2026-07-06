@@ -36,10 +36,7 @@ confirmThenGreet
     "arguments": {},
     "requestState": "step=1",
     "inputResponses": {
-      "who": {
-        "method": "elicitation/create",
-        "result": { "action": "accept", "content": { "name": "MCP Go" } }
-      }
+      "who": { "action": "accept", "content": { "name": "MCP Go" } }
     }
   }
 }

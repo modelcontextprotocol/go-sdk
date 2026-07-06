@@ -1216,6 +1216,43 @@ func TestInputRequestMapJSON(t *testing.T) {
 	})
 }
 
+func TestInputResponseMapJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		value InputResponse
+		check func(t *testing.T, got InputResponse)
+	}{
+		{
+			name:  "elicit",
+			value: &ElicitResult{Action: "accept", Content: map[string]any{"ok": true}},
+		},
+		{
+			name:  "sampling",
+			value: &CreateMessageWithToolsResult{Role: "assistant", Model: "test-model", Content: []Content{&TextContent{Text: "hello"}}},
+		},
+		{
+			name:  "list-roots",
+			value: &ListRootsResult{Roots: []*Root{{URI: "file:///tmp", Name: "tmp"}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.name
+			data, err := json.Marshal(InputResponseMap{key: tt.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got InputResponseMap
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tt.value, got[key], ctrCmpOpts...); diff != "" {
+				t.Errorf("mismatch (-want, +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestContentUnmarshal(t *testing.T) {
 	// Verify that types with a Content field round-trip properly.
 	roundtrip := func(in, out any) {
