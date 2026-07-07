@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -240,6 +241,46 @@ func registerTools(server *mcp.Server) {
 		Name:        "test_trigger_prompt_change",
 		Description: "Mutates the prompt list to trigger a notifications/prompts/list_changed on active subscription streams (SEP-2575)",
 	}, makeTriggerPromptChangeHandler(server))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_elicitation",
+		Description: "MRTR (SEP-2322): asks for the caller name via an in-band elicitation request",
+	}, testInputRequiredElicitationHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_sampling",
+		Description: "MRTR (SEP-2322): asks for an LLM completion via an in-band sampling request",
+	}, testInputRequiredSamplingHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_list_roots",
+		Description: "MRTR (SEP-2322): asks for the client roots via an in-band roots/list request",
+	}, testInputRequiredListRootsHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_request_state",
+		Description: "MRTR (SEP-2322): round-trips integrity-protected requestState alongside an elicitation request",
+	}, testInputRequiredRequestStateHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_multiple_inputs",
+		Description: "MRTR (SEP-2322): asks for elicitation, sampling and roots input in a single round",
+	}, testInputRequiredMultipleInputsHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_multi_round",
+		Description: "MRTR (SEP-2322): two elicitation rounds with evolving requestState before completing",
+	}, testInputRequiredMultiRoundHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_tampered_state",
+		Description: "MRTR (SEP-2322): rejects retries whose requestState fails integrity verification",
+	}, testInputRequiredTamperedStateHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "test_input_required_result_capabilities",
+		Description: "MRTR (SEP-2322): only requests input kinds the declared client capabilities cover",
+	}, testInputRequiredCapabilitiesHandler)
 }
 
 // Tool handlers
@@ -653,6 +694,349 @@ func makeTriggerPromptChangeHandler(server *mcp.Server) mcp.ToolHandlerFor[any, 
 	}
 }
 
+// =============================================================================
+// SEP-2322 Multi-Round-Trip helpers
+// =============================================================================
+
+// requestStateTamperedSuffix is what the tampered-state conformance scenario
+// appends to a valid requestState. Detecting this suffix is sufficient to
+// pass the check; a production server would use a real integrity mechanism
+// (HMAC / AEAD, per SEP-2322 § "Server Requirements").
+const requestStateTamperedSuffix = "-TAMPERED"
+
+// requestStateValid reports whether the state looks like one this server
+// minted (i.e. the harness did not append the tampered marker).
+func requestStateValid(state string) bool {
+	return state != "" && !strings.HasSuffix(state, requestStateTamperedSuffix)
+}
+
+// acceptedContent returns the "content" field of an ElicitResult only when the
+// user accepted the elicitation. Returns nil if the response is missing, of the
+// wrong type, or the action is not "accept".
+func acceptedContent(responses mcp.InputResponseMap, key string) map[string]any {
+	if responses == nil {
+		return nil
+	}
+	resp, ok := responses[key]
+	if !ok {
+		return nil
+	}
+	elicit, ok := resp.(*mcp.ElicitResult)
+	if !ok || elicit == nil || elicit.Action != "accept" {
+		return nil
+	}
+	return elicit.Content
+}
+
+// =============================================================================
+// SEP-2322 Multi-Round-Trip tool handlers
+// =============================================================================
+
+// nameElicitSchema is the requestedSchema used by tools that elicit a name.
+func nameElicitSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"name": {Type: "string"},
+		},
+		Required: []string{"name"},
+	}
+}
+
+// testInputRequiredElicitationHandler asks for the caller name via elicitation.
+// Reused by the result-type, missing-input-response, ignore-extra-params, and
+// validate-input scenarios: anything that does not carry an accepted
+// "user_name" response is answered with a fresh InputRequiredResult.
+func testInputRequiredElicitationHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if content := acceptedContent(req.Params.InputResponses, "user_name"); content != nil {
+		name, _ := content["name"].(string)
+		if name != "" {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Hello, %s!", name)}},
+			}, nil, nil
+		}
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"user_name": &mcp.ElicitParams{
+				Message:         "What is your name?",
+				RequestedSchema: nameElicitSchema(),
+			},
+		},
+	}, nil, nil
+}
+
+// samplingResponseText extracts the first text content from a sampling
+// response. The Go SDK unmarshals responses with a "role" field into
+// *CreateMessageWithToolsResult (a superset of the legacy single-content
+// CreateMessageResult).
+func samplingResponseText(responses mcp.InputResponseMap, key string) (string, bool) {
+	resp, ok := responses[key].(*mcp.CreateMessageWithToolsResult)
+	if !ok || resp == nil {
+		return "", false
+	}
+	for _, c := range resp.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			return tc.Text, true
+		}
+	}
+	return "(non-text response)", true
+}
+
+// testInputRequiredSamplingHandler asks for an LLM completion via sampling.
+func testInputRequiredSamplingHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if text, ok := samplingResponseText(req.Params.InputResponses, "capital_question"); ok {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Sampling response: %s", text)}},
+		}, nil, nil
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"capital_question": &mcp.CreateMessageParams{
+				Messages: []*mcp.SamplingMessage{
+					{Role: "user", Content: &mcp.TextContent{Text: "What is the capital of France?"}},
+				},
+				MaxTokens: 100,
+			},
+		},
+	}, nil, nil
+}
+
+// testInputRequiredListRootsHandler asks for the client roots.
+func testInputRequiredListRootsHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if resp, ok := req.Params.InputResponses["client_roots"].(*mcp.ListRootsResult); ok && resp != nil {
+		var uris []string
+		for _, r := range resp.Roots {
+			uris = append(uris, r.URI)
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Client exposed %d root(s): %s", len(resp.Roots), strings.Join(uris, ", "))},
+			},
+		}, nil, nil
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"client_roots": &mcp.ListRootsParams{},
+		},
+	}, nil, nil
+}
+
+// testInputRequiredRequestStateHandler round-trips an opaque requestState
+// alongside an elicitation request.
+func testInputRequiredRequestStateHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if content := acceptedContent(req.Params.InputResponses, "confirm"); content != nil {
+		if requestStateValid(req.Params.RequestState) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "state-ok: requestState received and confirmation accepted"}},
+			}, nil, nil
+		}
+		return nil, nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: "invalid requestState",
+		}
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"confirm": &mcp.ElicitParams{
+				Message: "Please confirm",
+				RequestedSchema: &jsonschema.Schema{
+					Type:       "object",
+					Properties: map[string]*jsonschema.Schema{"ok": {Type: "boolean"}},
+					Required:   []string{"ok"},
+				},
+			},
+		},
+		RequestState: "request_state",
+	}, nil, nil
+}
+
+// testInputRequiredMultipleInputsHandler asks for elicitation, sampling, and
+// roots input in a single round.
+func testInputRequiredMultipleInputsHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	nameContent := acceptedContent(req.Params.InputResponses, "user_name")
+	name, _ := nameContent["name"].(string)
+
+	greetingText, hasGreeting := samplingResponseText(req.Params.InputResponses, "greeting")
+
+	var rootsCount int
+	rootsResp, rootsOK := req.Params.InputResponses["client_roots"].(*mcp.ListRootsResult)
+	if rootsOK && rootsResp != nil {
+		rootsCount = len(rootsResp.Roots)
+	}
+
+	if name != "" && hasGreeting && rootsOK {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("%s %s — %d root(s) visible", greetingText, name, rootsCount)},
+			},
+		}, nil, nil
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"user_name": &mcp.ElicitParams{
+				Message:         "What is your name?",
+				RequestedSchema: nameElicitSchema(),
+			},
+			"greeting": &mcp.CreateMessageParams{
+				Messages: []*mcp.SamplingMessage{
+					{Role: "user", Content: &mcp.TextContent{Text: "Generate a greeting"}},
+				},
+				MaxTokens: 50,
+			},
+			"client_roots": &mcp.ListRootsParams{},
+		},
+		RequestState: "multiple_inputs",
+	}, nil, nil
+}
+
+// testInputRequiredMultiRoundHandler runs two elicitation rounds with
+// evolving requestState before completing. The round number (and the name
+// elicited in round 1) lives in the state, since the stateless server keeps
+// no per-session memory.
+func testInputRequiredMultiRoundHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	state := req.Params.RequestState
+	// State format: "round=1" or "round=2;name=<name>".
+	switch {
+	case state == "":
+		return &mcp.CallToolResult{
+			InputRequests: mcp.InputRequestMap{
+				"step1": &mcp.ElicitParams{
+					Message:         "Step 1: What is your name?",
+					RequestedSchema: nameElicitSchema(),
+				},
+			},
+			RequestState: "round=1",
+		}, nil, nil
+	case state == "round=1":
+		name, _ := acceptedContent(req.Params.InputResponses, "step1")["name"].(string)
+		if name == "" {
+			name = "unknown"
+		}
+		return &mcp.CallToolResult{
+			InputRequests: mcp.InputRequestMap{
+				"step2": &mcp.ElicitParams{
+					Message: "Step 2: What is your favorite color?",
+					RequestedSchema: &jsonschema.Schema{
+						Type:       "object",
+						Properties: map[string]*jsonschema.Schema{"color": {Type: "string"}},
+						Required:   []string{"color"},
+					},
+				},
+			},
+			RequestState: "round=2;name=" + name,
+		}, nil, nil
+	default:
+		color, _ := acceptedContent(req.Params.InputResponses, "step2")["color"].(string)
+		if color == "" {
+			color = "unknown"
+		}
+		name := strings.TrimPrefix(state, "round=2;name=")
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Multi-round complete: %s likes %s", name, color)},
+			},
+		}, nil, nil
+	}
+}
+
+// testInputRequiredTamperedStateHandler rejects retries whose requestState
+// looks tampered. The conformance harness tampers by appending "-TAMPERED";
+// production servers should use a real integrity mechanism (HMAC / AEAD).
+func testInputRequiredTamperedStateHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if req.Params.RequestState != "" {
+		if !requestStateValid(req.Params.RequestState) {
+			return nil, nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidParams,
+				Message: "invalid requestState: tampered",
+			}
+		}
+		if acceptedContent(req.Params.InputResponses, "confirm") != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "state-ok: requestState received and confirmation accepted"}},
+			}, nil, nil
+		}
+	}
+	return &mcp.CallToolResult{
+		InputRequests: mcp.InputRequestMap{
+			"confirm": &mcp.ElicitParams{
+				Message: "Please confirm",
+				RequestedSchema: &jsonschema.Schema{
+					Type:       "object",
+					Properties: map[string]*jsonschema.Schema{"ok": {Type: "boolean"}},
+					Required:   []string{"ok"},
+				},
+			},
+		},
+		RequestState: "tampered_state",
+	}, nil, nil
+}
+
+// testInputRequiredCapabilitiesHandler only requests input kinds the client
+// declared capabilities cover. Reads capabilities from the per-request
+// _meta["io.modelcontextprotocol/clientCapabilities"] envelope.
+func testInputRequiredCapabilitiesHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	if len(req.Params.InputResponses) > 0 {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Capability-aware input requests fulfilled"}},
+		}, nil, nil
+	}
+	caps := req.ClientCapabilities()
+	reqs := mcp.InputRequestMap{}
+	if caps != nil && caps.Elicitation != nil {
+		reqs["user_name"] = &mcp.ElicitParams{
+			Message:         "What is your name?",
+			RequestedSchema: nameElicitSchema(),
+		}
+	}
+	if caps != nil && caps.Sampling != nil {
+		reqs["greeting"] = &mcp.CreateMessageParams{
+			Messages: []*mcp.SamplingMessage{
+				{Role: "user", Content: &mcp.TextContent{Text: "Generate a short greeting"}},
+			},
+			MaxTokens: 50,
+		}
+	}
+	if caps != nil && (caps.RootsV2 != nil || caps.Roots.ListChanged) {
+		reqs["client_roots"] = &mcp.ListRootsParams{}
+	}
+	if len(reqs) == 0 {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "No declared client capability supports an in-band input request"}},
+		}, nil, nil
+	}
+	return &mcp.CallToolResult{InputRequests: reqs}, nil, nil
+}
+
+// testInputRequiredPromptHandler is the prompts/get analogue: elicits context
+// on the first call and returns a GetPromptResult with messages on retry.
+func testInputRequiredPromptHandler(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	if content := acceptedContent(req.Params.InputResponses, "user_context"); content != nil {
+		contextStr, _ := content["context"].(string)
+		return &mcp.GetPromptResult{
+			Description: "A prompt with elicited context",
+			Messages: []*mcp.PromptMessage{
+				{
+					Role:    "user",
+					Content: &mcp.TextContent{Text: fmt.Sprintf("Context: %s", contextStr)},
+				},
+			},
+		}, nil
+	}
+	return &mcp.GetPromptResult{
+		InputRequests: mcp.InputRequestMap{
+			"user_context": &mcp.ElicitParams{
+				Message: "Please provide context for the prompt",
+				RequestedSchema: &jsonschema.Schema{
+					Type:       "object",
+					Properties: map[string]*jsonschema.Schema{"context": {Type: "string"}},
+					Required:   []string{"context"},
+				},
+			},
+		},
+	}, nil
+}
+
 func testReconnectionHandler(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 	// Close the SSE stream to trigger client reconnection (SEP-1699)
 	if req.Extra != nil && req.Extra.CloseSSEStream != nil {
@@ -800,6 +1184,11 @@ func registerPrompts(server *mcp.Server) {
 		Title:       "Prompt With Image",
 		Description: "A prompt that includes image content",
 	}, promptWithImageHandler)
+
+	server.AddPrompt(&mcp.Prompt{
+		Name:        "test_input_required_result_prompt",
+		Description: "MRTR (SEP-2322): asks for context via an in-band elicitation request",
+	}, testInputRequiredPromptHandler)
 }
 
 func simplePromptHandler(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
