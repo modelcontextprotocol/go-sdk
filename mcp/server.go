@@ -1169,6 +1169,10 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
 	}
 
+	if req.Params.Notifications == nil {
+		return nil, fmt.Errorf("%w: missing required 'notifications' field", jsonrpc2.ErrInvalidParams)
+	}
+
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
 	s.mu.Lock()
 	if allowed.ToolsListChanged {
@@ -1217,11 +1221,14 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
 	}
 
-	<-ctx.Done()
+	// If there are any active subscriptions, we block until the context is cancelled. Otherwise, we return immediately.
+	if len(allowed.ResourceSubscriptions) > 0 || allowed.ToolsListChanged || allowed.PromptsListChanged || allowed.ResourcesListChanged {
+		<-ctx.Done()
+	}
 	return &emptyResult{}, nil
 }
 
-func (s *Server) allowedSubscriptions(want NotificationSubscriptions) NotificationSubscriptions {
+func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {
 	caps := s.capabilities()
 	agreed := NotificationSubscriptions{}
 	if want.ToolsListChanged && caps.Tools != nil && caps.Tools.ListChanged {

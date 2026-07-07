@@ -57,15 +57,13 @@ func negotiatedVersion(clientVersion string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version.
 	//
-	// This handles the case where a new spec version is released, and the SDK
-	// does not support it yet.
 	// Cap the supported versions at the legacy protocolVersion20251125, as this
 	// method is used by the initialize method which is deprecated in
 	// version protocolVersion20260728.
-	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return protocolVersion20251125
+	if slices.Contains(supportedProtocolVersions, clientVersion) && clientVersion < protocolVersion20260728 {
+		return clientVersion
 	}
-	return clientVersion
+	return protocolVersion20251125
 }
 
 // negotiateMutuallySupportedVersion returns a protocol version that is supported
@@ -515,11 +513,10 @@ type validatedMeta struct {
 // the >= 2026-07-28 protocol via the `_meta` field.
 // If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
 // validatedMeta with usesNewProtocol set to false, and a nil error.
-// If the request has a protocolVersion in _meta:
-//   - For notifications, it returns usesNewProtocol set to true and a nil initializeParams.
-//   - For call requests, it validates the presence of clientInfo and clientCapabilities in _meta.
-//     If either is missing or invalid, it returns nil and a non-nil error. Otherwise, it returns
-//     usesNewProtocol set to true and the populated initializeParams.
+// If the request has a protocolVersion in _meta it validates the presence of clientInfo
+// and clientCapabilities in _meta. If either is missing or invalid, it returns nil and
+// a non-nil error. Otherwise, it returns usesNewProtocol set to true and the populated
+// initializeParams.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
@@ -528,10 +525,6 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
 	if !ok || protocolVersion < protocolVersion20260728 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
-	}
-	// Notifications do not carry full client identity.
-	if !req.IsCall() {
-		return &validatedMeta{usesNewProtocol: true, initializeParams: nil}, nil
 	}
 	clientInfo, ok := decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
 	if !ok {
