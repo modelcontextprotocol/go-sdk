@@ -54,14 +54,6 @@ func (mc *methodCache[R]) put(key string, result R) {
 	}
 }
 
-func (mc *methodCache[R]) forEach(f func(R)) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	for _, entry := range mc.cachedValues {
-		f(entry.result)
-	}
-}
-
 func (mc *methodCache[R]) invalidate() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()

@@ -584,19 +584,16 @@ func (cs *ClientSession) Wait() error {
 // outgoing request context for transport-layer features (e.g. x-mcp-header
 // param annotations).
 func (cs *ClientSession) lookupTool(name string) *Tool {
-	var found *Tool
-	cs.toolsCache.forEach(func(r *ListToolsResult) {
-		if found != nil {
-			return
-		}
-		for _, t := range r.Tools {
+	cs.toolsCache.mu.Lock()
+	defer cs.toolsCache.mu.Unlock()
+	for _, entry := range cs.toolsCache.cachedValues {
+		for _, t := range entry.result.Tools {
 			if t.Name == name {
-				found = t
-				return
+				return t
 			}
 		}
-	})
-	return found
+	}
+	return nil
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
