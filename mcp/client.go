@@ -585,7 +585,7 @@ func (cs *ClientSession) Wait() error {
 // param annotations).
 func (cs *ClientSession) lookupTool(name string) *Tool {
 	var found *Tool
-	cs.toolsCache.forEachValid(func(r *ListToolsResult) {
+	cs.toolsCache.forEach(func(r *ListToolsResult) {
 		if found != nil {
 			return
 		}
