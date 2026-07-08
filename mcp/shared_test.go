@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -257,6 +258,47 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	}
 	if got := req.ClientCapabilities(); got != nil {
 		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
+func TestServerRequestGetParamsMissingOptionalParams(t *testing.T) {
+	info := newServerMethodInfo(
+		func(context.Context, *ServerRequest[*InitializedParams]) (*emptyResult, error) {
+			return &emptyResult{}, nil
+		},
+		missingParamsOK,
+	)
+	params, err := info.unmarshalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params != nil {
+		t.Fatalf("unmarshalParams returned %T, want nil", params)
+	}
+
+	req := info.newRequest(&ServerSession{}, params, nil)
+	if got := req.GetParams(); got != nil {
+		t.Fatalf("GetParams() = %T, want nil", got)
+	}
+}
+
+func TestRequestGetParamsTypedNilCustomParams(t *testing.T) {
+	type customParams struct{ ParamsBase }
+
+	var params *customParams
+	if got := (&ClientRequest[*customParams]{Params: params}).GetParams(); got != nil {
+		t.Fatalf("client GetParams() = %T, want nil", got)
+	}
+	if got := (&ServerRequest[*customParams]{Params: params}).GetParams(); got != nil {
+		t.Fatalf("server GetParams() = %T, want nil", got)
+	}
+
+	params = &customParams{}
+	if got := (&ClientRequest[*customParams]{Params: params}).GetParams(); got != params {
+		t.Fatalf("client GetParams() = %T, want original params", got)
+	}
+	if got := (&ServerRequest[*customParams]{Params: params}).GetParams(); got != params {
+		t.Fatalf("server GetParams() = %T, want original params", got)
 	}
 }
 

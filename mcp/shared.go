@@ -604,8 +604,19 @@ func (*ServerRequest[P]) isRequest() {}
 func (r *ClientRequest[P]) GetSession() Session { return r.Session }
 func (r *ServerRequest[P]) GetSession() Session { return r.Session }
 
-func (r *ClientRequest[P]) GetParams() Params { return r.Params }
-func (r *ServerRequest[P]) GetParams() Params { return r.Params }
+func (r *ClientRequest[P]) GetParams() Params { return requestParams(r.Params) }
+func (r *ServerRequest[P]) GetParams() Params { return requestParams(r.Params) }
+
+func requestParams[P Params](params P) Params {
+	if any(params) == nil {
+		return nil
+	}
+	value := reflect.ValueOf(params)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
+		return nil
+	}
+	return params
+}
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
