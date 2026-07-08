@@ -1523,8 +1523,7 @@ func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) erro
 		iparams.ProtocolVersion >= protocolVersion20260728 {
 		return fmt.Errorf(
 			"%q cannot be sent while serving a request on protocol version %s: "+
-				"return an InputRequests map from the tools/call, prompts/get, or "+
-				"resources/read handler instead (multi round-trip requests, SEP-2322)",
+				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
 			method, iparams.ProtocolVersion)
 	}
 	return nil

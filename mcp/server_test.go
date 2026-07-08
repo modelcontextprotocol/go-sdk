@@ -1452,15 +1452,13 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 	}
 }
 
-// TestServerSession_RejectsServerInitiatedRequestsOnModernEra verifies that
+// TestServerSession_RejectsServerInitiatedRequests verifies that
 // SEP-2322 / SEP-2575 is enforced at the API surface: [ServerSession.Elicit],
 // [ServerSession.CreateMessage], [ServerSession.CreateMessageWithTools], and
 // [ServerSession.ListRoots] must refuse to send a server-to-client request
 // when the session is negotiated at protocol version >= 2026-07-28, and must
 // remain functional on pre-2026-07-28 sessions.
-//
-//lint:ignore SA1019 test exercises deprecated SEP-2577 APIs to verify the era gate around them.
-func TestServerSession_RejectsServerInitiatedRequestsOnModernEra(t *testing.T) {
+func TestServerSession_RejectsServerInitiated(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
