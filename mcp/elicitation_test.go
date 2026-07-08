@@ -114,7 +114,7 @@ func TestElicitationURLMode(t *testing.T) {
 				},
 				ElicitationHandler: tc.handler,
 			})
-			cs, err := c.Connect(ctx, ct, nil)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,8 +165,18 @@ func TestElicitationCompleteNotification(t *testing.T) {
 			},
 		})
 
-		_, ss, cleanup := basicClientServerConnection(t, c, nil, nil)
-		defer cleanup()
+		ct, st := NewInMemoryTransports()
+		s := NewServer(testImpl, nil)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
 
 		// 1. Server initiates a URL elicitation
 		elicitID := "testElicitationID-123"
@@ -245,7 +255,7 @@ func TestElicitationNoValidationWithoutAccept(t *testing.T) {
 					return &ElicitResult{Action: tc.action, Content: tc.content}, nil
 				},
 			})
-			cs, err := c.Connect(ctx, ct, nil)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
