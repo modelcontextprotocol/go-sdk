@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -207,6 +208,45 @@ func TestElicitationCompleteNotification(t *testing.T) {
 			t.Errorf("elicitationComplete notification ID mismatch: got %q, want %q", gotParams.ElicitationID, elicitID)
 		}
 	})
+}
+
+func TestElicitationAcceptNilContentAppliesDefaults(t *testing.T) {
+	ctx := context.Background()
+
+	ct, st := NewInMemoryTransports()
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, &ClientOptions{
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := ss.Elicit(ctx, &ElicitParams{
+		Message: "Test defaults",
+		RequestedSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"ok": {Type: "boolean", Default: json.RawMessage(`true`)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Elicit failed: %v", err)
+	}
+	if got := res.Content["ok"]; got != true {
+		t.Fatalf("Elicit content default: got %v, want true", got)
+	}
 }
 
 func TestElicitationNoValidationWithoutAccept(t *testing.T) {

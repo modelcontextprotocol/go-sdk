@@ -1685,6 +1685,9 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if schema == nil {
 		return res, nil
 	}
+	if res.Content == nil {
+		res.Content = map[string]any{}
+	}
 
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
