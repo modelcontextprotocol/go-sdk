@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  CONFORMANCE_VERSION: "0.2.0-alpha.5"
+  CONFORMANCE_VERSION: "0.2.0-alpha.9"
 
 jobs:
   server-conformance:
@@ -43,7 +43,7 @@ jobs:
             --suite active \
             --spec-version 2025-11-25 \
             --expected-failures ./conformance/baseline.yml
-      - name: Run conformance tests (stateless, 2026-07-28)
+      - name: Run conformance tests (stateless, 2026-07-28, full suite)
         run: |
           ./everything-server -http=":3001" -stateless &
           SERVER_PID=$!
@@ -51,7 +51,7 @@ jobs:
           timeout 30 bash -c 'until curl -s http://localhost:3001/mcp > /dev/null; do sleep 0.5; done'
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
             --url http://localhost:3001/mcp \
-            --suite active \
+            --suite all \
             --spec-version 2026-07-28 \
             --expected-failures ./conformance/baseline.yml
 

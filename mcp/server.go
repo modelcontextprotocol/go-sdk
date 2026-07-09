@@ -1512,6 +1512,23 @@ func (ss *ServerSession) ID() string {
 	return ""
 }
 
+// assertServerInitiatedRequestAllowed returns an error when the session is
+// negotiated at protocol version >= 2026-07-28, where the spec (SEP-2322 /
+// SEP-2575) forbids server-initiated JSON-RPC requests for elicitation,
+// sampling, and roots: those interactions MUST be embedded as [InputRequests]
+// in an [InputRequiredResult] returned from a handler for one of the multi
+// round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
+func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
+	if iparams := ss.InitializeParams(); iparams != nil &&
+		iparams.ProtocolVersion >= protocolVersion20260728 {
+		return fmt.Errorf(
+			"%q cannot be sent while serving a request on protocol version %s: "+
+				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
+			method, iparams.ProtocolVersion)
+	}
+	return nil
+}
+
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
@@ -1527,6 +1544,9 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodListRoots); err != nil {
 		return nil, err
 	}
 	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
@@ -1545,6 +1565,9 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
 		return nil, err
 	}
 	if params == nil {
@@ -1590,6 +1613,9 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		params = &CreateMessageWithToolsParams{Messages: []*SamplingMessageV2{}}
 	}
@@ -1604,6 +1630,9 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 // Elicit sends an elicitation request to the client asking for user input.
 func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*ElicitResult, error) {
 	if err := ss.checkInitialized(methodElicit); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodElicit); err != nil {
 		return nil, err
 	}
 	if params == nil {

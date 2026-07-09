@@ -854,7 +854,7 @@ func TestNoJSONNull(t *testing.T) {
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1558,7 +1558,7 @@ func TestElicitContentValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,7 +1641,7 @@ func TestElicitationProgressToken(t *testing.T) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1720,7 +1720,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1757,7 +1757,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2079,8 +2079,22 @@ func TestSynchronousNotifications(t *testing.T) {
 				return new(CallToolResult), nil, nil
 			})
 		}
-		cs, ss, cleanup := basicClientServerConnection(t, client, server, addTool)
-		defer cleanup()
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		addTool(server)
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cs.Close()
+			ss.Wait()
+		})
 
 		t.Log("from client")
 		{

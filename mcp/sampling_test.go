@@ -53,7 +53,7 @@ func TestSamplingWithTools_ToolUse(t *testing.T) {
 	}
 	defer ss.Close()
 
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestSamplingWithTools_ToolResult(t *testing.T) {
 	}
 	defer ss.Close()
 
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestSamplingWithTools_ToolResultWithError(t *testing.T) {
 	}
 	defer ss.Close()
 
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestSamplingWithTools_ParallelToolCalls(t *testing.T) {
 	}
 	defer ss.Close()
 
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestCreateMessage_MultipleContentError(t *testing.T) {
 	}
 	defer ss.Close()
 
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
