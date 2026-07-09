@@ -280,6 +280,41 @@ func TestServerRequestGetParamsMissingOptionalParams(t *testing.T) {
 	if got := req.GetParams(); got != nil {
 		t.Fatalf("GetParams() = %T, want nil", got)
 	}
+	typedReq := req.(*ServerRequest[*InitializedParams])
+	if typedReq.Params == nil {
+		t.Fatal("Params field is nil, want zero InitializedParams")
+	}
+	if typedReq.Params.GetMeta() != nil {
+		t.Fatalf("Params.GetMeta() = %v, want nil", typedReq.Params.GetMeta())
+	}
+}
+
+func TestClientRequestMissingOptionalParamsUsesZeroValue(t *testing.T) {
+	info := newClientMethodInfo(
+		func(context.Context, *ClientRequest[*PingParams]) (*emptyResult, error) {
+			return &emptyResult{}, nil
+		},
+		missingParamsOK,
+	)
+	params, err := info.unmarshalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params != nil {
+		t.Fatalf("unmarshalParams returned %T, want nil", params)
+	}
+
+	req := info.newRequest(&ClientSession{}, params, nil)
+	if got := req.GetParams(); got != nil {
+		t.Fatalf("GetParams() = %T, want nil", got)
+	}
+	typedReq := req.(*ClientRequest[*PingParams])
+	if typedReq.Params == nil {
+		t.Fatal("Params field is nil, want zero PingParams")
+	}
+	if typedReq.Params.GetMeta() != nil {
+		t.Fatalf("Params.GetMeta() = %v, want nil", typedReq.Params.GetMeta())
+	}
 }
 
 func TestRequestGetParamsTypedNilCustomParams(t *testing.T) {
