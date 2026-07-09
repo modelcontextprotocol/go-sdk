@@ -1399,6 +1399,108 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 	})
 }
 
+func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: []string{"go"},
+				},
+			}, nil
+		},
+	})
+	newProtocolParams := func(fields map[string]any) map[string]any {
+		params := map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260728,
+				MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+				MetaKeyClientCapabilities: map[string]any{},
+			},
+		}
+		for k, v := range fields {
+			params[k] = v
+		}
+		return params
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{
+			name:   "discover",
+			method: methodDiscover,
+			params: newProtocolParams(nil),
+		},
+		{
+			name:   "tools list",
+			method: methodListTools,
+			params: newProtocolParams(nil),
+		},
+		{
+			name:   "prompts list",
+			method: methodListPrompts,
+			params: newProtocolParams(nil),
+		},
+		{
+			name:   "resources list",
+			method: methodListResources,
+			params: newProtocolParams(nil),
+		},
+		{
+			name:   "resource templates list",
+			method: methodListResourceTemplates,
+			params: newProtocolParams(nil),
+		},
+		{
+			name:   "complete",
+			method: methodComplete,
+			params: newProtocolParams(map[string]any{
+				"argument": map[string]any{
+					"name":  "language",
+					"value": "g",
+				},
+				"ref": map[string]any{
+					"type": "ref/prompt",
+					"name": "code_review",
+				},
+			}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: server}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := ss.handle(context.Background(), &jsonrpc.Request{
+				ID:     id,
+				Method: tc.method,
+				Params: mustMarshal(tc.params),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				ResultType string `json:"resultType"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ResultType != string(resultTypeComplete) {
+				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, resultTypeComplete, data)
+			}
+		})
+	}
+}
+
 // TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol verifies that
 // the methods removed by SEP-2575 (`initialize`, `notifications/initialized`,
 // `ping`) all return Method not found when the request opts into the new

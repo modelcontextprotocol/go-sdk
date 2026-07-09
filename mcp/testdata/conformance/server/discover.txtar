@@ -36,6 +36,7 @@ supports, its capabilities, and its identity.
 		"serverInfo": {
 			"name": "testServer",
 			"version": "v1.0.0"
-		}
+		},
+		"resultType": "complete"
 	}
 }
