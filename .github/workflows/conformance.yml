@@ -68,9 +68,9 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 22
-      - name: Run conformance tests
+      - name: Run conformance tests (full suite)
         run: |
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" client \
             --command "go run ./conformance/everything-client" \
-            --suite core \
+            --suite all \
             --expected-failures ./conformance/baseline.yml
