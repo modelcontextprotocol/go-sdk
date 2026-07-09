@@ -308,27 +308,14 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 // request-metadata scenario (SEP-2575)
 // ============================================================================
 
+// runRequestMetadataClient exercises the SEP-2575 wire-level negotiation:
+// every request must carry the MCP-Protocol-Version header and the per-request
+// _meta envelope, and the client must retry with a supported version when its
+// first choice is rejected with -32022. The Go SDK's Connect() drives
+// server/discover unconditionally for 2026-07-28, which is exactly that
+// mechanism.
 func runRequestMetadataClient(ctx context.Context, serverURL string, _ map[string]any) error {
-	elicitationHandler := func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
-		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
-	}
-	samplingHandler := func(context.Context, *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
-		return &mcp.CreateMessageResult{
-			Model:      "test-model",
-			Role:       "assistant",
-			Content:    &mcp.TextContent{Text: ""},
-			StopReason: "endTurn",
-		}, nil
-	}
-	session, err := connectToServer(ctx, serverURL, withClientOptions(&mcp.ClientOptions{
-		Capabilities: &mcp.ClientCapabilities{
-			RootsV2:     &mcp.RootCapabilities{ListChanged: true},
-			Sampling:    &mcp.SamplingCapabilities{},
-			Elicitation: &mcp.ElicitationCapabilities{},
-		},
-		ElicitationHandler:   elicitationHandler,
-		CreateMessageHandler: samplingHandler,
-	}))
+	session, err := connectToServer(ctx, serverURL)
 	if err != nil {
 		return err
 	}
