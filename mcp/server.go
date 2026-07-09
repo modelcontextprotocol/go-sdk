@@ -1906,41 +1906,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, err
 	}
 	if validatedMeta.usesNewProtocol {
-		return withCompleteResultType(res), nil
+		setCompleteResultType(res)
 	}
 	return res, nil
-}
-
-func withCompleteResultType(res Result) any {
-	switch res.(type) {
-	case *CompleteResult, *DiscoverResult, *ListPromptsResult, *ListResourceTemplatesResult, *ListResourcesResult, *ListToolsResult:
-		return completeResult{Result: res}
-	default:
-		return res
-	}
-}
-
-type completeResult struct {
-	Result
-}
-
-func (r completeResult) MarshalJSON() ([]byte, error) {
-	data, err := json.Marshal(r.Result)
-	if err != nil {
-		return nil, err
-	}
-	data = bytes.TrimSpace(data)
-	if len(data) == 2 && data[0] == '{' && data[1] == '}' {
-		return []byte(`{"resultType":"complete"}`), nil
-	}
-	if len(data) < 2 || data[0] != '{' || data[len(data)-1] != '}' {
-		return data, nil
-	}
-	out := make([]byte, 0, len(data)+len(`,"resultType":"complete"`))
-	out = append(out, data[:len(data)-1]...)
-	out = append(out, `,"resultType":"complete"`...)
-	out = append(out, '}')
-	return out, nil
 }
 
 // InitializeParams returns the InitializeParams provided during the client's
