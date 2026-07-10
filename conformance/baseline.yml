@@ -1,2 +1,13 @@
 server: [] # All tests pass!
-client: [] # All tests pass!
+
+client:
+  # OAuth mechanisms not yet implemented by the Go MCP SDK.
+  - auth/client-credentials-basic
+  - auth/client-credentials-jwt
+  - auth/enterprise-managed-authorization
+
+  # Upstream conformance mock inconsistency: the scenario's hand-rolled
+  # server/discover handler advertises "2026-07-28" but delegates every
+  # other method to a pinned @modelcontextprotocol/sdk that rejects that
+  # version at the HTTP layer.
+  - json-schema-ref-no-deref
