@@ -1451,3 +1451,101 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 		})
 	}
 }
+
+// TestServerSession_RejectsServerInitiatedRequests verifies that
+// SEP-2322 / SEP-2575 is enforced at the API surface: [ServerSession.Elicit],
+// [ServerSession.CreateMessage], [ServerSession.CreateMessageWithTools], and
+// [ServerSession.ListRoots] must refuse to send a server-to-client request
+// when the session is negotiated at protocol version >= 2026-07-28, and must
+// remain functional on pre-2026-07-28 sessions.
+func TestServerSession_RejectsServerInitiated(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		call func(*ServerSession) error
+	}{
+		{
+			name: "Elicit",
+			call: func(ss *ServerSession) error {
+				_, err := ss.Elicit(ctx, &ElicitParams{Message: "hi"})
+				return err
+			},
+		},
+		{
+			name: "CreateMessage",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessage(ctx, &CreateMessageParams{})
+				return err
+			},
+		},
+		{
+			name: "CreateMessageWithTools",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{})
+				return err
+			},
+		},
+		{
+			name: "ListRoots",
+			call: func(ss *ServerSession) error {
+				_, err := ss.ListRoots(ctx, nil)
+				return err
+			},
+		},
+	}
+
+	// Cover both branches of the era gate: modern must reject, legacy must let
+	// the call proceed to the wire (where it either succeeds or fails on
+	// something unrelated to the guard, such as missing client capabilities).
+	for _, protoVer := range []string{protocolVersion20260728, protocolVersion20251125} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", protoVer, tc.name), func(t *testing.T) {
+				ct, st := NewInMemoryTransports()
+				s := NewServer(testImpl, nil)
+				ss, err := s.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+
+				// Client advertises every server-to-client capability so a
+				// legacy-era call is not rejected for capability reasons
+				// instead of era reasons.
+				c := NewClient(testImpl, &ClientOptions{
+					ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+						return &ElicitResult{Action: "cancel"}, nil
+					},
+					CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+						return &CreateMessageResult{Model: "m", Role: "assistant", Content: &TextContent{Text: "ok"}}, nil
+					},
+				})
+				c.AddRoots(&Root{URI: "file:///workspace"})
+				cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protoVer})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cs.Close() })
+
+				gotErr := tc.call(ss)
+				modern := protoVer >= protocolVersion20260728
+				if modern {
+					if gotErr == nil {
+						t.Fatalf("%s on %s: got nil error, want era-gate rejection", tc.name, protoVer)
+					}
+					wantSubstr := "cannot be sent while serving a request on protocol version " + protoVer
+					if !strings.Contains(gotErr.Error(), wantSubstr) {
+						t.Errorf("%s on %s: error %q does not contain %q", tc.name, protoVer, gotErr.Error(), wantSubstr)
+					}
+					if !strings.Contains(gotErr.Error(), "multi round-trip requests") {
+						t.Errorf("%s on %s: error %q does not steer to MRTR", tc.name, protoVer, gotErr.Error())
+					}
+				} else {
+					if gotErr != nil {
+						t.Errorf("%s on %s: got error %v, want nil (era gate must not fire on legacy)", tc.name, protoVer, gotErr)
+					}
+				}
+			})
+		}
+	}
+}
