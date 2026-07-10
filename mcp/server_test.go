@@ -1399,7 +1399,7 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 	})
 }
 
-func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
+func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
 	server := NewServer(testImpl, &ServerOptions{
 		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
 			return &CompleteResult{
@@ -1408,6 +1408,21 @@ func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
 				},
 			}, nil
 		},
+	})
+	AddTool(server, &Tool{Name: "tool"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil, nil
+	})
+	server.AddPrompt(&Prompt{Name: "prompt"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
+	})
+	server.AddResource(&Resource{URI: "test://resource", Name: "resource"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
 	})
 	newProtocolParams := func(fields map[string]any) map[string]any {
 		params := map[string]any{
@@ -1427,31 +1442,37 @@ func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
 		name   string
 		method string
 		params map[string]any
+		want   resultType
 	}{
 		{
 			name:   "discover",
 			method: methodDiscover,
 			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
 		},
 		{
 			name:   "tools list",
 			method: methodListTools,
 			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
 		},
 		{
 			name:   "prompts list",
 			method: methodListPrompts,
 			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
 		},
 		{
 			name:   "resources list",
 			method: methodListResources,
 			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
 		},
 		{
 			name:   "resource templates list",
 			method: methodListResourceTemplates,
 			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
 		},
 		{
 			name:   "complete",
@@ -1466,6 +1487,25 @@ func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
 					"name": "code_review",
 				},
 			}),
+			want: resultTypeComplete,
+		},
+		{
+			name:   "tool input required",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "prompt input required",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "prompt"}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "resource input required",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
+			want:   resultTypeInputRequired,
 		},
 	}
 
@@ -1494,8 +1534,8 @@ func TestServerSessionHandle_AddsResultTypeOnNewProtocol(t *testing.T) {
 			if err := json.Unmarshal(data, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.ResultType != string(resultTypeComplete) {
-				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, resultTypeComplete, data)
+			if got.ResultType != string(tc.want) {
+				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, tc.want, data)
 			}
 		})
 	}
