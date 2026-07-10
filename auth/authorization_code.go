@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -151,6 +152,9 @@ type AuthorizationCodeHandlerConfig struct {
 type AuthorizationCodeHandler struct {
 	config *AuthorizationCodeHandlerConfig
 
+	// mu protects concurrent access to tokenSource and grantedScopes.
+	mu sync.RWMutex
+
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
 
@@ -161,6 +165,8 @@ type AuthorizationCodeHandler struct {
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
 
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.tokenSource, nil
 }
 
@@ -323,7 +329,10 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	h.mu.RLock()
+	granted := h.grantedScopes[asm.Issuer]
+	h.mu.RUnlock()
+	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -634,31 +643,42 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	// completes. Use a background context that still carries the configured HTTP
 	// client so refreshes keep working for the life of the token source.
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
+	var ts oauth2.TokenSource
 	if h.config.NewTokenSource == nil {
-		h.tokenSource = cfg.TokenSource(refreshCtx, token)
+		ts = cfg.TokenSource(refreshCtx, token)
 	} else {
-		ts, err := h.config.NewTokenSource(refreshCtx, cfg, token)
+		var err error
+		ts, err = h.config.NewTokenSource(refreshCtx, cfg, token)
 		if err != nil {
 			return fmt.Errorf("constructing token source failed: %w", err)
 		}
-		h.tokenSource = ts
 	}
+	h.mu.Lock()
+	h.tokenSource = ts
+	h.mu.Unlock()
 	return nil
 }
 
 // updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
 func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
-	if h.tokenSource == nil {
+	h.mu.RLock()
+	ts := h.tokenSource
+	h.mu.RUnlock()
+
+	if ts == nil {
 		return nil
 	}
-	tok, err := h.tokenSource.Token()
+	tok, err := ts.Token()
 	if err != nil {
 		return err
 	}
+
+	h.mu.Lock()
 	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
 	}
+	h.mu.Unlock()
 	return nil
 }
