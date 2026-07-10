@@ -752,8 +752,12 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 	//
 	// Allow outgoing "notifications" forwarded by the Notify method.
 	// This will allow to send the cancelled notification when the client is shutting down.
+	// Allow outgoing responses for incoming requests when the read side of the connection is closed.
 	c.updateInFlight(func(s *inFlightState) {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
+			return
+		}
+		if _, ok := msg.(*Response); ok && s.readErr == io.EOF {
 			return
 		}
 		err = s.shuttingDown(ErrServerClosing)

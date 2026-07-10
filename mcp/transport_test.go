@@ -5,11 +5,15 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -145,5 +149,90 @@ func TestIOConnRead_EmptyMethod(t *testing.T) {
 	}
 	if req.ID != jsonrpc2.Int64ID(5) {
 		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+}
+
+// When the peer closes the read side of the transport immediately after sending
+// the last request, the server must still flush responses for requests it has
+// already accepted.
+func TestIOTransportFlushesOnReaderClose(t *testing.T) {
+	c2sRead, c2sWrite := io.Pipe()
+	s2cRead, s2cWrite := io.Pipe()
+
+	server := NewServer(&Implementation{Name: "test", Version: "v1.0.0"}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverExit := make(chan error, 1)
+	go func() {
+		serverExit <- server.Run(ctx, &IOTransport{Reader: c2sRead, Writer: s2cWrite})
+	}()
+
+	// Write initialize + tools/list back-to-back and immediately close the write side.
+	const requests = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+`
+	go func() {
+		if _, err := io.WriteString(c2sWrite, requests); err != nil {
+			t.Errorf("write requests: %v", err)
+		}
+		c2sWrite.Close()
+	}()
+
+	// Read responses off the server's output pipe with a bounded deadline.
+	// We expect two responses (ids 1 and 2). The notification does not
+	// generate a response.
+	type readResult struct {
+		responses []map[string]any
+		err       error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		var out []map[string]any
+		scanner := bufio.NewScanner(s2cRead)
+		for scanner.Scan() {
+			var msg map[string]any
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+				done <- readResult{out, err}
+				return
+			}
+			// Skip server-initiated notifications; count only responses.
+			if _, hasID := msg["id"]; hasID {
+				out = append(out, msg)
+				if len(out) >= 2 {
+					break
+				}
+			}
+		}
+		done <- readResult{out, scanner.Err()}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("read responses: %v", r.err)
+		}
+		if len(r.responses) != 2 {
+			t.Fatalf("got %d responses, want 2: %+v", len(r.responses), r.responses)
+		}
+		gotIDs := []any{r.responses[0]["id"], r.responses[1]["id"]}
+		wantIDs := []any{float64(1), float64(2)}
+		if diff := cmp.Diff(wantIDs, gotIDs); diff != "" {
+			t.Errorf("response IDs mismatch (-want +got):\n%s", diff)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for responses after reader close (issue #1061 regression)")
+	}
+
+	// Clean shutdown: cancel the server and drain its exit.
+	cancel()
+	s2cWrite.Close()
+	s2cRead.Close()
+	select {
+	case <-serverExit:
+	case <-time.After(2 * time.Second):
+		t.Log("server did not exit within 2s after cancel")
 	}
 }
