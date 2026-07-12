@@ -2092,7 +2092,7 @@ type ElicitParams struct {
 	// The mode of elicitation to use.
 	//
 	// If unset, will be inferred from the other fields.
-	Mode string `json:"mode"`
+	Mode string `json:"mode,omitempty"`
 	// The message to present to the user.
 	Message string `json:"message"`
 	// A JSON schema object defining the requested elicitation schema.
