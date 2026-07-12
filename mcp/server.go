@@ -1953,6 +1953,9 @@ func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, erro
 }
 
 func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelParams) (*emptyResult, error) {
+	if !isValidLoggingLevel(params.Level) {
+		return nil, fmt.Errorf("invalid logging level %q: must be one of debug, info, notice, warning, error, critical, alert, emergency", params.Level)
+	}
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})

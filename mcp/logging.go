@@ -63,6 +63,11 @@ func mcpLevelToSlog(ll LoggingLevel) slog.Level {
 	return LevelDebug
 }
 
+func isValidLoggingLevel(level LoggingLevel) bool {
+	_, ok := mcpToSlog[level]
+	return ok
+}
+
 // compareLevels behaves like [cmp.Compare] for [LoggingLevel]s.
 func compareLevels(l1, l2 LoggingLevel) int {
 	return cmp.Compare(mcpLevelToSlog(l1), mcpLevelToSlog(l2))
