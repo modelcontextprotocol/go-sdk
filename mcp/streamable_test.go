@@ -1647,7 +1647,7 @@ func TestEventID(t *testing.T) {
 }
 
 func TestStreamableStateless(t *testing.T) {
-	initReq := req(1, methodInitialize, &InitializeParams{})
+	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20251125})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &ServerCapabilities{
 			Logging: &LoggingCapabilities{},
@@ -1873,7 +1873,7 @@ func TestStreamableGET(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	post1 := newReq(http.MethodPost, req(1, methodInitialize, &InitializeParams{}))
+	post1 := newReq(http.MethodPost, req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20251125}))
 	resp, err = http.DefaultClient.Do(post1)
 	if err != nil {
 		t.Fatal(err)

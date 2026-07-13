@@ -662,6 +662,12 @@ func (s *Server) capabilities() *ServerCapabilities {
 }
 
 func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
+	if req.Params.Argument == (CompleteParamsArgument{}) {
+		return nil, fmt.Errorf("%w: missing required 'argument' field", jsonrpc2.ErrInvalidParams)
+	}
+	if req.Params.Ref == nil {
+		return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
+	}
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1119,6 +1125,9 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 }
 
 func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyResult, error) {
+	if req.Params.URI == "" {
+		return nil, fmt.Errorf("%w: missing required 'uri' field", jsonrpc2.ErrInvalidParams)
+	}
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscribe requires a request ID", jsonrpc2.ErrInvalidRequest)
@@ -1142,6 +1151,9 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 }
 
 func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emptyResult, error) {
+	if req.Params.URI == "" {
+		return nil, fmt.Errorf("%w: missing required 'uri' field", jsonrpc2.ErrInvalidParams)
+	}
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1916,6 +1928,9 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
+	if params.ProtocolVersion == "" {
+		return nil, fmt.Errorf("%w: missing required 'protocolVersion' field", jsonrpc2.ErrInvalidParams)
+	}
 	var wasInit bool
 	ss.updateState(func(state *ServerSessionState) {
 		wasInit = state.InitializeParams != nil
@@ -1953,6 +1968,9 @@ func (ss *ServerSession) cancel(context.Context, *CancelledParams) (Result, erro
 }
 
 func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelParams) (*emptyResult, error) {
+	if params.Level == "" {
+		return nil, fmt.Errorf("%w: missing required 'level' field", jsonrpc2.ErrInvalidParams)
+	}
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})
