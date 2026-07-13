@@ -63,6 +63,9 @@ func (m InputRequestMap) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if ep, ok := v.(*ElicitParams); ok {
+			v = ep.inferElicitMode()
+		}
 		converted[k] = &wire{Method: method, Params: v}
 	}
 	return json.Marshal(converted)
@@ -2125,6 +2128,21 @@ func (x *ElicitParams) isNil() bool     { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+// inferElicitMode returns x with Mode populated by inference if it was empty.
+// Mode is inferred as "url" when URL or ElicitationID is set, otherwise "form".
+func (x *ElicitParams) inferElicitMode() *ElicitParams {
+	if x == nil || x.Mode != "" {
+		return x
+	}
+	x2 := *x
+	if x.URL != "" || x.ElicitationID != "" {
+		x2.Mode = "url"
+	} else {
+		x2.Mode = "form"
+	}
+	return &x2
+}
 
 // The client's response to an elicitation/create request from the server.
 type ElicitResult struct {
