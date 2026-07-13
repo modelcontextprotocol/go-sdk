@@ -52,7 +52,7 @@ confirmThenGreet
 			"who": {
 				"method": "elicitation/create",
 				"params": {
-					"mode": "",
+					"mode": "form",
 					"message": "What is your name?",
 					"requestedSchema": {
 						"type": "object",
