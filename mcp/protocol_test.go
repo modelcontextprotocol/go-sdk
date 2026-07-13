@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestParamsMeta(t *testing.T) {
@@ -491,7 +492,7 @@ func TestCompleteResult(t *testing.T) {
 			if err := json.Unmarshal([]byte(test.in), &got); err != nil {
 				t.Fatalf("json.Unmarshal(CompleteResult) failed: %v", err)
 			}
-			if diff := cmp.Diff(test.want, got); diff != "" {
+			if diff := cmp.Diff(test.want, got, cmpopts.IgnoreUnexported(CompleteResult{})); diff != "" {
 				t.Errorf("CompleteResult unmarshal mismatch (-want +got):\n%s", diff)
 			}
 		})
