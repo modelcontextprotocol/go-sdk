@@ -1639,15 +1639,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		return nil, fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
 	}
 
-	if params.Mode == "" {
-		params2 := *params
-		if params.URL != "" || params.ElicitationID != "" {
-			params2.Mode = "url"
-		} else {
-			params2.Mode = "form"
-		}
-		params = &params2
-	}
+	params = params.inferElicitMode()
 
 	if iparams := ss.InitializeParams(); iparams == nil || iparams.Capabilities == nil || iparams.Capabilities.Elicitation == nil {
 		return nil, fmt.Errorf("client does not support elicitation")
