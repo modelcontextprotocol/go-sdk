@@ -1233,3 +1233,92 @@ func validConfig() *AuthorizationCodeHandlerConfig {
 		},
 	}
 }
+
+func TestNewTokenSource(t *testing.T) {
+	// mock the /token endpoint to successfully return an access token on code exchange
+	mockTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"access_token": "test_token", "token_type": "bearer"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockTS.Close()
+
+	// configure the handler and set NewTokenSource
+	var called bool
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			u, _ := url.Parse(args.URL)
+			return &AuthorizationResult{
+				Code:  "test_code",
+				State: u.Query().Get("state"),
+			}, nil
+		},
+		NewTokenSource: func(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) (oauth2.TokenSource, error) {
+			called = true
+			return oauth2.StaticTokenSource(token), nil
+		},
+		Client: mockTS.Client(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Simulate a 401 response from a resource server.
+	// The WWW-Authenticate: Bearer header triggers the authorization logic.
+	req := httptest.NewRequest(http.MethodGet, mockTS.URL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer")
+
+	// Authorize and confirm NewTokenSource was called.
+	err = handler.Authorize(t.Context(), req, resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected NewTokenSource to be called")
+	}
+}
+
+func TestInitialTokenSource(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, nil
+		},
+		InitialTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "set_token"}),
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	ts, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("failed to get token source: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("expected token source to be non-nil")
+	}
+
+	tok, err := ts.Token()
+	if err != nil {
+		t.Fatalf("failed to get Token: %v", err)
+	}
+	if tok.AccessToken != "set_token" {
+		t.Errorf("expected access token 'set_token', got '%s'", tok.AccessToken)
+	}
+}
