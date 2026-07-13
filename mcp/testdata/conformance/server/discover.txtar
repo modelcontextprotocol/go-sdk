@@ -21,6 +21,7 @@ supports, its capabilities, and its identity.
 	"jsonrpc": "2.0",
 	"id": 1,
 	"result": {
+		"resultType": "complete",
 		"ttlMs": 0,
 		"cacheScope": "public",
 		"supportedVersions": [

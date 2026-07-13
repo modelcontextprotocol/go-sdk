@@ -1893,7 +1893,14 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if validatedMeta.usesNewProtocol {
 		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
 	}
-	return handleReceive(ctx, ss, req)
+	res, err := handleReceive(ctx, ss, req)
+	if err != nil {
+		return nil, err
+	}
+	if validatedMeta.usesNewProtocol {
+		setCompleteResultType(res)
+	}
+	return res, nil
 }
 
 // InitializeParams returns the InitializeParams provided during the client's
