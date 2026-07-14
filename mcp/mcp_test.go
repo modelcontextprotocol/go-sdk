@@ -854,7 +854,7 @@ func TestNoJSONNull(t *testing.T) {
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1558,7 +1558,7 @@ func TestElicitContentValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,7 +1641,7 @@ func TestElicitationProgressToken(t *testing.T) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1720,7 +1720,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1757,7 +1757,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2079,8 +2079,22 @@ func TestSynchronousNotifications(t *testing.T) {
 				return new(CallToolResult), nil, nil
 			})
 		}
-		cs, ss, cleanup := basicClientServerConnection(t, client, server, addTool)
-		defer cleanup()
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		addTool(server)
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cs.Close()
+			ss.Wait()
+		})
 
 		t.Log("from client")
 		{
@@ -2649,6 +2663,48 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 	case e := <-events:
 		t.Fatalf("unexpected event %q on no-handler client", e.kind)
 	case <-time.After(notificationDelay * 10):
+	}
+}
+
+// TestSubscriptionsListen_MissingNotifications verifies that a
+// subscriptions/listen request without the required "notifications" field
+// is rejected with an invalid params error.
+func TestSubscriptionsListen_MissingNotifications(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server := newSubListenServer()
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// Invoke the server handler directly with a nil Notifications field,
+	// simulating a request whose params omit the required field on the wire.
+	// The client-side subscriptionsListen does not await the RPC response
+	// (the call's lifetime is the notification stream), so we assert the
+	// server-side behavior at the handler level.
+	id, err := jsonrpc.MakeID("test-1")
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+	reqCtx := context.WithValue(ctx, idContextKey{}, id)
+	req := &SubscriptionsListenRequest{
+		Session: ss,
+		Params:  &SubscriptionsListenParams{}, // Notifications is nil
+	}
+	_, err = server.subscriptionsListen(reqCtx, req)
+	if err == nil {
+		t.Fatal("expected error for missing notifications field, got nil")
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
 	}
 }
 
@@ -3231,5 +3287,147 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 				inTool, inPrompt, inResource)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCustomMethods(t *testing.T) {
+	type searchParams struct {
+		ParamsBase
+		Query string `json:"query"`
+		Limit int    `json:"limit,omitempty"`
+	}
+
+	type searchResult struct {
+		ResultBase
+		Hits  []string `json:"hits"`
+		Total int      `json:"total"`
+	}
+
+	callCustom := func(ctx context.Context, conn *jsonrpc2.Connection, method string, params, result any) error {
+		return conn.Call(ctx, method, params).Await(ctx, result)
+	}
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+
+	if err := AddReceivingCustomMethod(s, "acme/search", func(ctx context.Context, ss *ServerSession, params *searchParams) (*searchResult, error) {
+		hits := []string{"result for " + params.Query}
+		return &searchResult{
+			Hits:  hits,
+			Total: len(hits),
+		}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search"); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	// Test raw JSON-RPC call.
+	var result1 searchResult
+	if err := callCustom(ctx, cs.getConn(), "acme/search", &searchParams{Query: "hello", Limit: 10}, &result1); err != nil {
+		t.Fatal(err)
+	}
+	if len(result1.Hits) != 1 || result1.Hits[0] != "result for hello" {
+		t.Errorf("raw call: unexpected hits: %v", result1.Hits)
+	}
+	if result1.Total != 1 {
+		t.Errorf("raw call: unexpected total: %d", result1.Total)
+	}
+
+	// Test the typed CallCustomMethod helper.
+	result2, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/search", &searchParams{Query: "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result2.Hits) != 1 || result2.Hits[0] != "result for world" {
+		t.Errorf("CallCustomMethod: unexpected hits: %v", result2.Hits)
+	}
+	if result2.Total != 1 {
+		t.Errorf("CallCustomMethod: unexpected total: %d", result2.Total)
+	}
+
+	// CallCustomMethod must reject methods that were never registered.
+	if _, err := CallCustomMethod[*searchParams, *searchResult](
+		ctx, cs, "acme/unregistered", &searchParams{Query: "x"}); err == nil {
+		t.Error("CallCustomMethod: expected error for unregistered method, got nil")
+	}
+}
+
+func TestAddCustomMethodRejectsStandardMethods(t *testing.T) {
+	type params struct{ ParamsBase }
+	type result struct{ ResultBase }
+
+	t.Run("server", func(t *testing.T) {
+		s := NewServer(testImpl, nil)
+		err := AddReceivingCustomMethod(s, "tools/call",
+			func(ctx context.Context, ss *ServerSession, p *params) (*result, error) {
+				return &result{}, nil
+			})
+		if err == nil {
+			t.Fatal("AddReceivingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
+
+	t.Run("client", func(t *testing.T) {
+		c := NewClient(testImpl, nil)
+		if err := AddSendingCustomMethod[*params, *result](c, "tools/call"); err == nil {
+			t.Fatal("AddSendingCustomMethod: expected error when shadowing a standard method, got nil")
+		}
+	})
+}
+
+// TestCallCustomMethodTypedNilParams exercises the typed-nil params path.
+// User param types embed ParamsBase, so the inherited isNil forwarder would
+// dereference a typed-nil outer if injectRequestMeta were called with it.
+// CallCustomMethod must allocate a fresh value before the meta-injection step.
+func TestCallCustomMethodTypedNilParams(t *testing.T) {
+	type pingParams struct{ ParamsBase }
+	type pingResult struct{ ResultBase }
+
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(s, "acme/ping",
+		func(ctx context.Context, ss *ServerSession, p *pingParams) (*pingResult, error) {
+			return &pingResult{}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	var typedNil *pingParams
+	if _, err := CallCustomMethod[*pingParams, *pingResult](ctx, cs, "acme/ping", typedNil); err != nil {
+		t.Fatalf("CallCustomMethod with typed-nil params: %v", err)
 	}
 }

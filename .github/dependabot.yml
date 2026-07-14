@@ -5,3 +5,11 @@ updates:
   directory: "/"
   schedule:
     interval: "monthly"
+  # Group all github/codeql-action/* sub-paths (init, analyze, ...) into a
+  # single PR so they are always bumped together. Bumping them independently
+  # leaves the workflow with mismatched versions across steps, which
+  # github/codeql-action rejects at runtime.
+  groups:
+    codeql-action:
+      patterns:
+        - "github/codeql-action/*"

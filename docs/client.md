@@ -45,26 +45,27 @@ pattern.
 func Example_roots() {
 	ctx := context.Background()
 
-	// Create a client with a single root.
+	// Create a client with two roots.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	c.AddRoots(&mcp.Root{URI: "file://a"})
+	c.AddRoots(&mcp.Root{URI: "file://a"}, &mcp.Root{URI: "file://b"})
 
-	// Now create a server with a handler to receive notifications about roots.
-	rootsChanged := make(chan struct{})
-	handleRootsChanged := func(ctx context.Context, req *mcp.RootsListChangedRequest) {
-		rootList, err := req.Session.ListRoots(ctx, nil)
-		if err != nil {
-			log.Fatal(err)
+	// Create a server with a tool that requests roots via the multi round-trip
+	// pattern (SEP-2322): server-to-client requests are no longer sent as
+	// standalone JSON-RPC calls on protocol version >= 2026-07-28.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "roots"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"roots": &mcp.ListRootsParams{}},
+			}, nil, nil
 		}
+		rootList := req.Params.InputResponses["roots"].(*mcp.ListRootsResult)
 		var roots []string
 		for _, root := range rootList.Roots {
 			roots = append(roots, root.URI)
 		}
 		fmt.Println(roots)
-		close(rootsChanged)
-	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
-		RootsListChangedHandler: handleRootsChanged,
+		return &mcp.CallToolResult{}, nil, nil
 	})
 
 	// Connect the server and client...
@@ -81,9 +82,11 @@ func Example_roots() {
 	}
 	defer clientSession.Close()
 
-	// ...and add a root. The server is notified about the change.
-	c.AddRoots(&mcp.Root{URI: "file://b"})
-	<-rootsChanged
+	// ...and call the tool. The client's multi round-trip driver fulfils the
+	// embedded roots/list request and retries the call.
+	if _, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "roots"}); err != nil {
+		log.Fatal(err)
+	}
 	// Output: [file://a file://b]
 }
 ```
@@ -130,22 +133,35 @@ func Example_sampling() {
 
 	// Connect the server and client...
 	ct, st := mcp.NewInMemoryTransports()
+	// Create a server with a tool that requests sampling via the multi
+	// round-trip pattern (SEP-2322): server-to-client requests are no longer
+	// sent as standalone JSON-RPC calls on protocol version >= 2026-07-28.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "sample"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"msg": &mcp.CreateMessageParams{}},
+			}, nil, nil
+		}
+		msg := req.Params.InputResponses["msg"].(*mcp.CreateMessageWithToolsResult)
+		return &mcp.CallToolResult{Content: msg.Content}, nil, nil
+	})
 	session, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-
-	msg, err := session.CreateMessage(ctx, &mcp.CreateMessageParams{})
+	clientSession, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(msg.Content.(*mcp.TextContent).Text)
+
+	res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "sample"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
 	// Output: would have created a message
 }
 ```
@@ -175,7 +191,28 @@ func Example_elicitation() {
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 
+	// Create a server with a tool that requests elicitation via the multi
+	// round-trip pattern (SEP-2322): server-to-client requests are no longer
+	// sent as standalone JSON-RPC calls on protocol version >= 2026-07-28.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "ask"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"input": &mcp.ElicitParams{
+					Message: "This should fail",
+					RequestedSchema: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"test": {Type: "string"},
+						},
+					},
+				}},
+			}, nil, nil
+		}
+		res := req.Params.InputResponses["input"].(*mcp.ElicitResult)
+		fmt.Println(res.Content["test"])
+		return &mcp.CallToolResult{}, nil, nil
+	})
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -187,22 +224,13 @@ func Example_elicitation() {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-	res, err := ss.Elicit(ctx, &mcp.ElicitParams{
-		Message: "This should fail",
-		RequestedSchema: &jsonschema.Schema{
-			Type: "object",
-			Properties: map[string]*jsonschema.Schema{
-				"test": {Type: "string"},
-			},
-		},
-	})
+	clientSession, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(res.Content["test"])
+	if _, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "ask"}); err != nil {
+		log.Fatal(err)
+	}
 	// Output: value
 }
 ```

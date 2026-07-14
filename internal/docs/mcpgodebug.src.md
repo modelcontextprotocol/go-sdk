@@ -49,6 +49,12 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   restoring the previous behavior. The default behavior was changed so that
   the client always attempts to surface the underlying JSON-RPC error.
 
+- `disablecompleteparamsvalidation` added. If set to `1`, `Server.complete`
+  will not validate that the required `ref` and `argument.name` fields on
+  `CompleteParams` are present, restoring the previous behavior of dispatching
+  the request to the completion handler unconditionally. The default behavior
+  was changed to reject malformed requests with `-32602` (Invalid Params).
+
 ### 1.6.1
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.

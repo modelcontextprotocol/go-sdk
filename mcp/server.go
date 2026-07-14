@@ -27,6 +27,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/yosida95/uritemplate/v3"
@@ -57,6 +58,11 @@ type Server struct {
 	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID            // session -> requestID for "resources/changed"
 	resourceSubscriptions       map[string]map[*ServerSession]jsonrpc.ID // uri -> session -> requestID
 	pendingNotifications        map[string]*time.Timer                   // notification name -> timer for pending notification send
+	// receiveMethods is the merged map of methods this server may receive
+	// from a client: it always contains the standard server methods (from
+	// serverMethodInfos) plus any custom methods registered via
+	// [AddReceivingCustomMethod].
+	receiveMethods map[string]methodInfo
 }
 
 // ServerOptions is used to configure behavior of the server.
@@ -203,6 +209,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.Logger = ensureLogger(nil)
 	}
 
+	receiveMethods := make(map[string]methodInfo, len(serverMethodInfos))
+	maps.Copy(receiveMethods, serverMethodInfos)
+
 	s := &Server{
 		impl:                        impl,
 		opts:                        opts,
@@ -217,6 +226,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceChangeSubscriptions: make(map[*ServerSession]jsonrpc.ID),
 		resourceSubscriptions:       make(map[string]map[*ServerSession]jsonrpc.ID),
 		pendingNotifications:        make(map[string]*time.Timer),
+		receiveMethods:              receiveMethods,
 	}
 	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
 	return s
@@ -652,7 +662,23 @@ func (s *Server) capabilities() *ServerCapabilities {
 	return caps
 }
 
+// disablecompleteparamsvalidation is a compatibility parameter that restores
+// the previous behavior of [Server.complete], where required fields on
+// [CompleteParams] were not validated before dispatching to the completion
+// handler. See the documentation for the mcpgodebug package for instructions
+// how to enable it.
+// The option will be removed in a future version of the SDK.
+var disablecompleteparamsvalidation = mcpgodebug.Value("disablecompleteparamsvalidation")
+
 func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
+	if disablecompleteparamsvalidation != "1" {
+		if req.Params.Ref == nil {
+			return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
+		}
+		if req.Params.Argument.Name == "" {
+			return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
+		}
+	}
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1160,6 +1186,10 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
 	}
 
+	if req.Params.Notifications == nil {
+		return nil, fmt.Errorf("%w: missing required 'notifications' field", jsonrpc2.ErrInvalidParams)
+	}
+
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
 	s.mu.Lock()
 	if allowed.ToolsListChanged {
@@ -1208,11 +1238,14 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
 	}
 
-	<-ctx.Done()
+	// If there are any active subscriptions, we block until the context is cancelled. Otherwise, we return immediately.
+	if len(allowed.ResourceSubscriptions) > 0 || allowed.ToolsListChanged || allowed.PromptsListChanged || allowed.ResourcesListChanged {
+		<-ctx.Done()
+	}
 	return &emptyResult{}, nil
 }
 
-func (s *Server) allowedSubscriptions(want NotificationSubscriptions) NotificationSubscriptions {
+func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {
 	caps := s.capabilities()
 	agreed := NotificationSubscriptions{}
 	if want.ToolsListChanged && caps.Tools != nil && caps.Tools.ListChanged {
@@ -1496,6 +1529,23 @@ func (ss *ServerSession) ID() string {
 	return ""
 }
 
+// assertServerInitiatedRequestAllowed returns an error when the session is
+// negotiated at protocol version >= 2026-07-28, where the spec (SEP-2322 /
+// SEP-2575) forbids server-initiated JSON-RPC requests for elicitation,
+// sampling, and roots: those interactions MUST be embedded as [InputRequests]
+// in an [InputRequiredResult] returned from a handler for one of the multi
+// round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
+func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
+	if iparams := ss.InitializeParams(); iparams != nil &&
+		iparams.ProtocolVersion >= protocolVersion20260728 {
+		return fmt.Errorf(
+			"%q cannot be sent while serving a request on protocol version %s: "+
+				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
+			method, iparams.ProtocolVersion)
+	}
+	return nil
+}
+
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
@@ -1511,6 +1561,9 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodListRoots); err != nil {
 		return nil, err
 	}
 	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
@@ -1529,6 +1582,9 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
 		return nil, err
 	}
 	if params == nil {
@@ -1574,6 +1630,9 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		params = &CreateMessageWithToolsParams{Messages: []*SamplingMessageV2{}}
 	}
@@ -1590,19 +1649,14 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
 	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodElicit); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		return nil, fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
 	}
 
-	if params.Mode == "" {
-		params2 := *params
-		if params.URL != "" || params.ElicitationID != "" {
-			params2.Mode = "url"
-		} else {
-			params2.Mode = "form"
-		}
-		params = &params2
-	}
+	params = params.inferElicitMode()
 
 	if iparams := ss.InitializeParams(); iparams == nil || iparams.Capabilities == nil || iparams.Capabilities.Elicitation == nil {
 		return nil, fmt.Errorf("client does not support elicitation")
@@ -1626,7 +1680,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		return nil, err
 	}
 
-	if res.Action != "accept" {
+	if res.Action != "accept" || res.Content == nil {
 		return res, nil
 	}
 
@@ -1761,7 +1815,15 @@ func initializeMethodInfo() methodInfo {
 
 func (ss *ServerSession) sendingMethodInfos() map[string]methodInfo { return clientMethodInfos }
 
-func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo { return serverMethodInfos }
+func (s *Server) receivingMethodInfos() map[string]methodInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.receiveMethods
+}
+
+func (ss *ServerSession) receivingMethodInfos() map[string]methodInfo {
+	return ss.server.receivingMethodInfos()
+}
 
 func (ss *ServerSession) sendingMethodHandler() MethodHandler {
 	s := ss.server
@@ -1848,7 +1910,14 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if validatedMeta.usesNewProtocol {
 		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
 	}
-	return handleReceive(ctx, ss, req)
+	res, err := handleReceive(ctx, ss, req)
+	if err != nil {
+		return nil, err
+	}
+	if validatedMeta.usesNewProtocol {
+		setCompleteResultType(res)
+	}
+	return res, nil
 }
 
 // InitializeParams returns the InitializeParams provided during the client's
@@ -2015,4 +2084,56 @@ func paginateList[P listParams, R listResult[T], T any](fs *featureSet[T], pageS
 	}
 	*res.nextCursorPtr() = nextCursor
 	return res, nil
+}
+
+// AddReceivingCustomMethod registers a handler for a custom (non-standard)
+// JSON-RPC method on the server.
+//
+// When a client sends a request with the given method name, the params will be
+// unmarshaled into P, the handler will be called, and the returned R will be
+// marshaled as the JSON-RPC result.
+//
+// Custom methods go through the server's middleware chain just like standard
+// MCP methods (tools/call, prompts/list, etc.).
+//
+// P and R must implement [Params] and [Result] respectively, which is most
+// easily done by embedding [ParamsBase] and [ResultBase]:
+//
+//	type SearchParams struct {
+//	    mcp.ParamsBase
+//	    Query string `json:"query"`
+//	}
+//
+//	type SearchResult struct {
+//	    mcp.ResultBase
+//	    Hits []string `json:"hits"`
+//	}
+//
+//	if err := mcp.AddReceivingCustomMethod(server, "acme/search",
+//	    func(ctx context.Context, ss *mcp.ServerSession, params *SearchParams) (*SearchResult, error) {
+//	        return &SearchResult{Hits: []string{"result"}}, nil
+//	    }); err != nil {
+//	    return err
+//	}
+//
+// AddReceivingCustomMethod returns an error if method is the name of a
+// standard MCP method. Registering the same custom method twice replaces the
+// previous handler.
+func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
+	s *Server,
+	method string,
+	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
+) error {
+	if _, ok := serverMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddReceivingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
+	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.receiveMethods[method] = newServerMethodInfo(typed, missingParamsOK)
+	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -126,12 +127,33 @@ type AuthorizationCodeHandlerConfig struct {
 	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
 	// If not provided, http.DefaultClient will be used.
 	Client *http.Client
+
+	// NewTokenSource is an optional function that can be set to construct the
+	// token source that will be used by the [AuthorizationCodeHandler]. If
+	// non-nil, it is called after the authorization code is successfully
+	// exchanged for a token in [AuthorizationCodeHandler.Authorize]
+	// to obtain the [oauth2.TokenSource] returned by
+	// [AuthorizationCodeHandler.TokenSource]. Implementations must use the
+	// provided context, which is properly configured for constructing a
+	// TokenSource. The default is to call [oauth2.Config.TokenSource].
+	NewTokenSource func(context.Context, *oauth2.Config, *oauth2.Token) (oauth2.TokenSource, error)
+
+	// InitialTokenSource is an optional field that can be set to inject the
+	// token source that will be used by the [AuthorizationCodeHandler]. If
+	// non-nil, it is set as the token source that will be returned by
+	// [AuthorizationCodeHandler.TokenSource] during handler initialization.
+	// The default is nil, which means no token source has been set initially,
+	// and will trigger a call to [AuthorizationCodeHandler.Authorize].
+	InitialTokenSource oauth2.TokenSource
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
 // the authorization code flow to obtain access tokens.
 type AuthorizationCodeHandler struct {
 	config *AuthorizationCodeHandlerConfig
+
+	// mu protects concurrent access to tokenSource and grantedScopes.
+	mu sync.RWMutex
 
 	// tokenSource is the token source to use for authorization.
 	tokenSource oauth2.TokenSource
@@ -143,6 +165,8 @@ type AuthorizationCodeHandler struct {
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
 
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.tokenSource, nil
 }
 
@@ -199,6 +223,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	}
 	return &AuthorizationCodeHandler{
 		config:        config,
+		tokenSource:   config.InitialTokenSource,
 		grantedScopes: make(map[string][]string),
 	}, nil
 }
@@ -304,7 +329,10 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	h.mu.RLock()
+	granted := h.grantedScopes[asm.Issuer]
+	h.mu.RUnlock()
+	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
@@ -615,23 +643,42 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	// completes. Use a background context that still carries the configured HTTP
 	// client so refreshes keep working for the life of the token source.
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
-	h.tokenSource = cfg.TokenSource(refreshCtx, token)
+	var ts oauth2.TokenSource
+	if h.config.NewTokenSource == nil {
+		ts = cfg.TokenSource(refreshCtx, token)
+	} else {
+		var err error
+		ts, err = h.config.NewTokenSource(refreshCtx, cfg, token)
+		if err != nil {
+			return fmt.Errorf("constructing token source failed: %w", err)
+		}
+	}
+	h.mu.Lock()
+	h.tokenSource = ts
+	h.mu.Unlock()
 	return nil
 }
 
 // updateGrantedScopes updates the granted scopes based on the token source and requested scopes.
 func (h *AuthorizationCodeHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
-	if h.tokenSource == nil {
+	h.mu.RLock()
+	ts := h.tokenSource
+	h.mu.RUnlock()
+
+	if ts == nil {
 		return nil
 	}
-	tok, err := h.tokenSource.Token()
+	tok, err := ts.Token()
 	if err != nil {
 		return err
 	}
+
+	h.mu.Lock()
 	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
 	}
+	h.mu.Unlock()
 	return nil
 }

@@ -194,7 +194,24 @@ type StreamableHTTPOptions struct {
 	//   protection := http.NewCrossOriginProtection()
 	//   protectedHandler := protection.Handler(handler)
 	CrossOriginProtection *http.CrossOriginProtection
+
+	// MaxRequestBodyBytes limits the number of bytes read from any incoming
+	// HTTP request body. Requests that exceed this limit are rejected with
+	// 413 Request Entity Too Large.
+	//
+	// The limit is enforced during the read, so it applies uniformly to
+	// requests using Content-Length, Transfer-Encoding: chunked, or HTTP/2
+	// (which has no Content-Length).
+	//
+	// If zero, [DefaultMaxRequestBodyBytes] is used.
+	// A negative value disables the limit entirely; do not use this on
+	// servers exposed to untrusted clients.
+	MaxRequestBodyBytes int64
 }
+
+// DefaultMaxRequestBodyBytes is the default value used for
+// [StreamableHTTPOptions.MaxRequestBodyBytes] when it is left at zero.
+const DefaultMaxRequestBodyBytes = 4 << 20 // 4 MiB
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
 //
@@ -214,6 +231,10 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.CrossOriginProtection == nil && enableoriginverification == "1" {
 		h.opts.CrossOriginProtection = &http.CrossOriginProtection{}
+	}
+
+	if h.opts.MaxRequestBodyBytes == 0 {
+		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
 	}
 
 	return h
@@ -308,6 +329,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 	}
 
+	// Bound the request body to protect against OOM attacks.
+	if req.Body != nil && h.opts.MaxRequestBodyBytes > 0 {
+		req.Body = http.MaxBytesReader(w, req.Body, h.opts.MaxRequestBodyBytes)
+	}
+
 	// [§2.7] of the spec (2025-06-18): validate the MCP-Protocol-Version
 	// header. If provided, it must be a supported version. If absent, the
 	// version is unknown (the request may be an initialize for any version).
@@ -368,6 +394,11 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 
 	info, err := h.ephemeralConnectOpts(req)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -435,7 +466,8 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 	var hasInitialize, hasInitialized, usesNewProtocol, isSubscriptionsListen bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
+		// Preserve *http.MaxBytesError so serveStateless can respond with 413.
+		return nil, fmt.Errorf("failed to read body: %w", err)
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -486,6 +518,7 @@ func connectStreamable(ctx context.Context, server *Server, transport *Streamabl
 	if err != nil {
 		return nil, err
 	}
+	transport.connection.server = server
 	transport.connection.toolLookup = server.getServerTool
 	return s, nil
 }
@@ -846,6 +879,7 @@ type streamableServerConn struct {
 
 	logger *slog.Logger
 
+	server     *Server
 	toolLookup func(name string) (*serverTool, bool)
 
 	incoming chan jsonrpc.Message // messages from the client to the server
@@ -1372,6 +1406,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// Read incoming messages.
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -1418,7 +1457,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// Preemptively check that this is a valid request, so that we can fail
 			// the HTTP request. If we didn't do this, a request with a bad method or
 			// missing ID could be silently swallowed.
-			if _, err := checkRequest(jreq, serverMethodInfos); err != nil {
+			// Use the server's receiving method infos (which include any custom
+			// methods registered via AddReceivingCustomMethod) when available;
+			// fall back to the standard methods otherwise, e.g. in tests that
+			// exercise streamableServerConn directly without a server.
+			methodInfos := serverMethodInfos
+			if c.server != nil {
+				methodInfos = c.server.receivingMethodInfos()
+			}
+			if _, err := checkRequest(jreq, methodInfos); err != nil {
 				if protocolVersion >= protocolVersion20260728 && errors.Is(err, jsonrpc2.ErrNotHandled) && jreq.IsCall() {
 					writeJSONRPCError(w, http.StatusNotFound, jreq.ID, &jsonrpc.Error{
 						Code:    jsonrpc.CodeMethodNotFound,

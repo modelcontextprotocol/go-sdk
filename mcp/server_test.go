@@ -1399,6 +1399,148 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 	})
 }
 
+func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: []string{"go"},
+				},
+			}, nil
+		},
+	})
+	AddTool(server, &Tool{Name: "tool"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil, nil
+	})
+	server.AddPrompt(&Prompt{Name: "prompt"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
+	})
+	server.AddResource(&Resource{URI: "test://resource", Name: "resource"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
+	})
+	newProtocolParams := func(fields map[string]any) map[string]any {
+		params := map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260728,
+				MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+				MetaKeyClientCapabilities: map[string]any{},
+			},
+		}
+		for k, v := range fields {
+			params[k] = v
+		}
+		return params
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+		want   resultType
+	}{
+		{
+			name:   "discover",
+			method: methodDiscover,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "tools list",
+			method: methodListTools,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "prompts list",
+			method: methodListPrompts,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "resources list",
+			method: methodListResources,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "resource templates list",
+			method: methodListResourceTemplates,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "complete",
+			method: methodComplete,
+			params: newProtocolParams(map[string]any{
+				"argument": map[string]any{
+					"name":  "language",
+					"value": "g",
+				},
+				"ref": map[string]any{
+					"type": "ref/prompt",
+					"name": "code_review",
+				},
+			}),
+			want: resultTypeComplete,
+		},
+		{
+			name:   "tool input required",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "prompt input required",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "prompt"}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "resource input required",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
+			want:   resultTypeInputRequired,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: server}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := ss.handle(context.Background(), &jsonrpc.Request{
+				ID:     id,
+				Method: tc.method,
+				Params: mustMarshal(tc.params),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				ResultType string `json:"resultType"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ResultType != string(tc.want) {
+				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, tc.want, data)
+			}
+		})
+	}
+}
+
 // TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol verifies that
 // the methods removed by SEP-2575 (`initialize`, `notifications/initialized`,
 // `ping`) all return Method not found when the request opts into the new
@@ -1449,5 +1591,103 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 				t.Errorf("method %q: message %q does not mention method name", tc.method, jerr.Message)
 			}
 		})
+	}
+}
+
+// TestServerSession_RejectsServerInitiatedRequests verifies that
+// SEP-2322 / SEP-2575 is enforced at the API surface: [ServerSession.Elicit],
+// [ServerSession.CreateMessage], [ServerSession.CreateMessageWithTools], and
+// [ServerSession.ListRoots] must refuse to send a server-to-client request
+// when the session is negotiated at protocol version >= 2026-07-28, and must
+// remain functional on pre-2026-07-28 sessions.
+func TestServerSession_RejectsServerInitiated(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		call func(*ServerSession) error
+	}{
+		{
+			name: "Elicit",
+			call: func(ss *ServerSession) error {
+				_, err := ss.Elicit(ctx, &ElicitParams{Message: "hi"})
+				return err
+			},
+		},
+		{
+			name: "CreateMessage",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessage(ctx, &CreateMessageParams{})
+				return err
+			},
+		},
+		{
+			name: "CreateMessageWithTools",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{})
+				return err
+			},
+		},
+		{
+			name: "ListRoots",
+			call: func(ss *ServerSession) error {
+				_, err := ss.ListRoots(ctx, nil)
+				return err
+			},
+		},
+	}
+
+	// Cover both branches of the era gate: modern must reject, legacy must let
+	// the call proceed to the wire (where it either succeeds or fails on
+	// something unrelated to the guard, such as missing client capabilities).
+	for _, protoVer := range []string{protocolVersion20260728, protocolVersion20251125} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", protoVer, tc.name), func(t *testing.T) {
+				ct, st := NewInMemoryTransports()
+				s := NewServer(testImpl, nil)
+				ss, err := s.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+
+				// Client advertises every server-to-client capability so a
+				// legacy-era call is not rejected for capability reasons
+				// instead of era reasons.
+				c := NewClient(testImpl, &ClientOptions{
+					ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+						return &ElicitResult{Action: "cancel"}, nil
+					},
+					CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+						return &CreateMessageResult{Model: "m", Role: "assistant", Content: &TextContent{Text: "ok"}}, nil
+					},
+				})
+				c.AddRoots(&Root{URI: "file:///workspace"})
+				cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protoVer})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cs.Close() })
+
+				gotErr := tc.call(ss)
+				modern := protoVer >= protocolVersion20260728
+				if modern {
+					if gotErr == nil {
+						t.Fatalf("%s on %s: got nil error, want era-gate rejection", tc.name, protoVer)
+					}
+					wantSubstr := "cannot be sent while serving a request on protocol version " + protoVer
+					if !strings.Contains(gotErr.Error(), wantSubstr) {
+						t.Errorf("%s on %s: error %q does not contain %q", tc.name, protoVer, gotErr.Error(), wantSubstr)
+					}
+					if !strings.Contains(gotErr.Error(), "multi round-trip requests") {
+						t.Errorf("%s on %s: error %q does not steer to MRTR", tc.name, protoVer, gotErr.Error())
+					}
+				} else {
+					if gotErr != nil {
+						t.Errorf("%s on %s: got error %v, want nil (era gate must not fire on legacy)", tc.name, protoVer, gotErr)
+					}
+				}
+			})
+		}
 	}
 }
