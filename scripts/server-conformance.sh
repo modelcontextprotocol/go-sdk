@@ -69,9 +69,14 @@ fi
 # Build the conformance server.
 go build -o "$WORKDIR/conformance-server" ./conformance/everything-server
 
-# Start the server in the background
+# Start the server in the background.
+# -stateless=false pins the server to the stateful transport so that
+# server-initiated sampling/elicitation scenarios (which are not supported on
+# stateless streamable HTTP) work against the current @latest conformance
+# suite. Drop this flag once the 0.2.x line is promoted to the @latest
+# dist-tag on npm and the stateless leg becomes viable.
 echo "Starting conformance server on localhost:$PORT..."
-"$WORKDIR/conformance-server" -http="localhost:$PORT" &
+"$WORKDIR/conformance-server" -http="localhost:$PORT" -stateless=false &
 SERVER_PID=$!
 
 echo "Server pid is $SERVER_PID"
@@ -90,11 +95,13 @@ if [ -n "$CONFORMANCE_REPO" ]; then
     (cd "$WORKDIR" && \
         npm --prefix "$CONFORMANCE_REPO" run start -- \
             server --url "http://localhost:$PORT" \
+            --spec-version 2025-11-25 \
             ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 else
     (cd "$WORKDIR" && \
         npx @modelcontextprotocol/conformance@latest \
         server --url "http://localhost:$PORT" \
+        --spec-version 2025-11-25 \
         ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 fi
 
