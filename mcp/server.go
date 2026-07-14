@@ -1879,7 +1879,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
 			}
 		}
-	case methodDiscover, methodSubscriptionsListen:
+	case methodDiscover:
 		// In case of methodDiscover call the state.initializeParams is populated
 		// within the discover handle function to make sure the method is supported
 		// when the user is probing a pre-2026-07-28 server.
