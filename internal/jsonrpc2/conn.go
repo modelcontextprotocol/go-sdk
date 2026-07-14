@@ -553,8 +553,14 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
 		// Mirrors the equivalent cleanup on write failure.
-		for _, r := range s.incomingByID {
-			r.cancel()
+		//
+		// EOF is a read-side half-close, not a full connection failure: the
+		// writer is still healthy and handlers for already-accepted requests
+		// should be allowed to complete and drain their responses. See #1061.
+		if !errors.Is(err, io.EOF) {
+			for _, r := range s.incomingByID {
+				r.cancel()
+			}
 		}
 	})
 }
@@ -757,7 +763,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
 			return
 		}
-		if _, ok := msg.(*Response); ok && s.readErr == io.EOF {
+		if _, ok := msg.(*Response); ok && errors.Is(s.readErr, io.EOF) {
 			return
 		}
 		err = s.shuttingDown(ErrServerClosing)

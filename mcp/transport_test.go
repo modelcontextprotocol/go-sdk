@@ -152,87 +152,83 @@ func TestIOConnRead_EmptyMethod(t *testing.T) {
 	}
 }
 
-// When the peer closes the read side of the transport immediately after sending
-// the last request, the server must still flush responses for requests it has
-// already accepted.
-func TestIOTransportFlushesOnReaderClose(t *testing.T) {
-	c2sRead, c2sWrite := io.Pipe()
-	s2cRead, s2cWrite := io.Pipe()
+// The peer writes three JSON-RPC frames and immediately closes its side of
+// the connection. The server must still flush responses for the two calls it
+// has already accepted (initialize and tools/list) before shutting down.
+//
+// The test uses an [IOTransport] wired to two [io.Pipe] pairs so we can
+// independently close the client→server direction (to trigger io.EOF on the
+// server's read side) while keeping the server→client direction open (so we
+// can still read the drained responses). NewInMemoryTransports is not usable
+// here because it's built on net.Pipe, whose Close is bidirectional and
+// therefore cannot express a half-closed stdin.
+func TestServerDrainsResponsesOnReaderEOF(t *testing.T) {
+	// Two unidirectional pipes emulate a stdin/stdout pair.
+	clientToServerR, clientToServerW := io.Pipe() // server reads, test writes
+	serverToClientR, serverToClientW := io.Pipe() // test reads, server writes
 
 	server := NewServer(&Implementation{Name: "test", Version: "v1.0.0"}, nil)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	serverExit := make(chan error, 1)
-	go func() {
-		serverExit <- server.Run(ctx, &IOTransport{Reader: c2sRead, Writer: s2cWrite})
-	}()
+	ss, err := server.Connect(ctx, &IOTransport{
+		Reader: clientToServerR,
+		Writer: serverToClientW,
+	}, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
 
-	// Write initialize + tools/list back-to-back and immediately close the write side.
-	const requests = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
+	const frames = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 `
-	go func() {
-		if _, err := io.WriteString(c2sWrite, requests); err != nil {
-			t.Errorf("write requests: %v", err)
-		}
-		c2sWrite.Close()
-	}()
-
-	// Read responses off the server's output pipe with a bounded deadline.
-	// We expect two responses (ids 1 and 2). The notification does not
-	// generate a response.
-	type readResult struct {
-		responses []map[string]any
-		err       error
+	if _, err := io.WriteString(clientToServerW, frames); err != nil {
+		t.Fatalf("write frames: %v", err)
 	}
-	done := make(chan readResult, 1)
-	go func() {
-		var out []map[string]any
-		scanner := bufio.NewScanner(s2cRead)
-		for scanner.Scan() {
-			var msg map[string]any
-			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-				done <- readResult{out, err}
-				return
-			}
-			// Skip server-initiated notifications; count only responses.
-			if _, hasID := msg["id"]; hasID {
-				out = append(out, msg)
-				if len(out) >= 2 {
-					break
-				}
-			}
-		}
-		done <- readResult{out, scanner.Err()}
-	}()
-
-	select {
-	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("read responses: %v", r.err)
-		}
-		if len(r.responses) != 2 {
-			t.Fatalf("got %d responses, want 2: %+v", len(r.responses), r.responses)
-		}
-		gotIDs := []any{r.responses[0]["id"], r.responses[1]["id"]}
-		wantIDs := []any{float64(1), float64(2)}
-		if diff := cmp.Diff(wantIDs, gotIDs); diff != "" {
-			t.Errorf("response IDs mismatch (-want +got):\n%s", diff)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for responses after reader close (issue #1061 regression)")
+	// Trigger the "stdin closed" condition on the server side while leaving
+	// the response pipe (serverToClient) open.
+	if err := clientToServerW.Close(); err != nil {
+		t.Fatalf("close client-to-server: %v", err)
 	}
 
-	// Clean shutdown: cancel the server and drain its exit.
-	cancel()
-	s2cWrite.Close()
-	s2cRead.Close()
-	select {
-	case <-serverExit:
-	case <-time.After(2 * time.Second):
-		t.Log("server did not exit within 2s after cancel")
+	// Bound the read with a timeout so a regression surfaces as a clear
+	// failure rather than a hung test.
+	deadline := time.AfterFunc(5*time.Second, func() { _ = serverToClientR.Close() })
+	defer deadline.Stop()
+
+	var responses []map[string]any
+	scanner := bufio.NewScanner(serverToClientR)
+	for scanner.Scan() {
+		var msg map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("decode response: %v: %s", err, scanner.Bytes())
+		}
+		if _, hasID := msg["id"]; hasID {
+			responses = append(responses, msg)
+		}
+		if len(responses) >= 2 {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanning responses: %v", err)
+	}
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2 (issue #1061 regression): %+v", len(responses), responses)
+	}
+	gotIDs := []any{responses[0]["id"], responses[1]["id"]}
+	wantIDs := []any{float64(1), float64(2)}
+	if diff := cmp.Diff(wantIDs, gotIDs); diff != "" {
+		t.Errorf("response IDs mismatch (-want +got):\n%s", diff)
+	}
+	// Both responses must carry real results, not context-canceled errors,
+	// which would indicate in-flight handlers were cancelled by EOF before
+	// they could complete.
+	for _, r := range responses {
+		if r["error"] != nil {
+			t.Errorf("response id=%v carries error (handler cancelled by EOF): %v", r["id"], r["error"])
+		}
 	}
 }
