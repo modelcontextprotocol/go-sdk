@@ -26,8 +26,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// nowrapinvalidparams is a compatibility parameter that restores the previous
+// behavior of [methodInfo.unmarshalParams]. When unset (the default), a
+// params-decoding failure is wrapped with [jsonrpc2.ErrInvalidParams] so the
+// wire response carries error code -32602 ("invalid params") rather than the
+// zero-value code 0. See:
+// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
 
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
@@ -304,7 +316,17 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 			var p P
 			if m != nil {
 				if err := internaljson.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					// Legacy behavior: pre-fix versions surfaced this as a
+					// plain wrapped error, which caused the wire response to
+					// carry code 0 instead of -32602. Restore via
+					// MCPGODEBUG=nowrapinvalidparams=1.
+					if nowrapinvalidparams == "1" {
+						return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					}
+					// Wrap jsonrpc2.ErrInvalidParams so toWireError surfaces
+					// code -32602 ("invalid params") while preserving the
+					// descriptive message.
+					return nil, fmt.Errorf("%w: unmarshaling %q into a %T: %w", jsonrpc2.ErrInvalidParams, m, p, err)
 				}
 			}
 			// We must check missingParamsOK here, in addition to checkRequest, to

@@ -512,3 +512,29 @@ func TestImplementationDescriptionJSON(t *testing.T) {
 // 		}
 // 	})
 // }
+
+// TestUnmarshalParamsInvalidParamsCode is a regression test for
+// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
+// Malformed params for a registered method must surface as a JSON-RPC error
+// whose code is CodeInvalidParams (-32602) rather than the zero-value 0.
+func TestUnmarshalParamsInvalidParamsCode(t *testing.T) {
+	info, ok := serverMethodInfos[methodPing]
+	if !ok {
+		t.Fatalf("no methodInfo for %q", methodPing)
+	}
+	// Array where a struct is expected.
+	_, err := info.unmarshalParams(json.RawMessage(`["a","b"]`))
+	if err == nil {
+		t.Fatal("unmarshalParams returned nil error for malformed params")
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *jsonrpc.Error in chain, got %T: %v", err, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", jerr.Code, jsonrpc.CodeInvalidParams)
+	}
+	if !strings.Contains(err.Error(), "unmarshaling") {
+		t.Errorf("error message = %q, want it to mention unmarshaling", err.Error())
+	}
+}

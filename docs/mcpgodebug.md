@@ -50,6 +50,13 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   restoring the previous behavior. The default behavior was changed so that
   the client always attempts to surface the underlying JSON-RPC error.
 
+- `nowrapinvalidparams` added. If set to `1`, the server will not wrap
+  params-decoding failures with `jsonrpc2.ErrInvalidParams`, so wire responses
+  carry the zero-value error code `0` instead of `-32602` ("invalid params"),
+  restoring the previous behavior. The default behavior was changed so that
+  the server always reports params-decoding failures with the standard
+  `-32602` code.
+
 - `disablecompleteparamsvalidation` added. If set to `1`, `Server.complete`
   will not validate that the required `ref` and `argument.name` fields on
   `CompleteParams` are present, restoring the previous behavior of dispatching
