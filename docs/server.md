@@ -439,14 +439,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
 defines a new pattern for server-to-client requests (sampling, elicitation,
 roots). Instead of issuing a fresh JSON-RPC request mid-flight, the server
-returns its in-flight result (`CallToolResult`, `GetPromptResult`, or
-`ReadResourceResult`) with the `InputRequests` field populated, describing
-the requests it needs the client to fulfil. On the wire the SDK stamps the
-result envelope with `resultType: "input_required"` (see
-[Result envelope: `resultType`](protocol.md#result-envelope-resulttype));
-the client's `NeedsInput()` helper reports the same condition. The client
-responds by retrying the original call with `InputResponses` set (and
-`RequestState` echoed back).
+returns an `InputRequiredResult` from its in-flight handler — the
+`InputRequests` field of `CallToolResult`, `GetPromptResult`, or
+`ReadResourceResult` carries the requests for additional information. The
+client responds by retrying the original call with `InputResponses` set.
 
 The SDK supports this pattern from both sides without requiring callers to
 choose:
@@ -463,12 +459,12 @@ choose:
 
 The server installs `serverMultiRoundTripMiddleware` automatically. For
 clients on a protocol version earlier than `2026-07-28`, the middleware
-intercepts any input-required result your handler returns (i.e. any result
-with `NeedsInput() == true`), fulfils each input request itself by calling
-the legacy server-initiated APIs (`Elicit`, `CreateMessage`, `ListRoots`),
-and re-invokes your handler exactly once with the responses already
-populated. This means a handler written in the MRTR style works against
-both old and new clients without code changes.
+intercepts any `InputRequiredResult` your handler returns, fulfils each
+input request itself by calling the legacy server-initiated APIs
+(`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
+exactly once with the responses already populated. This means a handler
+written in the MRTR style works against both old and new clients without
+code changes.
 
 ### Example
 

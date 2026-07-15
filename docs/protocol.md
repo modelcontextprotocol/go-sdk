@@ -4,7 +4,6 @@
 1. [Lifecycle](#lifecycle)
 	1. [Discovery (`server/discover`)](#discovery-(server/discover))
 	1. [Per-request `_meta` keys](#per-request-meta-keys)
-	1. [Result envelope: `resultType`](#result-envelope:-resulttype)
 	1. [Subscriptions (`subscriptions/listen`)](#subscriptions-(subscriptions/listen))
 1. [Transports](#transports)
 	1. [Stdio Transport](#stdio-transport)
@@ -143,30 +142,6 @@ Server-side handlers can read them
 through `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`,
 and `ServerRequest[P].ClientCapabilities()`.
 
-### Result envelope: `resultType`
-
-Introduced in `2026-07-28` by
-[SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322),
-every server result now carries a `resultType` discriminator that lets the
-client tell a final result apart from one that needs another round trip:
-
-| Value | Meaning |
-|---|---|
-| `"complete"` | Final result. This is the default; the SDK stamps it automatically on outgoing results for `2026-07-28` sessions. |
-| `"input_required"` | The server needs the client to fulfil one or more `InputRequests` and retry the call. See [Multi Round-Trip Requests](server.md#multi-round-trip-requests). |
-
-The field is emitted on the wire only for `2026-07-28` and later; on
-earlier sessions it is omitted. Per the spec, a client that receives a
-result without `resultType` from a legacy server MUST treat it as
-`"complete"` — the SDK does this automatically.
-
-User code does not need to read or set the wire value directly. Producers
-returning an input-required result set `InputRequests` (and optionally
-`RequestState`) on the result they return, and the SDK stamps
-`resultType: "input_required"` for them; consumers use the typed
-`NeedsInput()` helper on `CallToolResult`, `GetPromptResult`, and
-`ReadResourceResult` rather than comparing wire strings.
-
 ### Subscriptions (`subscriptions/listen`)
 
 Introduced in `2026-07-28` by
@@ -181,45 +156,7 @@ a list of resource URIs in `resourceSubscriptions`); the server replies
 first with a `notifications/subscriptions/acknowledged` notification
 reporting the honored subset, then streams every change notification on
 the same request, and finally closes with a `SubscriptionsListenResult`
-when it tears the subscription down. An abrupt transport drop carries no
-final result — the client re-listens and refetches.
-
-Every frame belonging to the stream (the ack, each notification, and the
-final result) carries the subscription's JSON-RPC id under the `_meta` key
-`io.modelcontextprotocol/subscriptionId`
-(`MetaKeySubscriptionID`), so a client with multiple concurrent listen
-streams can correlate frames to the right subscription.
-
-**Client-side (`2026-07-28` sessions).** `Client.Connect` automatically
-opens a `subscriptions/listen` stream if any of
-[`ClientOptions.ToolListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ToolListChangedHandler),
-[`ClientOptions.PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler),
-or
-[`ClientOptions.ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler)
-is set. Calling
-[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
-opens an additional per-URI listen stream and delivers matches through
-[`ClientOptions.ResourceUpdatedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceUpdatedHandler);
-[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe)
-cancels the corresponding stream. Session close cancels every stream via
-`notifications/cancelled`.
-
-**Server-side.** The `subscriptions/listen` handler is registered
-automatically. The server intersects the requested filter with its declared
-`ServerCapabilities` (a client asking for `toolsListChanged` on a server
-without the `tools.listChanged` capability is silently omitted from the
-ack), emits the ack, blocks until the stream is cancelled, and — when
-publishing a notification via
-[`ServerSession.NotifyToolListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyToolListChanged),
-[`ServerSession.NotifyPromptListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyPromptListChanged),
-[`ServerSession.NotifyResourceListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceListChanged),
-or `ServerSession.NotifyResourceUpdated` — routes it only to sessions
-whose listen stream opted in.
-
-**Legacy (`<= 2025-11-25`) sessions** continue to use `resources/subscribe`
-and the legacy notification channel; the SDK picks the right path based
-on the negotiated protocol version, so the same
-`ClientSession.Subscribe` / `Unsubscribe` API works against both.
+when it tears the subscription down.
 
 ## Transports
 
