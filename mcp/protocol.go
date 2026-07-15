@@ -2109,6 +2109,18 @@ type SubscriptionsAcknowledgedParams struct {
 func (x *SubscriptionsAcknowledgedParams) isParams()   {}
 func (x *SubscriptionsAcknowledgedParams) isNil() bool { return x == nil }
 
+// SubscriptionsListenResult is the response to a "subscriptions/listen"
+// request, signalling that the subscription has ended gracefully (for example,
+// during server shutdown). Because the listen stream is long-lived, this
+// result is sent only when the server tears the subscription down; an abrupt
+// transport close carries no response.
+type SubscriptionsListenResult struct {
+	completeResultWithType
+	Meta `json:"_meta"`
+}
+
+func (*SubscriptionsListenResult) isResult() {}
+
 // TODO(jba): add CompleteRequest and related types.
 
 // A request from the server to elicit additional information from the user via the client.

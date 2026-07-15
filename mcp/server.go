@@ -1180,7 +1180,7 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	return &emptyResult{}, nil
 }
 
-func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*emptyResult, error) {
+func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*SubscriptionsListenResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
@@ -1242,7 +1242,9 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	if len(allowed.ResourceSubscriptions) > 0 || allowed.ToolsListChanged || allowed.PromptsListChanged || allowed.ResourcesListChanged {
 		<-ctx.Done()
 	}
-	return &emptyResult{}, nil
+	return &SubscriptionsListenResult{
+		Meta: Meta{MetaKeySubscriptionID: requestID.Raw()},
+	}, nil
 }
 
 func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {

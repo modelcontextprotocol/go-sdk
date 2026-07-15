@@ -1443,7 +1443,7 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 // usual handlers registered in [ClientOptions].
 func (cs *ClientSession) subscriptionsListen(ctx context.Context, params *SubscriptionsListenParams) error {
 	params = injectRequestMeta(cs, params)
-	_, err := handleSend[*emptyResult](ctx, methodSubscriptionsListen, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*SubscriptionsListenResult](ctx, methodSubscriptionsListen, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
