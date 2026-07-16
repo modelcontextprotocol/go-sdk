@@ -898,7 +898,6 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
-		ServerInfo:        s.impl,
 		Instructions:      s.opts.Instructions,
 	}
 	res.setDefaultCacheableValues()
@@ -1924,8 +1923,30 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 	if validatedMeta.usesNewProtocol {
 		setCompleteResultType(res)
+		annotateServerInfo(res, ss.server.impl)
 	}
 	return res, nil
+}
+
+// annotateServerInfo sets [MetaKeyServerInfo] on the result's `_meta` unless
+// it is already present. Per SEP-2575, servers should identify themselves in
+// each result's `_meta`.
+func annotateServerInfo(res Result, impl *Implementation) {
+	if res == nil || impl == nil {
+		return
+	}
+	if _, isEmpty := res.(*emptyResult); isEmpty {
+		return
+	}
+	m := res.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyServerInfo]; ok {
+		return
+	}
+	m[MetaKeyServerInfo] = impl
+	res.SetMeta(m)
 }
 
 // InitializeParams returns the InitializeParams provided during the client's

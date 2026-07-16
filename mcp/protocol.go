@@ -1143,8 +1143,6 @@ type DiscoverResult struct {
 	SupportedVersions []string `json:"supportedVersions"`
 	// The server's capabilities.
 	Capabilities *ServerCapabilities `json:"capabilities"`
-	// Information about the server implementation.
-	ServerInfo *Implementation `json:"serverInfo"`
 	// Instructions describing how to use the server and its features.
 	Instructions string `json:"instructions,omitempty"`
 }
@@ -2365,6 +2363,8 @@ const (
 	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
 	// MetaKeyClientInfo carries the client's [Implementation].
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyServerInfo carries the server's [Implementation] on responses.
+	MetaKeyServerInfo = "io.modelcontextprotocol/serverInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	// MetaKeyLogLevel identifies the desired log level for the request.

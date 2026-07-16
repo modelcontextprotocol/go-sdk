@@ -794,6 +794,15 @@ func completeCallToolResult() *CallToolResult {
 	return r
 }
 
+// completeCallToolResultWithServerInfo returns a completeCallToolResult
+// annotated with the auto-populated [MetaKeyServerInfo] entry that servers
+// add to every new-protocol response.
+func completeCallToolResultWithServerInfo(impl *Implementation) *CallToolResult {
+	r := completeCallToolResult()
+	r.Meta = Meta{MetaKeyServerInfo: impl}
+	return r
+}
+
 func resp(id int64, result any, err error) *jsonrpc.Response {
 	return &jsonrpc.Response{
 		ID:     jsonrpc2.Int64ID(id),
@@ -1958,6 +1967,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 		MetaKeyClientInfo:         map[string]any{"name": "testClient", "version": "v1.0.0"},
 		MetaKeyClientCapabilities: map[string]any{},
 	}
+	serverImpl := &Implementation{Name: "testServer", Version: "v1.0.0"}
 
 	testStreamableHandler(t, handler, []streamableRequest{
 		{
@@ -1969,7 +1979,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",
@@ -2013,7 +2023,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",
@@ -2029,7 +2039,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
 			})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",

@@ -535,9 +535,10 @@ type validatedMeta struct {
 // the >= 2026-07-28 protocol via the `_meta` field.
 // If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
 // validatedMeta with usesNewProtocol set to false, and a nil error.
-// If the request has a protocolVersion in _meta it validates the presence of clientInfo
-// and clientCapabilities in _meta. If either is missing or invalid, it returns nil and
-// a non-nil error. Otherwise, it returns usesNewProtocol set to true and the populated
+// If the request has a protocolVersion in _meta it validates the presence of
+// clientCapabilities in _meta. If it is missing or invalid, it returns nil and
+// a non-nil error. clientInfo is optional; if present but invalid, an error is
+// returned. Otherwise, it returns usesNewProtocol set to true and the populated
 // initializeParams.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	meta := extractRequestMeta(req.Params)
@@ -548,11 +549,15 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	if !ok || protocolVersion < protocolVersion20260728 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	clientInfo, ok := decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
-	if !ok {
-		return nil, &jsonrpc.Error{
-			Code:    jsonrpc.CodeInvalidParams,
-			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientInfo),
+	var clientInfo *Implementation
+	if _, present := meta[MetaKeyClientInfo]; present {
+		var ok bool
+		clientInfo, ok = decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
+		if !ok {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidParams,
+				Message: fmt.Sprintf("invalid _meta field %q", MetaKeyClientInfo),
+			}
 		}
 	}
 	capabilities, ok := decodeMetaValue[*clientCapabilitiesV2](meta, MetaKeyClientCapabilities)

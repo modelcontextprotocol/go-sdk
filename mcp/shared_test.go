@@ -67,6 +67,19 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
+			wantUsesNew: true,
+		},
+		{
+			name:   "new protocol invalid clientInfo",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         "not an object",
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
 			wantUsesNew:     false,
 			wantErrContains: MetaKeyClientInfo,
 		},

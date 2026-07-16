@@ -443,11 +443,15 @@ func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeRe
 		}
 	}
 
+	var serverInfo *Implementation
+	if v, ok := decodeMetaValue[*Implementation](res.GetMeta(), MetaKeyServerInfo); ok {
+		serverInfo = v
+	}
 	return &InitializeResult{
 		Capabilities:    res.Capabilities,
 		Instructions:    res.Instructions,
 		ProtocolVersion: negotiated,
-		ServerInfo:      res.ServerInfo,
+		ServerInfo:      serverInfo,
 	}, nil
 }
 

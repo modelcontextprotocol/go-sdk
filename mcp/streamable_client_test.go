@@ -1265,11 +1265,13 @@ func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
 // discoverResult is the canned successful DiscoverResult returned by
 // fakeStreamableServer setups in the tests below.
 var discoverResult = &DiscoverResult{
+	Meta: Meta{
+		MetaKeyServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
+	},
 	SupportedVersions: []string{protocolVersion20260728},
 	Capabilities: &ServerCapabilities{
 		Tools: &ToolCapabilities{ListChanged: true},
 	},
-	ServerInfo:   &Implementation{Name: "discoverServer", Version: "v1.0.0"},
 	Instructions: "test discover",
 }
 

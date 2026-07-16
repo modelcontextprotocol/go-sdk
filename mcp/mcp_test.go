@@ -2475,7 +2475,15 @@ func TestSetErrorPreservesContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
+var ctrCmpOpts = []cmp.Option{
+	cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{}),
+	// Server responses under the >= 2026-07-28 protocol carry an auto-populated
+	// [MetaKeyServerInfo] entry; tests that compare result bodies against
+	// hand-crafted expected values should ignore it.
+	cmpopts.IgnoreFields(CallToolResult{}, "Meta"),
+	cmpopts.IgnoreFields(GetPromptResult{}, "Meta"),
+	cmpopts.IgnoreFields(ReadResourceResult{}, "Meta"),
+}
 
 // runSubscriptionsListenTest exercises the SEP-2575 auto-listen flow end-to-end
 // against the supplied transport pair. It captures every notification and the
