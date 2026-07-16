@@ -1,7 +1,21 @@
-server: [] # All tests pass!
+server:
+  # The `server-stateless` scenario ships with the `@modelcontextprotocol/conformance@0.2.0-alpha.9`
+  # suite pinned by the workflow, which still enforces the pre-PR-3002
+  # (https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3002) spec:
+  #   - `clientInfo` in the per-request `_meta` is required (MUST).
+  #   - `serverInfo` is a body field on `DiscoverResult`.
+  # PR #3002 relaxes `clientInfo` to SHOULD and moves `serverInfo` into every
+  # response's `_meta`. The Go SDK follows the updated spec, so the following
+  # checks in the `server-stateless` scenario fail against the pinned suite:
+  #   - sep-2575-request-meta-invalid-missing-client-info
+  #   - sep-2575-http-server-meta-invalid-400
+  #   - sep-2575-server-implements-discover
+  # Remove this entry when the conformance suite is bumped to a release that
+  # incorporates PR #3002.
+  - server-stateless
 
 client:
-  # OAuth mechanisms not yet implemented by the Go MCP SDK.
+  # OAuth mechanisms not implemented by the Go MCP SDK.
   - auth/client-credentials-basic
   - auth/client-credentials-jwt
   - auth/enterprise-managed-authorization
@@ -10,4 +24,6 @@ client:
   # server/discover handler advertises "2026-07-28" but delegates every
   # other method to a pinned @modelcontextprotocol/sdk that rejects that
   # version at the HTTP layer.
+  # Remove this entry when the conformance suite is bumped to a release that
+  # fixes this issue.
   - json-schema-ref-no-deref

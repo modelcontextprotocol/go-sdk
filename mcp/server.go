@@ -888,12 +888,17 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	if versions == nil {
 		versions = slices.Clone(supportedProtocolVersions)
 	}
+	// Read the request-scoped identity/capabilities before acquiring the
+	// session lock: these accessors may fall back to Session.InitializeParams
+	// (which also locks Session.mu), so calling them from inside updateState
+	// would self-deadlock.
+	init := &InitializeParams{
+		ProtocolVersion: req.ProtocolVersion(),
+		Capabilities:    req.ClientCapabilities(),
+		ClientInfo:      req.ClientInfo(),
+	}
 	req.Session.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = &InitializeParams{
-			ProtocolVersion: req.ProtocolVersion(),
-			Capabilities:    req.ClientCapabilities(),
-			ClientInfo:      req.ClientInfo(),
-		}
+		state.InitializeParams = init
 	})
 	res := &DiscoverResult{
 		SupportedVersions: versions,
