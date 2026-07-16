@@ -106,8 +106,12 @@ default. The middleware:
 
 The middleware is enabled by default. To opt out, set
 [`ClientOptions.MultiRoundTrip.Disabled = true`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MultiRoundTripOptions);
-the client will then surface `InputRequiredResult` values directly to the
-caller and your code must fulfil the requests manually.
+the client will then surface input-required results directly to the caller
+(the returned `CallToolResult`, `GetPromptResult`, or `ReadResourceResult`
+will report `NeedsInput() == true` and expose the server's `InputRequests`
+and opaque `RequestState`). Your code must fulfil each request and re-issue
+the original call with `InputResponses` set and `RequestState` echoed
+back.
 
 For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
 requests on the legacy server-initiated channel; the MRTR machinery is a

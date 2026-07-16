@@ -65,7 +65,12 @@ and
 to unsubscribe.
 Set
 [`ClientOptions.ResourceUpdatedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceUpdatedHandler)
-to be notified of changes to subscribed resources.
+to be notified of changes to subscribed resources. On `2026-07-28` and
+later sessions the SDK delivers these notifications over a
+`subscriptions/listen` stream instead of the legacy `resources/subscribe`
+RPC; see [Subscriptions
+(`subscriptions/listen`)](protocol.md#subscriptions-subscriptionslisten)
+for the wire-level details.
 
 **Server-side**:
 Use
