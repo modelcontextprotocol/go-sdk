@@ -17,8 +17,10 @@ transparently based on the negotiated protocol version:
 - A **stateless** model introduced in `2026-07-28` by
   [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
   in which there is no `initialize`/`notifications/initialized` handshake, and
-  each request carries its protocol version, client identity, and client
-  capabilities in `_meta`.
+  each request carries its protocol version and client capabilities in
+  `_meta`. Clients SHOULD also include their identity (`clientInfo`) on every
+  request, and servers SHOULD include their identity (`serverInfo`) on every
+  response.
 
 In both models, the SDK exposes the same API:
 
@@ -76,17 +78,28 @@ When the negotiated protocol version is `2026-07-28` or later, every request
 carries these keys inside its `_meta` map (constants live in
 [`mcp/protocol.go`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#pkg-constants)):
 
-| Constant | Wire key | Type |
-|---|---|---|
-| `MetaKeyProtocolVersion` | `io.modelcontextprotocol/protocolVersion` | `string` |
-| `MetaKeyClientInfo` | `io.modelcontextprotocol/clientInfo` | `*Implementation` |
-| `MetaKeyClientCapabilities` | `io.modelcontextprotocol/clientCapabilities` | `*ClientCapabilities` |
-| `MetaKeyLogLevel` | `io.modelcontextprotocol/logLevel` | `LoggingLevel` (deprecated by SEP-2577) |
+| Constant | Wire key | Type | Required |
+|---|---|---|---|
+| `MetaKeyProtocolVersion` | `io.modelcontextprotocol/protocolVersion` | `string` | Yes |
+| `MetaKeyClientCapabilities` | `io.modelcontextprotocol/clientCapabilities` | `*ClientCapabilities` | Yes |
+| `MetaKeyClientInfo` | `io.modelcontextprotocol/clientInfo` | `*Implementation` | No |
+| `MetaKeyLogLevel` | `io.modelcontextprotocol/logLevel` | `LoggingLevel` (deprecated by SEP-2577) | No |
 
-The client populates these keys automatically on every outgoing request.
-Server-side handlers can read them
-through `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`,
-and `ServerRequest[P].ClientCapabilities()`.
+The client populates the required keys automatically on every outgoing
+request, and populates `clientInfo` when configured with an `*Implementation`
+(the default). Server-side handlers can read them through
+`ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`, and
+`ServerRequest[P].ClientCapabilities()`.
+
+### Per-response `_meta` keys
+
+Under the same protocol version, servers SHOULD identify themselves on every
+response. The SDK populates this
+key automatically on every outgoing response:
+
+| Constant | Wire key | Type | Required |
+|---|---|---|---|
+| `MetaKeyServerInfo` | `io.modelcontextprotocol/serverInfo` | `*Implementation` | No |
 
 ## Transports
 
