@@ -44,8 +44,7 @@ transparently based on the negotiated protocol version:
   each request carries its protocol version and client capabilities in
   `_meta`. Clients SHOULD also include their identity (`clientInfo`) on every
   request, and servers SHOULD include their identity (`serverInfo`) on every
-  response, unless specifically configured not to do so
-  ([SEP-2575 / PR #3002](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3002)).
+  response.
 
 In both models, the SDK exposes the same API:
 
@@ -121,11 +120,8 @@ request. Servers implementing `2026-07-28` MUST implement it.
 
 - **Server**: `Server.Connect` registers the
   `server/discover` handler automatically; the response is computed from the
-  server's static configuration (capabilities and instructions) and the
-  transport-filtered list of supported protocol versions. Server identity is
-  reported in the response's `_meta.io.modelcontextprotocol/serverInfo`, the
-  same way it is on every other response (see
-  [Per-response `_meta` keys](#per-response-meta-keys)).
+  server's static configuration (capabilities, server info, instructions) and
+  the transport-filtered list of supported protocol versions.
 - **Client**: `Client.Connect` calls `server/discover` first and
   uses the result to negotiate a mutually supported version. If discovery
   fails or the server does not support the latest version, the client falls back to the
@@ -141,41 +137,24 @@ carries these keys inside its `_meta` map (constants live in
 |---|---|---|---|
 | `MetaKeyProtocolVersion` | `io.modelcontextprotocol/protocolVersion` | `string` | Yes |
 | `MetaKeyClientCapabilities` | `io.modelcontextprotocol/clientCapabilities` | `*ClientCapabilities` | Yes |
-| `MetaKeyClientInfo` | `io.modelcontextprotocol/clientInfo` | `*Implementation` | No (SHOULD) |
+| `MetaKeyClientInfo` | `io.modelcontextprotocol/clientInfo` | `*Implementation` | No |
 | `MetaKeyLogLevel` | `io.modelcontextprotocol/logLevel` | `LoggingLevel` (deprecated by SEP-2577) | No |
 
 The client populates the required keys automatically on every outgoing
 request, and populates `clientInfo` when configured with an `*Implementation`
 (the default). Server-side handlers can read them through
 `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`, and
-`ServerRequest[P].ClientCapabilities()`. `ClientInfo()` may return `nil` when
-the client omitted the field.
+`ServerRequest[P].ClientCapabilities()`.
 
 ### Per-response `_meta` keys
 
 Under the same protocol version, servers SHOULD identify themselves on every
-response, unless specifically configured not to do so. The SDK populates this
+response. The SDK populates this
 key automatically on every outgoing response:
 
 | Constant | Wire key | Type | Required |
 |---|---|---|---|
-| `MetaKeyServerInfo` | `io.modelcontextprotocol/serverInfo` | `*Implementation` | No (SHOULD) |
-
-Clients can read it from any `Result`'s `_meta` map, for example:
-
-```go
-res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "greet"})
-if err != nil { /* ... */ }
-if impl, ok := res.GetMeta()[mcp.MetaKeyServerInfo].(*mcp.Implementation); ok {
-    log.Printf("responded by %s %s", impl.Name, impl.Version)
-}
-```
-
-Both `clientInfo` and `serverInfo` are self-reported and unverified by the
-protocol. They are intended for display, logging, and debugging, and SHOULD
-NOT be used to change client or server behavior or relied on for security
-decisions
-([PR #3002](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3002)).
+| `MetaKeyServerInfo` | `io.modelcontextprotocol/serverInfo` | `*Implementation` | No |
 
 ### Subscriptions (`subscriptions/listen`)
 
