@@ -194,9 +194,9 @@ func TestElicitationCompleteNotification(t *testing.T) {
 		}
 
 		// 2. Server sends elicitation complete notification (simulating out-of-band completion)
-		err = handleNotify(ctx, notificationElicitationComplete, newServerRequest(ss, &ElicitationCompleteParams{
+		err = ss.NotifyElicitationComplete(ctx, &ElicitationCompleteParams{
 			ElicitationID: elicitID,
-		}))
+		})
 		if err != nil {
 			t.Fatalf("failed to send elicitation complete notification: %v", err)
 		}

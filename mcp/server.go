@@ -1448,6 +1448,12 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
+// NotifyElicitationComplete signals that an out-of-band (url-mode)
+// elicitation identified by params.ElicitationID has completed.
+func (ss *ServerSession) NotifyElicitationComplete(ctx context.Context, params *ElicitationCompleteParams) error {
+	return handleNotify(ctx, notificationElicitationComplete, newServerRequest(ss, orZero[Params](params)))
+}
+
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
 // notification on the listen stream represented by this session, indicating
 // the subscription filter the server accepted (SEP-2575).
