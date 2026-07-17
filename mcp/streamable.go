@@ -207,6 +207,17 @@ type StreamableHTTPOptions struct {
 	// A negative value disables the limit entirely; do not use this on
 	// servers exposed to untrusted clients.
 	MaxRequestBodyBytes int64
+
+	// PropagateRequestCancellation, when true, ties the in-flight handler
+	// context to the originating HTTP request's context. Only applies to
+	// requests using the >= 2026-07-28 protocol, where the POST is the whole
+	// request lifecycle.
+	// The handler context cancels whenever the HTTP request context does as the
+	// response can no longer be delivered, so cancelling the handler is safe.
+	//
+	// Requests using older protocol versions (including those routed through
+	// the allowsessionsinstateless compatibility path) are unaffected.
+	PropagateRequestCancellation bool
 }
 
 // DefaultMaxRequestBodyBytes is the default value used for
@@ -417,7 +428,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		EventStore:                  h.opts.EventStore,
 		jsonResponse:                h.opts.JSONResponse,
 		logger:                      h.opts.Logger,
-		shouldPropagateCancellation: info.isSubscriptionsListen && info.usesNewProtocol,
+		shouldPropagateCancellation: info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation),
 	}
 
 	session, err := connectStreamable(req.Context(), server, transport, info.opts)
