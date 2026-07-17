@@ -69,6 +69,27 @@ type sessionInfo struct {
 	timer   *time.Timer
 }
 
+// StreamableHTTPRequestSummary contains redacted metadata about a decoded
+// streamable HTTP POST body.
+type StreamableHTTPRequestSummary struct {
+	// Methods contains the methods of decoded JSON-RPC requests in body order.
+	// The methods have not yet been validated and may contain arbitrary
+	// attacker-controlled strings. The slice does not alias SDK state and may be
+	// retained or modified by the callback.
+	Methods []string
+
+	// RequestID is valid only when the decoded input contains exactly one
+	// JSON-RPC call and no other messages. IDs use the same coercion rules as
+	// [jsonrpc.DecodeMessage].
+	RequestID jsonrpc.ID
+
+	// Calls, Notifications, and Responses count the decoded JSON-RPC message
+	// kinds in the body.
+	Calls         int
+	Notifications int
+	Responses     int
+}
+
 // startPOST signals that a POST request for this session is starting (which
 // carries a client->server message), pausing the session timeout if it was
 // running.
@@ -218,6 +239,23 @@ type StreamableHTTPOptions struct {
 	// Requests using older protocol versions (including those routed through
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
+
+	// OnRequestSummary, when non-nil, observes redacted metadata for streamable
+	// HTTP POST bodies decoded by the session transport. The callback receives
+	// the HTTP request's context and runs synchronously before validation and
+	// dispatch of the decoded messages. It may be called concurrently for
+	// different requests and should return promptly; in particular, it must not
+	// wait for processing of the same request. Panics are not recovered. Only the
+	// summary is redacted; the context may contain values added by authentication
+	// or other middleware.
+	//
+	// The callback is not invoked for requests rejected before this point,
+	// including HTTP, authorization, session-routing, and connection failures,
+	// even if connection setup previously inspected the body. Use HTTP middleware
+	// to observe those failures. Use [Server.AddReceivingMiddleware] to observe
+	// dispatched messages; this callback additionally observes decoded messages
+	// that are rejected before dispatch without exposing their parameters.
+	OnRequestSummary func(context.Context, StreamableHTTPRequestSummary)
 }
 
 // DefaultMaxRequestBodyBytes is the default value used for
@@ -422,14 +460,8 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		}
 	}
 
-	transport := &StreamableServerTransport{
-		SessionID:                   sessionID,
-		Stateless:                   true,
-		EventStore:                  h.opts.EventStore,
-		jsonResponse:                h.opts.JSONResponse,
-		logger:                      h.opts.Logger,
-		shouldPropagateCancellation: info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation),
-	}
+	transport := h.newStreamableServerTransport(sessionID, true)
+	transport.shouldPropagateCancellation = info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation)
 
 	session, err := connectStreamable(req.Context(), server, transport, info.opts)
 	if err != nil {
@@ -532,6 +564,17 @@ func connectStreamable(ctx context.Context, server *Server, transport *Streamabl
 	transport.connection.server = server
 	transport.connection.toolLookup = server.getServerTool
 	return s, nil
+}
+
+func (h *StreamableHTTPHandler) newStreamableServerTransport(sessionID string, stateless bool) *StreamableServerTransport {
+	return &StreamableServerTransport{
+		SessionID:        sessionID,
+		Stateless:        stateless,
+		EventStore:       h.opts.EventStore,
+		jsonResponse:     h.opts.JSONResponse,
+		logger:           h.opts.Logger,
+		onRequestSummary: h.opts.OnRequestSummary,
+	}
 }
 
 // serveStateful handles requests for stateful servers.
@@ -652,13 +695,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	}
 	sessionID = server.opts.GetSessionID()
 
-	transport := &StreamableServerTransport{
-		SessionID:    sessionID,
-		Stateless:    false,
-		EventStore:   h.opts.EventStore,
-		jsonResponse: h.opts.JSONResponse,
-		logger:       h.opts.Logger,
-	}
+	transport := h.newStreamableServerTransport(sessionID, false)
 
 	// Sessions without a session ID (GetSessionID returned "") are ephemeral:
 	// there's no way to address them, so they are closed after the request.
@@ -832,6 +869,10 @@ type StreamableServerTransport struct {
 	// [streamableServerConn]. See its docstring.
 	shouldPropagateCancellation bool
 
+	// onRequestSummary is forwarded from StreamableHTTPOptions for transports
+	// created by StreamableHTTPHandler.
+	onRequestSummary func(context.Context, StreamableHTTPRequestSummary)
+
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
 }
@@ -848,6 +889,7 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		jsonResponse:                t.jsonResponse,
 		logger:                      ensureLogger(t.logger), // see #556: must be non-nil
 		shouldPropagateCancellation: t.shouldPropagateCancellation,
+		onRequestSummary:            t.onRequestSummary,
 		incoming:                    make(chan jsonrpc.Message, 10),
 		done:                        make(chan struct{}),
 		streams:                     make(map[string]*stream),
@@ -876,10 +918,11 @@ func (t *StreamableServerTransport) SupportsProtocolVersion(version string) bool
 }
 
 type streamableServerConn struct {
-	sessionID    string
-	stateless    bool
-	jsonResponse bool
-	eventStore   EventStore
+	sessionID        string
+	stateless        bool
+	jsonResponse     bool
+	eventStore       EventStore
+	onRequestSummary func(context.Context, StreamableHTTPRequestSummary)
 
 	// shouldPropagateCancellation is true when the underlying HTTP request's
 	// lifetime IS the connection's cancellation signal (e.g., a stateless
@@ -1437,6 +1480,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
+	singleMessage := isSingleStreamableMessage(incoming, isBatch)
+	if c.onRequestSummary != nil {
+		c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming))
+	}
 
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
@@ -1582,7 +1629,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
-	if !isBatch && len(incoming) == 1 {
+	if singleMessage {
 		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
@@ -1735,6 +1782,33 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 
 	c.hangResponse(req.Context(), done)
+}
+
+func summarizeStreamableHTTPRequest(incoming []jsonrpc.Message) StreamableHTTPRequestSummary {
+	var summary StreamableHTTPRequestSummary
+	for _, msg := range incoming {
+		switch msg := msg.(type) {
+		case *jsonrpc.Request:
+			summary.Methods = append(summary.Methods, msg.Method)
+			if msg.IsCall() {
+				summary.Calls++
+			} else {
+				summary.Notifications++
+			}
+		case *jsonrpc.Response:
+			summary.Responses++
+		}
+	}
+	if len(incoming) == 1 {
+		if req, ok := incoming[0].(*jsonrpc.Request); ok && req.IsCall() {
+			summary.RequestID = req.ID
+		}
+	}
+	return summary
+}
+
+func isSingleStreamableMessage(incoming []jsonrpc.Message, isBatch bool) bool {
+	return !isBatch && len(incoming) == 1
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
