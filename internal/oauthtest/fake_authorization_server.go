@@ -24,8 +24,9 @@ import (
 )
 
 type ClientInfo struct {
-	Secret       string
-	RedirectURIs []string
+	Secret          string
+	RedirectURIs    []string
+	RegisteredScope string
 }
 
 type MetadataEndpointConfig struct {
@@ -245,8 +246,9 @@ func (s *FakeAuthorizationServer) handleRegister(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusCreated)
 	clientID := rand.Text()
 	ci := ClientInfo{
-		Secret:       rand.Text(),
-		RedirectURIs: metadata.RedirectURIs,
+		Secret:          rand.Text(),
+		RedirectURIs:    metadata.RedirectURIs,
+		RegisteredScope: metadata.Scope,
 	}
 	s.clients[clientID] = ci
 	metadata.TokenEndpointAuthMethod = "client_secret_basic"
@@ -442,4 +444,10 @@ func (s *FakeAuthorizationServer) authenticateClient(r *http.Request) error {
 		return errors.New("client not found")
 	}
 	return nil
+}
+
+// GetClient returns the ClientInfo for the given clientID, or false if not found.
+func (s *FakeAuthorizationServer) GetClient(clientID string) (ClientInfo, bool) {
+	ci, ok := s.clients[clientID]
+	return ci, ok
 }

@@ -308,11 +308,6 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		}
 	}
 
-	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
-	if err != nil {
-		return err
-	}
-
 	requestedScopes := scopesFromChallenges(wwwChallenges)
 	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
 		requestedScopes = prm.ScopesSupported
@@ -333,6 +328,18 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	granted := h.grantedScopes[asm.Issuer]
 	h.mu.RUnlock()
 	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
+
+	// Propagate discovered scopes into the DCR metadata before registration,
+	// so the client is registered for the same scopes it will request.
+	// This prevents invalid_scope errors on strict authorization servers.
+	if dcrCfg := h.config.DynamicClientRegistrationConfig; dcrCfg != nil && dcrCfg.Metadata.Scope == "" && len(requestedScopes) > 0 {
+		dcrCfg.Metadata.Scope = strings.Join(requestedScopes, " ")
+	}
+
+	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
+	if err != nil {
+		return err
+	}
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,

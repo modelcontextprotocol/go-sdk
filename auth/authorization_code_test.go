@@ -915,6 +915,179 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 }
 
+func TestDCRScopePropagation(t *testing.T) {
+	s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			DynamicClientRegistrationEnabled: true,
+		},
+		ScopesSupported: []string{"read", "write"},
+	})
+	s.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{s.URL()},
+	}))
+
+	dcrMetadata := &oauthex.ClientRegistrationMetadata{
+		RedirectURIs: []string{"http://localhost:12345/callback"},
+	}
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+			Metadata: dcrMetadata,
+		},
+		RedirectURL: "http://localhost:12345/callback",
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set(
+		"WWW-Authenticate",
+		"Bearer scope=\"read write\", resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource",
+	)
+
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+
+	if got := dcrMetadata.Scope; got != "read write" {
+		t.Errorf("DCR metadata Scope = %q, want %q", got, "read write")
+	}
+
+	tokenSource, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("Failed to get token: %v", err)
+	}
+	if token.AccessToken != "test_access_token" {
+		t.Errorf("Expected access token 'test_access_token', got '%s'", token.AccessToken)
+	}
+}
+
+func TestDCRScopePropagation_PreservesExplicitScope(t *testing.T) {
+	s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			DynamicClientRegistrationEnabled: true,
+		},
+		ScopesSupported: []string{"read", "write"},
+	})
+	s.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{s.URL()},
+	}))
+
+	dcrMetadata := &oauthex.ClientRegistrationMetadata{
+		RedirectURIs: []string{"http://localhost:12345/callback"},
+		Scope:        "explicit_scope",
+	}
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+			Metadata: dcrMetadata,
+		},
+		RedirectURL: "http://localhost:12345/callback",
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set(
+		"WWW-Authenticate",
+		"Bearer scope=\"read write\", resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource",
+	)
+
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+
+	if got := dcrMetadata.Scope; got != "explicit_scope" {
+		t.Errorf("DCR metadata Scope = %q, want %q (explicit scope should not be overridden)", got, "explicit_scope")
+	}
+
+	tokenSource, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("Failed to get token: %v", err)
+	}
+	if token.AccessToken != "test_access_token" {
+		t.Errorf("Expected access token 'test_access_token', got '%s'", token.AccessToken)
+	}
+}
+
 func TestValidateIssuerResponse(t *testing.T) {
 	const expectedIssuer = "https://auth.example.com"
 
