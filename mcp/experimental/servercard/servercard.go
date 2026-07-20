@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -33,13 +36,27 @@ const (
 
 	// RemoteTypeSSE identifies an SSE MCP endpoint.
 	RemoteTypeSSE = "sse"
+
+	// InputFormatBoolean identifies a boolean input represented as "true" or
+	// "false".
+	InputFormatBoolean = "boolean"
+
+	// InputFormatFilePath identifies a path on the user's filesystem.
+	InputFormatFilePath = "filepath"
+
+	// InputFormatNumber identifies a number represented as a decimal string.
+	InputFormatNumber = "number"
+
+	// InputFormatString identifies an arbitrary string input.
+	InputFormatString = "string"
 )
 
 var (
 	nameRE                   = regexp.MustCompile(`^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$`)
 	remoteURLRE              = regexp.MustCompile(`^(https?://[^\s]+|\{[a-zA-Z_][a-zA-Z0-9_]*\}[^\s]*)$`)
-	versionRangeOperatorRE   = regexp.MustCompile(`[\^~|]|[<>]=?|\s`)
+	versionRangeOperatorRE   = regexp.MustCompile(`[\^~|]|[<>]=?`)
 	versionWildcardSegmentRE = regexp.MustCompile(`(?:^|\.)[xX*](?:\.|$)`)
+	versionHyphenRangeRE     = regexp.MustCompile(`^\s*[vV]?\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\s+-\s+[vV]?\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\s*$`)
 )
 
 // Icon is an optionally sized icon that can be displayed in a user interface.
@@ -99,7 +116,6 @@ type ServerCard struct {
 type buildOptions struct {
 	name        string
 	description string
-	schema      string
 	remotes     []Remote
 	repository  *Repository
 	meta        map[string]any
@@ -119,13 +135,6 @@ func WithName(name string) BuildOption {
 func WithDescription(description string) BuildOption {
 	return func(o *buildOptions) {
 		o.description = description
-	}
-}
-
-// WithSchema sets the Server Card schema URL. If unset, [SchemaURL] is used.
-func WithSchema(schema string) BuildOption {
-	return func(o *buildOptions) {
-		o.schema = schema
 	}
 }
 
@@ -161,7 +170,7 @@ func BuildServerCard(impl *mcp.Implementation, opts ...BuildOption) (*ServerCard
 	if impl == nil {
 		return nil, errors.New("implementation must not be nil")
 	}
-	cfg := buildOptions{schema: SchemaURL}
+	cfg := buildOptions{}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -177,7 +186,7 @@ func BuildServerCard(impl *mcp.Implementation, opts ...BuildOption) (*ServerCard
 		return nil, errors.New("server card description must be set")
 	}
 	card := &ServerCard{
-		Schema:      cfg.schema,
+		Schema:      SchemaURL,
 		Name:        cfg.name,
 		Title:       impl.Title,
 		Description: cfg.description,
@@ -206,35 +215,48 @@ func (c *ServerCard) Validate() error {
 	if c.Name == "" {
 		return errors.New("server card name must be set")
 	}
-	if len(c.Name) < 3 || len(c.Name) > 200 || !nameRE.MatchString(c.Name) {
+	nameLength := utf8.RuneCountInString(c.Name)
+	if nameLength < 3 || nameLength > 200 || !nameRE.MatchString(c.Name) {
 		return fmt.Errorf("server card name must match reverse-DNS namespace/name format: %q", c.Name)
 	}
 	if c.Description == "" {
 		return errors.New("server card description must be set")
 	}
-	if len(c.Description) > 100 {
+	if utf8.RuneCountInString(c.Description) > 100 {
 		return fmt.Errorf("server card description must be at most 100 characters")
 	}
 	if c.Version == "" {
 		return errors.New("server card version must be set")
 	}
-	if len(c.Version) > 255 {
+	if utf8.RuneCountInString(c.Version) > 255 {
 		return fmt.Errorf("server card version must be at most 255 characters")
 	}
 	if isVersionRange(c.Version) {
 		return fmt.Errorf("server card version must be an exact version, not a range/wildcard: %q", c.Version)
 	}
-	if c.Title != "" && len(c.Title) > 100 {
+	if c.Title != "" && utf8.RuneCountInString(c.Title) > 100 {
 		return fmt.Errorf("server card title must be at most 100 characters")
+	}
+	if c.WebsiteURL != "" && !isAbsoluteURI(c.WebsiteURL) {
+		return fmt.Errorf("server card website URL must be an absolute URI: %q", c.WebsiteURL)
 	}
 	for i, icon := range c.Icons {
 		if icon.Source == "" {
 			return fmt.Errorf("server card icon %d source must be set", i)
 		}
+		if !isAbsoluteURI(icon.Source) {
+			return fmt.Errorf("server card icon %d source must be an absolute URI: %q", i, icon.Source)
+		}
+		if icon.Theme != "" && icon.Theme != mcp.IconThemeLight && icon.Theme != mcp.IconThemeDark {
+			return fmt.Errorf("server card icon %d has unsupported theme %q", i, icon.Theme)
+		}
 	}
 	if c.Repository != nil {
 		if c.Repository.URL == "" {
 			return errors.New("server card repository URL must be set")
+		}
+		if !isAbsoluteURI(c.Repository.URL) {
+			return fmt.Errorf("server card repository URL must be an absolute URI: %q", c.Repository.URL)
 		}
 		if c.Repository.Source == "" {
 			return errors.New("server card repository source must be set")
@@ -250,13 +272,35 @@ func (c *ServerCard) Validate() error {
 		if !remoteURLRE.MatchString(remote.URL) {
 			return fmt.Errorf("server card remote %d URL must start with http://, https://, or a template variable", i)
 		}
+		for name, input := range remote.Variables {
+			if err := validateInput(input); err != nil {
+				return fmt.Errorf("server card remote %d variable %q: %w", i, name, err)
+			}
+		}
 		for j, header := range remote.Headers {
 			if header.Name == "" {
 				return fmt.Errorf("server card remote %d header %d name must be set", i, j)
 			}
+			if err := validateInput(header.Input); err != nil {
+				return fmt.Errorf("server card remote %d header %d: %w", i, j, err)
+			}
+			for name, input := range header.Variables {
+				if err := validateInput(input); err != nil {
+					return fmt.Errorf("server card remote %d header %d variable %q: %w", i, j, name, err)
+				}
+			}
 		}
 	}
 	return nil
+}
+
+func validateInput(input Input) error {
+	switch input.Format {
+	case "", InputFormatBoolean, InputFormatFilePath, InputFormatNumber, InputFormatString:
+		return nil
+	default:
+		return fmt.Errorf("unsupported input format %q", input.Format)
+	}
 }
 
 // Handler returns an HTTP handler that serves card as a Server Card discovery
@@ -265,22 +309,26 @@ func Handler(card *ServerCard) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setDiscoveryHeaders(w.Header())
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if err := card.Validate(); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		body, err := json.Marshal(card)
 		if err != nil {
+			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		sum := sha256.Sum256(body)
 		etag := `"` + hex.EncodeToString(sum[:]) + `"`
 		w.Header().Set("Content-Type", MediaType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
 		w.Header().Set("ETag", etag)
 		if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
@@ -306,7 +354,6 @@ func setDiscoveryHeaders(h http.Header) {
 	h.Set("Access-Control-Allow-Origin", "*")
 	h.Set("Access-Control-Allow-Methods", http.MethodGet)
 	h.Set("Access-Control-Allow-Headers", "Content-Type")
-	h.Set("Cache-Control", "public, max-age=3600")
 }
 
 func ifNoneMatchMatches(header, etag string) bool {
@@ -329,8 +376,21 @@ func ifNoneMatchMatches(header, etag string) bool {
 }
 
 func isVersionRange(version string) bool {
-	release, _, _ := strings.Cut(version, "-")
-	return versionRangeOperatorRE.MatchString(version) || versionWildcardSegmentRE.MatchString(release)
+	withoutBuild, _, _ := strings.Cut(version, "+")
+	release, _, _ := strings.Cut(withoutBuild, "-")
+	return versionRangeOperatorRE.MatchString(version) ||
+		versionWildcardSegmentRE.MatchString(release) ||
+		versionHyphenRangeRE.MatchString(version)
+}
+
+func isAbsoluteURI(value string) bool {
+	for _, r := range value {
+		if r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	uri, err := url.ParseRequestURI(value)
+	return err == nil && uri.IsAbs()
 }
 
 func copyMap[M ~map[string]V, V any](m M) M {
