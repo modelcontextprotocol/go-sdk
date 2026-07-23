@@ -3603,13 +3603,11 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	}
 }
 
-// TestStreamableStateful_AcceptsDiscover verifies that a stateful HTTP server
-// accepts a server/discover probe carrying MCP-Protocol-Version: 2026-07-28
-// (and the matching _meta.protocolVersion), instead of rejecting it with the
-// "stateless required" 400. The SEP-2575 client flow has the client probing
-// the server with the new protocol version to learn which versions are
-// supported.
-func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
+// TestStreamableStateful_DiscoverRejectsUnsupportedVersion verifies that a
+// stateful HTTP server rejects a server/discover probe carrying
+// MCP-Protocol-Version: 2026-07-28 when that version is not supported by the
+// transport, per SEP-2575 version negotiation.
+func TestStreamableStateful_DiscoverRejectsUnsupportedVersion(t *testing.T) {
 
 	server := NewServer(testImpl, nil)
 	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
@@ -3646,8 +3644,8 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, respBody)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
 	}
 
 	// Parse the JSON-RPC response. The body may arrive as a bare JSON object
@@ -3667,18 +3665,27 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	if err := json.Unmarshal(jsonPayload, &rpcResp); err != nil {
 		t.Fatalf("unmarshal response %q: %v", respBody, err)
 	}
-	if rpcResp.Error != nil {
-		t.Fatalf("discover returned error: %+v (body = %s)", rpcResp.Error, respBody)
+	if rpcResp.Error == nil {
+		t.Fatalf("discover should return UnsupportedProtocolVersionError; body = %s", respBody)
 	}
-	if rpcResp.Result == nil {
-		t.Fatalf("discover returned no result; body = %s", respBody)
+	if rpcResp.Error.Code != CodeUnsupportedProtocolVersion {
+		t.Fatalf("discover error code = %d, want %d; error = %+v",
+			rpcResp.Error.Code, CodeUnsupportedProtocolVersion, rpcResp.Error)
 	}
-	if slices.Contains(rpcResp.Result.SupportedVersions, protocolVersion20260728) {
-		t.Errorf("DiscoverResult.SupportedVersions = %v, must not include %q on a stateful transport",
-			rpcResp.Result.SupportedVersions, protocolVersion20260728)
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(rpcResp.Error.Data, &data); err != nil {
+		t.Fatalf("unmarshal error data: %v", err)
 	}
-	if len(rpcResp.Result.SupportedVersions) == 0 {
-		t.Errorf("DiscoverResult.SupportedVersions is empty; want at least one legacy version")
+	if data.Requested != protocolVersion20260728 {
+		t.Errorf("UnsupportedProtocolVersionData.Requested = %q, want %q",
+			data.Requested, protocolVersion20260728)
+	}
+	if slices.Contains(data.Supported, protocolVersion20260728) {
+		t.Errorf("UnsupportedProtocolVersionData.Supported = %v, must not include %q on a stateful transport",
+			data.Supported, protocolVersion20260728)
+	}
+	if len(data.Supported) == 0 {
+		t.Errorf("UnsupportedProtocolVersionData.Supported is empty; want at least one legacy version")
 	}
 }
 

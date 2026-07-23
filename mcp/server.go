@@ -1863,16 +1863,24 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, perRequestErr
 	}
 
-	if validatedMeta.usesNewProtocol &&
-		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
-		data, _ := json.Marshal(UnsupportedProtocolVersionData{
-			Supported: supportedProtocolVersions,
-			Requested: validatedMeta.initializeParams.ProtocolVersion,
-		})
-		return nil, &jsonrpc.Error{
-			Code:    CodeUnsupportedProtocolVersion,
-			Message: "unsupported protocol version",
-			Data:    data,
+	if validatedMeta.usesNewProtocol {
+		requested := validatedMeta.initializeParams.ProtocolVersion
+		ss.mu.Lock()
+		versions := ss.supportedVersions
+		ss.mu.Unlock()
+		if versions == nil {
+			versions = supportedProtocolVersions
+		}
+		if !slices.Contains(versions, requested) {
+			data, _ := json.Marshal(UnsupportedProtocolVersionData{
+				Supported: versions,
+				Requested: requested,
+			})
+			return nil, &jsonrpc.Error{
+				Code:    CodeUnsupportedProtocolVersion,
+				Message: "unsupported protocol version",
+				Data:    data,
+			}
 		}
 	}
 
