@@ -744,6 +744,7 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 // error on an SSE reconnect is retried rather than breaking the session (#683).
 func TestStreamableClientReconnectTransientErrors(t *testing.T) {
 	const tick = 10 * time.Millisecond
+	const serverReconnectDelay = 50 * time.Millisecond
 	defer func(delay int64) {
 		reconnectInitialDelay.Store(delay)
 	}(reconnectInitialDelay.Load())
@@ -753,6 +754,8 @@ func TestStreamableClientReconnectTransientErrors(t *testing.T) {
 
 	var callID atomic.Int64
 	var sentTransient atomic.Bool
+	var transientResponseAt atomic.Int64
+	var successfulReconnectAt atomic.Int64
 
 	fake := &fakeStreamableServer{
 		t: t,
@@ -777,7 +780,8 @@ func TestStreamableClientReconnectTransientErrors(t *testing.T) {
 				},
 				responseFunc: func(r *jsonrpc.Request) (string, int) {
 					callID.Store(r.ID.Raw().(int64))
-					return "id: evt_1\n" +
+					return fmt.Sprintf("retry: %d\n", serverReconnectDelay.Milliseconds()) +
+						"id: evt_1\n" +
 						`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"progress"}}` +
 						"\n\n", http.StatusOK
 				},
@@ -788,8 +792,10 @@ func TestStreamableClientReconnectTransientErrors(t *testing.T) {
 				},
 				responseFunc: func(r *jsonrpc.Request) (string, int) {
 					if !sentTransient.Swap(true) {
+						transientResponseAt.Store(time.Now().UnixNano())
 						return "", http.StatusServiceUnavailable
 					}
+					successfulReconnectAt.Store(time.Now().UnixNano())
 					body := jsonBody(t, resp(callID.Load(), &CallToolResult{Content: []Content{}}, nil))
 					return "id: evt_2\ndata: " + body + "\n\n", http.StatusOK
 				},
@@ -814,6 +820,9 @@ func TestStreamableClientReconnectTransientErrors(t *testing.T) {
 	}
 	if !sentTransient.Load() {
 		t.Error("expected a transient error to be exercised on reconnect")
+	}
+	if got := time.Duration(successfulReconnectAt.Load() - transientResponseAt.Load()); got < serverReconnectDelay {
+		t.Errorf("retry after transient error took %v, want at least the server-requested %v", got, serverReconnectDelay)
 	}
 }
 

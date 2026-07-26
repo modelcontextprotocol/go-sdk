@@ -2490,7 +2490,6 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 						}
 						return
 					}
-					reconnectDelay = 0
 					continue
 				}
 				c.fail(err)
