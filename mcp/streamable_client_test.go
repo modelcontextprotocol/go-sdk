@@ -1387,6 +1387,12 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 		want              string
 	}{
 		{
+			name:              "nil checked",
+			initializedResult: nil,
+			msg:               (*jsonrpc.Request)(nil),
+			want:              "",
+		},
+		{
 			name:              "message meta wins when initializedResult unset",
 			initializedResult: nil,
 			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20260728}}),

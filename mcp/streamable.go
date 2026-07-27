@@ -2403,13 +2403,12 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 			}
 		}
 	}
-	switch {
-	case protocolVersionFromMessage(msg) != "":
-		req.Header.Set(protocolVersionHeader, protocolVersionFromMessage(msg))
-	case c.initializedResult != nil:
+	if pv := protocolVersionFromMessage(msg); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	case protocolVersionFromContext(req.Context()) != "":
-		req.Header.Set(protocolVersionHeader, protocolVersionFromContext(req.Context()))
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
@@ -2424,7 +2423,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 // nil msg.
 func protocolVersionFromMessage(msg jsonrpc.Message) string {
 	req, ok := msg.(*jsonrpc.Request)
-	if !ok {
+	if !ok || req == nil {
 		return ""
 	}
 	meta := extractRequestMeta(req.Params)
