@@ -3504,8 +3504,30 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
 	}
-	if !strings.Contains(string(respBody), "stateless") {
-		t.Errorf("body = %q, want a message mentioning 'stateless'", respBody)
+	msg, err := jsonrpc2.DecodeMessage(respBody)
+	if err != nil {
+		t.Fatalf("failed to decode message: %v; body = %s", err, respBody)
+	}
+	wireResp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", msg)
+	}
+	var wireErr *jsonrpc2.WireError
+	if !errors.As(wireResp.Error, &wireErr) {
+		t.Fatalf("expected *jsonrpc2.WireError, got %T", wireResp.Error)
+	}
+	if wireErr.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d", wireErr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(wireErr.Data, &data); err != nil {
+		t.Fatalf("error.Data is not UnsupportedProtocolVersionData: %v", err)
+	}
+	if data.Requested != protocolVersion20260728 {
+		t.Errorf("data.Requested = %q, want %q", data.Requested, protocolVersion20260728)
+	}
+	if slices.Contains(data.Supported, protocolVersion20260728) {
+		t.Errorf("data.Supported = %v, must not contain %q for a stateful server", data.Supported, protocolVersion20260728)
 	}
 }
 

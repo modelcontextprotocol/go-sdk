@@ -1514,10 +1514,25 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
 				if !c.stateless && jreq.Method != methodDiscover {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-						protocolVersion),
-						http.StatusBadRequest)
+					// This server has chosen not to serve >= 2026-07-28 requests
+					// unless configured as stateless (see StreamableHTTPOptions.Stateless).
+					c.logger.Warn("rejecting request for unsupported protocol version; set StreamableHTTPOptions.Stateless = true to serve it",
+						"protocolVersion", protocolVersion)
+					legacyVersions := make([]string, 0, len(supportedProtocolVersions))
+					for _, v := range supportedProtocolVersions {
+						if v < protocolVersion20260728 {
+							legacyVersions = append(legacyVersions, v)
+						}
+					}
+					data, _ := json.Marshal(UnsupportedProtocolVersionData{
+						Supported: legacyVersions,
+						Requested: protocolVersion,
+					})
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code:    CodeUnsupportedProtocolVersion,
+						Message: fmt.Sprintf("protocol version %q is not supported by this server", protocolVersion),
+						Data:    data,
+					})
 					return
 				}
 				if headerVersion == "" {
