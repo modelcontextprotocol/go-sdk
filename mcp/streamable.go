@@ -2254,7 +2254,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 
-		if err := c.setMCPHeaders(req); err != nil {
+		if err := c.setMCPHeaders(req, msg); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
@@ -2381,7 +2381,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
+func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -2411,16 +2411,35 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 			}
 		}
 	}
-	if c.initializedResult != nil {
+	if pv := protocolVersionFromMessage(msg); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if v := protocolVersionFromContext(req.Context()); v != "" {
-		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
 
 	return nil
+}
+
+// protocolVersionFromMessage recovers the SEP-2575 `_meta.protocolVersion`
+// value from an outgoing JSON-RPC request, if present. It returns "" for
+// notifications, responses, requests without a `_meta.protocolVersion`, or a
+// nil msg.
+func protocolVersionFromMessage(msg jsonrpc.Message) string {
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok || req == nil {
+		return ""
+	}
+	meta := extractRequestMeta(req.Params)
+	if meta == nil {
+		return ""
+	}
+	v, _ := meta[MetaKeyProtocolVersion].(string)
+	return v
 }
 
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
@@ -2683,7 +2702,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			if err != nil {
 				return nil, err
 			}
-			if err := c.setMCPHeaders(req); err != nil {
+			if err := c.setMCPHeaders(req, nil); err != nil {
 				return nil, err
 			}
 			if lastEventID != "" {
@@ -2719,7 +2738,7 @@ func (c *streamableClientConn) Close() error {
 			if err != nil {
 				c.closeErr = err
 			} else {
-				if err := c.setMCPHeaders(req); err != nil {
+				if err := c.setMCPHeaders(req, nil); err != nil {
 					c.closeErr = err
 				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err
