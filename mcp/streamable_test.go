@@ -3816,95 +3816,61 @@ func TestStreamableServerRejectsDuplicateInFlightRequestID(t *testing.T) {
 
 func TestSummarizeStreamableHTTPRequest(t *testing.T) {
 	tests := []struct {
-		name              string
-		body              string
-		wantMethods       []string
-		wantRequestID     any
-		wantCalls         int
-		wantNotifications int
-		wantResponses     int
+		name               string
+		body               string
+		wantMethod         string
+		wantRequestID      any
+		wantIsNotification bool
+		wantIsResponse     bool
 	}{
 		{
 			name:          "single integer ID call",
 			body:          `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
-			wantMethods:   []string{"tools/list"},
+			wantMethod:    "tools/list",
 			wantRequestID: int64(1),
-			wantCalls:     1,
 		},
 		{
 			name:          "single string ID call",
 			body:          `{"jsonrpc":"2.0","id":"request-1","method":"ping"}`,
-			wantMethods:   []string{"ping"},
+			wantMethod:    "ping",
 			wantRequestID: "request-1",
-			wantCalls:     1,
 		},
 		{
-			name:              "null ID is a notification",
-			body:              `{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}`,
-			wantMethods:       []string{"notifications/initialized"},
-			wantNotifications: 1,
+			name:               "null ID is a notification",
+			body:               `{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}`,
+			wantMethod:         "notifications/initialized",
+			wantIsNotification: true,
 		},
 		{
-			name:          "single response has no request ID",
-			body:          `{"jsonrpc":"2.0","id":3,"result":{}}`,
-			wantResponses: 1,
+			name:           "response",
+			body:           `{"jsonrpc":"2.0","id":3,"result":{}}`,
+			wantIsResponse: true,
 		},
 		{
-			name:          "one-element batch has one call",
-			body:          `[{"jsonrpc":"2.0","id":4,"method":"ping"}]`,
-			wantMethods:   []string{"ping"},
-			wantRequestID: int64(4),
-			wantCalls:     1,
-		},
-		{
-			name:              "one-element notification batch",
-			body:              `[{"jsonrpc":"2.0","method":"notifications/initialized"}]`,
-			wantMethods:       []string{"notifications/initialized"},
-			wantNotifications: 1,
-		},
-		{
-			name:          "one-element response batch",
-			body:          `[{"jsonrpc":"2.0","id":3,"result":{}}]`,
-			wantResponses: 1,
-		},
-		{
-			name: "mixed batch preserves methods in body order",
-			body: `[
-				{"jsonrpc":"2.0","id":1,"method":"tools/list"},
-				{"jsonrpc":"2.0","method":"tools/list"},
-				{"jsonrpc":"2.0","id":2,"result":{}},
-				{"jsonrpc":"2.0","id":"x","method":"ping"}
-			]`,
-			wantMethods:       []string{"tools/list", "tools/list", "ping"},
-			wantCalls:         2,
-			wantNotifications: 1,
-			wantResponses:     1,
-		},
-		{
-			name:              "empty method is retained",
-			body:              `{"jsonrpc":"2.0","method":""}`,
-			wantMethods:       []string{""},
-			wantNotifications: 1,
+			name:               "empty notification method is retained",
+			body:               `{"jsonrpc":"2.0","method":""}`,
+			wantIsNotification: true,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			msgs, _, err := readBatch([]byte(test.body))
+			msg, err := jsonrpc2.DecodeMessage([]byte(test.body))
 			if err != nil {
-				t.Fatalf("readBatch: %v", err)
+				t.Fatalf("DecodeMessage: %v", err)
 			}
-			got := summarizeStreamableHTTPRequest(msgs)
-			if diff := cmp.Diff(test.wantMethods, got.Methods); diff != "" {
-				t.Errorf("Methods mismatch (-want +got):\n%s", diff)
+			got := summarizeStreamableHTTPRequest(msg)
+			if got.Method != test.wantMethod {
+				t.Errorf("Method = %q, want %q", got.Method, test.wantMethod)
 			}
 			if gotID := got.RequestID.Raw(); gotID != test.wantRequestID {
 				t.Errorf("RequestID.Raw() = %#v, want %#v", gotID, test.wantRequestID)
 			}
-			if got.Calls != test.wantCalls || got.Notifications != test.wantNotifications || got.Responses != test.wantResponses {
-				t.Errorf("message counts = (%d calls, %d notifications, %d responses), want (%d, %d, %d)",
-					got.Calls, got.Notifications, got.Responses,
-					test.wantCalls, test.wantNotifications, test.wantResponses)
+			if got.IsNotification != test.wantIsNotification {
+				t.Errorf("IsNotification = %t, want %t", got.IsNotification, test.wantIsNotification)
+			}
+			if got.IsResponse != test.wantIsResponse {
+				t.Errorf("IsResponse = %t, want %t", got.IsResponse, test.wantIsResponse)
 			}
 		})
 	}
@@ -3938,10 +3904,9 @@ func TestStreamableHTTPRequestSummaryContext(t *testing.T) {
 					if got := ctx.Value(contextKey{}); got != contextValue {
 						t.Errorf("callback context value = %v, want %q", got, contextValue)
 					}
-					if diff := cmp.Diff([]string{methodInitialize}, summary.Methods); diff != "" {
-						t.Errorf("callback Methods mismatch (-want +got):\n%s", diff)
+					if summary.Method != methodInitialize {
+						t.Errorf("callback Method = %q, want %q", summary.Method, methodInitialize)
 					}
-					summary.Methods[0] = "changed"
 					summarySeen.Store(true)
 					observed <- summary
 				},
@@ -3958,14 +3923,14 @@ func TestStreamableHTTPRequestSummaryContext(t *testing.T) {
 				t.Fatalf("status = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
 			}
 			summary := <-observed
-			if diff := cmp.Diff([]string{"changed"}, summary.Methods); diff != "" {
-				t.Errorf("Methods mismatch (-want +got):\n%s", diff)
+			if summary.Method != methodInitialize {
+				t.Errorf("Method = %q, want %q", summary.Method, methodInitialize)
 			}
 			if got := summary.RequestID.Raw(); got != int64(1) {
 				t.Errorf("RequestID.Raw() = %#v, want 1", got)
 			}
-			if summary.Calls != 1 || summary.Notifications != 0 || summary.Responses != 0 {
-				t.Errorf("message counts = (%d, %d, %d), want (1, 0, 0)", summary.Calls, summary.Notifications, summary.Responses)
+			if summary.IsNotification || summary.IsResponse {
+				t.Errorf("message kind = (notification=%t, response=%t), want call", summary.IsNotification, summary.IsResponse)
 			}
 		})
 	}
@@ -3997,7 +3962,7 @@ func TestStreamableHTTPRequestSummaryRejections(t *testing.T) {
 		}
 	})
 
-	t.Run("prohibited batch is observed before policy validation", func(t *testing.T) {
+	t.Run("batch is not observed", func(t *testing.T) {
 		var calls atomic.Int64
 		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
 			Stateless: true,
@@ -4012,8 +3977,8 @@ func TestStreamableHTTPRequestSummaryRejections(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 		}
-		if got := calls.Load(); got != 1 {
-			t.Errorf("callback calls = %d, want 1", got)
+		if got := calls.Load(); got != 0 {
+			t.Errorf("callback calls = %d, want 0", got)
 		}
 	})
 

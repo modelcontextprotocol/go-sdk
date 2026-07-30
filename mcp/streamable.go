@@ -69,25 +69,23 @@ type sessionInfo struct {
 	timer   *time.Timer
 }
 
-// StreamableHTTPRequestSummary contains redacted metadata about a decoded
-// streamable HTTP POST body.
+// StreamableHTTPRequestSummary contains redacted metadata about a single
+// JSON-RPC message decoded from a streamable HTTP POST body.
 type StreamableHTTPRequestSummary struct {
-	// Methods contains the methods of decoded JSON-RPC requests in body order.
-	// The methods have not yet been validated and may contain arbitrary
-	// attacker-controlled strings. The slice does not alias SDK state and may be
-	// retained or modified by the callback.
-	Methods []string
+	// Method is the method of a decoded JSON-RPC request. It is empty for a
+	// response. The method has not yet been validated and may contain an
+	// arbitrary attacker-controlled string.
+	Method string
 
-	// RequestID is valid only when the decoded input contains exactly one
-	// JSON-RPC call and no other messages. IDs use the same coercion rules as
-	// [jsonrpc.DecodeMessage].
+	// RequestID is valid only for a JSON-RPC call. IDs use the same coercion
+	// rules as [jsonrpc.DecodeMessage].
 	RequestID jsonrpc.ID
 
-	// Calls, Notifications, and Responses count the decoded JSON-RPC message
-	// kinds in the body.
-	Calls         int
-	Notifications int
-	Responses     int
+	// IsNotification reports whether the message is a JSON-RPC notification.
+	IsNotification bool
+
+	// IsResponse reports whether the message is a JSON-RPC response.
+	IsResponse bool
 }
 
 // startPOST signals that a POST request for this session is starting (which
@@ -240,14 +238,14 @@ type StreamableHTTPOptions struct {
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
 
-	// OnRequestSummary, when non-nil, observes redacted metadata for streamable
-	// HTTP POST bodies decoded by the session transport. The callback receives
-	// the HTTP request's context and runs synchronously before validation and
-	// dispatch of the decoded messages. It may be called concurrently for
-	// different requests and should return promptly; in particular, it must not
-	// wait for processing of the same request. Panics are not recovered. Only the
-	// summary is redacted; the context may contain values added by authentication
-	// or other middleware.
+	// OnRequestSummary, when non-nil, observes redacted metadata for a single
+	// JSON-RPC message decoded from a streamable HTTP POST body. It is not called
+	// for JSON-RPC batches. The callback receives the HTTP request's context and
+	// runs synchronously before validation and dispatch of the decoded message.
+	// It may be called concurrently for different requests and should return
+	// promptly; in particular, it must not wait for processing of the same
+	// request. Panics are not recovered. Only the summary is redacted; the context
+	// may contain values added by authentication or other middleware.
 	//
 	// The callback is not invoked for requests rejected before this point,
 	// including HTTP, authorization, session-routing, and connection failures,
@@ -1480,9 +1478,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
-	singleMessage := isSingleStreamableMessage(incoming, isBatch)
-	if c.onRequestSummary != nil {
-		c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming))
+	if c.onRequestSummary != nil && !isBatch && len(incoming) == 1 {
+		c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming[0]))
 	}
 
 	protocolVersion := protocolVersionFromContext(req.Context())
@@ -1629,7 +1626,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 
 	// Validate MCP standard headers (Mcp-Method, Mcp-Name, Mcp-Param-*)
-	if singleMessage {
+	if !isBatch && len(incoming) == 1 {
 		if err := validateMcpHeaders(req.Header, incoming[0], c.toolLookup); err != nil {
 			resp := &jsonrpc.Response{
 				Error: jsonrpc2.NewError(CodeHeaderMismatch, err.Error()),
@@ -1784,31 +1781,20 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	c.hangResponse(req.Context(), done)
 }
 
-func summarizeStreamableHTTPRequest(incoming []jsonrpc.Message) StreamableHTTPRequestSummary {
+func summarizeStreamableHTTPRequest(msg jsonrpc.Message) StreamableHTTPRequestSummary {
 	var summary StreamableHTTPRequestSummary
-	for _, msg := range incoming {
-		switch msg := msg.(type) {
-		case *jsonrpc.Request:
-			summary.Methods = append(summary.Methods, msg.Method)
-			if msg.IsCall() {
-				summary.Calls++
-			} else {
-				summary.Notifications++
-			}
-		case *jsonrpc.Response:
-			summary.Responses++
+	switch msg := msg.(type) {
+	case *jsonrpc.Request:
+		summary.Method = msg.Method
+		if msg.IsCall() {
+			summary.RequestID = msg.ID
+		} else {
+			summary.IsNotification = true
 		}
-	}
-	if len(incoming) == 1 {
-		if req, ok := incoming[0].(*jsonrpc.Request); ok && req.IsCall() {
-			summary.RequestID = req.ID
-		}
+	case *jsonrpc.Response:
+		summary.IsResponse = true
 	}
 	return summary
-}
-
-func isSingleStreamableMessage(incoming []jsonrpc.Message, isBatch bool) bool {
-	return !isBatch && len(incoming) == 1
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
