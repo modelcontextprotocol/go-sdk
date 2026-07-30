@@ -262,6 +262,12 @@ func filterValidTools(logger *slog.Logger, tools []*Tool) []*Tool {
 	logger = ensureLogger(logger)
 	result := make([]*Tool, 0, len(tools))
 	for _, tool := range tools {
+		// A nil tool (e.g. from a malformed "tools":[null] response) is
+		// invalid; exclude it instead of dereferencing it.
+		if tool == nil {
+			logger.Error("excluding nil tool from tools/list")
+			continue
+		}
 		if err := validateParamHeaderAnnotations(tool); err != nil {
 			logger.Error("excluding tool from tools/list", "tool", tool.Name, "error", err)
 			continue

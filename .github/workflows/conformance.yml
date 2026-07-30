@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  CONFORMANCE_VERSION: "0.2.0-alpha.9"
+  CONFORMANCE_VERSION: "0.2.0-alpha.10"
 
 jobs:
   server-conformance:
