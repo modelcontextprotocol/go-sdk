@@ -259,11 +259,6 @@ func generateParamHeaders(tool *Tool, params json.RawMessage) map[string]string 
 // filterValidTools returns only tools that have valid
 // x-mcp-header annotations. Invalid tools are logged and excluded.
 func filterValidTools(logger *slog.Logger, tools []*Tool) []*Tool {
-	// Preserve a nil slice as nil rather than normalizing a malformed
-	// "tools":null response into a non-nil empty slice.
-	if tools == nil {
-		return nil
-	}
 	logger = ensureLogger(logger)
 	result := make([]*Tool, 0, len(tools))
 	for _, tool := range tools {

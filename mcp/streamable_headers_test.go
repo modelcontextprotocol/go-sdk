@@ -969,29 +969,15 @@ func TestFilterValidTools(t *testing.T) {
 		t.Errorf("filterValidTools returned [%s, %s, %s, %s], want [valid, plain, nested-valid, valid-jsonschema]",
 			result[0].Name, result[1].Name, result[2].Name, result[3].Name)
 	}
-}
 
-func TestFilterValidToolsNilHandling(t *testing.T) {
-	// A malformed "tools":[null] response must not panic the client, and a
-	// "tools":null response must not be normalized into a non-nil empty slice.
-	t.Run("nil tool element is excluded without panicking", func(t *testing.T) {
-		got := filterValidTools(nil, []*Tool{nil})
-		if len(got) != 0 {
-			t.Fatalf("filterValidTools returned %d tools, want 0", len(got))
-		}
-	})
-	t.Run("nil slice is preserved as nil", func(t *testing.T) {
-		if got := filterValidTools(nil, nil); got != nil {
-			t.Fatalf("filterValidTools returned non-nil slice (len=%d) for nil input, want nil", len(got))
-		}
-	})
-	t.Run("valid tools are kept alongside nil elements", func(t *testing.T) {
-		valid := &Tool{Name: "valid"}
-		got := filterValidTools(nil, []*Tool{nil, valid, nil})
-		if len(got) != 1 || got[0].Name != "valid" {
-			t.Fatalf("filterValidTools returned %d tools, want [valid]", len(got))
-		}
-	})
+	// Regression for #1119: a malformed "tools":[null] response must not panic;
+	// nil tools are treated as invalid and excluded.
+	if got := filterValidTools(nil, []*Tool{nil}); len(got) != 0 {
+		t.Errorf("filterValidTools([nil]) returned %d tools, want 0", len(got))
+	}
+	if got := filterValidTools(nil, []*Tool{nil, valid, nil}); len(got) != 1 || got[0].Name != "valid" {
+		t.Errorf("filterValidTools([nil, valid, nil]) = %d tools, want [valid]", len(got))
+	}
 }
 
 func TestSetStandardHeadersWithParamHeaders(t *testing.T) {
