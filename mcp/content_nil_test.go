@@ -224,4 +224,12 @@ func TestContentUnmarshalNilWithInvalidContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(mcp.CallToolResult{}, mcp.GetPromptResult{}, mcp.ReadResourceResult{})}
+var ctrCmpOpts = []cmp.Option{
+	cmpopts.IgnoreUnexported(mcp.CallToolResult{}, mcp.GetPromptResult{}, mcp.ReadResourceResult{}),
+	// Server responses under the >= 2026-07-28 protocol carry an auto-populated
+	// [mcp.MetaKeyServerInfo] entry; tests that compare result bodies against
+	// hand-crafted expected values should ignore it.
+	cmpopts.IgnoreFields(mcp.CallToolResult{}, "Meta"),
+	cmpopts.IgnoreFields(mcp.GetPromptResult{}, "Meta"),
+	cmpopts.IgnoreFields(mcp.ReadResourceResult{}, "Meta"),
+}

@@ -28,6 +28,24 @@ const (
 	resultTypeInputRequired resultType = "input_required"
 )
 
+type completeResultWithType struct {
+	ResultType resultType `json:"resultType,omitempty"`
+}
+
+func (r *completeResultWithType) setResultType(rt resultType) { r.ResultType = rt }
+func (*completeResultWithType) isCompleteResult()             {}
+
+type completeResultResponse interface {
+	setResultType(resultType)
+	isCompleteResult()
+}
+
+func setCompleteResultType(res Result) {
+	if r, ok := res.(completeResultResponse); ok {
+		r.setResultType(resultTypeComplete)
+	}
+}
+
 // InputRequest is a type for parameters that a server can include in the response
 // to request input from client (SEP-2322). Implementations are [*ElicitParams],
 // [*CreateMessageParams], and [*ListRootsParams].
@@ -62,6 +80,9 @@ func (m InputRequestMap) MarshalJSON() ([]byte, error) {
 		method, err := typeToMethod(v)
 		if err != nil {
 			return nil, err
+		}
+		if ep, ok := v.(*ElicitParams); ok {
+			v = ep.inferElicitMode()
 		}
 		converted[k] = &wire{Method: method, Params: v}
 	}
@@ -119,70 +140,56 @@ type InputResponse interface{ isInputResponse() }
 // input-required result.
 type InputResponseMap map[string]InputResponse
 
-func (m InputResponseMap) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		Method string        `json:"method"`
-		Result InputResponse `json:"result,omitempty"`
-	}
-	typeToMethod := func(v InputResponse) (string, error) {
-		switch v.(type) {
-		case *ElicitResult:
-			return methodElicit, nil
-		case *CreateMessageResult, *CreateMessageWithToolsResult:
-			return methodCreateMessage, nil
-		case *ListRootsResult:
-			return methodListRoots, nil
-		default:
-			return "", fmt.Errorf("unsupported type: %T", v)
-		}
-	}
-	converted := map[string]*wire{}
-	for k, v := range m {
-		method, err := typeToMethod(v)
-		if err != nil {
-			return nil, err
-		}
-		converted[k] = &wire{Method: method, Result: v}
-	}
-	return json.Marshal(converted)
-}
-
 func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
-	type raw struct {
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-	}
-	var rawMap map[string]*raw
+	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	result := make(InputResponseMap, len(rawMap))
 	for k, raw := range rawMap {
-		switch raw.Method {
-		case methodElicit:
-			var p ElicitResult
-			if err := json.Unmarshal(raw.Result, &p); err != nil {
-				return err
-			}
-			result[k] = &p
-		case methodCreateMessage:
-			var p CreateMessageWithToolsResult
-			if err := json.Unmarshal(raw.Result, &p); err != nil {
-				return err
-			}
-			result[k] = &p
-		case methodListRoots:
-			var p ListRootsResult
-			if err := json.Unmarshal(raw.Result, &p); err != nil {
-				return err
-			}
-			result[k] = &p
-		default:
-			return fmt.Errorf("unsupported InputResponse method: %q", raw.Method)
+		v, err := unmarshalInputResponse(raw)
+		if err != nil {
+			return fmt.Errorf("inputResponses[%q]: %w", k, err)
 		}
+		result[k] = v
 	}
 	*m = result
 	return nil
+}
+
+// unmarshalInputResponse determines the concrete InputResponse type from the
+// JSON structure by searching for a discriminating key in a raw message.
+func unmarshalInputResponse(data json.RawMessage) (InputResponse, error) {
+	var probe struct {
+		Action json.RawMessage `json:"action"`
+		Role   json.RawMessage `json:"role"`
+		Roots  json.RawMessage `json:"roots"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, err
+	}
+	switch {
+	case probe.Roots != nil:
+		var p ListRootsResult
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, err
+		}
+		return &p, nil
+	case probe.Action != nil:
+		var p ElicitResult
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, err
+		}
+		return &p, nil
+	case probe.Role != nil:
+		var p CreateMessageWithToolsResult
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, err
+		}
+		return &p, nil
+	default:
+		return nil, fmt.Errorf(`cannot determine InputResponse type: expected "action", "role", or "roots" key`)
+	}
 }
 
 // Optional annotations for the client. The client can use annotations to inform
@@ -651,6 +658,7 @@ type CompletionResultDetails struct {
 
 // The server's response to a completion/complete request
 type CompleteResult struct {
+	completeResultWithType
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta       `json:"_meta,omitempty"`
@@ -1128,14 +1136,13 @@ func (x *DiscoverParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *DiscoverParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 type DiscoverResult struct {
+	completeResultWithType
 	Meta `json:"_meta,omitempty"`
 	Cacheable
 	// The versions of the Model Context Protocol that the server supports.
 	SupportedVersions []string `json:"supportedVersions"`
 	// The server's capabilities.
 	Capabilities *ServerCapabilities `json:"capabilities"`
-	// Information about the server implementation.
-	ServerInfo *Implementation `json:"serverInfo"`
 	// Instructions describing how to use the server and its features.
 	Instructions string `json:"instructions,omitempty"`
 }
@@ -1191,6 +1198,7 @@ func (c *Cacheable) setDefaultCacheableValues() {
 
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
+	completeResultWithType
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -1221,6 +1229,7 @@ func (x *ListResourceTemplatesParams) cursorPtr() *string     { return &x.Cursor
 
 // The server's response to a resources/templates/list request from the client.
 type ListResourceTemplatesResult struct {
+	completeResultWithType
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -1251,6 +1260,7 @@ func (x *ListResourcesParams) cursorPtr() *string     { return &x.Cursor }
 
 // The server's response to a resources/list request from the client.
 type ListResourcesResult struct {
+	completeResultWithType
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -1317,6 +1327,7 @@ func (x *ListToolsParams) cursorPtr() *string     { return &x.Cursor }
 
 // The server's response to a tools/list request from the client.
 type ListToolsResult struct {
+	completeResultWithType
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
 	Meta `json:"_meta,omitempty"`
@@ -2077,7 +2088,7 @@ type SubscriptionsListenParams struct {
 	Meta `json:"_meta,omitempty"`
 	// Notifications declares which notification types the client wants to
 	// receive on this stream.
-	Notifications NotificationSubscriptions `json:"notifications"`
+	Notifications *NotificationSubscriptions `json:"notifications"`
 }
 
 func (x *SubscriptionsListenParams) isParams()   {}
@@ -2095,6 +2106,18 @@ type SubscriptionsAcknowledgedParams struct {
 
 func (x *SubscriptionsAcknowledgedParams) isParams()   {}
 func (x *SubscriptionsAcknowledgedParams) isNil() bool { return x == nil }
+
+// SubscriptionsListenResult is the response to a "subscriptions/listen"
+// request, signalling that the subscription has ended gracefully (for example,
+// during server shutdown). Because the listen stream is long-lived, this
+// result is sent only when the server tears the subscription down; an abrupt
+// transport close carries no response.
+type SubscriptionsListenResult struct {
+	completeResultWithType
+	Meta `json:"_meta"`
+}
+
+func (*SubscriptionsListenResult) isResult() {}
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -2139,6 +2162,21 @@ func (x *ElicitParams) isNil() bool     { return x == nil }
 
 func (x *ElicitParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *ElicitParams) SetProgressToken(t any) { setProgressToken(x, t) }
+
+// inferElicitMode returns x with Mode populated by inference if it was empty.
+// Mode is inferred as "url" when URL or ElicitationID is set, otherwise "form".
+func (x *ElicitParams) inferElicitMode() *ElicitParams {
+	if x == nil || x.Mode != "" {
+		return x
+	}
+	x2 := *x
+	if x.URL != "" || x.ElicitationID != "" {
+		x2.Mode = "url"
+	} else {
+		x2.Mode = "form"
+	}
+	return &x2
+}
 
 // The client's response to an elicitation/create request from the server.
 type ElicitResult struct {
@@ -2325,6 +2363,8 @@ const (
 	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
 	// MetaKeyClientInfo carries the client's [Implementation].
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyServerInfo carries the server's [Implementation] on responses.
+	MetaKeyServerInfo = "io.modelcontextprotocol/serverInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	// MetaKeyLogLevel identifies the desired log level for the request.

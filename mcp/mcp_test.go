@@ -854,7 +854,7 @@ func TestNoJSONNull(t *testing.T) {
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1558,7 +1558,7 @@ func TestElicitContentValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,7 +1641,7 @@ func TestElicitationProgressToken(t *testing.T) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1720,7 +1720,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1757,7 +1757,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2079,8 +2079,22 @@ func TestSynchronousNotifications(t *testing.T) {
 				return new(CallToolResult), nil, nil
 			})
 		}
-		cs, ss, cleanup := basicClientServerConnection(t, client, server, addTool)
-		defer cleanup()
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		addTool(server)
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cs.Close()
+			ss.Wait()
+		})
 
 		t.Log("from client")
 		{
@@ -2461,7 +2475,15 @@ func TestSetErrorPreservesContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
+var ctrCmpOpts = []cmp.Option{
+	cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{}),
+	// Server responses under the >= 2026-07-28 protocol carry an auto-populated
+	// [MetaKeyServerInfo] entry; tests that compare result bodies against
+	// hand-crafted expected values should ignore it.
+	cmpopts.IgnoreFields(CallToolResult{}, "Meta"),
+	cmpopts.IgnoreFields(GetPromptResult{}, "Meta"),
+	cmpopts.IgnoreFields(ReadResourceResult{}, "Meta"),
+}
 
 // runSubscriptionsListenTest exercises the SEP-2575 auto-listen flow end-to-end
 // against the supplied transport pair. It captures every notification and the
@@ -2649,6 +2671,48 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 	case e := <-events:
 		t.Fatalf("unexpected event %q on no-handler client", e.kind)
 	case <-time.After(notificationDelay * 10):
+	}
+}
+
+// TestSubscriptionsListen_MissingNotifications verifies that a
+// subscriptions/listen request without the required "notifications" field
+// is rejected with an invalid params error.
+func TestSubscriptionsListen_MissingNotifications(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server := newSubListenServer()
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// Invoke the server handler directly with a nil Notifications field,
+	// simulating a request whose params omit the required field on the wire.
+	// The client-side subscriptionsListen does not await the RPC response
+	// (the call's lifetime is the notification stream), so we assert the
+	// server-side behavior at the handler level.
+	id, err := jsonrpc.MakeID("test-1")
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+	reqCtx := context.WithValue(ctx, idContextKey{}, id)
+	req := &SubscriptionsListenRequest{
+		Session: ss,
+		Params:  &SubscriptionsListenParams{}, // Notifications is nil
+	}
+	_, err = server.subscriptionsListen(reqCtx, req)
+	if err == nil {
+		t.Fatal("expected error for missing notifications field, got nil")
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
 	}
 }
 

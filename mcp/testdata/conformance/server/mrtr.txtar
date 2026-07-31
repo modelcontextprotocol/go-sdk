@@ -36,10 +36,7 @@ confirmThenGreet
     "arguments": {},
     "requestState": "step=1",
     "inputResponses": {
-      "who": {
-        "method": "elicitation/create",
-        "result": { "action": "accept", "content": { "name": "MCP Go" } }
-      }
+      "who": { "action": "accept", "content": { "name": "MCP Go" } }
     }
   }
 }
@@ -48,6 +45,12 @@ confirmThenGreet
 	"jsonrpc": "2.0",
 	"id": 1,
 	"result": {
+		"_meta": {
+			"io.modelcontextprotocol/serverInfo": {
+				"name": "testServer",
+				"version": "v1.0.0"
+			}
+		},
 		"content": null,
 		"requestState": "step=1",
 		"resultType": "input_required",
@@ -55,7 +58,7 @@ confirmThenGreet
 			"who": {
 				"method": "elicitation/create",
 				"params": {
-					"mode": "",
+					"mode": "form",
 					"message": "What is your name?",
 					"requestedSchema": {
 						"type": "object",
@@ -74,6 +77,12 @@ confirmThenGreet
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"_meta": {
+			"io.modelcontextprotocol/serverInfo": {
+				"name": "testServer",
+				"version": "v1.0.0"
+			}
+		},
 		"content": [
 			{
 				"type": "text",

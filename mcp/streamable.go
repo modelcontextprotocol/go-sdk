@@ -194,7 +194,35 @@ type StreamableHTTPOptions struct {
 	//   protection := http.NewCrossOriginProtection()
 	//   protectedHandler := protection.Handler(handler)
 	CrossOriginProtection *http.CrossOriginProtection
+
+	// MaxRequestBodyBytes limits the number of bytes read from any incoming
+	// HTTP request body. Requests that exceed this limit are rejected with
+	// 413 Request Entity Too Large.
+	//
+	// The limit is enforced during the read, so it applies uniformly to
+	// requests using Content-Length, Transfer-Encoding: chunked, or HTTP/2
+	// (which has no Content-Length).
+	//
+	// If zero, [DefaultMaxRequestBodyBytes] is used.
+	// A negative value disables the limit entirely; do not use this on
+	// servers exposed to untrusted clients.
+	MaxRequestBodyBytes int64
+
+	// PropagateRequestCancellation, when true, ties the in-flight handler
+	// context to the originating HTTP request's context. Only applies to
+	// requests using the >= 2026-07-28 protocol, where the POST is the whole
+	// request lifecycle.
+	// The handler context cancels whenever the HTTP request context does as the
+	// response can no longer be delivered, so cancelling the handler is safe.
+	//
+	// Requests using older protocol versions (including those routed through
+	// the allowsessionsinstateless compatibility path) are unaffected.
+	PropagateRequestCancellation bool
 }
+
+// DefaultMaxRequestBodyBytes is the default value used for
+// [StreamableHTTPOptions.MaxRequestBodyBytes] when it is left at zero.
+const DefaultMaxRequestBodyBytes = 4 << 20 // 4 MiB
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
 //
@@ -214,6 +242,10 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.CrossOriginProtection == nil && enableoriginverification == "1" {
 		h.opts.CrossOriginProtection = &http.CrossOriginProtection{}
+	}
+
+	if h.opts.MaxRequestBodyBytes == 0 {
+		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
 	}
 
 	return h
@@ -308,6 +340,11 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 		}
 	}
 
+	// Bound the request body to protect against OOM attacks.
+	if req.Body != nil && h.opts.MaxRequestBodyBytes > 0 {
+		req.Body = http.MaxBytesReader(w, req.Body, h.opts.MaxRequestBodyBytes)
+	}
+
 	// [§2.7] of the spec (2025-06-18): validate the MCP-Protocol-Version
 	// header. If provided, it must be a supported version. If absent, the
 	// version is unknown (the request may be an initialize for any version).
@@ -368,6 +405,11 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 
 	info, err := h.ephemeralConnectOpts(req)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -386,7 +428,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		EventStore:                  h.opts.EventStore,
 		jsonResponse:                h.opts.JSONResponse,
 		logger:                      h.opts.Logger,
-		shouldPropagateCancellation: info.isSubscriptionsListen && info.usesNewProtocol,
+		shouldPropagateCancellation: info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation),
 	}
 
 	session, err := connectStreamable(req.Context(), server, transport, info.opts)
@@ -435,7 +477,8 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 	var hasInitialize, hasInitialized, usesNewProtocol, isSubscriptionsListen bool
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
+		// Preserve *http.MaxBytesError so serveStateless can respond with 413.
+		return nil, fmt.Errorf("failed to read body: %w", err)
 	}
 	req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -1374,6 +1417,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// Read incoming messages.
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -2201,7 +2249,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 
-		if err := c.setMCPHeaders(req); err != nil {
+		if err := c.setMCPHeaders(req, msg); err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
@@ -2325,7 +2373,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
+func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -2355,16 +2403,35 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 			}
 		}
 	}
-	if c.initializedResult != nil {
+	if pv := protocolVersionFromMessage(msg); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
+	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
-	} else if v := protocolVersionFromContext(req.Context()); v != "" {
-		req.Header.Set(protocolVersionHeader, v)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
 	}
 
 	return nil
+}
+
+// protocolVersionFromMessage recovers the SEP-2575 `_meta.protocolVersion`
+// value from an outgoing JSON-RPC request, if present. It returns "" for
+// notifications, responses, requests without a `_meta.protocolVersion`, or a
+// nil msg.
+func protocolVersionFromMessage(msg jsonrpc.Message) string {
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok || req == nil {
+		return ""
+	}
+	meta := extractRequestMeta(req.Params)
+	if meta == nil {
+		return ""
+	}
+	v, _ := meta[MetaKeyProtocolVersion].(string)
+	return v
 }
 
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
@@ -2628,7 +2695,7 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			if err != nil {
 				return nil, err
 			}
-			if err := c.setMCPHeaders(req); err != nil {
+			if err := c.setMCPHeaders(req, nil); err != nil {
 				return nil, err
 			}
 			if lastEventID != "" {
@@ -2664,7 +2731,7 @@ func (c *streamableClientConn) Close() error {
 			if err != nil {
 				c.closeErr = err
 			} else {
-				if err := c.setMCPHeaders(req); err != nil {
+				if err := c.setMCPHeaders(req, nil); err != nil {
 					c.closeErr = err
 				} else if resp, err := c.client.Do(req); err != nil {
 					c.closeErr = err

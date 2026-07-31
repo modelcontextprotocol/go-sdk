@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestParamsMeta(t *testing.T) {
@@ -491,7 +492,7 @@ func TestCompleteResult(t *testing.T) {
 			if err := json.Unmarshal([]byte(test.in), &got); err != nil {
 				t.Fatalf("json.Unmarshal(CompleteResult) failed: %v", err)
 			}
-			if diff := cmp.Diff(test.want, got); diff != "" {
+			if diff := cmp.Diff(test.want, got, cmpopts.IgnoreUnexported(CompleteResult{})); diff != "" {
 				t.Errorf("CompleteResult unmarshal mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -1214,6 +1215,43 @@ func TestInputRequestMapJSON(t *testing.T) {
 			t.Error("expected key r1 in InputRequests")
 		}
 	})
+}
+
+func TestInputResponseMapJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		value InputResponse
+		check func(t *testing.T, got InputResponse)
+	}{
+		{
+			name:  "elicit",
+			value: &ElicitResult{Action: "accept", Content: map[string]any{"ok": true}},
+		},
+		{
+			name:  "sampling",
+			value: &CreateMessageWithToolsResult{Role: "assistant", Model: "test-model", Content: []Content{&TextContent{Text: "hello"}}},
+		},
+		{
+			name:  "list-roots",
+			value: &ListRootsResult{Roots: []*Root{{URI: "file:///tmp", Name: "tmp"}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.name
+			data, err := json.Marshal(InputResponseMap{key: tt.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got InputResponseMap
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tt.value, got[key], ctrCmpOpts...); diff != "" {
+				t.Errorf("mismatch (-want, +got):\n%s", diff)
+			}
+		})
+	}
 }
 
 func TestContentUnmarshal(t *testing.T) {

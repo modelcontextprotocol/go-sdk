@@ -18,7 +18,6 @@ func TestValidateRequestMeta(t *testing.T) {
 	tests := []struct {
 		name            string
 		method          string
-		isNotification  bool
 		params          any
 		wantUsesNew     bool
 		wantLogLevel    LoggingLevel
@@ -68,6 +67,19 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
+			wantUsesNew: true,
+		},
+		{
+			name:   "new protocol invalid clientInfo",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         "not an object",
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
 			wantUsesNew:     false,
 			wantErrContains: MetaKeyClientInfo,
 		},
@@ -83,18 +95,6 @@ func TestValidateRequestMeta(t *testing.T) {
 			},
 			wantUsesNew:     false,
 			wantErrContains: MetaKeyClientCapabilities,
-		},
-		{
-			name:           "notifications exempt from required fields",
-			method:         notificationCancelled,
-			isNotification: true,
-			params: map[string]any{
-				"_meta": map[string]any{
-					MetaKeyProtocolVersion: protocolVersion20260728,
-				},
-				"requestId": "r1",
-			},
-			wantUsesNew: true,
 		},
 		{
 			name:        "malformed _meta is ignored",
@@ -141,16 +141,11 @@ func TestValidateRequestMeta(t *testing.T) {
 			default:
 				raw = mustMarshal(tc.params)
 			}
-			req := &jsonrpc.Request{Method: tc.method, Params: raw}
-			if !tc.isNotification {
-				req.ID = jsonrpc.ID{}
-				// Give the request an ID by parsing one.
-				id, err := jsonrpc.MakeID("test")
-				if err != nil {
-					t.Fatal(err)
-				}
-				req.ID = id
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
 			}
+			req := &jsonrpc.Request{Method: tc.method, Params: raw, ID: id}
 
 			vmeta, err := validateRequestMeta(req)
 			usesNew := vmeta != nil && vmeta.usesNewProtocol
@@ -530,3 +525,29 @@ func TestImplementationDescriptionJSON(t *testing.T) {
 // 		}
 // 	})
 // }
+
+// TestUnmarshalParamsInvalidParamsCode is a regression test for
+// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
+// Malformed params for a registered method must surface as a JSON-RPC error
+// whose code is CodeInvalidParams (-32602) rather than the zero-value 0.
+func TestUnmarshalParamsInvalidParamsCode(t *testing.T) {
+	info, ok := serverMethodInfos[methodPing]
+	if !ok {
+		t.Fatalf("no methodInfo for %q", methodPing)
+	}
+	// Array where a struct is expected.
+	_, err := info.unmarshalParams(json.RawMessage(`["a","b"]`))
+	if err == nil {
+		t.Fatal("unmarshalParams returned nil error for malformed params")
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *jsonrpc.Error in chain, got %T: %v", err, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", jerr.Code, jsonrpc.CodeInvalidParams)
+	}
+	if !strings.Contains(err.Error(), "unmarshaling") {
+		t.Errorf("error message = %q, want it to mention unmarshaling", err.Error())
+	}
+}

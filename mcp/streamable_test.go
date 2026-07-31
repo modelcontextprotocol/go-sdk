@@ -794,6 +794,15 @@ func completeCallToolResult() *CallToolResult {
 	return r
 }
 
+// completeCallToolResultWithServerInfo returns a completeCallToolResult
+// annotated with the auto-populated [MetaKeyServerInfo] entry that servers
+// add to every new-protocol response.
+func completeCallToolResultWithServerInfo(impl *Implementation) *CallToolResult {
+	r := completeCallToolResult()
+	r.Meta = Meta{MetaKeyServerInfo: impl}
+	return r
+}
+
 func resp(id int64, result any, err error) *jsonrpc.Response {
 	return &jsonrpc.Response{
 		ID:     jsonrpc2.Int64ID(id),
@@ -1958,6 +1967,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 		MetaKeyClientInfo:         map[string]any{"name": "testClient", "version": "v1.0.0"},
 		MetaKeyClientCapabilities: map[string]any{},
 	}
+	serverImpl := &Implementation{Name: "testServer", Version: "v1.0.0"}
 
 	testStreamableHandler(t, handler, []streamableRequest{
 		{
@@ -1969,7 +1979,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(2, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",
@@ -2013,7 +2023,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			},
 			messages:       []jsonrpc.Message{req(6, "tools/call", &CallToolParams{Meta: testMeta, Name: "my-tool"})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(6, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",
@@ -2029,7 +2039,7 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 				Arguments: map[string]any{"region": "us-west1", "query": "SELECT 1"},
 			})},
 			wantStatusCode: http.StatusOK,
-			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResult(), nil)},
+			wantMessages:   []jsonrpc.Message{resp(7, completeCallToolResultWithServerInfo(serverImpl), nil)},
 		},
 		{
 			method: "POST",
@@ -3800,5 +3810,107 @@ func TestStreamableServerRejectsDuplicateInFlightRequestID(t *testing.T) {
 	case msg := <-conn.incoming:
 		t.Fatalf("duplicate request was published to incoming: %v", msg)
 	default:
+	}
+}
+
+// TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
+// enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
+// bodies. The limit must apply uniformly regardless of transfer encoding:
+// Content-Length, Transfer-Encoding: chunked, or HTTP/2 (which has no
+// Content-Length).
+func TestStreamableMaxRequestBodyBytes(t *testing.T) {
+	// A minimally-valid JSON-RPC initialize request. The body-size check runs
+	// before parsing, so exact contents don't matter for the reject cases,
+	// but we use a real one for the "under limit" success case.
+	validInit := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"v1"}}}`)
+
+	// Build a payload of the requested size by padding a JSON object. The
+	// server doesn't need to parse it; the MaxBytesReader trips first.
+	oversizedBody := func(n int) []byte {
+		b := make([]byte, n)
+		b[0] = '{'
+		for i := 1; i < n-1; i++ {
+			b[i] = ' '
+		}
+		b[n-1] = '}'
+		return b
+	}
+
+	tests := []struct {
+		name           string
+		limit          int64 // value assigned to MaxRequestBodyBytes
+		body           []byte
+		wantStatus     int
+		wantStatusDesc string
+	}{
+		{
+			name:           "default limit rejects oversized",
+			limit:          0, // triggers DefaultMaxRequestBodyBytes (4 MiB)
+			body:           oversizedBody(DefaultMaxRequestBodyBytes + 1),
+			wantStatus:     http.StatusRequestEntityTooLarge,
+			wantStatusDesc: "413 for body > 4MiB default",
+		},
+		{
+			name:           "custom limit rejects oversized",
+			limit:          1024,
+			body:           oversizedBody(2048),
+			wantStatus:     http.StatusRequestEntityTooLarge,
+			wantStatusDesc: "413 for body > custom 1KiB limit",
+		},
+		{
+			name:           "chunked encoding does not bypass limit",
+			limit:          1024,
+			body:           oversizedBody(4096),
+			wantStatus:     http.StatusRequestEntityTooLarge,
+			wantStatusDesc: "413 for chunked body > limit (regression: Content-Length-only checks are bypassable)",
+		},
+		{
+			name:           "negative limit disables the check",
+			limit:          -1,
+			body:           oversizedBody(2 * DefaultMaxRequestBodyBytes),
+			wantStatus:     http.StatusBadRequest, // body is not valid JSON-RPC; but the size check must not fire
+			wantStatusDesc: "not 413 when limit is disabled",
+		},
+		{
+			name:           "under limit succeeds",
+			limit:          64 * 1024,
+			body:           validInit,
+			wantStatus:     http.StatusOK,
+			wantStatusDesc: "200 for a valid initialize under the limit",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			handler := NewStreamableHTTPHandler(
+				func(*http.Request) *Server { return server },
+				&StreamableHTTPOptions{
+					Stateless:           true,
+					MaxRequestBodyBytes: tc.limit,
+				},
+			)
+			ts := httptest.NewServer(handler)
+			defer ts.Close()
+
+			req, err := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("%s: status = %d, want %d (body=%q)",
+					tc.wantStatusDesc, resp.StatusCode, tc.wantStatus, string(body))
+			}
+		})
 	}
 }

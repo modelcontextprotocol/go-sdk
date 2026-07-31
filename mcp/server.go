@@ -27,6 +27,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/yosida95/uritemplate/v3"
@@ -661,7 +662,23 @@ func (s *Server) capabilities() *ServerCapabilities {
 	return caps
 }
 
+// disablecompleteparamsvalidation is a compatibility parameter that restores
+// the previous behavior of [Server.complete], where required fields on
+// [CompleteParams] were not validated before dispatching to the completion
+// handler. See the documentation for the mcpgodebug package for instructions
+// how to enable it.
+// The option will be removed in a future version of the SDK.
+var disablecompleteparamsvalidation = mcpgodebug.Value("disablecompleteparamsvalidation")
+
 func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
+	if disablecompleteparamsvalidation != "1" {
+		if req.Params.Ref == nil {
+			return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
+		}
+		if req.Params.Argument.Name == "" {
+			return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
+		}
+	}
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -871,17 +888,21 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	if versions == nil {
 		versions = slices.Clone(supportedProtocolVersions)
 	}
+	// Read the request-scoped identity/capabilities before acquiring the
+	// session lock: these accessors may fall back to Session.InitializeParams
+	// (which also locks Session.mu), so calling them from inside updateState
+	// would self-deadlock.
+	init := &InitializeParams{
+		ProtocolVersion: req.ProtocolVersion(),
+		Capabilities:    req.ClientCapabilities(),
+		ClientInfo:      req.ClientInfo(),
+	}
 	req.Session.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = &InitializeParams{
-			ProtocolVersion: req.ProtocolVersion(),
-			Capabilities:    req.ClientCapabilities(),
-			ClientInfo:      req.ClientInfo(),
-		}
+		state.InitializeParams = init
 	})
 	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
-		ServerInfo:        s.impl,
 		Instructions:      s.opts.Instructions,
 	}
 	res.setDefaultCacheableValues()
@@ -1163,10 +1184,14 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	return &emptyResult{}, nil
 }
 
-func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*emptyResult, error) {
+func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*SubscriptionsListenResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
+	}
+
+	if req.Params.Notifications == nil {
+		return nil, fmt.Errorf("%w: missing required 'notifications' field", jsonrpc2.ErrInvalidParams)
 	}
 
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
@@ -1217,11 +1242,16 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		return nil, fmt.Errorf("sending subscriptions/acknowledged: %w", err)
 	}
 
-	<-ctx.Done()
-	return &emptyResult{}, nil
+	// If there are any active subscriptions, we block until the context is cancelled. Otherwise, we return immediately.
+	if len(allowed.ResourceSubscriptions) > 0 || allowed.ToolsListChanged || allowed.PromptsListChanged || allowed.ResourcesListChanged {
+		<-ctx.Done()
+	}
+	return &SubscriptionsListenResult{
+		Meta: Meta{MetaKeySubscriptionID: requestID.Raw()},
+	}, nil
 }
 
-func (s *Server) allowedSubscriptions(want NotificationSubscriptions) NotificationSubscriptions {
+func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {
 	caps := s.capabilities()
 	agreed := NotificationSubscriptions{}
 	if want.ToolsListChanged && caps.Tools != nil && caps.Tools.ListChanged {
@@ -1505,6 +1535,23 @@ func (ss *ServerSession) ID() string {
 	return ""
 }
 
+// assertServerInitiatedRequestAllowed returns an error when the session is
+// negotiated at protocol version >= 2026-07-28, where the spec (SEP-2322 /
+// SEP-2575) forbids server-initiated JSON-RPC requests for elicitation,
+// sampling, and roots: those interactions MUST be embedded as [InputRequests]
+// in an [InputRequiredResult] returned from a handler for one of the multi
+// round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
+func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
+	if iparams := ss.InitializeParams(); iparams != nil &&
+		iparams.ProtocolVersion >= protocolVersion20260728 {
+		return fmt.Errorf(
+			"%q cannot be sent while serving a request on protocol version %s: "+
+				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
+			method, iparams.ProtocolVersion)
+	}
+	return nil
+}
+
 // Ping pings the client.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
@@ -1520,6 +1567,9 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams) (*ListRootsResult, error) {
 	if err := ss.checkInitialized(methodListRoots); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodListRoots); err != nil {
 		return nil, err
 	}
 	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
@@ -1538,6 +1588,9 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessageParams) (*CreateMessageResult, error) {
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
+		return nil, err
+	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
 		return nil, err
 	}
 	if params == nil {
@@ -1583,6 +1636,9 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 	if err := ss.checkInitialized(methodCreateMessage); err != nil {
 		return nil, err
 	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		params = &CreateMessageWithToolsParams{Messages: []*SamplingMessageV2{}}
 	}
@@ -1599,19 +1655,14 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	if err := ss.checkInitialized(methodElicit); err != nil {
 		return nil, err
 	}
+	if err := ss.assertServerInitiatedRequestAllowed(methodElicit); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		return nil, fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
 	}
 
-	if params.Mode == "" {
-		params2 := *params
-		if params.URL != "" || params.ElicitationID != "" {
-			params2.Mode = "url"
-		} else {
-			params2.Mode = "form"
-		}
-		params = &params2
-	}
+	params = params.inferElicitMode()
 
 	if iparams := ss.InitializeParams(); iparams == nil || iparams.Capabilities == nil || iparams.Capabilities.Elicitation == nil {
 		return nil, fmt.Errorf("client does not support elicitation")
@@ -1635,7 +1686,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 		return nil, err
 	}
 
-	if res.Action != "accept" {
+	if res.Action != "accept" || res.Content == nil {
 		return res, nil
 	}
 
@@ -1838,6 +1889,12 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		// In case of methodDiscover call the state.initializeParams is populated
 		// within the discover handle function to make sure the method is supported
 		// when the user is probing a pre-2026-07-28 server.
+		if !validatedMeta.usesNewProtocol {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is only supported in protocol version >= %s", req.Method, protocolVersion20260728),
+			}
+		}
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
@@ -1865,7 +1922,36 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if validatedMeta.usesNewProtocol {
 		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
 	}
-	return handleReceive(ctx, ss, req)
+	res, err := handleReceive(ctx, ss, req)
+	if err != nil {
+		return nil, err
+	}
+	if validatedMeta.usesNewProtocol {
+		setCompleteResultType(res)
+		annotateServerInfo(res, ss.server.impl)
+	}
+	return res, nil
+}
+
+// annotateServerInfo sets [MetaKeyServerInfo] on the result's `_meta` unless
+// it is already present. Per SEP-2575, servers should identify themselves in
+// each result's `_meta`.
+func annotateServerInfo(res Result, impl *Implementation) {
+	if res == nil || impl == nil {
+		return
+	}
+	if _, isEmpty := res.(*emptyResult); isEmpty {
+		return
+	}
+	m := res.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyServerInfo]; ok {
+		return
+	}
+	m[MetaKeyServerInfo] = impl
+	res.SetMeta(m)
 }
 
 // InitializeParams returns the InitializeParams provided during the client's
