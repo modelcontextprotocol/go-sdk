@@ -312,7 +312,7 @@ func TestMultiRoundTrip_ServerMiddleware(t *testing.T) {
 				},
 			})
 			c.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
-			cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() error = %v", err)
 			}
@@ -516,7 +516,7 @@ func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSess
 	})
 
 	c := NewClient(testImpl, clientOpts)
-	cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(t.Context(), ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect() error = %v", err)
 	}
