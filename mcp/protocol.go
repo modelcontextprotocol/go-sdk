@@ -1192,7 +1192,14 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
 // setDefaultCacheableValues sets the default values for the cacheable fields.
-func (c *Cacheable) setDefaultCacheableValues() {
+// If defaults is non-nil, its TTLMs and CacheScope are copied onto c.
+// Otherwise CacheScope is set to "public" (TTLMs stays 0 unless already set).
+func (c *Cacheable) setDefaultCacheableValues(defaults *Cacheable) {
+	if defaults != nil {
+		c.TTLMs = defaults.TTLMs
+		c.CacheScope = defaults.CacheScope
+		return
+	}
 	c.CacheScope = "public"
 }
 

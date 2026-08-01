@@ -169,6 +169,15 @@ type ServerOptions struct {
 	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
+
+	// DefaultCacheable, if non-nil, supplies the [Cacheable] values stamped on
+	// SDK-generated results (server/discover, list methods, and resources/read
+	// after the handler returns). If nil, those results use the historical
+	// defaults: CacheScope "public" and TTLMs 0.
+	//
+	// Receiving middleware can still overwrite Cacheable on a per-result basis
+	// after the SDK stamps these values.
+	DefaultCacheable *Cacheable
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -851,7 +860,7 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	return res, nil
 }
 
@@ -913,7 +922,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 		Capabilities:      s.capabilities(),
 		Instructions:      s.opts.Instructions,
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	return res, nil
 }
 
@@ -949,7 +958,7 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	return res, nil
 }
 
@@ -997,7 +1006,7 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	return res, nil
 }
 
@@ -1017,7 +1026,7 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	return res, nil
 }
 
@@ -1038,7 +1047,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.setDefaultCacheableValues(s.opts.DefaultCacheable)
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
