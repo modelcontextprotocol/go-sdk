@@ -875,6 +875,41 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	return res, err
 }
 
+// Discover returns the [DiscoverResult] the server would advertise via the
+// SEP-2575 server/discover method.
+//
+// If ss is non-nil, SupportedVersions reflects the protocol versions that
+// session's transport can serve. If ss is nil, SupportedVersions is the full
+// list of versions supported by this SDK.
+//
+// Discover is intended for host introspection (for example health checks) and
+// does not mutate session state. Inbound server/discover RPCs still run the
+// internal handler, which may establish session identity from the client
+// request.
+//
+// To customize responses to inbound server/discover requests, use
+// [Server.AddReceivingMiddleware].
+func (s *Server) Discover(ss *ServerSession) *DiscoverResult {
+	var versions []string
+	if ss != nil {
+		ss.mu.Lock()
+		versions = ss.supportedVersions
+		ss.mu.Unlock()
+	}
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	} else {
+		versions = slices.Clone(versions)
+	}
+	res := &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		Instructions:      s.opts.Instructions,
+	}
+	res.setDefaultCacheableValues()
+	return res
+}
+
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
 //
 // It returns the protocol versions supported by the underlying transport,
@@ -882,12 +917,6 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 // instructions, allowing clients to negotiate without performing the legacy
 // initialize handshake.
 func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
-	req.Session.mu.Lock()
-	versions := req.Session.supportedVersions
-	req.Session.mu.Unlock()
-	if versions == nil {
-		versions = slices.Clone(supportedProtocolVersions)
-	}
 	// Read the request-scoped identity/capabilities before acquiring the
 	// session lock: these accessors may fall back to Session.InitializeParams
 	// (which also locks Session.mu), so calling them from inside updateState
@@ -903,18 +932,18 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	// is never surfaced to the client via Mcp-Session-Id; leaving
 	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
 	// close it instead of leaking.
+	req.Session.mu.Lock()
+	versions := req.Session.supportedVersions
+	req.Session.mu.Unlock()
+	if versions == nil {
+		versions = slices.Clone(supportedProtocolVersions)
+	}
 	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
 		})
 	}
-	res := &DiscoverResult{
-		SupportedVersions: versions,
-		Capabilities:      s.capabilities(),
-		Instructions:      s.opts.Instructions,
-	}
-	res.setDefaultCacheableValues()
-	return res, nil
+	return s.Discover(req.Session), nil
 }
 
 // filterSupportedVersions returns the subset of [supportedProtocolVersions]
