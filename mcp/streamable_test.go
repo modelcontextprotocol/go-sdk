@@ -347,7 +347,7 @@ func TestStreamableServerShutdown(t *testing.T) {
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint:   httpServer.URL,
 				MaxRetries: -1, // avoid slow tests during exponential retries
-			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -622,7 +622,7 @@ func TestStreamableServerDisconnect(t *testing.T) {
 			})
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint: httpServer.URL,
-			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -697,7 +697,7 @@ func TestServerTransportCleanup(t *testing.T) {
 		// stateful HTTP server (which rejects the new protocol), opening
 		// an extra HTTP connection and therefore an extra session. Pinning
 		// to 2025-11-25 skips the discover probe.
-		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatalf("client.Connect() failed: %v", err)
 		}
@@ -2122,7 +2122,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2285,7 +2285,7 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2383,7 +2383,7 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 	ctx := context.Background()
 	session, err := client.Connect(ctx, &StreamableClientTransport{
 		Endpoint: httpServer.URL,
-	}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	}, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2644,7 +2644,7 @@ func TestStreamableSessionTimeout(t *testing.T) {
 	// protocol), opening an extra HTTP connection and therefore an extra
 	// session. Pinning to 2025-11-25 skips the discover probe.
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -2938,7 +2938,7 @@ func Test_ExportErrSessionMissing(t *testing.T) {
 	// first against a stateful HTTP server (which rejects the new
 	// protocol), opening an extra HTTP connection and therefore an extra
 	// session. Pinning to 2025-11-25 skips the discover probe.
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -3579,7 +3579,7 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	client := NewClient(testImpl, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -3771,7 +3771,7 @@ func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "e2e-client", Version: "v1"}, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
