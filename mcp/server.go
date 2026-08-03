@@ -903,7 +903,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	// is never surfaced to the client via Mcp-Session-Id; leaving
 	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
 	// close it instead of leaking.
-	if slices.Contains(versions, protocolVersion20260728) {
+	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
 		})
