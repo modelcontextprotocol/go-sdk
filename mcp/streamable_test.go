@@ -3682,6 +3682,70 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	}
 }
 
+// On a stateful StreamableHTTPHandler, a v1.7.0-style client always
+// probes server/discover before falling back to initialize. That probe used
+// to create a ServerSession that was registered in the handler's session
+// map but never surfaced via Mcp-Session-Id, so the client could not DELETE
+// it and it was leaked for the lifetime of the process.
+//
+// The fix in Server.discover skips populating InitializeParams when the
+// transport cannot serve the new protocol, which lets the safety-net
+// cleanup in serveStatefulPOST close the otherwise-unaddressable session.
+func TestStreamableStateful_DiscoverDoesNotLeakSession(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop", Description: "noop"},
+		func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{}, nil, nil
+		})
+
+	// Stateful (default). SessionTimeout unset so nothing masks the leak
+	// via idle eviction.
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	countSessions := func() int {
+		n := 0
+		for range server.Sessions() {
+			n++
+		}
+		return n
+	}
+
+	const clients = 3
+	for i := 1; i <= clients; i++ {
+		c := NewClient(&Implementation{Name: "c", Version: "1.0.0"}, nil)
+		sess, err := c.Connect(ctx, &StreamableClientTransport{
+			Endpoint:             httpServer.URL,
+			DisableStandaloneSSE: true,
+			MaxRetries:           -1,
+		}, nil)
+		if err != nil {
+			t.Fatalf("client %d Connect: %v", i, err)
+		}
+		if _, err := sess.ListTools(ctx, nil); err != nil {
+			t.Fatalf("client %d ListTools: %v", i, err)
+		}
+		// Exactly one addressable session should exist while this client
+		// is connected. Anything more means a discover-only session
+		// slipped through.
+		if got := countSessions(); got != 1 {
+			t.Errorf("client %d connected: sessions = %d, want 1", i, got)
+		}
+		if err := sess.Close(); err != nil {
+			t.Fatalf("client %d Close: %v", i, err)
+		}
+		if got := countSessions(); got != 0 {
+			t.Errorf("client %d closed: sessions = %d, want 0", i, got)
+		}
+	}
+
+	if got := countSessions(); got != 0 {
+		t.Errorf("final leaked sessions = %d, want 0", got)
+	}
+}
+
 // TestStreamableHTTP_E2E_DiscoverSuccess is a full end-to-end smoke test for
 // SEP-2575 over the streamable HTTP transport.
 func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
