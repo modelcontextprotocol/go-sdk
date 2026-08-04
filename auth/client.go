@@ -15,8 +15,9 @@ import (
 //
 // If a transport wishes to support OAuth 2 authorization, it should support
 // being configured with an OAuthHandler. It should call the handler's
-// TokenSource method whenever it sends an HTTP request to set the
-// Authorization header. If a request fails with a 401 or 403, it should call
+// TokenSource method whenever it sends an HTTP request, then either call
+// [RequestPreparer.PrepareRequest] (when implemented) or set the Authorization
+// header from the token. If a request fails with a 401 or 403, it should call
 // Authorize, and if that returns nil, it should retry the request. It should
 // not call Authorize after the second failure. See
 // [github.com/modelcontextprotocol/go-sdk/mcp.StreamableClientTransport]
@@ -40,10 +41,14 @@ type OAuthHandler interface {
 }
 
 // RequestPreparer is an optional interface that an [OAuthHandler] may
-// implement to decorate outgoing MCP HTTP requests after the Authorization
-// header is set (for example, to attach a fresh DPoP proof). Transports that
-// support it should type-assert the handler; handlers that do not implement
-// it are unaffected.
+// implement to apply OAuth credentials to an outgoing MCP HTTP request.
+//
+// When a handler implements RequestPreparer, it owns the Authorization header
+// and any related headers (for example a DPoP proof). Transports that detect
+// this interface MUST NOT set Authorization themselves; they obtain a token
+// from [OAuthHandler.TokenSource] and call PrepareRequest. Handlers that do
+// not implement it are unaffected: the transport sets Authorization from
+// token.Type() and the access token.
 type RequestPreparer interface {
 	PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error
 }

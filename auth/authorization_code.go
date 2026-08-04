@@ -680,9 +680,6 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
-	if h.dpopKey != nil && token.TokenType == "" {
-		token.TokenType = "DPoP"
-	}
 	// The token source outlives this authorization request: it is stored on the
 	// handler and used by the transport for the lifetime of the connection. The
 	// oauth2 library captures the context passed to TokenSource and reuses it for
@@ -709,21 +706,28 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	return nil
 }
 
-// PrepareRequest implements [RequestPreparer]. When DPoP is enabled, it
-// attaches a fresh DPoP proof for the request.
+// PrepareRequest implements [RequestPreparer]. It sets the Authorization header
+// from the access token. When DPoP is enabled, the scheme is always "DPoP"
+// (independent of the AS-reported token_type) and a fresh DPoP proof is
+// attached, so scheme and proof cannot diverge after token refresh.
 func (h *AuthorizationCodeHandler) PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error {
-	if h.dpopKey == nil || token == nil {
+	if token == nil {
 		return nil
 	}
-	htu, err := oauthex.HTU(req.URL.String())
-	if err != nil {
-		return fmt.Errorf("DPoP htu: %w", err)
+	if h.dpopKey != nil {
+		req.Header.Set("Authorization", "DPoP "+token.AccessToken)
+		htu, err := oauthex.HTU(req.URL.String())
+		if err != nil {
+			return fmt.Errorf("DPoP htu: %w", err)
+		}
+		proof, err := oauthex.BuildDPoPProof(h.dpopKey, req.Method, htu, token.AccessToken)
+		if err != nil {
+			return fmt.Errorf("DPoP proof: %w", err)
+		}
+		req.Header.Set("DPoP", proof)
+		return nil
 	}
-	proof, err := oauthex.BuildDPoPProof(h.dpopKey, req.Method, htu, token.AccessToken)
-	if err != nil {
-		return fmt.Errorf("DPoP proof: %w", err)
-	}
-	req.Header.Set("DPoP", proof)
+	req.Header.Set("Authorization", token.Type()+" "+token.AccessToken)
 	return nil
 }
 

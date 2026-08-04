@@ -1031,7 +1031,9 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 
 func TestStreamableClientOAuth_DPoPSchemeAndPrepareRequest(t *testing.T) {
 	ctx := context.Background()
-	token := &oauth2.Token{AccessToken: "dpop-token", TokenType: "DPoP"}
+	// Empty TokenType would make token.Type() return "Bearer"; the preparer must
+	// own Authorization so the scheme stays DPoP.
+	token := &oauth2.Token{AccessToken: "dpop-token"}
 	oauthHandler := &dpopMockOAuthHandler{mockOAuthHandler: mockOAuthHandler{token: token}}
 
 	var mu sync.Mutex
@@ -1098,6 +1100,7 @@ type dpopMockOAuthHandler struct {
 
 func (h *dpopMockOAuthHandler) PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error {
 	h.prepareCalls++
+	req.Header.Set("Authorization", "DPoP "+token.AccessToken)
 	req.Header.Set("DPoP", "test-proof")
 	return nil
 }
