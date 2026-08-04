@@ -552,9 +552,11 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Cancel any incoming requests still in flight: with the reader gone we
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
-		// Mirrors the equivalent cleanup on write failure.
+		// The read error (typically io.EOF from the peer disconnecting) is the
+		// cause, rather than a directional ErrServerClosing/ErrClientClosing
+		// sentinel: at this layer the connection has no designated end.
 		for _, r := range s.incomingByID {
-			r.cancel(fmt.Errorf("%w: %v", ErrServerClosing, err))
+			r.cancel(err)
 		}
 	})
 }
