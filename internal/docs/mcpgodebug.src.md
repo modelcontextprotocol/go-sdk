@@ -17,6 +17,22 @@
 
 ## `MCPGODEBUG` history
 
+### 1.8.0
+
+Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+
+- `plaintextstatefulrejection` added. If set to `1`, a stateful
+  `StreamableHTTPHandler` will respond with a plain-text `http.Error` 400 body
+  when it receives a request carrying per-request metadata (i.e. an
+  `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+  `MCP-Protocol-Version` header >= `2026-07-28`), restoring the previous
+  behavior. The default behavior was changed so that the server responds with a
+  JSON-RPC error of code `CodeUnsupportedProtocolVersion` (`-32022`) carrying
+  an `UnsupportedProtocolVersionData` payload that advertises the legacy
+  versions the server supports. This lets the client's
+  existing renegotiation logic recover and prevents the failure from tearing
+  down the underlying connection.
+
 ### 1.7.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
