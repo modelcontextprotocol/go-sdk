@@ -1866,7 +1866,7 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
