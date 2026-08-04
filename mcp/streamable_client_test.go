@@ -214,7 +214,7 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 	// Pin to 2025-11-25: the fixture's canned initialize response uses
 	// hardcoded id=1, which only matches when initialize is the first
 	// request. Under 2026-07-28 the client probes server/discover first.
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	// Pin to 2025-11-25: the fixture's canned initialize response uses
 	// hardcoded id=1, which only matches when initialize is the first
 	// request. Under 2026-07-28 the client probes server/discover first.
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestStreamableClientGETHandling(t *testing.T) {
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
 			session, err := client.Connect(ctx, transport, &ClientSessionOptions{
-				protocolVersion: protocolVersion20251125,
+				ProtocolVersion: protocolVersion20251125,
 			})
 			if err == nil {
 				defer session.Close()
@@ -414,7 +414,7 @@ func TestStreamableClientStrictness(t *testing.T) {
 			// uses hardcoded id=1, which only matches when initialize is
 			// the first request. Under 2026-07-28 the client probes
 			// server/discover first.
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if (err != nil) != test.wantConnectError {
 				t.Errorf("client.Connect() returned error %v; want error: %t", err, test.wantConnectError)
 			}
@@ -454,7 +454,7 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err == nil {
 		cs.Close()
 		t.Fatalf("Connect succeeded unexpectedly")
@@ -575,7 +575,7 @@ data: { "jsonrpc": "2.0", "method": "notifications/message", "params": { "level"
 			// uses hardcoded id=1, which only matches when initialize is
 			// the first request. Under 2026-07-28 the client probes
 			// server/discover first.
-			cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -707,7 +707,7 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 			// uses hardcoded id=1, which only matches when initialize is
 			// the first request. Under 2026-07-28 the client probes
 			// server/discover first.
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("Connect failed: %v", err)
 			}
@@ -813,7 +813,7 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 	// Pin to 2025-11-25: the fixture's canned initialize response uses
 	// hardcoded id=1, which only matches when initialize is the first
 	// request. Under 2026-07-28 the client probes server/discover first.
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -901,7 +901,7 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 			// uses hardcoded id=1, which only matches when initialize is
 			// the first request. Under 2026-07-28 the client probes
 			// server/discover first.
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -1022,7 +1022,7 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 	// Pin to 2025-11-25: the fixture's canned initialize response uses
 	// hardcoded id=1, which only matches when initialize is the first
 	// request. Under 2026-07-28 the client probes server/discover first.
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -1316,7 +1316,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1361,6 +1361,82 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	}
 	if ir.Instructions != "test discover" {
 		t.Errorf("InitializeResult.Instructions = %q, want %q", ir.Instructions, "test discover")
+	}
+}
+
+// TestStreamableClientConnSetMCPHeaders_ProtocolVersion covers
+// streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
+// header value.
+//
+// Ordinarily initializedResult is populated by sessionUpdated, called
+// through a type assertion to the unexported clientConnection interface
+// (see Client.Connect). That assertion silently fails, leaving
+// initializedResult nil for the life of the session, whenever the
+// Connection returned by a Transport is wrapped by another type exposing
+// only the exported Connection interface (a real pattern for transports
+// that intercept traffic, e.g. to filter notifications): Go does not
+// promote unexported interface methods across an embedded interface
+// boundary. Every SEP-2575 (>= 2026-07-28) request already carries its own
+// `_meta.protocolVersion` field, so setMCPHeaders falls back to reading it
+// from the outgoing message when initializedResult is unset.
+func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name              string
+		initializedResult *InitializeResult
+		msg               jsonrpc.Message
+		want              string
+	}{
+		{
+			name:              "nil checked",
+			initializedResult: nil,
+			msg:               (*jsonrpc.Request)(nil),
+			want:              "",
+		},
+		{
+			name:              "message meta wins when initializedResult unset",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20260728}}),
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "initializedResult used when message has no meta",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "initializedResult used for nil message (GET/DELETE)",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               nil,
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "message meta preferred over stale initializedResult",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20260728}}),
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "no header when neither source is set",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			want:              "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := &streamableClientConn{initializedResult: tt.initializedResult}
+			httpReq, err := http.NewRequest(http.MethodPost, "http://test.invalid", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.setMCPHeaders(httpReq, tt.msg); err != nil {
+				t.Fatalf("setMCPHeaders: %v", err)
+			}
+			if got := httpReq.Header.Get(protocolVersionHeader); got != tt.want {
+				t.Errorf("Mcp-Protocol-Version header = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1420,7 +1496,7 @@ func TestStreamableClientConnect_DiscoverMethodNotFound(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1487,7 +1563,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersion(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1547,7 +1623,7 @@ func TestStreamableClientConnect_DiscoverMethodNotFoundVPre(t *testing.T) {
 		DisableStandaloneSSE: true,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1604,7 +1680,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
 		DisableStandaloneSSE: true,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -1662,7 +1738,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testin
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: unsupportedClientVersion})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: unsupportedClientVersion})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
