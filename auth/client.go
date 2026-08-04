@@ -38,3 +38,12 @@ type OAuthHandler interface {
 	// The function is responsible for closing the response body.
 	Authorize(context.Context, *http.Request, *http.Response) error
 }
+
+// RequestPreparer is an optional interface that an [OAuthHandler] may
+// implement to decorate outgoing MCP HTTP requests after the Authorization
+// header is set (for example, to attach a fresh DPoP proof). Transports that
+// support it should type-assert the handler; handlers that do not implement
+// it are unaffected.
+type RequestPreparer interface {
+	PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error
+}
