@@ -46,9 +46,12 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   requested method in STDIO transport is not found.
 
 - `noprotocolerrorbody` added. If set to `1`, the streamable HTTP client will
-  not attempt to decode the JSON-RPC error body of a non-2xx HTTP response, 
-  restoring the previous behavior. The default behavior was changed so that
-  the client always attempts to surface the underlying JSON-RPC error.
+  not attempt to decode the JSON-RPC error body of a non-2xx HTTP response,
+  and any non-transient error will permanently fail the connection, restoring
+  the previous behavior. The default behavior was changed so that the client
+  attempts to decode the JSON-RPC error body of a non-2xx response, surfaces
+  the underlying JSON-RPC error, and wraps it with `jsonrpc2.ErrRejected` so
+  that per-call rejections do not tear down the session.
 
 - `nowrapinvalidparams` added. If set to `1`, the server will not wrap
   params-decoding failures with `jsonrpc2.ErrInvalidParams`, so wire responses
