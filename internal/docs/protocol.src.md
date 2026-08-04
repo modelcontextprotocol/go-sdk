@@ -181,7 +181,8 @@ connect to the server:
 transport := &mcp.StreamableClientTransport{
 	Endpoint: "http://localhost:8080/mcp",
 }
-client, err := mcp.Connect(ctx, transport, &mcp.ClientOptions{...})
+client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v1.0.0"}, nil)
+session, err := client.Connect(ctx, transport, nil)
 ```
 
 The `StreamableClientTransport` handles the HTTP requests and communicates with
