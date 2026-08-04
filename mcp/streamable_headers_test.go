@@ -969,6 +969,15 @@ func TestFilterValidTools(t *testing.T) {
 		t.Errorf("filterValidTools returned [%s, %s, %s, %s], want [valid, plain, nested-valid, valid-jsonschema]",
 			result[0].Name, result[1].Name, result[2].Name, result[3].Name)
 	}
+
+	// Regression for #1119: a malformed "tools":[null] response must not panic;
+	// nil tools are treated as invalid and excluded.
+	if got := filterValidTools(nil, []*Tool{nil}); len(got) != 0 {
+		t.Errorf("filterValidTools([nil]) returned %d tools, want 0", len(got))
+	}
+	if got := filterValidTools(nil, []*Tool{nil, valid, nil}); len(got) != 1 || got[0].Name != "valid" {
+		t.Errorf("filterValidTools([nil, valid, nil]) = %d tools, want [valid]", len(got))
+	}
 }
 
 func TestSetStandardHeadersWithParamHeaders(t *testing.T) {

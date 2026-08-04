@@ -1663,7 +1663,7 @@ func TestServerSession_RejectsServerInitiated(t *testing.T) {
 					},
 				})
 				c.AddRoots(&Root{URI: "file:///workspace"})
-				cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protoVer})
+				cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protoVer})
 				if err != nil {
 					t.Fatal(err)
 				}
