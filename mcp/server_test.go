@@ -1707,4 +1707,13 @@ func TestSetDefaultCacheableValues(t *testing.T) {
 			t.Fatalf("got %+v, want private/60000", c)
 		}
 	})
+	t.Run("defaults with empty CacheScope fall back to public", func(t *testing.T) {
+		// ServerOptions.DefaultCacheable may set only TTLMs; CacheScope must still
+		// become "public" rather than remaining the empty string.
+		c := Cacheable{}
+		c.setDefaultCacheableValues(&Cacheable{TTLMs: 60_000})
+		if c.TTLMs != 60_000 || c.CacheScope != "public" {
+			t.Fatalf("got %+v, want TTLMs 60000 and CacheScope public", c)
+		}
+	})
 }
