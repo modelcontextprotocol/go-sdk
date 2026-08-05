@@ -1195,6 +1195,8 @@ func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 // When defaults is non-nil, TTLMs is copied and CacheScope is copied only when
 // non-empty. An empty CacheScope on defaults (or a nil defaults pointer) falls
 // back to "public", matching the protocol default for an absent cacheScope.
+// Used by [Server.applyDefaultCacheable] after optionally invoking
+// ServerOptions.DefaultCacheable.
 func (c *Cacheable) setDefaultCacheableValues(defaults *Cacheable) {
 	if defaults != nil {
 		c.TTLMs = defaults.TTLMs
