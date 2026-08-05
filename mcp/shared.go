@@ -117,6 +117,14 @@ func addMiddleware(handlerp *MethodHandler, middleware []Middleware) {
 }
 
 func defaultSendingMethodHandler(ctx context.Context, method string, req Request) (Result, error) {
+	if strings.HasPrefix(method, "x-notifications/") {
+		return nil, req.GetSession().getConn().Notify(
+			ctx,
+			strings.TrimPrefix(method, "x-notifications/"),
+			req.GetParams(),
+		)
+	}
+
 	info, ok := req.GetSession().sendingMethodInfos()[method]
 	if !ok {
 		// This can be called from user code, with an arbitrary value for method.
@@ -274,6 +282,22 @@ const (
 	notification    methodFlags = 1 << iota // method is a notification, not request
 	missingParamsOK                         // params may be missing or null
 )
+
+type customNotificationParams struct {
+	payload any
+}
+
+func (*customNotificationParams) GetMeta() map[string]any { return nil }
+func (*customNotificationParams) SetMeta(map[string]any)  {}
+func (*customNotificationParams) isParams()               {}
+func (p *customNotificationParams) isNil() bool           { return p == nil }
+
+func (p customNotificationParams) MarshalJSON() ([]byte, error) {
+	if p.payload == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(p.payload)
+}
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)

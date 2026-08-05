@@ -1460,6 +1460,16 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
+// SendNotification sends a custom notification to the client associated with
+// this session. It supports protocol extensions such as notifications/foobar/stats.
+func (ss *ServerSession) SendNotification(ctx context.Context, method string, params any) error {
+	return handleNotify(
+		ctx,
+		"x-notifications/"+method,
+		newServerRequest(ss, Params(&customNotificationParams{payload: params})),
+	)
+}
+
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
 // notification on the listen stream represented by this session, indicating
 // the subscription filter the server accepted (SEP-2575).

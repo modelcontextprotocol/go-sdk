@@ -839,6 +839,49 @@ func (b *safeBuffer) Bytes() []byte {
 	return b.buf.Bytes()
 }
 
+func TestSendNotification(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		var clientLog, serverLog safeBuffer
+
+		server := NewServer(testImpl, nil)
+		ss, err := server.Connect(ctx, &LoggingTransport{Transport: st, Writer: &serverLog}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, &LoggingTransport{Transport: ct, Writer: &clientLog}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+
+		if err := cs.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ss.SendNotification(ctx, "notifications/foobar/stats", nil); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+
+		for _, test := range []struct {
+			name string
+			log  *safeBuffer
+			want string
+		}{
+			{"client", &clientLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
+			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{}`},
+		} {
+			if !bytes.Contains(test.log.Bytes(), []byte(test.want)) {
+				t.Errorf("%s log does not contain %q:\n%s", test.name, test.want, test.log.Bytes())
+			}
+		}
+	})
+}
+
 func TestNoJSONNull(t *testing.T) {
 	ctx := context.Background()
 	var ct, st Transport = NewInMemoryTransports()
