@@ -196,6 +196,142 @@ func TestMultiRoundTrip_AutoRetry(t *testing.T) {
 	}
 }
 
+// TestMultiRoundTrip_AutoRetryDoesNotMutateCallerParams verifies that
+// the client middleware carries inputResponses and requestState on a
+// copy of the caller's params: after CallTool returns, the caller's
+// struct is unchanged, and reusing it for a second call fulfills the
+// input requests again instead of silently replaying the first call's
+// answers against a server that gates on them.
+func TestMultiRoundTrip_AutoRetryDoesNotMutateCallerParams(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	AddTool(srv, &Tool{Name: "act"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &CallToolResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Sure?"}},
+				RequestState:  "state-1",
+			}, nil, nil
+		}
+		return &CallToolResult{}, map[string]any{"ok": true}, nil
+	})
+
+	var elicitations atomic.Int32
+	conn := mustConnect(t, srv, &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			elicitations.Add(1)
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	params := &CallToolParams{Name: "act"}
+	res, err := conn.CallTool(ctx, params)
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after auto-retry, want false")
+	}
+	if params.InputResponses != nil {
+		t.Errorf("params.InputResponses = %v after CallTool, want nil (caller params must not be mutated)", params.InputResponses)
+	}
+	if params.RequestState != "" {
+		t.Errorf("params.RequestState = %q after CallTool, want empty (caller params must not be mutated)", params.RequestState)
+	}
+	if got := elicitations.Load(); got != 1 {
+		t.Fatalf("elicitations = %d, want 1", got)
+	}
+
+	// Reusing the same params struct must fulfill the input requests
+	// again, not replay the first call's responses.
+	if _, err := conn.CallTool(ctx, params); err != nil {
+		t.Fatalf("CallTool() reuse error = %v", err)
+	}
+	if got := elicitations.Load(); got != 2 {
+		t.Errorf("elicitations after reuse = %d, want 2 (stale responses must not be replayed)", got)
+	}
+}
+
+// TestMultiRoundTrip_GetPrompt_AutoRetryDoesNotMutateCallerParams is the
+// GetPrompt analogue of the CallTool caller-params test.
+func TestMultiRoundTrip_GetPrompt_AutoRetryDoesNotMutateCallerParams(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddPrompt(&Prompt{Name: "review"}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &GetPromptResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Include sensitive data?"}},
+				RequestState:  "prompt-state",
+			}, nil
+		}
+		return &GetPromptResult{
+			Messages: []*PromptMessage{{Role: "user", Content: &TextContent{Text: "review this code"}}},
+		}, nil
+	})
+
+	conn := mustConnect(t, srv, &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	params := &GetPromptParams{Name: "review"}
+	res, err := conn.GetPrompt(ctx, params)
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after auto-retry, want false")
+	}
+	if params.InputResponses != nil {
+		t.Errorf("params.InputResponses = %v after GetPrompt, want nil (caller params must not be mutated)", params.InputResponses)
+	}
+	if params.RequestState != "" {
+		t.Errorf("params.RequestState = %q after GetPrompt, want empty (caller params must not be mutated)", params.RequestState)
+	}
+}
+
+// TestMultiRoundTrip_ReadResource_AutoRetryDoesNotMutateCallerParams is
+// the ReadResource analogue of the CallTool caller-params test.
+func TestMultiRoundTrip_ReadResource_AutoRetryDoesNotMutateCallerParams(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddResource(&Resource{URI: "test://data", Name: "data"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &ReadResourceResult{
+				InputRequests: InputRequestMap{"auth": &ElicitParams{Message: "Authenticate?"}},
+				RequestState:  "resource-state",
+			}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://data", Text: "resource data"}},
+		}, nil
+	})
+
+	conn := mustConnect(t, srv, &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	params := &ReadResourceParams{URI: "test://data"}
+	res, err := conn.ReadResource(ctx, params)
+	if err != nil {
+		t.Fatalf("ReadResource() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("NeedsInput() = true after auto-retry, want false")
+	}
+	if params.InputResponses != nil {
+		t.Errorf("params.InputResponses = %v after ReadResource, want nil (caller params must not be mutated)", params.InputResponses)
+	}
+	if params.RequestState != "" {
+		t.Errorf("params.RequestState = %q after ReadResource, want empty (caller params must not be mutated)", params.RequestState)
+	}
+}
+
 func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 	testCases := []struct {
 		name        string

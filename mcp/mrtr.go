@@ -108,10 +108,43 @@ func clientMultiRoundTripMiddleware() Middleware {
 				if err != nil {
 					return nil, err
 				}
-				setMultiRoundTripRetryParams(req, responses, mrtrResult.requestState())
+				req = multiRoundTripRetryRequest(cs, req, responses, mrtrResult.requestState())
 			}
 		}
 	}
+}
+
+// multiRoundTripRetryRequest builds the request for the next round of a
+// client-side multi-round-trip retry: a request whose params carry the
+// fulfilled responses and the request state to echo. The retry params
+// are a shallow copy of the original, so the caller-owned params passed
+// to CallTool, GetPrompt, or ReadResource are never mutated: a params
+// struct reused across calls must not carry one call's inputResponses
+// and requestState into the next, where a server gating on them (for
+// example an elicitation confirmation) would treat the new call as
+// already answered.
+func multiRoundTripRetryRequest(cs *ClientSession, req Request, responses InputResponseMap, state string) Request {
+	var clone Params
+	switch p := req.GetParams().(type) {
+	case *CallToolParams:
+		cp := *p
+		clone = &cp
+	case *CallToolParamsRaw:
+		cp := *p
+		clone = &cp
+	case *GetPromptParams:
+		cp := *p
+		clone = &cp
+	case *ReadResourceParams:
+		cp := *p
+		clone = &cp
+	default:
+		// No retry params to carry; resend the request unchanged.
+		return req
+	}
+	retry := newClientRequest(cs, clone)
+	setMultiRoundTripRetryParams(retry, responses, state)
+	return retry
 }
 
 // serverMultiRoundTripMiddleware is a receiving middleware for servers that transparently
