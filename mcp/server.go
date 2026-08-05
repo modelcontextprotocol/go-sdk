@@ -888,17 +888,29 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	if versions == nil {
 		versions = slices.Clone(supportedProtocolVersions)
 	}
-	req.Session.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = &InitializeParams{
-			ProtocolVersion: req.ProtocolVersion(),
-			Capabilities:    req.ClientCapabilities(),
-			ClientInfo:      req.ClientInfo(),
-		}
-	})
+	// Read the request-scoped identity/capabilities before acquiring the
+	// session lock: these accessors may fall back to Session.InitializeParams
+	// (which also locks Session.mu), so calling them from inside updateState
+	// would self-deadlock.
+	init := &InitializeParams{
+		ProtocolVersion: req.ProtocolVersion(),
+		Capabilities:    req.ClientCapabilities(),
+		ClientInfo:      req.ClientInfo(),
+	}
+	// Only persist InitializeParams when the transport can actually serve
+	// the new protocol. On transports that cannot (notably stateful
+	// StreamableHTTPHandler), a discover request creates a session that
+	// is never surfaced to the client via Mcp-Session-Id; leaving
+	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
+	// close it instead of leaking.
+	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
+		req.Session.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = init
+		})
+	}
 	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
-		ServerInfo:        s.impl,
 		Instructions:      s.opts.Instructions,
 	}
 	res.setDefaultCacheableValues()
@@ -1180,7 +1192,7 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	return &emptyResult{}, nil
 }
 
-func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*emptyResult, error) {
+func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*SubscriptionsListenResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscriptions/listen requires a request ID", jsonrpc2.ErrInvalidRequest)
@@ -1242,7 +1254,9 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	if len(allowed.ResourceSubscriptions) > 0 || allowed.ToolsListChanged || allowed.PromptsListChanged || allowed.ResourcesListChanged {
 		<-ctx.Done()
 	}
-	return &emptyResult{}, nil
+	return &SubscriptionsListenResult{
+		Meta: Meta{MetaKeySubscriptionID: requestID.Raw()},
+	}, nil
 }
 
 func (s *Server) allowedSubscriptions(want *NotificationSubscriptions) NotificationSubscriptions {
@@ -1883,6 +1897,12 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		// In case of methodDiscover call the state.initializeParams is populated
 		// within the discover handle function to make sure the method is supported
 		// when the user is probing a pre-2026-07-28 server.
+		if !validatedMeta.usesNewProtocol {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is only supported in protocol version >= %s", req.Method, protocolVersion20260728),
+			}
+		}
 	default:
 		if !initialized && !validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
@@ -1916,8 +1936,30 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 	if validatedMeta.usesNewProtocol {
 		setCompleteResultType(res)
+		annotateServerInfo(res, ss.server.impl)
 	}
 	return res, nil
+}
+
+// annotateServerInfo sets [MetaKeyServerInfo] on the result's `_meta` unless
+// it is already present. Per SEP-2575, servers should identify themselves in
+// each result's `_meta`.
+func annotateServerInfo(res Result, impl *Implementation) {
+	if res == nil || impl == nil {
+		return
+	}
+	if _, isEmpty := res.(*emptyResult); isEmpty {
+		return
+	}
+	m := res.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyServerInfo]; ok {
+		return
+	}
+	m[MetaKeyServerInfo] = impl
+	res.SetMeta(m)
 }
 
 // InitializeParams returns the InitializeParams provided during the client's

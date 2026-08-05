@@ -1143,8 +1143,6 @@ type DiscoverResult struct {
 	SupportedVersions []string `json:"supportedVersions"`
 	// The server's capabilities.
 	Capabilities *ServerCapabilities `json:"capabilities"`
-	// Information about the server implementation.
-	ServerInfo *Implementation `json:"serverInfo"`
 	// Instructions describing how to use the server and its features.
 	Instructions string `json:"instructions,omitempty"`
 }
@@ -2109,6 +2107,18 @@ type SubscriptionsAcknowledgedParams struct {
 func (x *SubscriptionsAcknowledgedParams) isParams()   {}
 func (x *SubscriptionsAcknowledgedParams) isNil() bool { return x == nil }
 
+// SubscriptionsListenResult is the response to a "subscriptions/listen"
+// request, signalling that the subscription has ended gracefully (for example,
+// during server shutdown). Because the listen stream is long-lived, this
+// result is sent only when the server tears the subscription down; an abrupt
+// transport close carries no response.
+type SubscriptionsListenResult struct {
+	completeResultWithType
+	Meta `json:"_meta"`
+}
+
+func (*SubscriptionsListenResult) isResult() {}
+
 // TODO(jba): add CompleteRequest and related types.
 
 // A request from the server to elicit additional information from the user via the client.
@@ -2353,6 +2363,8 @@ const (
 	MetaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
 	// MetaKeyClientInfo carries the client's [Implementation].
 	MetaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
+	// MetaKeyServerInfo carries the server's [Implementation] on responses.
+	MetaKeyServerInfo = "io.modelcontextprotocol/serverInfo"
 	// MetaKeyClientCapabilities carries the client's [ClientCapabilities].
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	// MetaKeyLogLevel identifies the desired log level for the request.

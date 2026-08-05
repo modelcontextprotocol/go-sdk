@@ -26,8 +26,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// nowrapinvalidparams is a compatibility parameter that restores the previous
+// behavior of [methodInfo.unmarshalParams]. When unset (the default), a
+// params-decoding failure is wrapped with [jsonrpc2.ErrInvalidParams] so the
+// wire response carries error code -32602 ("invalid params") rather than the
+// zero-value code 0. See:
+// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
 
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
@@ -304,7 +316,17 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 			var p P
 			if m != nil {
 				if err := internaljson.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					// Legacy behavior: pre-fix versions surfaced this as a
+					// plain wrapped error, which caused the wire response to
+					// carry code 0 instead of -32602. Restore via
+					// MCPGODEBUG=nowrapinvalidparams=1.
+					if nowrapinvalidparams == "1" {
+						return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					}
+					// Wrap jsonrpc2.ErrInvalidParams so toWireError surfaces
+					// code -32602 ("invalid params") while preserving the
+					// descriptive message.
+					return nil, fmt.Errorf("%w: unmarshaling %q into a %T: %w", jsonrpc2.ErrInvalidParams, m, p, err)
 				}
 			}
 			// We must check missingParamsOK here, in addition to checkRequest, to
@@ -513,9 +535,10 @@ type validatedMeta struct {
 // the >= 2026-07-28 protocol via the `_meta` field.
 // If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
 // validatedMeta with usesNewProtocol set to false, and a nil error.
-// If the request has a protocolVersion in _meta it validates the presence of clientInfo
-// and clientCapabilities in _meta. If either is missing or invalid, it returns nil and
-// a non-nil error. Otherwise, it returns usesNewProtocol set to true and the populated
+// If the request has a protocolVersion in _meta it validates the presence of
+// clientCapabilities in _meta. If it is missing or invalid, it returns nil and
+// a non-nil error. clientInfo is optional; if present but invalid, an error is
+// returned. Otherwise, it returns usesNewProtocol set to true and the populated
 // initializeParams.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	meta := extractRequestMeta(req.Params)
@@ -526,11 +549,15 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	if !ok || protocolVersion < protocolVersion20260728 {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	clientInfo, ok := decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
-	if !ok {
-		return nil, &jsonrpc.Error{
-			Code:    jsonrpc.CodeInvalidParams,
-			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientInfo),
+	var clientInfo *Implementation
+	if _, present := meta[MetaKeyClientInfo]; present {
+		var ok bool
+		clientInfo, ok = decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
+		if !ok {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidParams,
+				Message: fmt.Sprintf("invalid _meta field %q", MetaKeyClientInfo),
+			}
 		}
 	}
 	capabilities, ok := decodeMetaValue[*clientCapabilitiesV2](meta, MetaKeyClientCapabilities)
