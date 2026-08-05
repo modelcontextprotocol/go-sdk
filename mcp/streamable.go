@@ -300,7 +300,12 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 
 // noprotocolerrorbody is a compatibility parameter that restores the previous
 // behavior of [streamableClientConn.checkResponse]. When unset (the default),
-// the client always attempts to surface the underlying JSON-RPC error.
+// the client attempts to decode the response body of a non-2xx response as a
+// JSON-RPC error. If successful, the underlying JSON-RPC error is surfaced to
+// the caller and wrapped with [jsonrpc2.ErrRejected] so that per-call
+// rejections do not tear down the session. When set to "1", the client
+// ignores response bodies on non-2xx responses and any non-transient error
+// permanently fails the connection.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
 // disablecontenttypecheck is a compatibility parameter that allows to disable
@@ -308,6 +313,18 @@ var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 // See the documentation for the mcpgodebug package for instructions how to enable it.
 // The option will be removed in the 1.8.0 version of the SDK.
 var disablecontenttypecheck = mcpgodebug.Value("disablecontenttypecheck")
+
+// plaintextstatefulrejection is a compatibility parameter that restores the
+// previous behavior of a stateful [StreamableHTTPHandler] when it receives a
+// request carrying SEP-2575 per-request metadata (i.e. an
+// `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+// `MCP-Protocol-Version` header >= 2026-07-28). When unset (the default), the
+// server responds with a JSON-RPC error of code
+// [CodeUnsupportedProtocolVersion] and an [UnsupportedProtocolVersionData]
+// payload listing its supported legacy versions, as required by SEP-2575. When
+// set to "1", the server instead responds with a plain-text `http.Error` body
+// mentioning the `StreamableHTTPOptions.Stateless` field.
+var plaintextstatefulrejection = mcpgodebug.Value("plaintextstatefulrejection")
 
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
@@ -1514,10 +1531,31 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
 				if !c.stateless && jreq.Method != methodDiscover {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-						protocolVersion),
-						http.StatusBadRequest)
+					if plaintextstatefulrejection == "1" {
+						http.Error(w, fmt.Sprintf(
+							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+							protocolVersion),
+							http.StatusBadRequest)
+						return
+					}
+					// Advertise only the legacy versions this stateful server accepts
+					// (i.e. exclude 2026-07-28, since that's what the request asked for
+					// and what we're rejecting).
+					legacyVersions := slices.DeleteFunc(slices.Clone(supportedProtocolVersions), func(v string) bool {
+						return v >= protocolVersion20260728
+					})
+					data, _ := json.Marshal(UnsupportedProtocolVersionData{
+						Supported: legacyVersions,
+						Requested: protocolVersion,
+					})
+					c.logger.Warn(fmt.Sprintf(
+						"rejecting request with protocol version %q: this server is stateful; set StreamableHTTPOptions.Stateless = true to accept it",
+						protocolVersion))
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code:    CodeUnsupportedProtocolVersion,
+						Message: fmt.Sprintf("protocol version %q is not supported by this server", protocolVersion),
+						Data:    data,
+					})
 					return
 				}
 				if headerVersion == "" {
@@ -2304,10 +2342,13 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-		if requestMethod == methodDiscover {
+		if requestMethod == methodDiscover && !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
 			// doesn't set writeErr, which would prevent the legacy initialize
-			// fallback from succeeding on the same connection.
+			// fallback from succeeding on the same connection. This covers the
+			// case where a legacy server rejects server/discover with a
+			// non-JSON-RPC body (e.g. plain text 400), which checkResponse
+			// cannot classify as a per-call rejection on its own.
 			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
@@ -2528,6 +2569,21 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 			resp.Body.Close()
 		}
 	}()
+	// Transient server errors (502, 503, 504, 429) should not break the connection.
+	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
+	if isTransientHTTPStatus(resp.StatusCode) {
+		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
+	}
+	// By default, always try to decode the body and surface the underlying
+	// JSON-RPC error, wrapping it with ErrRejected to prevent the connection from closing.
+	// Setting MCPGODEBUG=noprotocolerrorbody=1 restores the previous behavior.
+	if noprotocolerrorbody != "1" && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		body, _ := io.ReadAll(resp.Body)
+		msg, _ := jsonrpc.DecodeMessage(body)
+		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
+			return fmt.Errorf("%s: %w: %w: %v", requestSummary, response.Error, jsonrpc2.ErrRejected, http.StatusText(resp.StatusCode))
+		}
+	}
 	// §2.5.3: "The server MAY terminate the session at any time, after
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
@@ -2536,23 +2592,7 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		// session is already gone.
 		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
 	}
-	// Transient server errors (502, 503, 504, 429) should not break the connection.
-	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
-	if isTransientHTTPStatus(resp.StatusCode) {
-		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// By default, always try to decode the body and surface the underlying
-		// JSON-RPC error.
-		// Setting MCPGODEBUG=noprotocolerrorbody=1 restores the previous behavior.
-		if noprotocolerrorbody == "1" {
-			return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
-		}
-		body, _ := io.ReadAll(resp.Body)
-		msg, _ := jsonrpc.DecodeMessage(body)
-		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
-			return fmt.Errorf("%s: %w: %v", requestSummary, response.Error, http.StatusText(resp.StatusCode))
-		}
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
 	}
 	return nil
