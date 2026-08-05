@@ -174,7 +174,7 @@ func TestEndToEnd(t *testing.T) {
 		//
 		// Pin the session to 2025-11-25 so the legacy
 		// semantics apply.
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -764,7 +764,7 @@ func TestMiddleware(t *testing.T) {
 	// Pin to 2025-11-25 because the test's expected wire sequence asserts
 	// the legacy initialize / notifications/initialized handshake, which
 	// 2026-07-28 replaces with server/discover.
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -854,7 +854,7 @@ func TestNoJSONNull(t *testing.T) {
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1558,7 +1558,7 @@ func TestElicitContentValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,7 +1641,7 @@ func TestElicitationProgressToken(t *testing.T) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1720,7 +1720,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1757,7 +1757,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1912,7 +1912,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
 		// in 2026-07-28, so keepalive is only meaningful on legacy protocol
 		// versions.
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2087,7 +2087,7 @@ func TestSynchronousNotifications(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = ss.Close() })
-		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2501,7 +2501,7 @@ func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct
 	ctx, topCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer topCancel()
 
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2659,7 +2659,7 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 			return next(ctx, method, req)
 		}
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2782,7 +2782,7 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 		},
 	})
 	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
-		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2851,7 +2851,7 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2928,7 +2928,7 @@ func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
 	c := NewClient(testImpl, &ClientOptions{
 		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3000,7 +3000,7 @@ func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3105,7 +3105,7 @@ func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
 		}
 		c := newSubListenClient(events)
 		cs, err := c.Connect(context.Background(), ct,
-			&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+			&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 		if err != nil {
 			t.Fatalf("client connect: %v", err)
 		}
@@ -3205,7 +3205,7 @@ func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3249,7 +3249,7 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 	c := newSubListenClient(events)
 	cs, err := c.Connect(context.Background(), ct,
-		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3428,7 +3428,7 @@ func TestCallCustomMethodTypedNilParams(t *testing.T) {
 	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatal(err)
 	}
