@@ -12,11 +12,75 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+// TestSSEServerTransport_SupportedVersions verifies that the deprecated
+// HTTP+SSE transport does not advertise protocol revisions that only define
+// stdio and Streamable HTTP (see #1112).
+func TestSSEServerTransport_SupportedVersions(t *testing.T) {
+	var tr SSEServerTransport
+	versions := filterSupportedVersions(&tr)
+	if slices.Contains(versions, protocolVersion20260728) {
+		t.Errorf("filterSupportedVersions(SSEServerTransport) = %v, must not include %q",
+			versions, protocolVersion20260728)
+	}
+	if !slices.Contains(versions, protocolVersion20241105) {
+		t.Errorf("filterSupportedVersions(SSEServerTransport) = %v, want %q (SSE-defined revision)",
+			versions, protocolVersion20241105)
+	}
+	if len(versions) == 0 {
+		t.Error("filterSupportedVersions(SSEServerTransport) is empty; want legacy SSE revisions")
+	}
+	for _, v := range supportedProtocolVersions {
+		got := tr.SupportsProtocolVersion(v)
+		want := v < protocolVersion20260728
+		if got != want {
+			t.Errorf("SupportsProtocolVersion(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// TestSSEHandler_DiscoverFallsBackToInitialize checks that a Modern-first
+// client connecting over HTTP+SSE does not stick on 2026-07-28: discover
+// advertises only SSE-defined revisions, and Connect falls back to legacy
+// initialize successfully.
+func TestSSEHandler_DiscoverFallsBackToInitialize(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(sseHandler)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	// Default Client.Connect probes with the latest protocol version (2026-07-28).
+	cs, err := client.Connect(ctx, &SSEClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("Connect over SSE with modern client: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil after Connect")
+	}
+	if ir.ProtocolVersion == protocolVersion20260728 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q; HTTP+SSE must not negotiate that revision",
+			ir.ProtocolVersion)
+	}
+	if ir.ProtocolVersion != protocolVersion20251125 {
+		// Client.Connect falls back to protocolVersion20251125 for legacy initialize.
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (legacy fallback)",
+			ir.ProtocolVersion, protocolVersion20251125)
+	}
+	if err := cs.Ping(ctx, nil); err != nil {
+		t.Errorf("Ping after SSE fallback initialize: %v", err)
+	}
+}
 
 func TestSSEServer(t *testing.T) {
 	for _, closeServerFirst := range []bool{false, true} {
