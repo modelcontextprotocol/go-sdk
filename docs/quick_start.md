@@ -7,8 +7,13 @@
 ## Installation
 
 ```
-go get github.com/modelcontextprotocol/go-sdk
+go get github.com/modelcontextprotocol/go-sdk/mcp
 ```
+
+The module root holds no importable package, so `go get` on the module path
+alone records the requirement without the `go.sum` entries the `mcp` package
+needs, and the first `go build` fails. Ask for the package instead, as above
+(or run `go mod tidy` after writing the code below).
 
 ## Getting started
 
