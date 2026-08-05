@@ -903,9 +903,6 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	// is never surfaced to the client via Mcp-Session-Id; leaving
 	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
 	// close it instead of leaking.
-	// With SSE ProtocolVersionSupporter filtering out 2026-07-28, negotiate
-	// returns a legacy revision so InitializeParams stays nil and Modern-first
-	// clients can fall back to the legacy initialize handshake (#1112).
 	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
