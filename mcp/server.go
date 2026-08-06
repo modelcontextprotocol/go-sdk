@@ -1880,8 +1880,11 @@ func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 	return s.receivingMethodHandler_
 }
 
-// getConn implements [session.getConn].
+// getConn implements [Session.getConn].
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
+
+// getMCPConn implements [Session.getMCPConn].
+func (ss *ServerSession) getMCPConn() Connection { return ss.mcpConn }
 
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {

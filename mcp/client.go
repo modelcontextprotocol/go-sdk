@@ -1212,6 +1212,9 @@ func (cs *ClientSession) receivingMethodHandler() MethodHandler {
 // getConn implements [Session.getConn].
 func (cs *ClientSession) getConn() *jsonrpc2.Connection { return cs.conn }
 
+// getMCPConn implements [Session.getMCPConn].
+func (cs *ClientSession) getMCPConn() Connection { return cs.mcpConn }
+
 func (*ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
 	return &emptyResult{}, nil
 }
