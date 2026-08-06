@@ -858,9 +858,9 @@ func TestSendNotification(t *testing.T) {
 		t.Cleanup(func() { _ = ss.Close() })
 
 		client := NewClient(testImpl, nil)
-		received := make(chan string, 1)
+		received := make(chan *statsNotificationParams, 1)
 		if err := AddReceivingCustomNotification(client, "notifications/foobar/stats", func(_ context.Context, _ *ClientSession, params *statsNotificationParams) {
-			received <- params.Status
+			received <- params
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -873,14 +873,22 @@ func TestSendNotification(t *testing.T) {
 		if err := cs.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ss.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
+		subscriptionID, err := jsonrpc.MakeID("subscription-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscriptionCtx := context.WithValue(ctx, idContextKey{}, subscriptionID)
+		if err := ss.SendSubscriptionNotification(subscriptionCtx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
 		select {
-		case status := <-received:
-			if status != "ok" {
-				t.Errorf("received status %q, want ok", status)
+		case params := <-received:
+			if params.Status != "ok" {
+				t.Errorf("received status %q, want ok", params.Status)
+			}
+			if got := params.Meta[MetaKeySubscriptionID]; got != "subscription-1" {
+				t.Errorf("received subscription ID %v, want subscription-1", got)
 			}
 		default:
 			t.Error("custom notification handler was not called")
@@ -892,7 +900,7 @@ func TestSendNotification(t *testing.T) {
 			want string
 		}{
 			{"client", &clientLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
-			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
+			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":"subscription-1"},"status":"ok"}`},
 		} {
 			if !bytes.Contains(test.log.Bytes(), []byte(test.want)) {
 				t.Errorf("%s log does not contain %q:\n%s", test.name, test.want, test.log.Bytes())
