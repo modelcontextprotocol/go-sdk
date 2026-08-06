@@ -3599,6 +3599,120 @@ func TestStreamableStateful_RejectsNewProtocol_LegacyPlainText(t *testing.T) {
 	}
 }
 
+// TestCallCancellation_FastReturn verifies that a cancelled tool call
+// returns as soon as its context is cancelled, even when the peer is slow
+// to accept the follow-up notifications/cancelled POST. This is the fix
+// for issue #1150: the best-effort cancellation notification must not
+// block the caller's return path.
+//
+// The test also covers the MCPGODEBUG=blockingcancelnotify=1 fallback that
+// restores the previous behavior of waiting synchronously for delivery
+// (bounded by notifyCancellationTimeout).
+func TestCallCancellation_FastReturn(t *testing.T) {
+	// stallDuration is the time the middleware holds a
+	// notifications/cancelled POST. It must be larger than
+	// notifyCancellationTimeout so the blocking branch clearly overshoots
+	// even after cushioning for scheduler jitter.
+	const stallDuration = notifyCancellationTimeout + 2*time.Second
+
+	// callerDeadline is the deadline the client passes into CallTool. It
+	// must be short enough that any waiting on the cancel notification is
+	// obvious in the measured elapsed time.
+	const callerDeadline = 100 * time.Millisecond
+
+	// slack accounts for scheduling jitter around the deadline.
+	const slack = 500 * time.Millisecond
+
+	stallCancelNotify := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.Body != nil {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(notificationCancelled)) {
+					time.Sleep(stallDuration)
+				}
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	makeSession := func(t *testing.T) *ClientSession {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "slow"},
+			func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+				// Bound the handler above the caller deadline so the test
+				// always exercises the cancellation path, but not so long
+				// that a stuck cancellation makes the test slow.
+				select {
+				case <-ctx.Done():
+				case <-time.After(2 * stallDuration):
+				}
+				return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+			})
+
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+		httpServer := httptest.NewServer(stallCancelNotify(handler))
+		t.Cleanup(httpServer.Close)
+
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(context.Background(),
+			&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		t.Cleanup(func() { cs.Close() })
+		return cs
+	}
+
+	t.Run("default_returns_on_caller_deadline", func(t *testing.T) {
+		cs := makeSession(t)
+
+		callCtx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		start := time.Now()
+		_, err := cs.CallTool(callCtx, &CallToolParams{Name: "slow"})
+		elapsed := time.Since(start)
+
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("CallTool error = %v, want context.DeadlineExceeded", err)
+		}
+		// The caller should return within slack of its own deadline. In the
+		// buggy pre-fix behavior, elapsed would be >= notifyCancellationTimeout
+		// (currently 5s).
+		if elapsed > callerDeadline+slack {
+			t.Errorf("CallTool returned after %v; want <= %v (caller deadline %v + slack %v)",
+				elapsed, callerDeadline+slack, callerDeadline, slack)
+		}
+	})
+
+	t.Run("blockingcancelnotify_restores_previous_wait", func(t *testing.T) {
+		prev := blockingcancelnotify
+		blockingcancelnotify = "1"
+		t.Cleanup(func() { blockingcancelnotify = prev })
+
+		cs := makeSession(t)
+
+		callCtx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		start := time.Now()
+		_, err := cs.CallTool(callCtx, &CallToolParams{Name: "slow"})
+		elapsed := time.Since(start)
+
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("CallTool error = %v, want context.DeadlineExceeded", err)
+		}
+		// With the compatibility flag set, the caller waits for the notify
+		// to complete (or hit notifyCancellationTimeout). We expect elapsed
+		// to be at least notifyCancellationTimeout, capped by the stall.
+		if elapsed < notifyCancellationTimeout {
+			t.Errorf("CallTool returned after %v; want >= %v (notifyCancellationTimeout) with blockingcancelnotify=1",
+				elapsed, notifyCancellationTimeout)
+		}
+	})
+}
+
 // TestStreamableStateless_AcceptsNewProtocol is the positive control:
 // confirms that a stateless server still accepts new-protocol requests
 // (the rejection in TestStreamableStateful_RejectsNewProtocol must not
