@@ -839,6 +839,11 @@ func (b *safeBuffer) Bytes() []byte {
 	return b.buf.Bytes()
 }
 
+type statsNotificationParams struct {
+	ParamsBase
+	Status string `json:"status"`
+}
+
 func TestSendNotification(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
@@ -853,6 +858,12 @@ func TestSendNotification(t *testing.T) {
 		t.Cleanup(func() { _ = ss.Close() })
 
 		client := NewClient(testImpl, nil)
+		received := make(chan string, 1)
+		if err := AddReceivingCustomNotification(client, "notifications/foobar/stats", func(_ context.Context, _ *ClientSession, params *statsNotificationParams) {
+			received <- params.Status
+		}); err != nil {
+			t.Fatal(err)
+		}
 		cs, err := client.Connect(ctx, &LoggingTransport{Transport: ct, Writer: &clientLog}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -862,10 +873,18 @@ func TestSendNotification(t *testing.T) {
 		if err := cs.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ss.SendNotification(ctx, "notifications/foobar/stats", nil); err != nil {
+		if err := ss.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
+		select {
+		case status := <-received:
+			if status != "ok" {
+				t.Errorf("received status %q, want ok", status)
+			}
+		default:
+			t.Error("custom notification handler was not called")
+		}
 
 		for _, test := range []struct {
 			name string
@@ -873,7 +892,7 @@ func TestSendNotification(t *testing.T) {
 			want string
 		}{
 			{"client", &clientLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
-			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{}`},
+			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
 		} {
 			if !bytes.Contains(test.log.Bytes(), []byte(test.want)) {
 				t.Errorf("%s log does not contain %q:\n%s", test.name, test.want, test.log.Bytes())

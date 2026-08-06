@@ -284,19 +284,40 @@ const (
 )
 
 type customNotificationParams struct {
+	meta    map[string]any
 	payload any
 }
 
-func (*customNotificationParams) GetMeta() map[string]any { return nil }
-func (*customNotificationParams) SetMeta(map[string]any)  {}
-func (*customNotificationParams) isParams()               {}
-func (p *customNotificationParams) isNil() bool           { return p == nil }
+func (p *customNotificationParams) GetMeta() map[string]any { return p.meta }
+func (p *customNotificationParams) SetMeta(meta map[string]any) {
+	p.meta = meta
+}
+func (*customNotificationParams) isParams()     {}
+func (p *customNotificationParams) isNil() bool { return p == nil }
 
 func (p customNotificationParams) MarshalJSON() ([]byte, error) {
-	if p.payload == nil {
+	if p.payload == nil && p.meta == nil {
 		return []byte("{}"), nil
 	}
-	return json.Marshal(p.payload)
+	encoded, err := json.Marshal(p.payload)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return nil, fmt.Errorf("custom notification params must be an object: %w", err)
+	}
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
+	if p.meta != nil {
+		encodedMeta, err := json.Marshal(p.meta)
+		if err != nil {
+			return nil, err
+		}
+		object["_meta"] = encodedMeta
+	}
+	return json.Marshal(object)
 }
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {

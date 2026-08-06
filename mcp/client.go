@@ -39,6 +39,11 @@ type Client struct {
 	// serverMethodInfos) plus any custom methods registered via
 	// [AddSendingCustomMethod].
 	sendMethods map[string]methodInfo
+	// receiveMethods is the list of methods this client may receive from a
+	// server: it always contains the standard client methods (from
+	// clientMethodInfos) plus any custom notifications registered via
+	// [AddReceivingCustomNotification].
+	receiveMethods map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -67,6 +72,8 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 
 	sendMethods := make(map[string]methodInfo, len(serverMethodInfos))
 	maps.Copy(sendMethods, serverMethodInfos)
+	receiveMethods := make(map[string]methodInfo, len(clientMethodInfos))
+	maps.Copy(receiveMethods, clientMethodInfos)
 
 	c := &Client{
 		impl:                    impl,
@@ -75,6 +82,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
 		sendMethods:             sendMethods,
+		receiveMethods:          receiveMethods,
 	}
 	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
 		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
@@ -1177,7 +1185,9 @@ func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
-	return clientMethodInfos
+	cs.client.mu.Lock()
+	defer cs.client.mu.Unlock()
+	return cs.client.receiveMethods
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
@@ -1626,6 +1636,40 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			*params.cursorPtr() = *nextCursorVal
 		}
 	}
+}
+
+// AddReceivingCustomNotification registers a handler for a custom JSON-RPC
+// notification from a server.
+//
+// The method must start with "notifications/". Params are unmarshaled into P
+// before handler is called. P must embed [ParamsBase].
+//
+// Registration must occur before [Client.Connect]. Registering the same custom
+// notification twice replaces the previous handler.
+func AddReceivingCustomNotification[P paramsPtr[T], T any](
+	c *Client,
+	method string,
+	handler func(context.Context, *ClientSession, P),
+) error {
+	if !strings.HasPrefix(method, "notifications/") {
+		return fmt.Errorf("mcp: AddReceivingCustomNotification: %q is not a notification method", method)
+	}
+	if _, ok := clientMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddReceivingCustomNotification: %q shadows a standard MCP notification", method)
+	}
+	if handler == nil {
+		return errors.New("mcp: AddReceivingCustomNotification: nil handler")
+	}
+
+	typed := typedClientMethodHandler[P, *emptyResult](func(ctx context.Context, req *ClientRequest[P]) (*emptyResult, error) {
+		handler(ctx, req.Session, req.Params)
+		return nil, nil
+	})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.receiveMethods[method] = newClientMethodInfo(typed, notification)
+	return nil
 }
 
 // AddSendingCustomMethod registers a custom JSON-RPC method

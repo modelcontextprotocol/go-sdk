@@ -1470,6 +1470,23 @@ func (ss *ServerSession) SendNotification(ctx context.Context, method string, pa
 	)
 }
 
+// SendSubscriptionNotification sends a custom notification on the
+// subscriptions/listen stream represented by ctx. It adds the subscription ID
+// to the notification metadata.
+func (ss *ServerSession) SendSubscriptionNotification(ctx context.Context, method string, params any) error {
+	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
+	if !ok || !requestID.IsValid() {
+		return fmt.Errorf("mcp: SendSubscriptionNotification: context has no subscription ID")
+	}
+	customParams := &customNotificationParams{payload: params}
+	injectMetaSubscriptionID(customParams, requestID)
+	return handleNotify(
+		ctx,
+		"x-notifications/"+method,
+		newServerRequest(ss, Params(customParams)),
+	)
+}
+
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
 // notification on the listen stream represented by this session, indicating
 // the subscription filter the server accepted (SEP-2575).
