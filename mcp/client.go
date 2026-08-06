@@ -245,11 +245,12 @@ func (e unsupportedProtocolVersionError) Error() string {
 	return fmt.Sprintf("unsupported protocol version: %q", e.version)
 }
 
-// ClientSessionOptions is reserved for future use.
+// ClientSessionOptions configures a client session created by [Client.Connect].
 type ClientSessionOptions struct {
-	// protocolVersion overrides the protocol version sent in the initialize
-	// request, for testing. If empty, latestProtocolVersion is used.
-	protocolVersion string
+	// ProtocolVersion is the protocol version sent in the initialize (or
+	// discover) request. If empty, the latest supported version is used.
+	// The server may negotiate a different mutually supported version.
+	ProtocolVersion string
 }
 
 func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
@@ -311,8 +312,8 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	protocolVersion := latestProtocolVersion
-	if opts != nil && opts.protocolVersion != "" {
-		protocolVersion = opts.protocolVersion
+	if opts != nil && opts.ProtocolVersion != "" {
+		protocolVersion = opts.ProtocolVersion
 	}
 
 	if protocolVersion >= protocolVersion20260728 {

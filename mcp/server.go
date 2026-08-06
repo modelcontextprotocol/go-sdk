@@ -897,9 +897,17 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 		Capabilities:    req.ClientCapabilities(),
 		ClientInfo:      req.ClientInfo(),
 	}
-	req.Session.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = init
-	})
+	// Only persist InitializeParams when the transport can actually serve
+	// the new protocol. On transports that cannot (notably stateful
+	// StreamableHTTPHandler), a discover request creates a session that
+	// is never surfaced to the client via Mcp-Session-Id; leaving
+	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
+	// close it instead of leaking.
+	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
+		req.Session.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = init
+		})
+	}
 	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
