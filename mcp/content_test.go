@@ -160,8 +160,10 @@ func TestEmbeddedResource(t *testing.T) {
 			`{"uri":"u","mimeType":"m","text":"t","_meta":{"key":"value"}}`,
 		},
 		{
+			// Text is required by TextResourceContents in the spec, so it must
+			// always be present, even when empty.
 			&mcp.ResourceContents{URI: "u"},
-			`{"uri":"u"}`,
+			`{"uri":"u","text":""}`,
 		},
 		{
 			&mcp.ResourceContents{URI: "u", Blob: []byte{}},
