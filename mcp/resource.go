@@ -38,6 +38,21 @@ type serverResourceTemplate struct {
 // If it cannot find the resource, it should return the result of calling [ResourceNotFoundError].
 type ResourceHandler func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error)
 
+// A ListResourcesHandler serves resources/list on demand.
+//
+// Set [ServerOptions.ListResourcesHandler] to enable dynamic resource listing for
+// gateway servers, template-backed catalogs, and other cases where the resource
+// set cannot be materialized up front.
+//
+// If the server also has static resources registered with [Server.AddResource],
+// those are listed first using SDK pagination, then this handler is invoked for
+// subsequent pages. If there are no static resources, the client's pagination
+// cursor is passed through to this handler unchanged.
+//
+// The handler should set Resources to a non-nil empty slice when there are no
+// resources on the page.
+type ListResourcesHandler func(context.Context, *ListResourcesRequest) (*ListResourcesResult, error)
+
 // customresnotfounderrcode is a compatibility parameter that restores the
 // pre-1.7.0 behavior of [ResourceNotFoundError] and [CodeResourceNotFound],
 // where the error code was a custom -32002. See the documentation for the mcpgodebug
