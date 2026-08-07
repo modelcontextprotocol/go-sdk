@@ -168,6 +168,21 @@ func (s *inFlightState) shuttingDown(errClosing error) error {
 	return nil
 }
 
+func (s *inFlightState) responseWriteErr(errClosing error) error {
+	if s.connClosing {
+		return errClosing
+	}
+	if s.writeErr != nil {
+		// A broken writer prevents responses from reaching the peer. A read-side
+		// EOF alone does not: already-received requests can still drain responses.
+		return fmt.Errorf("%w: %v", errClosing, s.writeErr)
+	}
+	if s.readErr != nil && !errors.Is(s.readErr, io.EOF) {
+		return fmt.Errorf("%w: %v", errClosing, s.readErr)
+	}
+	return nil
+}
+
 // incomingRequest is used to track an incoming request as it is being handled
 type incomingRequest struct {
 	*Request // the request being processed
@@ -549,12 +564,14 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		}
 		s.outgoingCalls = nil
 
-		// Cancel any incoming requests still in flight: with the reader gone we
-		// cannot receive cancellation notifications, and likely cannot write a
-		// response either, so parked handlers have nothing useful left to do.
-		// Mirrors the equivalent cleanup on write failure.
-		for _, r := range s.incomingByID {
-			r.cancel()
+		if !errors.Is(err, io.EOF) {
+			// Cancel any incoming requests still in flight: with the reader gone we
+			// cannot receive cancellation notifications, and likely cannot write a
+			// response either, so parked handlers have nothing useful left to do.
+			// Mirrors the equivalent cleanup on write failure.
+			for _, r := range s.incomingByID {
+				r.cancel()
+			}
 		}
 	})
 }
@@ -756,7 +773,11 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
 			return
 		}
-		err = s.shuttingDown(ErrServerClosing)
+		if _, ok := msg.(*Response); ok {
+			err = s.responseWriteErr(ErrServerClosing)
+		} else {
+			err = s.shuttingDown(ErrServerClosing)
+		}
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
