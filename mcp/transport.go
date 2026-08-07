@@ -34,7 +34,6 @@ const notifyCancellationTimeout = 5 * time.Second
 // notifications/cancelled message (up to notifyCancellationTimeout). By
 // default, the call is retired immediately and the notification is sent
 // asynchronously so the caller returns as soon as its context is cancelled.
-// See issue #1150.
 var blockingcancelnotify = mcpgodebug.Value("blockingcancelnotify")
 
 // ErrConnectionClosed is returned when sending a message to a connection that
