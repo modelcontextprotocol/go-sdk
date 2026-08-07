@@ -55,6 +55,7 @@ func TestMain(m *testing.M) {
 var serverFuncs = map[string]func(){
 	"default":       runServer,
 	"cancelContext": runCancelContextServer,
+	"exitNonZero":   runExitNonZeroServer,
 }
 
 func runServer() {
@@ -65,6 +66,19 @@ func runServer() {
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runExitNonZeroServer runs a server that exits with a non-zero status when the
+// connection is closed, simulating servers (like gopls) that treat EOF on stdin
+// as a fatal error. This exercises the fix for #855.
+func runExitNonZeroServer() {
+	ctx := context.Background()
+	server := mcp.NewServer(testImpl, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "greet", Description: "say hi"}, SayHi)
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		os.Exit(2) // non-zero exit, as gopls does
+	}
+	os.Exit(2) // also exit non-zero on clean shutdown to test the fix
 }
 
 func runCancelContextServer() {
@@ -226,6 +240,35 @@ func TestCmdTransport(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("closing server: %v", err)
+	}
+}
+
+// TestCmdTransportNonZeroExit verifies that ClientSession.Close does not return
+// an error when the subprocess exits with a non-zero status during graceful
+// shutdown. This is a regression test for #855: servers like gopls may exit
+// non-zero when they observe EOF on stdin, and that should not be surfaced as
+// an error from Close.
+func TestCmdTransportNonZeroExit(t *testing.T) {
+	requireExec(t)
+
+	ctx := t.Context()
+	cmd := createServerCommand(t, "exitNonZero")
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make a call to ensure the session is fully established.
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "greet",
+		Arguments: map[string]any{"name": "user"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Close should succeed even though the server exits non-zero.
+	if err := session.Close(); err != nil {
+		t.Fatalf("closing server that exits non-zero: %v", err)
 	}
 }
 
