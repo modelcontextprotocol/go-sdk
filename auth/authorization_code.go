@@ -154,6 +154,12 @@ type AuthorizationCodeHandlerConfig struct {
 	// The default is nil, which means no token source has been set initially,
 	// and will trigger a call to [AuthorizationCodeHandler.Authorize].
 	InitialTokenSource oauth2.TokenSource
+
+	// DPoP, when non-nil, enables DPoP (RFC 9449 / SEP-1932) for this handler:
+	// a proof is attached to token exchange and refresh requests, and
+	// [RequestPreparer] attaches a fresh proof to each MCP request.
+	// Server-provided nonces are not handled yet.
+	DPoP *oauthex.DPoPConfig
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -169,9 +175,13 @@ type AuthorizationCodeHandler struct {
 
 	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
 	grantedScopes map[string][]string
+
+	// dpopKey is non-nil when DPoP is enabled for this handler.
+	dpopKey *oauthex.DPoPKeyPair
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
+var _ RequestPreparer = (*AuthorizationCodeHandler)(nil)
 
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	h.mu.RLock()
@@ -230,10 +240,32 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.Client == nil {
 		config.Client = http.DefaultClient
 	}
+
+	var dpopKey *oauthex.DPoPKeyPair
+	if config.DPoP != nil {
+		dpopKey = config.DPoP.KeyPair
+		if dpopKey == nil {
+			var err error
+			dpopKey, err = oauthex.GenerateDPoPKeyPair()
+			if err != nil {
+				return nil, fmt.Errorf("generate DPoP key pair: %w", err)
+			}
+		}
+		// Clone the client so we do not mutate a shared http.DefaultClient.
+		c := *config.Client
+		base := c.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		c.Transport = &oauthex.DPoPRoundTripper{Base: base, Key: dpopKey}
+		config.Client = &c
+	}
+
 	return &AuthorizationCodeHandler{
 		config:        config,
 		tokenSource:   config.InitialTokenSource,
 		grantedScopes: make(map[string][]string),
+		dpopKey:       dpopKey,
 	}, nil
 }
 
@@ -671,6 +703,31 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	h.mu.Lock()
 	h.tokenSource = ts
 	h.mu.Unlock()
+	return nil
+}
+
+// PrepareRequest implements [RequestPreparer]. It sets the Authorization header
+// from the access token. When DPoP is enabled, the scheme is always "DPoP"
+// (independent of the AS-reported token_type) and a fresh DPoP proof is
+// attached, so scheme and proof cannot diverge after token refresh.
+func (h *AuthorizationCodeHandler) PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error {
+	if token == nil {
+		return nil
+	}
+	if h.dpopKey != nil {
+		req.Header.Set("Authorization", "DPoP "+token.AccessToken)
+		htu, err := oauthex.HTU(req.URL.String())
+		if err != nil {
+			return fmt.Errorf("DPoP htu: %w", err)
+		}
+		proof, err := oauthex.BuildDPoPProof(h.dpopKey, req.Method, htu, token.AccessToken)
+		if err != nil {
+			return fmt.Errorf("DPoP proof: %w", err)
+		}
+		req.Header.Set("DPoP", proof)
+		return nil
+	}
+	req.Header.Set("Authorization", token.Type()+" "+token.AccessToken)
 	return nil
 }
 

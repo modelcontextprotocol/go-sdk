@@ -1029,6 +1029,82 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 	session.Close()
 }
 
+func TestStreamableClientOAuth_DPoPSchemeAndPrepareRequest(t *testing.T) {
+	ctx := context.Background()
+	// Empty TokenType would make token.Type() return "Bearer"; the preparer must
+	// own Authorization so the scheme stays DPoP.
+	token := &oauth2.Token{AccessToken: "dpop-token"}
+	oauthHandler := &dpopMockOAuthHandler{mockOAuthHandler: mockOAuthHandler{token: token}}
+
+	var mu sync.Mutex
+	var gotAuth, gotDPoP string
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			{"POST", "123", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"GET", "123", "", ""}: {
+				header: header{"Content-Type": "text/event-stream"},
+			},
+			{"DELETE", "123", "", ""}: {},
+		},
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mu.Lock()
+			gotAuth = r.Header.Get("Authorization")
+			gotDPoP = r.Header.Get("DPoP")
+			mu.Unlock()
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	transport := &StreamableClientTransport{
+		Endpoint:     httpServer.URL,
+		OAuthHandler: oauthHandler,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	session.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAuth != "DPoP dpop-token" {
+		t.Fatalf("Authorization = %q, want %q", gotAuth, "DPoP dpop-token")
+	}
+	if gotDPoP != "test-proof" {
+		t.Fatalf("DPoP header = %q, want %q", gotDPoP, "test-proof")
+	}
+	if oauthHandler.prepareCalls == 0 {
+		t.Fatal("expected PrepareRequest to be called")
+	}
+}
+
+type dpopMockOAuthHandler struct {
+	mockOAuthHandler
+	prepareCalls int
+}
+
+func (h *dpopMockOAuthHandler) PrepareRequest(ctx context.Context, req *http.Request, token *oauth2.Token) error {
+	h.prepareCalls++
+	req.Header.Set("Authorization", "DPoP "+token.AccessToken)
+	req.Header.Set("DPoP", "test-proof")
+	return nil
+}
+
 func TestStreamableClientOAuth_401(t *testing.T) {
 	ctx := context.Background()
 	oauthHandler := &mockOAuthHandler{token: nil}
