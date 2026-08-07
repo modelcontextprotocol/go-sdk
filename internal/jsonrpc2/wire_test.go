@@ -7,6 +7,9 @@ package jsonrpc2_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"testing"
 
@@ -144,6 +147,22 @@ func TestDecodeIDOnlyMessageIsResponse(t *testing.T) {
 	}
 	if _, ok := msg.(*jsonrpc2.Response); !ok {
 		t.Fatalf("message type = %T, want *jsonrpc2.Response", msg)
+	}
+}
+
+// TestServerClosingErrorWrapsWriteErr verifies that the error produced when a
+// connection shuts down due to a write failure wraps both ErrServerClosing and
+// the underlying write error, so that errors.Is works for both sentinels.
+// Regression test for https://github.com/modelcontextprotocol/go-sdk/issues/1098.
+func TestServerClosingErrorWrapsWriteErr(t *testing.T) {
+	writeErr := io.EOF
+	err := fmt.Errorf("%w: %w", jsonrpc2.ErrServerClosing, writeErr)
+
+	if !errors.Is(err, jsonrpc2.ErrServerClosing) {
+		t.Error("errors.Is(err, ErrServerClosing) = false, want true")
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Error("errors.Is(err, io.EOF) = false, want true")
 	}
 }
 

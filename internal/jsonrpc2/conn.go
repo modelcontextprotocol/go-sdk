@@ -671,7 +671,7 @@ func (c *Connection) handleAsync() {
 				if s.writeErr != nil {
 					// Assume that req.ctx was canceled due to s.writeErr.
 					// TODO(#51365): use a Context API to plumb this through req.ctx.
-					err = fmt.Errorf("%w: %v", ErrServerClosing, s.writeErr)
+					err = fmt.Errorf("%w: %w", ErrServerClosing, s.writeErr)
 				}
 			})
 			c.processResult("handleAsync", req, nil, err)
