@@ -104,6 +104,7 @@ type Session interface {
 	sendingMethodHandler() MethodHandler
 	receivingMethodHandler() MethodHandler
 	getConn() *jsonrpc2.Connection
+	getMCPConn() Connection
 }
 
 // Middleware is a function from [MethodHandler] to [MethodHandler].
@@ -117,6 +118,14 @@ func addMiddleware(handlerp *MethodHandler, middleware []Middleware) {
 }
 
 func defaultSendingMethodHandler(ctx context.Context, method string, req Request) (Result, error) {
+	if strings.HasPrefix(method, "x-notifications/") {
+		return nil, req.GetSession().getConn().Notify(
+			ctx,
+			strings.TrimPrefix(method, "x-notifications/"),
+			req.GetParams(),
+		)
+	}
+
 	info, ok := req.GetSession().sendingMethodInfos()[method]
 	if !ok {
 		// This can be called from user code, with an arbitrary value for method.
@@ -138,7 +147,7 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
 	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
+		callSubscriptionsListen(ctx, req.GetSession().getConn(), req.GetSession().getMCPConn(), method, params)
 	} else {
 		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
 			return nil, err
@@ -274,6 +283,43 @@ const (
 	notification    methodFlags = 1 << iota // method is a notification, not request
 	missingParamsOK                         // params may be missing or null
 )
+
+type customNotificationParams struct {
+	meta    map[string]any
+	payload any
+}
+
+func (p *customNotificationParams) GetMeta() map[string]any { return p.meta }
+func (p *customNotificationParams) SetMeta(meta map[string]any) {
+	p.meta = meta
+}
+func (*customNotificationParams) isParams()     {}
+func (p *customNotificationParams) isNil() bool { return p == nil }
+
+func (p customNotificationParams) MarshalJSON() ([]byte, error) {
+	if p.payload == nil && p.meta == nil {
+		return []byte("{}"), nil
+	}
+	encoded, err := json.Marshal(p.payload)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return nil, fmt.Errorf("custom notification params must be an object: %w", err)
+	}
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
+	if p.meta != nil {
+		encodedMeta, err := json.Marshal(p.meta)
+		if err != nil {
+			return nil, err
+		}
+		object["_meta"] = encodedMeta
+	}
+	return json.Marshal(object)
+}
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
