@@ -63,6 +63,12 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   the request to the completion handler unconditionally. The default behavior
   was changed to reject malformed requests with `-32602` (Invalid Params).
 
+- `noboundscopetodcr` added. If set to `1`, the authorization code handler will
+  not automatically propagate discovered scopes into dynamic client registration
+  metadata, restoring the previous behavior. The default behavior was changed to
+  automatically set the scope in DCR metadata from the requested scopes to
+  prevent `invalid_scope` errors on strict authorization servers.
+
 ### 1.6.1
 
 Options listed below were added and will be removed in the 1.8.0 version of the SDK.
