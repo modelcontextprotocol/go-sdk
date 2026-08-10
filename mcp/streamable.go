@@ -1524,7 +1524,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
-				// Extract again the protcol version from the context to see what the client
+				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
