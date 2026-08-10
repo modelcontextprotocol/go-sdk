@@ -389,6 +389,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		return nil, err
 	}
 	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
+		_ = cs.Close()
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
 	cs.state.InitializeResult = res
