@@ -99,6 +99,15 @@ type AuthorizationCodeHandlerConfig struct {
 	// See [AuthorizationCodeFetcher] for details.
 	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
+	// ScopeFilter, if non-nil, is called with the scopes discovered from the
+	// protected resource metadata (or WWW-Authenticate challenge) and returns
+	// the scopes to request during authorization. It gives the client full
+	// control to narrow, extend, or reorder that set — e.g. dropping Gmail's
+	// gmail.metadata, which the Gmail API refuses to combine with the search "q"
+	// parameter even alongside gmail.readonly. It runs before offline_access
+	// (see RequestRefreshToken) and the step-up union, so neither is affected.
+	ScopeFilter func(discovered []string) []string
+
 	// RequestRefreshToken indicates that the client intends to use refresh
 	// tokens and is capable of storing them securely.
 	//
@@ -319,6 +328,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	requestedScopes := scopesFromChallenges(wwwChallenges)
 	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
 		requestedScopes = prm.ScopesSupported
+	}
+
+	// Let the client adjust the discovered scopes before offline_access and the
+	// step-up union below so neither is affected.
+	if h.config.ScopeFilter != nil {
+		requestedScopes = h.config.ScopeFilter(requestedScopes)
 	}
 
 	// SEP-2207: when the client desires refresh tokens and the Authorization
