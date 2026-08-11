@@ -108,43 +108,13 @@ func clientMultiRoundTripMiddleware() Middleware {
 				if err != nil {
 					return nil, err
 				}
-				req = multiRoundTripRetryRequest(cs, req, responses, mrtrResult.requestState())
+				req, err = setMultiRoundTripRetryParams(method, req, responses, mrtrResult.requestState())
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
-}
-
-// multiRoundTripRetryRequest builds the request for the next round of a
-// client-side multi-round-trip retry: a request whose params carry the
-// fulfilled responses and the request state to echo. The retry params
-// are a shallow copy of the original, so the caller-owned params passed
-// to CallTool, GetPrompt, or ReadResource are never mutated: a params
-// struct reused across calls must not carry one call's inputResponses
-// and requestState into the next, where a server gating on them (for
-// example an elicitation confirmation) would treat the new call as
-// already answered.
-func multiRoundTripRetryRequest(cs *ClientSession, req Request, responses InputResponseMap, state string) Request {
-	var clone Params
-	switch p := req.GetParams().(type) {
-	case *CallToolParams:
-		cp := *p
-		clone = &cp
-	case *CallToolParamsRaw:
-		cp := *p
-		clone = &cp
-	case *GetPromptParams:
-		cp := *p
-		clone = &cp
-	case *ReadResourceParams:
-		cp := *p
-		clone = &cp
-	default:
-		// No retry params to carry; resend the request unchanged.
-		return req
-	}
-	retry := newClientRequest(cs, clone)
-	setMultiRoundTripRetryParams(retry, responses, state)
-	return retry
 }
 
 // serverMultiRoundTripMiddleware is a receiving middleware for servers that transparently
@@ -185,7 +155,10 @@ func serverMultiRoundTripMiddleware() Middleware {
 			if err != nil {
 				return nil, err
 			}
-			setMultiRoundTripRetryParams(req, responses, mrtrResult.requestState())
+			req, err = setMultiRoundTripRetryParams(method, req, responses, mrtrResult.requestState())
+			if err != nil {
+				return nil, err
+			}
 			return next(ctx, method, req)
 		}
 	}
@@ -246,20 +219,54 @@ func createMessageParamsToWithTools(p *CreateMessageParams) *CreateMessageWithTo
 	}
 }
 
-func setMultiRoundTripRetryParams(req Request, responses InputResponseMap, state string) {
+// setMultiRoundTripRetryParams returns the request for the next round of a
+// multi-round-trip retry: a request whose params are a shallow copy of the
+// original, carrying the fulfilled responses and the request state to echo.
+// The original params are never mutated: on the client side they are
+// caller-owned, and a params struct reused across calls must not carry one
+// call's inputResponses and requestState into the next, where a server
+// gating on them (for example an elicitation confirmation) would treat the
+// new call as already answered.
+//
+// An unrecognized params type is an error. It cannot occur on the server
+// side, but client sending middleware runs before the retry loop and may
+// substitute its own params.
+func setMultiRoundTripRetryParams(method string, req Request, responses InputResponseMap, state string) (Request, error) {
+	var retryParams Params
 	switch p := req.GetParams().(type) {
 	case *CallToolParams:
-		p.InputResponses = responses
-		p.RequestState = state
+		cp := *p
+		cp.InputResponses = responses
+		cp.RequestState = state
+		retryParams = &cp
 	case *CallToolParamsRaw:
-		p.InputResponses = responses
-		p.RequestState = state
+		cp := *p
+		cp.InputResponses = responses
+		cp.RequestState = state
+		retryParams = &cp
 	case *GetPromptParams:
-		p.InputResponses = responses
-		p.RequestState = state
+		cp := *p
+		cp.InputResponses = responses
+		cp.RequestState = state
+		retryParams = &cp
 	case *ReadResourceParams:
-		p.InputResponses = responses
-		p.RequestState = state
+		cp := *p
+		cp.InputResponses = responses
+		cp.RequestState = state
+		retryParams = &cp
+	default:
+		return nil, fmt.Errorf("multi-round-trip: unsupported params type %T", p)
+	}
+	switch s := req.GetSession().(type) {
+	case *ClientSession:
+		return newClientRequest(s, retryParams), nil
+	case *ServerSession:
+		// Rebuild with the same constructor handleReceive uses: the
+		// receiving dispatch type-asserts on the request's concrete
+		// *ServerRequest[P] type, and Extra must carry over.
+		return s.receivingMethodInfos()[method].newRequest(s, retryParams, req.GetExtra()), nil
+	default:
+		return nil, fmt.Errorf("multi-round-trip: unsupported session type %T", s)
 	}
 }
 
