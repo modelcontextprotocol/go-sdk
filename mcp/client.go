@@ -383,7 +383,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		Capabilities:    c.capabilities(protocolVersion),
 	}
 	req := &InitializeRequest{Session: cs, Params: params}
-	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
+	// The header must agree with params.protocolVersion: no version has been
+	// negotiated yet, so nothing else identifies what this request proposes.
+	initializeCtx := context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
+	res, err := handleSend[*InitializeResult](initializeCtx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
