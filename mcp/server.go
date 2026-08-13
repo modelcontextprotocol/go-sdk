@@ -1736,9 +1736,12 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 // (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
-	ss.mu.Unlock()
+	logLevel, ok := logLevelFromContext(ctx)
+	if !ok {
+		ss.mu.Lock()
+		logLevel = ss.state.LogLevel
+		ss.mu.Unlock()
+	}
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1926,9 +1929,8 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
-	// For new-protocol requests, propagate the per-request log level.
 	if validatedMeta.usesNewProtocol {
-		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
+		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
 	}
 	res, err := handleReceive(ctx, ss, req)
 	if err != nil {
