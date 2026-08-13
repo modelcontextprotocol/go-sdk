@@ -256,22 +256,30 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 	return nil, jsonrpc2.ErrNotHandled
 }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
+// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575).
+// If the call is accepted, its logical lifetime is the stream of notifications
+// that follow on the same channel. The empty response, if ever delivered, only
+// marks subscription teardown, so the caller has nothing useful to block on.
 //
 // Cancellation is driven by ctx: when it is cancelled, a background goroutine
 // sends a "notifications/cancelled" notification referencing the listen's
 // request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
+func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) error {
 	call := conn.Call(ctx, method, params)
 
+	select {
+	case <-call.Done():
+		return call.Await(context.Background(), nil)
+	case <-ctx.Done():
+		_ = cancelCall(ctx, conn, call)
+		return nil
+	default:
+	}
 	go func() {
 		<-ctx.Done()
 		_ = cancelCall(ctx, conn, call)
 	}()
+	return nil
 }
 
 // call executes and awaits a jsonrpc2 call on the given connection,
