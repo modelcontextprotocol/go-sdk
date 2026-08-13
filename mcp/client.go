@@ -515,21 +515,26 @@ func (cs *ClientSession) usesNewProtocol() bool {
 	return res != nil && res.ProtocolVersion >= protocolVersion20260728
 }
 
-// injectRequestMeta populates the SEP-2575 per-request `_meta` fields
-// (protocolVersion, optional clientInfo, clientCapabilities) on the given
-// outgoing request params. Keys already present in params.Meta are not
-// overwritten. Per PR modelcontextprotocol/modelcontextprotocol#3002
-// clientInfo is SHOULD (not MUST), and is omitted when the client has no
-// [Implementation] configured.
-func injectRequestMeta[T any, P interface {
-	*T
-	Params
-}](cs *ClientSession, params P) P {
-	res := cs.state.InitializeResult
-	if params == nil {
-		params = new(T)
+func clientMethodUsesLegacyCompatPath(method string) bool {
+	switch method {
+	case methodPing,
+		methodSetLevel,
+		notificationRootsListChanged,
+		methodSubscribe,
+		methodUnsubscribe:
+		return true
+	default:
+		return false
 	}
+}
+
+func injectRequestMetaParams(cs *ClientSession, params Params) Params {
+	if params == nil {
+		return nil
+	}
+	res := cs.state.InitializeResult
 	m := params.GetMeta()
+	m = maps.Clone(m)
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -544,6 +549,22 @@ func injectRequestMeta[T any, P interface {
 	}
 	params.SetMeta(m)
 	return params
+}
+
+// injectRequestMeta populates the SEP-2575 per-request `_meta` fields
+// (protocolVersion, optional clientInfo, clientCapabilities) on the given
+// outgoing request params. Keys already present in params.Meta are not
+// overwritten. Per PR modelcontextprotocol/modelcontextprotocol#3002
+// clientInfo is SHOULD (not MUST), and is omitted when the client has no
+// [Implementation] configured.
+func injectRequestMeta[T any, P interface {
+	*T
+	Params
+}](cs *ClientSession, params P) P {
+	if params == nil {
+		params = new(T)
+	}
+	return injectRequestMetaParams(cs, params).(P)
 }
 
 func (cs *ClientSession) ID() string {
@@ -1673,9 +1694,6 @@ func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	if !ok {
 		var zero R
 		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
-	}
-	if cs.usesNewProtocol() {
-		params = injectRequestMeta(cs, params)
 	}
 	return handleSend[R](ctx, method, &ClientRequest[P]{
 		Session: cs,
