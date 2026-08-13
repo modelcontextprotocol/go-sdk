@@ -2969,6 +2969,103 @@ func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
 	}
 }
 
+func TestResourceSubscriptions_SubscribeAfterCloseFails(t *testing.T) {
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	err = cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"})
+	if !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("Subscribe after Close error = %v, want ErrConnectionClosed", err)
+	}
+	cs.resourceSubsMu.Lock()
+	_, subscribed := cs.resourceSubs["file:///r1"]
+	cs.resourceSubsMu.Unlock()
+	if subscribed {
+		t.Fatal("Subscribe after Close left a resource subscription registered")
+	}
+}
+
+func TestResourceSubscriptions_SubscribeConcurrentCloseFails(t *testing.T) {
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+
+	server := resourceSubServer(t, subCh, unsubCh)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	c := NewClient(testImpl, nil)
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSubscriptionsListen {
+				close(entered)
+				<-release
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for subscriptions/listen to start")
+	}
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	close(release)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("Subscribe racing Close error = %v, want ErrConnectionClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Subscribe")
+	}
+	cs.resourceSubsMu.Lock()
+	_, subscribed := cs.resourceSubs["file:///r1"]
+	cs.resourceSubsMu.Unlock()
+	if subscribed {
+		t.Fatal("Subscribe racing Close left a resource subscription registered")
+	}
+}
+
 // TestResourceSubscriptions_MultipleURIs verifies that two concurrent
 // Subscribe calls on the same session each open their own independent listen
 // stream with a distinct subscription ID. Unsubscribing one does not affect
