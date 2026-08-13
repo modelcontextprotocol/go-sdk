@@ -1497,6 +1497,12 @@ type ServerSession struct {
 
 	mu    sync.Mutex
 	state ServerSessionState
+	// listenIDs holds the request IDs of in-flight subscriptions/listen
+	// handlers on this session. subscriptions/listen parks on ctx.Done until
+	// cancelled, so ServerSession.Close must cancel these contexts explicitly
+	// via jsonrpc2.Connection.Cancel to avoid deadlocking on the jsonrpc2
+	// drain. See modelcontextprotocol/go-sdk#1160.
+	listenIDs []jsonrpc.ID
 }
 
 func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
@@ -1930,6 +1936,17 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if validatedMeta.usesNewProtocol {
 		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
 	}
+
+	// subscriptions/listen parks on ctx.Done until the peer cancels it (or the
+	// underlying reader breaks). Track the request ID so ServerSession.Close
+	// can cancel the in-flight handler via jsonrpc2.Connection.Cancel and
+	// avoid deadlocking on the jsonrpc2 drain.
+	if req.Method == methodSubscriptionsListen {
+		ss.mu.Lock()
+		ss.listenIDs = append(ss.listenIDs, req.ID)
+		ss.mu.Unlock()
+	}
+
 	res, err := handleReceive(ctx, ss, req)
 	if err != nil {
 		return nil, err
@@ -2033,6 +2050,18 @@ func (ss *ServerSession) Close() error {
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly
 		ss.keepaliveCancel()
 	}
+
+	// Unblock any in-flight subscriptions/listen handlers, which otherwise park
+	// on ctx.Done and would deadlock conn.Close (which waits for in-flight
+	// requests to drain).
+	ss.mu.Lock()
+	ids := ss.listenIDs
+	ss.listenIDs = nil
+	ss.mu.Unlock()
+	for _, id := range ids {
+		ss.conn.Cancel(id)
+	}
+
 	err := ss.conn.Close()
 
 	if ss.onClose != nil && ss.calledOnClose.CompareAndSwap(false, true) {
