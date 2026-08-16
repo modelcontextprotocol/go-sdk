@@ -15,6 +15,42 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
+// TestServerToolPanic verifies that a panicking tool handler is contained:
+// the client receives an internal error and the connection remains usable.
+func TestServerToolPanic(t *testing.T) {
+	ctx := context.Background()
+
+	cs, _, _ := basicConnection(t, func(s *Server) {
+		AddTool(s, &Tool{Name: "boom", Description: "panics"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+			var slice []int
+			_ = slice[42] // panic: index out of range
+			return nil, nil, nil
+		})
+		AddTool(s, &Tool{Name: "ok", Description: "works"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "fine"}}}, nil, nil
+		})
+	})
+
+	// The panicking tool must produce an internal error rather than
+	// killing the server process.
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "boom", Arguments: map[string]any{}})
+	if err == nil {
+		t.Fatal("CallTool(boom) = nil error, want internal error")
+	}
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("CallTool(boom) error = %v, want *jsonrpc.Error", err)
+	}
+	if rpcErr.Code != jsonrpc.CodeInternalError {
+		t.Errorf("CallTool(boom) error code = %d, want %d", rpcErr.Code, jsonrpc.CodeInternalError)
+	}
+
+	// The connection must survive the panic: a subsequent call succeeds.
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "ok", Arguments: map[string]any{}}); err != nil {
+		t.Errorf("CallTool(ok) after panic = %v, want nil", err)
+	}
+}
+
 // TestServerErrors validates that the server returns appropriate error codes
 // for various invalid requests.
 func TestServerErrors(t *testing.T) {

@@ -19,6 +19,13 @@ import (
 // ErrMethodNotFound.
 var ErrNotHandled = errors.New("JSON RPC not handled")
 
+// ErrPanic is returned when a Handler panics while handling a request.
+//
+// If a Handler panics, the server replies with ErrInternal instead of
+// terminating the connection, so that a single misbehaving request cannot
+// take down the whole server.
+var ErrPanic = errors.New("JSON RPC panic")
+
 // Preempter handles messages on a connection before they are queued to the main
 // handler.
 // Primarily this is used for cancel handlers or notifications for which out of

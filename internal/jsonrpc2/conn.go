@@ -681,6 +681,13 @@ func (c *Connection) handleAsync() {
 		releaser := &releaser{ch: make(chan struct{})}
 		ctx := context.WithValue(req.ctx, asyncKey, releaser)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// A panicking handler must not take down the connection or the
+					// process; reply with an internal error instead.
+					c.processResult(c.handler, req, nil, fmt.Errorf("%w: %v", ErrPanic, r))
+				}
+			}()
 			defer releaser.release(true)
 			result, err := c.handler.Handle(ctx, req.Request)
 			c.processResult(c.handler, req, result, err)
@@ -693,6 +700,11 @@ func (c *Connection) handleAsync() {
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
 	if nomethodnotfoundcodeinerror != "1" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)
+	}
+	if errors.Is(err, ErrPanic) {
+		// A panic recovered from the handler is reported as an internal error
+		// rather than a bare error, so the wire error carries code -32603.
+		err = fmt.Errorf("%w: %v", ErrInternal, err)
 	}
 
 	if result != nil && err != nil {
