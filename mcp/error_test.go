@@ -127,6 +127,32 @@ func TestResourceNotFoundErrorCode(t *testing.T) {
 	}
 }
 
+// TestReadResourceNilResult verifies that a resource handler returning
+// (nil, nil) yields a clean error to the client instead of a nil pointer
+// panic that crashes the server. The sibling handlers callTool and getPrompt
+// already tolerate a (nil, nil) return; readResource must do the same.
+func TestReadResourceNilResult(t *testing.T) {
+	ctx := context.Background()
+
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
+		s.AddResource(
+			&Resource{URI: "file:///nil.txt", Name: "nil", MIMEType: "text/plain"},
+			func(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+				return nil, nil
+			},
+		)
+	})
+	defer cleanup()
+
+	_, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "file:///nil.txt"})
+	if err == nil {
+		t.Fatal("got nil error, want non-nil error for nil resource result")
+	}
+	if !strings.Contains(err.Error(), "nil information") {
+		t.Errorf("got error %q, want it to mention 'nil information'", err.Error())
+	}
+}
+
 // TestInputValidationToolError validates that input validation errors (missing
 // required params, wrong types) are returned as tool results with IsError=true,
 // not as JSON-RPC errors. This allows LLMs to see the error and self-correct.
