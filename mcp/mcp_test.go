@@ -3439,3 +3439,79 @@ func TestCallCustomMethodTypedNilParams(t *testing.T) {
 		t.Fatalf("CallCustomMethod with typed-nil params: %v", err)
 	}
 }
+
+func TestServerLogLevelDoesNotLeakBetweenNewProtocolRequests(t *testing.T) {
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	logged := make(chan LoggingLevel, 1)
+	s.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationLoggingMessage {
+				logged <- req.GetParams().(*LoggingMessageParams).Level
+				return nil, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	AddTool(s, &Tool{Name: "blocked-log"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+		close(started)
+		<-release
+		if err := req.Session.Log(ctx, &LoggingMessageParams{Level: "warning", Data: "request log"}); err != nil {
+			return nil, nil, err
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+	})
+	AddTool(s, &Tool{Name: "noop"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+	})
+
+	withLogLevel := &CallToolParams{Name: "blocked-log"}
+	withLogLevel.SetMeta(newProtocolMeta("warning"))
+	errc := make(chan error, 1)
+	go func() {
+		_, err := ss.handle(ctx, req(1, methodCallTool, withLogLevel))
+		errc <- err
+	}()
+
+	<-started
+	withoutLogLevel := &CallToolParams{Name: "noop"}
+	withoutLogLevel.SetMeta(newProtocolMeta(""))
+	if _, err := ss.handle(ctx, req(2, methodCallTool, withoutLogLevel)); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-logged:
+		if got != "warning" {
+			t.Fatalf("logged level = %q, want warning", got)
+		}
+	default:
+		t.Fatal("request-scoped warning log was suppressed after another request cleared session log level")
+	}
+}
+
+func newProtocolMeta(logLevel LoggingLevel) Meta {
+	m := Meta{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         testImpl,
+		MetaKeyClientCapabilities: (&ClientCapabilities{}).toV2(),
+	}
+	if logLevel != "" {
+		m[MetaKeyLogLevel] = logLevel
+	}
+	return m
+}
