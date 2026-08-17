@@ -3298,6 +3298,65 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 }
 
+// TestServerSessionCloseWithActiveListen is a regression test for
+// modelcontextprotocol/go-sdk#1160: ServerSession.Close must not deadlock
+// when the client has an active subscriptions/listen stream. Previously,
+// the server-side handler parked on ctx.Done and Close waited forever for
+// the in-flight request to drain.
+//
+// The client's auto-listen (triggered by registering a list-changed handler)
+// opens the stream on Connect — no explicit Subscribe is needed. The server
+// must expose the corresponding list-changed capability, which happens
+// automatically when at least one tool/prompt/resource is registered.
+func TestServerSessionCloseWithActiveListen(t *testing.T) {
+	ctx := context.Background()
+	s := NewServer(&Implementation{Name: "s", Version: "0"}, nil)
+	AddTool(s, &Tool{Name: "t"}, sayHi)
+
+	ct, st := NewInMemoryTransports()
+	if _, err := s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	c := NewClient(&Implementation{Name: "c", Version: "0"}, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	// Give the auto-listen request time to reach the server-side handler.
+	time.Sleep(20 * time.Millisecond)
+
+	var ss *ServerSession
+	for x := range s.Sessions() {
+		ss = x
+		break
+	}
+	if ss == nil {
+		t.Fatal("no server session found")
+	}
+
+	// Sanity check: the auto-listen must actually have registered an entry in
+	// listenIDs, otherwise the test below would trivially pass without
+	// exercising the fix.
+	ss.mu.Lock()
+	n := len(ss.listenIDs)
+	ss.mu.Unlock()
+	if n == 0 {
+		t.Fatal("expected auto-listen to register a request ID on the server session")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- ss.Close() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServerSession.Close deadlocked with an active subscriptions/listen")
+	}
+}
+
 func TestCustomMethods(t *testing.T) {
 	type searchParams struct {
 		ParamsBase
