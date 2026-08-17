@@ -1035,6 +1035,9 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err != nil {
 		return nil, err
 	}
+	if res == nil {
+		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
+	}
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
@@ -1042,7 +1045,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
-	if res == nil || res.Contents == nil {
+	if res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
 	}
 	// As a convenience, populate some fields.
