@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   vulncheck:
+    # Don't run scheduled builds on forks.
+    if: github.event_name != 'schedule' || github.repository == 'modelcontextprotocol/go-sdk'
     runs-on: ubuntu-latest
     steps:
     - name: Run govulncheck
@@ -20,6 +22,8 @@ jobs:
            go-package: ./...
 
   conformance:
+    # Don't run scheduled builds on forks.
+    if: github.event_name != 'schedule' || github.repository == 'modelcontextprotocol/go-sdk'
     runs-on: ubuntu-latest
     steps:
     - name: Check out code

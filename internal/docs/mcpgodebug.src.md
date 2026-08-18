@@ -17,6 +17,32 @@
 
 ## `MCPGODEBUG` history
 
+### 1.8.0
+
+Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+
+- `plaintextstatefulrejection` added. If set to `1`, a stateful
+  `StreamableHTTPHandler` will respond with a plain-text `http.Error` 400 body
+  when it receives a request carrying per-request metadata (i.e. an
+  `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+  `MCP-Protocol-Version` header >= `2026-07-28`), restoring the previous
+  behavior. The default behavior was changed so that the server responds with a
+  JSON-RPC error of code `CodeUnsupportedProtocolVersion` (`-32022`) carrying
+  an `UnsupportedProtocolVersionData` payload that advertises the legacy
+  versions the server supports. This lets the client's
+  existing renegotiation logic recover and prevents the failure from tearing
+  down the underlying connection.
+
+- `blockingcancelnotify` added. If set to `1`, a cancelled call waits
+  synchronously for the best-effort `notifications/cancelled` message to be
+  delivered (up to `notifyCancellationTimeout`, currently 5 s) before
+  returning to the caller, restoring the previous behavior. The delivery
+  error is joined into the caller's returned error. The default behavior was
+  changed so that the call is retired immediately and the notification is
+  sent asynchronously off the caller's return path: the caller returns as
+  soon as its context is cancelled and cannot be delayed by a slow or
+  unresponsive peer. See issue #1150.
+
 ### 1.7.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

@@ -314,6 +314,18 @@ var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 // The option will be removed in the 1.8.0 version of the SDK.
 var disablecontenttypecheck = mcpgodebug.Value("disablecontenttypecheck")
 
+// plaintextstatefulrejection is a compatibility parameter that restores the
+// previous behavior of a stateful [StreamableHTTPHandler] when it receives a
+// request carrying SEP-2575 per-request metadata (i.e. an
+// `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+// `MCP-Protocol-Version` header >= 2026-07-28). When unset (the default), the
+// server responds with a JSON-RPC error of code
+// [CodeUnsupportedProtocolVersion] and an [UnsupportedProtocolVersionData]
+// payload listing its supported legacy versions, as required by SEP-2575. When
+// set to "1", the server instead responds with a plain-text `http.Error` body
+// mentioning the `StreamableHTTPOptions.Stateless` field.
+var plaintextstatefulrejection = mcpgodebug.Value("plaintextstatefulrejection")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -1512,17 +1524,38 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
-				// Extract again the protcol version from the context to see what the client
+				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
 				if !c.stateless && jreq.Method != methodDiscover {
-					http.Error(w, fmt.Sprintf(
-						"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-						protocolVersion),
-						http.StatusBadRequest)
+					if plaintextstatefulrejection == "1" {
+						http.Error(w, fmt.Sprintf(
+							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+							protocolVersion),
+							http.StatusBadRequest)
+						return
+					}
+					// Advertise only the legacy versions this stateful server accepts
+					// (i.e. exclude 2026-07-28, since that's what the request asked for
+					// and what we're rejecting).
+					legacyVersions := slices.DeleteFunc(slices.Clone(supportedProtocolVersions), func(v string) bool {
+						return v >= protocolVersion20260728
+					})
+					data, _ := json.Marshal(UnsupportedProtocolVersionData{
+						Supported: legacyVersions,
+						Requested: protocolVersion,
+					})
+					c.logger.Warn(fmt.Sprintf(
+						"rejecting request with protocol version %q: this server is stateful; set StreamableHTTPOptions.Stateless = true to accept it",
+						protocolVersion))
+					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+						Code:    CodeUnsupportedProtocolVersion,
+						Message: fmt.Sprintf("protocol version %q is not supported by this server", protocolVersion),
+						Data:    data,
+					})
 					return
 				}
 				if headerVersion == "" {
@@ -2413,10 +2446,10 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 	}
 	if pv := protocolVersionFromMessage(msg); pv != "" {
 		req.Header.Set(protocolVersionHeader, pv)
-	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
-		req.Header.Set(protocolVersionHeader, pv)
 	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)

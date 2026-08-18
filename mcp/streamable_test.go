@@ -3504,8 +3504,171 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
 	}
+	msg, err := jsonrpc.DecodeMessage(respBody)
+	if err != nil {
+		t.Fatalf("decoding response body as JSON-RPC: %v; body = %s", err, respBody)
+	}
+	jresp, ok := msg.(*jsonrpc.Response)
+	if !ok || jresp.Error == nil {
+		t.Fatalf("response is not a JSON-RPC error: %s", respBody)
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(jresp.Error, &jerr) {
+		t.Fatalf("response error is not *jsonrpc.Error: %v", jresp.Error)
+	}
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d (CodeUnsupportedProtocolVersion)", jerr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
+		t.Fatalf("decoding error data: %v; data = %s", err, jerr.Data)
+	}
+	if data.Requested != protocolVersion20260728 {
+		t.Errorf("data.Requested = %q, want %q", data.Requested, protocolVersion20260728)
+	}
+	if slices.Contains(data.Supported, protocolVersion20260728) {
+		t.Errorf("data.Supported = %v, must not contain the rejected version %q",
+			data.Supported, protocolVersion20260728)
+	}
+	if len(data.Supported) == 0 {
+		t.Errorf("data.Supported is empty; expected at least one legacy version")
+	}
+}
+
+// TestStreamableStateful_RejectsNewProtocol_LegacyPlainText verifies that
+// MCPGODEBUG=plaintextstatefulrejection=1 restores the pre-v1.8.0 plain-text
+// 400 body for the stateful/new-protocol rejection.
+func TestStreamableStateful_RejectsNewProtocol_LegacyPlainText(t *testing.T) {
+	prev := plaintextstatefulrejection
+	plaintextstatefulrejection = "1"
+	t.Cleanup(func() { plaintextstatefulrejection = prev })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequest(http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(sessionIDHeader, sessionID)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain; body = %s", ct, respBody)
+	}
 	if !strings.Contains(string(respBody), "stateless") {
 		t.Errorf("body = %q, want a message mentioning 'stateless'", respBody)
+	}
+}
+
+// TestCallCancellation_FastReturn verifies that a cancelled tool call
+// returns as soon as its context is cancelled, even when the peer is slow
+// to accept the follow-up notifications/cancelled POST.
+func TestCallCancellation_FastReturn(t *testing.T) {
+	// stallDuration is the time the middleware holds a
+	// notifications/cancelled POST. It must be larger than
+	// notifyCancellationTimeout so the blocking branch clearly overshoots
+	// even after cushioning for scheduler jitter.
+	const stallDuration = notifyCancellationTimeout + 2*time.Second
+
+	// callerDeadline is the deadline the client passes into CallTool. It
+	// must be short enough that any waiting on the cancel notification is
+	// obvious in the measured elapsed time.
+	const callerDeadline = 100 * time.Millisecond
+
+	// slack accounts for scheduling jitter around the deadline.
+	const slack = 500 * time.Millisecond
+
+	stallCancelNotify := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.Body != nil {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(notificationCancelled)) {
+					time.Sleep(stallDuration)
+				}
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			// Bound the handler above the caller deadline so the test
+			// always exercises the cancellation path, but not so long
+			// that a stuck cancellation makes the test slow.
+			select {
+			case <-ctx.Done():
+			case <-time.After(2 * stallDuration):
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(stallCancelNotify(handler))
+	t.Cleanup(httpServer.Close)
+
+	client := NewClient(testImpl, nil)
+	cs, err := client.Connect(context.Background(),
+		&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	callCtx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+	defer cancel()
+
+	start := time.Now()
+	_, err = cs.CallTool(callCtx, &CallToolParams{Name: "slow"})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CallTool error = %v, want context.DeadlineExceeded", err)
+	}
+	// The caller should return within slack of its own deadline.
+	if elapsed > callerDeadline+slack {
+		t.Errorf("CallTool returned after %v; want <= %v (caller deadline %v + slack %v)",
+			elapsed, callerDeadline+slack, callerDeadline, slack)
 	}
 }
 
