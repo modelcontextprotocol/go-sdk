@@ -616,23 +616,23 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 }
 
 // validateIssuerResponse validates the "iss" parameter in an authorization response
-// per [RFC 9207].
+// per [RFC 9207]. When iss is present it is always compared to expectedIssuer
+// (RFC 9207 §2.4), even if the server did not advertise
+// authorization_response_iss_parameter_supported. An unadvertised matching iss
+// is accepted; a mismatch is rejected. Absence of iss is an error only when
+// the server advertised support.
 //
 // [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
 func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bool) error {
-	if issParameterSupported {
-		if iss == "" {
-			return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
-		}
+	if iss != "" {
 		if iss != expectedIssuer {
 			return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
 		}
-	} else {
-		if iss != "" {
-			return fmt.Errorf("authorization server does not advertise RFC 9207 iss parameter support but iss was received in the authorization response")
-		}
+		return nil
 	}
-
+	if issParameterSupported {
+		return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
+	}
 	return nil
 }
 

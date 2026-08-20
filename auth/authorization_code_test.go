@@ -949,6 +949,18 @@ func TestValidateIssuerResponse(t *testing.T) {
 			iss:          "",
 			issSupported: false,
 		},
+		{
+			name:         "UnadvertisedIssCorrect",
+			iss:          expectedIssuer,
+			issSupported: false,
+		},
+		{
+			name:            "UnadvertisedIssWrong",
+			iss:             "https://attacker.example.com",
+			issSupported:    false,
+			wantErr:         true,
+			wantErrContains: "does not match expected issuer",
+		},
 	}
 
 	for _, tt := range tests {
