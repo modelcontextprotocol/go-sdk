@@ -102,6 +102,51 @@ func newResponse(id any, result any, rerr error) jsonrpc2.Message {
 	return msg
 }
 
+// go-sdk#976: empty method must decode as a request (encode omits empty method).
+func TestDecodeEmptyMethodRequest(t *testing.T) {
+	encoded := []byte(`{"jsonrpc":"2.0","id":5,"method":"","params":{}}`)
+	msg, err := jsonrpc2.DecodeMessage(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		t.Fatalf("message type = %T, want *jsonrpc2.Request", msg)
+	}
+	if req.Method != "" {
+		t.Errorf("Method = %q, want empty string", req.Method)
+	}
+	if req.ID != jsonrpc2.Int64ID(5) {
+		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+	if !req.IsCall() {
+		t.Error("empty method with id=5 should be a call")
+	}
+}
+
+func TestDecodeResponseUnchanged(t *testing.T) {
+	encoded := []byte(`{"jsonrpc":"2.0","id":2,"result":{}}`)
+	msg, err := jsonrpc2.DecodeMessage(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := msg.(*jsonrpc2.Response); !ok {
+		t.Fatalf("message type = %T, want *jsonrpc2.Response", msg)
+	}
+}
+
+// Messages with an id but no "method" key are responses, not malformed requests.
+func TestDecodeIDOnlyMessageIsResponse(t *testing.T) {
+	encoded := []byte(`{"jsonrpc":"2.0","id":5}`)
+	msg, err := jsonrpc2.DecodeMessage(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := msg.(*jsonrpc2.Response); !ok {
+		t.Fatalf("message type = %T, want *jsonrpc2.Response", msg)
+	}
+}
+
 func checkJSON(t *testing.T, got, want []byte) {
 	// compare the compact form, to allow for formatting differences
 	g := &bytes.Buffer{}

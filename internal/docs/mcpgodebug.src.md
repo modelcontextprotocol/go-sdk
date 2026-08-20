@@ -17,6 +17,32 @@
 
 ## `MCPGODEBUG` history
 
+### 1.8.0
+
+Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+
+- `plaintextstatefulrejection` added. If set to `1`, a stateful
+  `StreamableHTTPHandler` will respond with a plain-text `http.Error` 400 body
+  when it receives a request carrying per-request metadata (i.e. an
+  `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+  `MCP-Protocol-Version` header >= `2026-07-28`), restoring the previous
+  behavior. The default behavior was changed so that the server responds with a
+  JSON-RPC error of code `CodeUnsupportedProtocolVersion` (`-32022`) carrying
+  an `UnsupportedProtocolVersionData` payload that advertises the legacy
+  versions the server supports. This lets the client's
+  existing renegotiation logic recover and prevents the failure from tearing
+  down the underlying connection.
+
+- `blockingcancelnotify` added. If set to `1`, a cancelled call waits
+  synchronously for the best-effort `notifications/cancelled` message to be
+  delivered (up to `notifyCancellationTimeout`, currently 5 s) before
+  returning to the caller, restoring the previous behavior. The delivery
+  error is joined into the caller's returned error. The default behavior was
+  changed so that the call is retired immediately and the notification is
+  sent asynchronously off the caller's return path: the caller returns as
+  soon as its context is cancelled and cannot be delayed by a slow or
+  unresponsive peer. See issue #1150.
+
 ### 1.7.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
@@ -25,6 +51,54 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   use the custom error code `-32002` instead of the standard `-32602` (Invalid
   Params), restoring the previous behavior. The default behavior was changed to
   align with SEP-2164 and the JSON-RPC specification.
+
+- `hintomitempty` added. If set to `1`, `ToolAnnotations` JSON marshaling
+  will omit `ReadOnlyHint` and `IdempotentHint` when their value is `false`,
+  restoring the previous behavior. The default behavior was changed to always
+  serialize these fields, since their Go types are bare `bool` (not `*bool`)
+  and omitting `false` made it indistinguishable from unset.
+  
+- `allowsessionsinstateless` added. If set to `1`, stateless streamable HTTP
+  servers will read the `Mcp-Session-Id` request header (or generate one via
+  `GetSessionID`), set it on response headers, and accept `DELETE` requests,
+  restoring the previous behavior. The default behavior was changed so that
+  stateless servers ignore session IDs entirely and reject `DELETE` with 405.
+
+- `nomethodnotfoundcodeinerror` added. If set to `1`, the jsonrpc2 layer will not
+  include the MethodNotFound Error (`-32601`) in the error response when the 
+  requested method in STDIO transport is not found. The default behavior was
+  changed to include the MethodNotFound Error in the error response when the
+  requested method in STDIO transport is not found.
+
+- `noprotocolerrorbody` added. If set to `1`, the streamable HTTP client will
+  not attempt to decode the JSON-RPC error body of a non-2xx HTTP response,
+  and any non-transient error will permanently fail the connection, restoring
+  the previous behavior. The default behavior was changed so that the client
+  attempts to decode the JSON-RPC error body of a non-2xx response, surfaces
+  the underlying JSON-RPC error, and wraps it with `jsonrpc2.ErrRejected` so
+  that per-call rejections do not tear down the session.
+
+- `nowrapinvalidparams` added. If set to `1`, the server will not wrap
+  params-decoding failures with `jsonrpc2.ErrInvalidParams`, so wire responses
+  carry the zero-value error code `0` instead of `-32602` ("invalid params"),
+  restoring the previous behavior. The default behavior was changed so that
+  the server always reports params-decoding failures with the standard
+  `-32602` code.
+
+- `disablecompleteparamsvalidation` added. If set to `1`, `Server.complete`
+  will not validate that the required `ref` and `argument.name` fields on
+  `CompleteParams` are present, restoring the previous behavior of dispatching
+  the request to the completion handler unconditionally. The default behavior
+  was changed to reject malformed requests with `-32602` (Invalid Params).
+
+### 1.6.1
+
+Options listed below were added and will be removed in the 1.8.0 version of the SDK.
+
+- `disablecontenttypecheck` added. If set to `1`, Content-Type validation on
+  HTTP POST requests will be disabled, allowing requests with non-JSON or missing
+  Content-Type headers. The default behavior is to validate that HTTP POST
+  requests have Content-Type: application/json.
 
 ### 1.6.0
 

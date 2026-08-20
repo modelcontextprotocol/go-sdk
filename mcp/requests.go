@@ -19,12 +19,14 @@ type (
 	ReadResourceRequest               = ServerRequest[*ReadResourceParams]
 	RootsListChangedRequest           = ServerRequest[*RootsListChangedParams]
 	SubscribeRequest                  = ServerRequest[*SubscribeParams]
+	SubscriptionsListenRequest        = ServerRequest[*SubscriptionsListenParams]
 	UnsubscribeRequest                = ServerRequest[*UnsubscribeParams]
 )
 
 type (
 	CreateMessageRequest                   = ClientRequest[*CreateMessageParams]
 	CreateMessageWithToolsRequest          = ClientRequest[*CreateMessageWithToolsParams]
+	DiscoverRequest                        = ClientRequest[*DiscoverParams]
 	ElicitRequest                          = ClientRequest[*ElicitParams]
 	initializedClientRequest               = ClientRequest[*InitializedParams]
 	InitializeRequest                      = ClientRequest[*InitializeParams]

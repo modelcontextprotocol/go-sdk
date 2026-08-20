@@ -16,6 +16,8 @@
 // Example:
 //
 //	./distributed -http=localhost:8080 -child_ports=8081,8082
+//
+//lint:file-ignore SA1019 example server exercises deprecated SEP-2577 logging API for demonstration.
 package main
 
 import (

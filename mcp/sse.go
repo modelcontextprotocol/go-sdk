@@ -189,6 +189,13 @@ func (t *SSEServerTransport) Connect(context.Context) (Connection, error) {
 	return &sseServerConn{t: t}, nil
 }
 
+// SupportsProtocolVersion reports whether the HTTP+SSE transport can serve the
+// given protocol version. MCP 2026-07-28 defines only the stdio and Streamable
+// HTTP bindings, so this (deprecated) transport does not advertise that revision.
+func (t *SSEServerTransport) SupportsProtocolVersion(version string) bool {
+	return version < protocolVersion20260728
+}
+
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
@@ -202,7 +209,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate 'Content-Type' header.
-	if req.Method == http.MethodPost {
+	if disablecontenttypecheck != "1" && req.Method == http.MethodPost {
 		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 		if err != nil || mediaType != "application/json" {
 			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)

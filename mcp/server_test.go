@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 type testItem struct {
@@ -519,7 +521,8 @@ func panics(f func()) (b bool) {
 }
 
 func TestAddTool(t *testing.T) {
-	// AddTool should panic if In or Out are not JSON objects.
+	// AddTool should panic if In is not a JSON object.
+	// Out may be of any type whose inferred JSON Schema is valid.
 	s := NewServer(testImpl, nil)
 	if !panics(func() {
 		AddTool(s, &Tool{Name: "T1"}, func(context.Context, *CallToolRequest, string) (*CallToolResult, any, error) { return nil, nil, nil })
@@ -533,12 +536,12 @@ func TestAddTool(t *testing.T) {
 	}) {
 		t.Error("good In: expected no panic")
 	}
-	if !panics(func() {
-		AddTool(s, &Tool{Name: "T2"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, int, error) {
+	if panics(func() {
+		AddTool(s, &Tool{Name: "T3"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, int, error) {
 			return nil, 0, nil
 		})
 	}) {
-		t.Error("bad Out: expected panic")
+		t.Error("primitive Out: expected no panic")
 	}
 }
 
@@ -649,6 +652,195 @@ func TestAddToolNilSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAddToolNonObjectOutputSchema verifies the low-level
+// Server.AddTool accepts an output schema whose root type is not "object"
+// (array or primitive) and structured content of the matching shape
+// round-trips end-to-end.
+func TestAddToolNonObjectOutputSchema(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name         string
+		outputSchema any
+		content      any
+		want         any
+	}{
+		{
+			name:         "array of objects",
+			outputSchema: &jsonschema.Schema{Type: "array", Items: &jsonschema.Schema{Type: "object"}},
+			content:      []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}},
+			want:         []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}},
+		},
+		{
+			name:         "primitive number (map-based schema)",
+			outputSchema: map[string]any{"type": "number"},
+			content:      42.0,
+			want:         42.0,
+		},
+		{
+			name:         "primitive string (RawMessage schema)",
+			outputSchema: json.RawMessage(`{"type":"string"}`),
+			content:      "hello",
+			want:         "hello",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			handler := func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+				return &CallToolResult{StructuredContent: tc.content}, nil
+			}
+			tool := &Tool{
+				Name:         "t",
+				InputSchema:  &jsonschema.Schema{Type: "object"},
+				OutputSchema: tc.outputSchema,
+			}
+			// Must not panic.
+			server.AddTool(tool, handler)
+
+			ct, st := NewInMemoryTransports()
+			if _, err := server.Connect(ctx, st, nil); err != nil {
+				t.Fatal(err)
+			}
+			client := NewClient(testImpl, nil)
+			cs, err := client.Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			res, err := cs.CallTool(ctx, &CallToolParams{Name: "t"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected tool error: %v", res.Content)
+			}
+			if diff := cmp.Diff(tc.want, res.StructuredContent); diff != "" {
+				t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestAddToolGenericNonObjectOutput verifies SEP-2106 for the generic
+// AddTool[In, Out] helper: Out may be a slice or primitive whose inferred
+// JSON Schema has a non-object root.
+func TestAddToolGenericNonObjectOutput(t *testing.T) {
+	ctx := context.Background()
+
+	type item struct {
+		ID string `json:"id"`
+	}
+
+	t.Run("slice output", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "list"},
+			func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, []item, error) {
+				return nil, []item{{ID: "u1"}, {ID: "u2"}}, nil
+			})
+
+		ct, st := NewInMemoryTransports()
+		if _, err := server.Connect(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		// Verify tools/list reports an array-rooted output schema.
+		// jsonschema-go infers ["null","array"] for slices since nil slices
+		// are valid; accept either form.
+		lt, err := cs.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lt.Tools) != 1 {
+			t.Fatalf("got %d tools, want 1", len(lt.Tools))
+		}
+		gotSchema, _ := lt.Tools[0].OutputSchema.(map[string]any)
+		typeOK := false
+		switch typ := gotSchema["type"].(type) {
+		case string:
+			typeOK = typ == "array"
+		case []any:
+			for _, e := range typ {
+				if e == "array" {
+					typeOK = true
+				}
+			}
+		}
+		if !typeOK {
+			t.Errorf("output schema type = %v, want to include %q", gotSchema["type"], "array")
+		}
+
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "list"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %v", res.Content)
+		}
+		want := []any{map[string]any{"id": "u1"}, map[string]any{"id": "u2"}}
+		if diff := cmp.Diff(want, res.StructuredContent); diff != "" {
+			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("primitive output", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "count"},
+			func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, int, error) {
+				return nil, 42, nil
+			})
+
+		ct, st := NewInMemoryTransports()
+		if _, err := server.Connect(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "count"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %v", res.Content)
+		}
+		if diff := cmp.Diff(float64(42), res.StructuredContent); diff != "" {
+			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestAddToolInputSchemaComposition verifies SEP-2106 (input side): composition
+// keywords such as oneOf are allowed on the input schema alongside
+// type:"object".
+func TestAddToolInputSchemaComposition(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	tool := &Tool{
+		Name: "lookup",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			OneOf: []*jsonschema.Schema{
+				{Required: []string{"id"}, Properties: map[string]*jsonschema.Schema{"id": {Type: "string"}}},
+				{Required: []string{"name"}, Properties: map[string]*jsonschema.Schema{"name": {Type: "string"}}},
+			},
+		},
+	}
+	// Must not panic.
+	server.AddTool(tool, func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{}, nil
+	})
 }
 
 type schema = jsonschema.Schema
@@ -822,6 +1014,92 @@ func TestClientRootCapabilities(t *testing.T) {
 			}
 			ss.Wait()
 		})
+	}
+}
+
+func TestServerRejectsDuplicateInitialize(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	cTransport, sTransport := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, sTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	cConn, err := cTransport.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cConn.Close()
+
+	firstParams := json.RawMessage(`{
+		"protocolVersion": "2025-11-25",
+		"clientInfo": {"name": "first-client", "version": "1.0.0"}
+	}`)
+	firstReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), methodInitialize, firstParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, firstReq); err != nil {
+		t.Fatalf("first initialize write failed: %v", err)
+	}
+	msg, err := cConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("first initialize read failed: %v", err)
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected Response, got %T", msg)
+	}
+	if resp.Error != nil {
+		t.Fatalf("first initialize failed: %v", resp.Error)
+	}
+
+	initializedReq, err := jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, initializedReq); err != nil {
+		t.Fatalf("initialized notification write failed: %v", err)
+	}
+
+	secondParams := json.RawMessage(`{
+		"protocolVersion": "2024-11-05",
+		"clientInfo": {"name": "second-client", "version": "2.0.0"}
+	}`)
+	secondReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(2), methodInitialize, secondParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cConn.Write(ctx, secondReq); err != nil {
+		t.Fatalf("second initialize write failed: %v", err)
+	}
+	msg, err = cConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("second initialize read failed: %v", err)
+	}
+	resp, ok = msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected Response, got %T", msg)
+	}
+	if resp.Error == nil {
+		t.Fatal("second initialize unexpectedly succeeded")
+	}
+	if !strings.Contains(resp.Error.Error(), `duplicate "initialize" received`) {
+		t.Fatalf("second initialize error = %v, want duplicate initialize", resp.Error)
+	}
+
+	got := ss.InitializeParams()
+	if got == nil {
+		t.Fatal("InitializeParams is nil")
+	}
+	if got.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("ProtocolVersion = %q, want first initialize value", got.ProtocolVersion)
+	}
+	if got.ClientInfo == nil || got.ClientInfo.Name != "first-client" {
+		t.Fatalf("ClientInfo = %#v, want first initialize value", got.ClientInfo)
 	}
 }
 
@@ -1005,5 +1283,411 @@ func TestServerCapabilitiesOverWire(t *testing.T) {
 				t.Errorf("Capabilities mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// SEP-2575 removes the initialization handshake. An `initialize` request
+// that opts into the new protocol via `_meta.protocolVersion` must be
+// rejected with `Method not found` (-32601).
+func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
+
+	tests := []struct {
+		name       string
+		params     any
+		wantReject bool
+	}{
+		{
+			name: "initialize with new-protocol _meta is rejected",
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260728,
+			},
+			wantReject: true,
+		},
+		{
+			name: "initialize without _meta is allowed (old protocol)",
+			params: map[string]any{
+				"protocolVersion": protocolVersion20251125,
+			},
+			wantReject: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: NewServer(testImpl, nil)}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &jsonrpc.Request{
+				ID:     id,
+				Method: methodInitialize,
+				Params: mustMarshal(tc.params),
+			}
+			_, err = ss.handle(context.Background(), req)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatal("expected error rejecting initialize, got nil")
+				}
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) {
+					t.Fatalf("error type = %T, want *jsonrpc.Error so the wire returns the right code", err)
+				}
+				if jerr.Code != jsonrpc.CodeMethodNotFound {
+					t.Errorf("error code = %d, want %d (CodeMethodNotFound = -32601)", jerr.Code, jsonrpc.CodeMethodNotFound)
+				}
+				if !strings.Contains(jerr.Message, "initialize") {
+					t.Errorf("error message %q does not mention %q", jerr.Message, "initialize")
+				}
+			} else {
+				// Old-protocol initialize should be dispatched normally; any
+				// CodeMethodNotFound here would mean the rejection branch
+				// fired incorrectly.
+				var jerr *jsonrpc.Error
+				if errors.As(err, &jerr) && jerr.Code == jsonrpc.CodeMethodNotFound {
+					t.Errorf("old-protocol initialize was incorrectly rejected: %v", err)
+				}
+			}
+		})
+	}
+
+	t.Run("rejection error encodes to wire as code -32601", func(t *testing.T) {
+		// Belt-and-braces check that the error type produced by handle()
+		// actually serializes to JSON-RPC code -32601, not a bare 0.
+		ss := &ServerSession{server: NewServer(testImpl, nil)}
+		id, err := jsonrpc.MakeID("test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := &jsonrpc.Request{
+			ID:     id,
+			Method: methodInitialize,
+			Params: mustMarshal(map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"protocolVersion": protocolVersion20260728,
+			}),
+		}
+		_, handleErr := ss.handle(context.Background(), req)
+		if handleErr == nil {
+			t.Fatal("expected rejection error, got nil")
+		}
+		data, encErr := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: id, Error: handleErr.(*jsonrpc.Error)})
+		if encErr != nil {
+			t.Fatal(encErr)
+		}
+		var wire struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if wire.Error.Code != jsonrpc.CodeMethodNotFound {
+			t.Errorf("wire error code = %d, want %d; full response = %s", wire.Error.Code, jsonrpc.CodeMethodNotFound, data)
+		}
+	})
+}
+
+func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{
+				Completion: CompletionResultDetails{
+					Values: []string{"go"},
+				},
+			}, nil
+		},
+	})
+	AddTool(server, &Tool{Name: "tool"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil, nil
+	})
+	server.AddPrompt(&Prompt{Name: "prompt"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
+	})
+	server.AddResource(&Resource{URI: "test://resource", Name: "resource"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+		}, nil
+	})
+	newProtocolParams := func(fields map[string]any) map[string]any {
+		params := map[string]any{
+			"_meta": map[string]any{
+				MetaKeyProtocolVersion:    protocolVersion20260728,
+				MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+				MetaKeyClientCapabilities: map[string]any{},
+			},
+		}
+		for k, v := range fields {
+			params[k] = v
+		}
+		return params
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+		want   resultType
+	}{
+		{
+			name:   "discover",
+			method: methodDiscover,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "tools list",
+			method: methodListTools,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "prompts list",
+			method: methodListPrompts,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "resources list",
+			method: methodListResources,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "resource templates list",
+			method: methodListResourceTemplates,
+			params: newProtocolParams(nil),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "complete",
+			method: methodComplete,
+			params: newProtocolParams(map[string]any{
+				"argument": map[string]any{
+					"name":  "language",
+					"value": "g",
+				},
+				"ref": map[string]any{
+					"type": "ref/prompt",
+					"name": "code_review",
+				},
+			}),
+			want: resultTypeComplete,
+		},
+		{
+			name:   "tool input required",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "prompt input required",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "prompt"}),
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "resource input required",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
+			want:   resultTypeInputRequired,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ServerSession{server: server}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := ss.handle(context.Background(), &jsonrpc.Request{
+				ID:     id,
+				Method: tc.method,
+				Params: mustMarshal(tc.params),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				ResultType string `json:"resultType"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ResultType != string(tc.want) {
+				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, tc.want, data)
+			}
+		})
+	}
+}
+
+// TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol verifies that
+// the methods removed by SEP-2575 (`initialize`, `notifications/initialized`,
+// `ping`) all return Method not found when the request opts into the new
+// protocol via `_meta.protocolVersion`.
+func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
+
+	newProtoMeta := map[string]any{
+		"_meta": map[string]any{
+			MetaKeyProtocolVersion:    protocolVersion20260728,
+			MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+			MetaKeyClientCapabilities: map[string]any{},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{"initialize", methodInitialize},
+		{"ping", methodPing},
+		{"notifications/initialized", notificationInitialized},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name+" rejected on new protocol", func(t *testing.T) {
+			ss := &ServerSession{server: NewServer(testImpl, nil)}
+			id, err := jsonrpc.MakeID("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &jsonrpc.Request{
+				ID:     id,
+				Method: tc.method,
+				Params: mustMarshal(newProtoMeta),
+			}
+			_, err = ss.handle(context.Background(), req)
+			if err == nil {
+				t.Fatalf("method %q on new protocol: got nil error, want CodeMethodNotFound", tc.method)
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("error type = %T, want *jsonrpc.Error", err)
+			}
+			if jerr.Code != jsonrpc.CodeMethodNotFound {
+				t.Errorf("method %q: code = %d, want %d", tc.method, jerr.Code, jsonrpc.CodeMethodNotFound)
+			}
+			if !strings.Contains(jerr.Message, tc.method) {
+				t.Errorf("method %q: message %q does not mention method name", tc.method, jerr.Message)
+			}
+		})
+	}
+}
+
+// TestServerSession_RejectsServerInitiatedRequests verifies that
+// SEP-2322 / SEP-2575 is enforced at the API surface: [ServerSession.Elicit],
+// [ServerSession.CreateMessage], [ServerSession.CreateMessageWithTools], and
+// [ServerSession.ListRoots] must refuse to send a server-to-client request
+// when the session is negotiated at protocol version >= 2026-07-28, and must
+// remain functional on pre-2026-07-28 sessions.
+func TestServerSession_RejectsServerInitiated(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		call func(*ServerSession) error
+	}{
+		{
+			name: "Elicit",
+			call: func(ss *ServerSession) error {
+				_, err := ss.Elicit(ctx, &ElicitParams{Message: "hi"})
+				return err
+			},
+		},
+		{
+			name: "CreateMessage",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessage(ctx, &CreateMessageParams{})
+				return err
+			},
+		},
+		{
+			name: "CreateMessageWithTools",
+			call: func(ss *ServerSession) error {
+				_, err := ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{})
+				return err
+			},
+		},
+		{
+			name: "ListRoots",
+			call: func(ss *ServerSession) error {
+				_, err := ss.ListRoots(ctx, nil)
+				return err
+			},
+		},
+	}
+
+	// Cover both branches of the era gate: modern must reject, legacy must let
+	// the call proceed to the wire (where it either succeeds or fails on
+	// something unrelated to the guard, such as missing client capabilities).
+	for _, protoVer := range []string{protocolVersion20260728, protocolVersion20251125} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", protoVer, tc.name), func(t *testing.T) {
+				ct, st := NewInMemoryTransports()
+				s := NewServer(testImpl, nil)
+				ss, err := s.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+
+				// Client advertises every server-to-client capability so a
+				// legacy-era call is not rejected for capability reasons
+				// instead of era reasons.
+				c := NewClient(testImpl, &ClientOptions{
+					ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+						return &ElicitResult{Action: "cancel"}, nil
+					},
+					CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+						return &CreateMessageResult{Model: "m", Role: "assistant", Content: &TextContent{Text: "ok"}}, nil
+					},
+				})
+				c.AddRoots(&Root{URI: "file:///workspace"})
+				cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protoVer})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cs.Close() })
+
+				gotErr := tc.call(ss)
+				modern := protoVer >= protocolVersion20260728
+				if modern {
+					if gotErr == nil {
+						t.Fatalf("%s on %s: got nil error, want era-gate rejection", tc.name, protoVer)
+					}
+					wantSubstr := "cannot be sent while serving a request on protocol version " + protoVer
+					if !strings.Contains(gotErr.Error(), wantSubstr) {
+						t.Errorf("%s on %s: error %q does not contain %q", tc.name, protoVer, gotErr.Error(), wantSubstr)
+					}
+					if !strings.Contains(gotErr.Error(), "multi round-trip requests") {
+						t.Errorf("%s on %s: error %q does not steer to MRTR", tc.name, protoVer, gotErr.Error())
+					}
+				} else {
+					if gotErr != nil {
+						t.Errorf("%s on %s: got error %v, want nil (era gate must not fire on legacy)", tc.name, protoVer, gotErr)
+					}
+				}
+			})
+		}
 	}
 }

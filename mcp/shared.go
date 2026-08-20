@@ -26,8 +26,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+// nowrapinvalidparams is a compatibility parameter that restores the previous
+// behavior of [methodInfo.unmarshalParams]. When unset (the default), a
+// params-decoding failure is wrapped with [jsonrpc2.ErrInvalidParams] so the
+// wire response carries error code -32602 ("invalid params") rather than the
+// zero-value code 0. See:
+// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
 
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
@@ -35,8 +47,8 @@ const (
 	//
 	// It is the version that the client sends in the initialization request, and
 	// the default version used by the server.
-	latestProtocolVersion   = protocolVersion20251125
-	protocolVersion20260630 = "2026-06-30"
+	latestProtocolVersion   = protocolVersion20260728
+	protocolVersion20260728 = "2026-07-28"
 	protocolVersion20251125 = "2025-11-25"
 	protocolVersion20250618 = "2025-06-18"
 	protocolVersion20250326 = "2025-03-26"
@@ -44,6 +56,7 @@ const (
 )
 
 var supportedProtocolVersions = []string{
+	protocolVersion20260728,
 	protocolVersion20251125,
 	protocolVersion20250618,
 	protocolVersion20250326,
@@ -56,12 +69,24 @@ func negotiatedVersion(clientVersion string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version.
 	//
-	// This handles the case where a new spec version is released, and the SDK
-	// does not support it yet.
-	if !slices.Contains(supportedProtocolVersions, clientVersion) {
-		return latestProtocolVersion
+	// Cap the supported versions at the legacy protocolVersion20251125, as this
+	// method is used by the initialize method which is deprecated in
+	// version protocolVersion20260728.
+	if slices.Contains(supportedProtocolVersions, clientVersion) && clientVersion < protocolVersion20260728 {
+		return clientVersion
 	}
-	return clientVersion
+	return protocolVersion20251125
+}
+
+// negotiateMutuallySupportedVersion returns a protocol version that is supported
+// by both the client and the server.
+func negotiateMutuallySupportedVersion(supported []string) string {
+	for _, ver := range supportedProtocolVersions {
+		if slices.Contains(supported, ver) {
+			return ver
+		}
+	}
+	return ""
 }
 
 // A MethodHandler handles MCP messages.
@@ -112,8 +137,12 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
-	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
-		return nil, err
+	if method == methodSubscriptionsListen {
+		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
+	} else {
+		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
+			return nil, err
+		}
 	}
 	return res, nil
 }
@@ -287,7 +316,17 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 			var p P
 			if m != nil {
 				if err := internaljson.Unmarshal(m, &p); err != nil {
-					return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					// Legacy behavior: pre-fix versions surfaced this as a
+					// plain wrapped error, which caused the wire response to
+					// carry code 0 instead of -32602. Restore via
+					// MCPGODEBUG=nowrapinvalidparams=1.
+					if nowrapinvalidparams == "1" {
+						return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
+					}
+					// Wrap jsonrpc2.ErrInvalidParams so toWireError surfaces
+					// code -32602 ("invalid params") while preserving the
+					// descriptive message.
+					return nil, fmt.Errorf("%w: unmarshaling %q into a %T: %w", jsonrpc2.ErrInvalidParams, m, p, err)
 				}
 			}
 			// We must check missingParamsOK here, in addition to checkRequest, to
@@ -346,7 +385,13 @@ func clientSessionMethod[P Params, R Result](f func(*ClientSession, context.Cont
 const (
 	// CodeHeaderMismatch indicates that HTTP headers do not match the corresponding values
 	// in the request body, or that required headers are missing or malformed.
-	CodeHeaderMismatch = -32001
+	CodeHeaderMismatch = -32020
+	// CodeMissingRequiredClientCapabilities is the JSON-RPC error code defined by
+	// SEP-2575 for MissingRequiredClientCapabilitiesError.
+	CodeMissingRequiredClientCapabilities = -32021
+	// CodeUnsupportedProtocolVersion is the JSON-RPC error code defined by
+	// SEP-2575 for UnsupportedProtocolVersionError.
+	CodeUnsupportedProtocolVersion = -32022
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation
 	// before processing the request. The client should execute the elicitation handler
 	// with the elicitations provided in the error data.
@@ -465,6 +510,71 @@ func setProgressToken(p Params, pt any) {
 	m[progressTokenKey] = pt
 }
 
+// extractRequestMeta performs a lightweight partial unmarshal of the `_meta`
+// field from a JSON-RPC request's raw params.
+func extractRequestMeta(rawParams json.RawMessage) Meta {
+	if len(rawParams) == 0 {
+		return nil
+	}
+	var meta struct {
+		Meta Meta `json:"_meta"`
+	}
+	if err := internaljson.Unmarshal(rawParams, &meta); err != nil {
+		return nil
+	}
+	return meta.Meta
+}
+
+type validatedMeta struct {
+	usesNewProtocol  bool
+	initializeParams *InitializeParams
+	logLevel         LoggingLevel
+}
+
+// validateRequestMeta inspects a JSON-RPC request to detect whether it follows
+// the >= 2026-07-28 protocol via the `_meta` field.
+// If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
+// validatedMeta with usesNewProtocol set to false, and a nil error.
+// If the request has a protocolVersion in _meta it validates the presence of
+// clientCapabilities in _meta. If it is missing or invalid, it returns nil and
+// a non-nil error. clientInfo is optional; if present but invalid, an error is
+// returned. Otherwise, it returns usesNewProtocol set to true and the populated
+// initializeParams.
+func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
+	meta := extractRequestMeta(req.Params)
+	if meta == nil {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
+	if !ok || protocolVersion < protocolVersion20260728 {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	var clientInfo *Implementation
+	if _, present := meta[MetaKeyClientInfo]; present {
+		var ok bool
+		clientInfo, ok = decodeMetaValue[*Implementation](meta, MetaKeyClientInfo)
+		if !ok {
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidParams,
+				Message: fmt.Sprintf("invalid _meta field %q", MetaKeyClientInfo),
+			}
+		}
+	}
+	capabilities, ok := decodeMetaValue[*clientCapabilitiesV2](meta, MetaKeyClientCapabilities)
+	if !ok {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("missing or invalid _meta field %q", MetaKeyClientCapabilities),
+		}
+	}
+	logLevel, _ := decodeMetaValue[LoggingLevel](meta, MetaKeyLogLevel)
+	return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
+		ProtocolVersion: protocolVersion,
+		Capabilities:    capabilities.toV1(),
+		ClientInfo:      clientInfo,
+	}, logLevel: logLevel}, nil
+}
+
 // A Request is a method request with parameters and additional information, such as the session.
 // Request is implemented by [*ClientRequest] and [*ServerRequest].
 type Request interface {
@@ -503,6 +613,8 @@ type RequestExtra struct {
 	// to configure the reconnection delay.
 	//
 	// [SEP-1699]: https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1699
+	// This mechanism is deprecated in protocol version 2026-07-28 as the resumability
+	// feature is removed.
 	CloseSSEStream func(CloseSSEStreamArgs)
 }
 
@@ -525,6 +637,94 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
 
+// ProtocolVersion returns the protocol version negotiated for this request.
+//
+// For requests following the >= 2026-07-28 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams] established during the
+// initialize handshake.
+func (r *ServerRequest[P]) ProtocolVersion() string {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := m[MetaKeyProtocolVersion].(string); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ProtocolVersion
+		}
+	}
+	return ""
+}
+
+// ClientInfo returns the [Implementation] identifying the calling client.
+//
+// For requests following the >= 2026-07-28 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams].
+func (r *ServerRequest[P]) ClientInfo() *Implementation {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*Implementation](m, MetaKeyClientInfo); ok {
+			return v
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.ClientInfo
+		}
+	}
+	return nil
+}
+
+// ClientCapabilities returns the [ClientCapabilities] of the calling client.
+//
+// For requests following the >= 2026-07-28 protocol, the value is read from
+// the per-request `_meta` field. For older protocol requests, the value falls
+// back to the session-level [InitializeParams].
+func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
+	if m := getRequestMeta(r); m != nil {
+		if v, ok := decodeMetaValue[*clientCapabilitiesV2](m, MetaKeyClientCapabilities); ok {
+			return v.toV1()
+		}
+	}
+	if r.Session != nil {
+		if p := r.Session.InitializeParams(); p != nil {
+			return p.Capabilities
+		}
+	}
+	return nil
+}
+
+// getRequestMeta returns the raw `_meta` map from the request's params, or
+// nil if the params are absent.
+func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
+	// In practice P is a pointer type implementing Params.
+	if any(r.Params) == nil || r.Params.isNil() {
+		return nil
+	}
+	return r.Params.GetMeta()
+}
+
+// decodeMetaValue decodes a typed value out of a `_meta` map. Values may
+// arrive either as the typed Go value (when constructed in-process) or as
+// the generic JSON map produced by encoding/json after wire transit. In the
+// latter case, the value is re-encoded and decoded into the target type.
+func decodeMetaValue[T any](m map[string]any, key string) (T, bool) {
+	var zero T
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return zero, false
+	}
+	if v, ok := raw.(T); ok {
+		return v, true
+	}
+	var v T
+	if err := remarshal(raw, &v); err != nil {
+		return zero, false
+	}
+	return v, true
+}
+
 func serverRequestFor[P Params](s *ServerSession, p P) *ServerRequest[P] {
 	return &ServerRequest[P]{Session: s, Params: p}
 }
@@ -542,7 +742,26 @@ type Params interface {
 
 	// isParams discourages implementation of Params outside of this package.
 	isParams()
+
+	// isNil returns true if the underlying value is nil.
+	isNil() bool
 }
+
+// ParamsBase can be embedded in custom parameter structs to satisfy the
+// [Params] interface. It provides the required [Meta] field and the unexported
+// isParams marker method.
+//
+//	type SearchParams struct {
+//	    mcp.ParamsBase
+//	    Query string `json:"query"`
+//	}
+type ParamsBase struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (*ParamsBase) isParams() {}
+
+func (p *ParamsBase) isNil() bool { return p == nil }
 
 // RequestParams is a parameter (input) type for an MCP request.
 type RequestParams interface {
@@ -567,6 +786,20 @@ type Result interface {
 	// SetMeta sets the metadata on a value.
 	SetMeta(map[string]any)
 }
+
+// ResultBase can be embedded in custom result structs to satisfy the
+// [Result] interface. It provides the required [Meta] field and the unexported
+// isResult marker method.
+//
+//	type SearchResult struct {
+//	    mcp.ResultBase
+//	    Hits []string `json:"hits"`
+//	}
+type ResultBase struct {
+	Meta `json:"_meta,omitempty"`
+}
+
+func (*ResultBase) isResult() {}
 
 // emptyResult is returned by methods that have no result, like ping.
 // Those methods cannot return nil, because jsonrpc2 cannot handle nils.
@@ -596,9 +829,20 @@ type keepaliveSession interface {
 // It assigns the cancel function to the provided cancelPtr and starts a goroutine
 // that sends ping messages at the specified interval.
 //
-// logger must be non-nil; ping failures (which terminate the keepalive loop and
-// close the session) are reported via logger so they are not silently dropped.
-func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+// failureThreshold is the number of consecutive ping failures tolerated before
+// the session is closed; a value below 1 is treated as 1 (close on the first
+// failure). A successful ping resets the counter. This mirrors the spec's
+// "multiple failed pings MAY trigger a connection reset" language, letting a
+// transient miss pass without tearing down an otherwise live session.
+//
+// logger must be non-nil; ping failures (both the tolerated ones and the final
+// one that closes the session) are reported via logger so they are not silently
+// dropped.
+func startKeepalive(session keepaliveSession, interval time.Duration, failureThreshold int, cancelPtr *context.CancelFunc, logger *slog.Logger) {
+	if failureThreshold < 1 {
+		failureThreshold = 1
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	// Assign cancel function before starting goroutine to avoid race condition.
 	// We cannot return it because the caller may need to cancel during the
@@ -609,6 +853,7 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -617,17 +862,32 @@ func startKeepalive(session keepaliveSession, interval time.Duration, cancelPtr 
 				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
-				if err != nil {
-					if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
-						// Peer doesn't support ping, stop the keepalive process.
-						return
-					}
-					// Ping failed; log it before closing the session so the
-					// failure is observable to operators. See #218.
-					logger.Error("keepalive ping failed; closing session", "error", err)
-					_ = session.Close()
+				if err == nil {
+					consecutiveFailures = 0
+					continue
+				}
+				if errors.Is(err, jsonrpc2.ErrMethodNotFound) {
+					// Peer doesn't support ping, stop the keepalive process.
 					return
 				}
+				consecutiveFailures++
+				if consecutiveFailures < failureThreshold {
+					// Tolerate transient failures below the threshold; log so
+					// the misses are still observable to operators. See #218.
+					logger.Warn("keepalive ping failed; tolerating below threshold",
+						"error", err,
+						"consecutiveFailures", consecutiveFailures,
+						"failureThreshold", failureThreshold)
+					continue
+				}
+				// Threshold reached; log before closing the session so the
+				// failure is observable to operators. See #218.
+				logger.Error("keepalive ping failed; closing session",
+					"error", err,
+					"consecutiveFailures", consecutiveFailures,
+					"failureThreshold", failureThreshold)
+				_ = session.Close()
+				return
 			}
 		}
 	}()

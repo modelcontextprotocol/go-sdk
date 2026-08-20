@@ -32,7 +32,7 @@ func ExampleStreamableHTTPHandler() {
 	defer httpServer.Close()
 
 	// The SDK is currently permissive of some missing keys in "params".
-	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
+	resp := mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {"protocolVersion":"2025-11-25"}}`, httpServer.URL)
 	fmt.Println(resp)
 	// Output:
 	// {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"logging":{}},"protocolVersion":"2025-11-25","serverInfo":{"name":"server","version":"v0.1.0"}}}

@@ -4,11 +4,20 @@
 1. [Roots](#roots)
 1. [Sampling](#sampling)
 1. [Elicitation](#elicitation)
+1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 1. [Capabilities](#capabilities)
 	1. [Capability inference](#capability-inference)
 	1. [Explicit capabilities](#explicit-capabilities)
+	1. [Extensions](#extensions)
 
 ## Roots
+
+> **Note:** The roots feature is deprecated as of protocol version 2026-07-28
+> ([SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)).
+> It remains fully functional during the deprecation window (at least twelve
+> months). The SDK continues to support roots for compatibility. New code
+> should pass paths via tool parameters, resource URIs, or configuration
+> instead.
 
 MCP allows clients to specify a set of filesystem
 ["roots"](https://modelcontextprotocol.io/specification/2025-06-18/client/roots).
@@ -27,31 +36,36 @@ client, a call to `AddRoot` or `RemoveRoots` will result in a
 [`ServerSession.ListRoots`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.ListRoots)
 method. To receive notifications about root changes, set
 [`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler).
+For protocol versions `2026-07-28` and later, `ListRoots` requests are
+delivered via the
+[Multi Round-Trip Requests](#multi-round-trip-requests)
+pattern.
 
 ```go
 func Example_roots() {
 	ctx := context.Background()
 
-	// Create a client with a single root.
+	// Create a client with two roots.
 	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
-	c.AddRoots(&mcp.Root{URI: "file://a"})
+	c.AddRoots(&mcp.Root{URI: "file://a"}, &mcp.Root{URI: "file://b"})
 
-	// Now create a server with a handler to receive notifications about roots.
-	rootsChanged := make(chan struct{})
-	handleRootsChanged := func(ctx context.Context, req *mcp.RootsListChangedRequest) {
-		rootList, err := req.Session.ListRoots(ctx, nil)
-		if err != nil {
-			log.Fatal(err)
+	// Create a server with a tool that requests roots via the multi round-trip
+	// pattern (SEP-2322): server-to-client requests are no longer sent as
+	// standalone JSON-RPC calls on protocol version >= 2026-07-28.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "roots"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"roots": &mcp.ListRootsParams{}},
+			}, nil, nil
 		}
+		rootList := req.Params.InputResponses["roots"].(*mcp.ListRootsResult)
 		var roots []string
 		for _, root := range rootList.Roots {
 			roots = append(roots, root.URI)
 		}
 		fmt.Println(roots)
-		close(rootsChanged)
-	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
-		RootsListChangedHandler: handleRootsChanged,
+		return &mcp.CallToolResult{}, nil, nil
 	})
 
 	// Connect the server and client...
@@ -68,14 +82,23 @@ func Example_roots() {
 	}
 	defer clientSession.Close()
 
-	// ...and add a root. The server is notified about the change.
-	c.AddRoots(&mcp.Root{URI: "file://b"})
-	<-rootsChanged
+	// ...and call the tool. The client's multi round-trip driver fulfils the
+	// embedded roots/list request and retries the call.
+	if _, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "roots"}); err != nil {
+		log.Fatal(err)
+	}
 	// Output: [file://a file://b]
 }
 ```
 
 ## Sampling
+
+> **Note:** The sampling feature is deprecated as of protocol version
+> 2026-07-28
+> ([SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)).
+> It remains fully functional during the deprecation window (at least twelve
+> months). The SDK continues to support sampling for compatibility. Servers
+> that need LLM completions should call LLM provider APIs directly.
 
 [Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
 is a way for servers to leverage the client's AI capabilities. It is
@@ -87,6 +110,11 @@ This function is invoked whenever the server requests sampling.
 
 **Server-side**: To use sampling from the server, call
 [`ServerSession.CreateMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.CreateMessage).
+
+For protocol versions `2026-07-28` and later, sampling requests are
+delivered via the
+[Multi Round-Trip Requests](#multi-round-trip-requests)
+pattern.
 
 ```go
 func Example_sampling() {
@@ -105,22 +133,35 @@ func Example_sampling() {
 
 	// Connect the server and client...
 	ct, st := mcp.NewInMemoryTransports()
+	// Create a server with a tool that requests sampling via the multi
+	// round-trip pattern (SEP-2322): server-to-client requests are no longer
+	// sent as standalone JSON-RPC calls on protocol version >= 2026-07-28.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "sample"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"msg": &mcp.CreateMessageParams{}},
+			}, nil, nil
+		}
+		msg := req.Params.InputResponses["msg"].(*mcp.CreateMessageWithToolsResult)
+		return &mcp.CallToolResult{Content: msg.Content}, nil, nil
+	})
 	session, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-
-	msg, err := session.CreateMessage(ctx, &mcp.CreateMessageParams{})
+	clientSession, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(msg.Content.(*mcp.TextContent).Text)
+
+	res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "sample"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
 	// Output: would have created a message
 }
 ```
@@ -140,12 +181,38 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 **Server-side**: To use elicitation from the server, call
 [`ServerSession.Elicit`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Elicit).
 
+For protocol versions `2026-07-28` and later, elicitation requests are
+delivered via the
+[Multi Round-Trip Requests](#multi-round-trip-requests)
+pattern.
+
 ```go
 func Example_elicitation() {
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 
+	// Create a server with a tool that requests elicitation via the multi
+	// round-trip pattern (SEP-2322): server-to-client requests are no longer
+	// sent as standalone JSON-RPC calls on protocol version >= 2026-07-28.
 	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "ask"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"input": &mcp.ElicitParams{
+					Message: "This should fail",
+					RequestedSchema: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"test": {Type: "string"},
+						},
+					},
+				}},
+			}, nil, nil
+		}
+		res := req.Params.InputResponses["input"].(*mcp.ElicitResult)
+		fmt.Println(res.Content["test"])
+		return &mcp.CallToolResult{}, nil, nil
+	})
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -157,25 +224,51 @@ func Example_elicitation() {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	if _, err := c.Connect(ctx, ct, nil); err != nil {
-		log.Fatal(err)
-	}
-	res, err := ss.Elicit(ctx, &mcp.ElicitParams{
-		Message: "This should fail",
-		RequestedSchema: &jsonschema.Schema{
-			Type: "object",
-			Properties: map[string]*jsonschema.Schema{
-				"test": {Type: "string"},
-			},
-		},
-	})
+	clientSession, err := c.Connect(ctx, ct, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(res.Content["test"])
+	if _, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "ask"}); err != nil {
+		log.Fatal(err)
+	}
 	// Output: value
 }
 ```
+
+## Multi Round-Trip Requests
+
+[SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
+introduces the MRTR pattern: server-to-client requests for sampling,
+elicitation, and roots are no longer issued as fresh JSON-RPC requests but
+are carried inside the in-flight reply of a `tools/call`, `prompts/get`, or
+`resources/read`. The client must respond by retrying the original request
+with the produced responses.
+
+The SDK installs `clientMultiRoundTripMiddleware` for every client by
+default. The middleware:
+
+1. Inspects each `tools/call`/`prompts/get`/`resources/read` reply.
+2. If the result's `NeedsInput()` is true, fans out the `InputRequests` map
+   concurrently, calling the configured handler for each (`elicit`,
+   `createMessage`/`createMessageWithTools`, or `listRoots`).
+3. Threads the server-supplied opaque `RequestState` back unchanged.
+4. Retries the original request with the responses set, repeating until the
+   result no longer needs input.
+
+The middleware is enabled by default. To opt out, set
+[`ClientOptions.MultiRoundTrip.Disabled = true`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MultiRoundTripOptions);
+the client will then surface input-required results directly to the caller
+(the returned `CallToolResult`, `GetPromptResult`, or `ReadResourceResult`
+will report `NeedsInput() == true` and expose the server's `InputRequests`
+and opaque `RequestState`). Your code must fulfil each request and re-issue
+the original call with `InputResponses` set and `RequestState` echoed
+back.
+
+For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
+requests on the legacy server-initiated channel; the MRTR machinery is a
+no-op in that direction. For legacy clients talking to MRTR-style servers,
+the server SDK applies the inverse compatibility shim — see the
+[server-side documentation](server.md#multi-round-trip-requests).
 
 ## Capabilities
 
@@ -232,4 +325,12 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
     ElicitationHandler: handler,
 })
 ```
+
+### Extensions
+
+[SEP-2133](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2133)
+adds an `extensions` map to `ClientCapabilities` and `ServerCapabilities` so
+that optional capabilities outside the core protocol can be declared on the
+wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
+are per-extension settings objects.
 

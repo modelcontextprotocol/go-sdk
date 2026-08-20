@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -77,6 +78,7 @@ func TestAuthorize(t *testing.T) {
 			return &AuthorizationResult{
 				Code:  location.Query().Get("code"),
 				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
 			}, nil
 		},
 	})
@@ -110,6 +112,227 @@ func TestAuthorize(t *testing.T) {
 	}
 	if token.AccessToken != "test_access_token" {
 		t.Errorf("Expected access token 'test_access_token', got '%s'", token.AccessToken)
+	}
+}
+
+// TestAuthorize_RefreshAfterContextCancel verifies that the token source built
+// by Authorize keeps refreshing after the context passed to Authorize is
+// cancelled. The token source is stored on the handler and used by the
+// transport for the whole connection lifetime, whereas Authorize is typically
+// called from a request- or connect-scoped context. golang.org/x/oauth2
+// captures the context handed to Config.TokenSource and reuses it for every
+// refresh, so binding it to the request context made every refresh after the
+// access token expired fail with "context canceled". Regression test for that.
+func TestAuthorize_RefreshAfterContextCancel(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the reuse token source
+		// treats the access token as expired immediately and must refresh.
+		AccessTokenTTL:    1,
+		IssueRefreshToken: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+
+	// Authorize under a context that we cancel immediately afterwards, mimicking
+	// the request/connect context the transport passes and that is already done
+	// by the time a later token refresh runs.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := handler.Authorize(ctx, req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+	cancel()
+
+	tokenSource, err := handler.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	// The access token is already expired, so this forces a refresh round-trip.
+	// It must not fail with "context canceled" from the cancelled Authorize ctx.
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("token refresh after Authorize context cancellation failed: %v", err)
+	}
+	if token.AccessToken != "test_access_token_refreshed" {
+		t.Errorf("expected refreshed access token %q, got %q", "test_access_token_refreshed", token.AccessToken)
+	}
+}
+
+func TestAuthorize_ScopeAccumulation(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+		TokenScopeFunc: func(requestedScope string) string {
+			// Simulate a server that never grants "write".
+			var granted []string
+			for _, s := range strings.Fields(requestedScope) {
+				if s != "write" {
+					granted = append(granted, s)
+				}
+			}
+			return strings.Join(granted, " ")
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	var capturedAuthURLs []string
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test_client_secret",
+			},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			capturedAuthURLs = append(capturedAuthURLs, args.URL)
+			resp, err := noRedirectClient.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			loc, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &AuthorizationResult{
+				Code:  loc.Query().Get("code"),
+				State: loc.Query().Get("state"),
+				Iss:   loc.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	// First authorization: 401 with scope="read write".
+	// The token response will only grant "read" (TokenScopeFunc strips "write").
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer scope="read write", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("First Authorize failed: %v", err)
+	}
+
+	// Verify first auth URL requested "read" and "write".
+	firstURL, err := url.Parse(capturedAuthURLs[0])
+	if err != nil {
+		t.Fatalf("Failed to parse first auth URL: %v", err)
+	}
+	firstScopes := strings.Fields(firstURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"read", "write"}, firstScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("First auth scopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Verify only "read" was granted (the token omitted "write").
+	issuer := authServer.URL()
+	if diff := cmp.Diff([]string{"read"}, handler.grantedScopes[issuer], cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("After first Authorize, grantedScopes mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second authorization: 403 insufficient_scope with scope="admin".
+	// Accumulated scopes should be "read" (previously granted) + "admin" (new).
+	req2 := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp2 := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp2.Header.Set("WWW-Authenticate",
+		fmt.Sprintf(`Bearer error="insufficient_scope", scope="admin", resource_metadata="%s/.well-known/oauth-protected-resource/resource"`, resourceServer.URL))
+	if err := handler.Authorize(context.Background(), req2, resp2); err != nil {
+		t.Fatalf("Second Authorize failed: %v", err)
+	}
+
+	// Verify second auth URL accumulated "read" (granted) + "admin" (challenged),
+	// but NOT "write" (requested but never granted).
+	secondURL, err := url.Parse(capturedAuthURLs[1])
+	if err != nil {
+		t.Fatalf("Failed to parse second auth URL: %v", err)
+	}
+	secondScopes := strings.Fields(secondURL.Query().Get("scope"))
+	if diff := cmp.Diff([]string{"admin", "read"}, secondScopes, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("Second auth scopes mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -481,6 +704,8 @@ func TestHandleRegistration(t *testing.T) {
 		asm           *oauthex.AuthServerMeta
 		want          *resolvedClientConfig
 		wantError     bool
+		issuerMatch   bool
+		issuerSuffix  string
 	}{
 		{
 			name: "ClientIDMetadataDocument",
@@ -520,6 +745,79 @@ func TestHandleRegistration(t *testing.T) {
 			},
 		},
 		{
+			name: "Preregistered_IssuerMatch",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "", // set dynamically in the test
+				},
+			},
+			want: &resolvedClientConfig{
+				registrationType: registrationTypePreregistered,
+				clientID:         "pre_client_id",
+				clientSecret:     "pre_client_secret",
+				authStyle:        oauth2.AuthStyleInParams,
+			},
+			issuerMatch: true,
+		},
+		{
+			name: "Preregistered_IssuerMismatch",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "https://other-issuer.example.com",
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "Preregistered_IssuerMatchTrailingSlash",
+			serverConfig: &oauthtest.RegistrationConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"pre_client_id": {
+						Secret: "pre_client_secret",
+					},
+				},
+			},
+			handlerConfig: &AuthorizationCodeHandlerConfig{
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID: "pre_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{
+						ClientSecret: "pre_client_secret",
+					},
+					Issuer: "", // set dynamically in the test (with trailing slash)
+				},
+			},
+			want: &resolvedClientConfig{
+				registrationType: registrationTypePreregistered,
+				clientID:         "pre_client_id",
+				clientSecret:     "pre_client_secret",
+				authStyle:        oauth2.AuthStyleInParams,
+			},
+			issuerMatch:  true,
+			issuerSuffix: "/",
+		},
+		{
 			name: "NoneSupported",
 			handlerConfig: &AuthorizationCodeHandlerConfig{
 				ClientIDMetadataDocumentConfig: &ClientIDMetadataDocumentConfig{URL: "https://client.example.com/metadata.json"},
@@ -532,6 +830,10 @@ func TestHandleRegistration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{RegistrationConfig: tt.serverConfig})
 			s.Start(t)
+			// Set the Issuer dynamically if requested by the test case.
+			if tt.issuerMatch {
+				tt.handlerConfig.PreregisteredClient.Issuer = s.URL() + tt.issuerSuffix
+			}
 			tt.handlerConfig.AuthorizationCodeFetcher = func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 				return nil, nil
 			}
@@ -550,6 +852,9 @@ func TestHandleRegistration(t *testing.T) {
 					t.Fatalf("handleRegistration() unexpected error = %v", err)
 				}
 				return
+			}
+			if tt.wantError {
+				t.Fatal("handleRegistration() expected error, got nil")
 			}
 			if got.registrationType != tt.want.registrationType {
 				t.Errorf("handleRegistration() registrationType = %v, want %v", got.registrationType, tt.want.registrationType)
@@ -607,6 +912,59 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 	if got.authStyle != oauth2.AuthStyleInHeader {
 		t.Errorf("handleRegistration() authStyle = %v, want %v", got.authStyle, oauth2.AuthStyleInHeader)
+	}
+}
+
+func TestValidateIssuerResponse(t *testing.T) {
+	const expectedIssuer = "https://auth.example.com"
+
+	tests := []struct {
+		name            string
+		iss             string
+		issSupported    bool
+		wantErr         bool
+		wantErrContains string
+	}{
+		{
+			name:         "ValidIss",
+			iss:          expectedIssuer,
+			issSupported: true,
+		},
+		{
+			name:            "WrongIss",
+			iss:             "https://attacker.example.com",
+			issSupported:    true,
+			wantErr:         true,
+			wantErrContains: "does not match expected issuer",
+		},
+		{
+			name:            "MissingIssWhenRequired",
+			iss:             "",
+			issSupported:    true,
+			wantErr:         true,
+			wantErrContains: "RFC 9207",
+		},
+		{
+			name:         "MissingIssWhenNotRequired",
+			iss:          "",
+			issSupported: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIssuerResponse(tt.iss, expectedIssuer, tt.issSupported)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("validateIssuerResponse() = nil, want error containing %q", tt.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("validateIssuerResponse() error = %q, want it to contain %q", err.Error(), tt.wantErrContains)
+				}
+			} else if err != nil {
+				t.Fatalf("validateIssuerResponse() unexpected error = %v", err)
+			}
+		})
 	}
 }
 
@@ -864,6 +1222,107 @@ func TestAuthorize_OfflineAccessScope(t *testing.T) {
 	}
 }
 
+func TestAuthorize_ScopeFilter(t *testing.T) {
+	// advertised is delivered via the WWW-Authenticate "scope" challenge, which
+	// the handler treats as the discovered scopes passed to ScopeFilter.
+	const advertised = "gmail.metadata gmail.readonly gmail.compose"
+	tests := []struct {
+		name   string
+		filter func(discovered []string) []string
+		want   []string // requested scopes, order-independent
+	}{
+		{
+			name:   "nil filter leaves scopes unchanged",
+			filter: nil,
+			want:   []string{"gmail.metadata", "gmail.readonly", "gmail.compose"},
+		},
+		{
+			name: "filter drops a scope",
+			filter: func(d []string) []string {
+				return slices.DeleteFunc(slices.Clone(d), func(s string) bool { return s == "gmail.metadata" })
+			},
+			want: []string{"gmail.readonly", "gmail.compose"},
+		},
+		{
+			name:   "filter replaces the set entirely",
+			filter: func([]string) []string { return []string{"gmail.readonly"} },
+			want:   []string{"gmail.readonly"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+				RegistrationConfig: &oauthtest.RegistrationConfig{
+					PreregisteredClients: map[string]oauthtest.ClientInfo{
+						"test_client_id": {
+							Secret:       "test_client_secret",
+							RedirectURIs: []string{"http://localhost:12345/callback"},
+						},
+					},
+				},
+			})
+			authServer.Start(t)
+
+			resourceMux := http.NewServeMux()
+			resourceServer := httptest.NewServer(resourceMux)
+			t.Cleanup(resourceServer.Close)
+			resourceURL := resourceServer.URL + "/resource"
+			resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+				Resource:             resourceURL,
+				AuthorizationServers: []string{authServer.URL()},
+			}))
+
+			var capturedAuthURL string
+			handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+				RedirectURL: "http://localhost:12345/callback",
+				PreregisteredClient: &oauthex.ClientCredentials{
+					ClientID:         "test_client_id",
+					ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+				},
+				ScopeFilter: tt.filter,
+				AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+					capturedAuthURL = args.URL
+					return nil, fmt.Errorf("stop after capturing URL")
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+			resp := &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+				Request:    req,
+			}
+			resp.Header.Set("WWW-Authenticate", fmt.Sprintf(
+				"Bearer resource_metadata=%s/.well-known/oauth-protected-resource/resource, scope=%q",
+				resourceServer.URL, advertised))
+
+			handler.Authorize(context.Background(), req, resp)
+
+			if capturedAuthURL == "" {
+				t.Fatal("AuthorizationCodeFetcher was not called")
+			}
+			u, err := url.Parse(capturedAuthURL)
+			if err != nil {
+				t.Fatalf("failed to parse captured auth URL: %v", err)
+			}
+			// Compare as a set: UnionScopes (applied downstream) returns map keys,
+			// so the order of the requested scope parameter is not deterministic.
+			got := strings.Fields(u.Query().Get("scope"))
+			want := slices.Clone(tt.want)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("requested scopes = %v, want %v (any order)", got, want)
+			}
+		})
+	}
+}
+
 // validConfig for test to create an AuthorizationCodeHandler using its constructor.
 // Values that are relevant to the test should be set explicitly.
 func validConfig() *AuthorizationCodeHandlerConfig {
@@ -873,5 +1332,94 @@ func validConfig() *AuthorizationCodeHandlerConfig {
 		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
 			return nil, nil
 		},
+	}
+}
+
+func TestNewTokenSource(t *testing.T) {
+	// mock the /token endpoint to successfully return an access token on code exchange
+	mockTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"access_token": "test_token", "token_type": "bearer"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockTS.Close()
+
+	// configure the handler and set NewTokenSource
+	var called bool
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			u, _ := url.Parse(args.URL)
+			return &AuthorizationResult{
+				Code:  "test_code",
+				State: u.Query().Get("state"),
+			}, nil
+		},
+		NewTokenSource: func(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) (oauth2.TokenSource, error) {
+			called = true
+			return oauth2.StaticTokenSource(token), nil
+		},
+		Client: mockTS.Client(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Simulate a 401 response from a resource server.
+	// The WWW-Authenticate: Bearer header triggers the authorization logic.
+	req := httptest.NewRequest(http.MethodGet, mockTS.URL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer")
+
+	// Authorize and confirm NewTokenSource was called.
+	err = handler.Authorize(t.Context(), req, resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected NewTokenSource to be called")
+	}
+}
+
+func TestInitialTokenSource(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, nil
+		},
+		InitialTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "set_token"}),
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	ts, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("failed to get token source: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("expected token source to be non-nil")
+	}
+
+	tok, err := ts.Token()
+	if err != nil {
+		t.Fatalf("failed to get Token: %v", err)
+	}
+	if tok.AccessToken != "set_token" {
+		t.Errorf("expected access token 'set_token', got '%s'", tok.AccessToken)
 	}
 }

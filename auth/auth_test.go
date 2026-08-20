@@ -63,6 +63,11 @@ func TestVerify(t *testing.T) {
 			"token missing expiration", 401,
 		},
 		{
+			"no expiration with AllowMissingExpiration accepts",
+			&RequireBearerTokenOptions{AllowMissingExpiration: true}, "Bearer noexp",
+			"", 0,
+		},
+		{
 			"expired", nil, "Bearer expired",
 			"token expired", 401,
 		},
@@ -280,6 +285,66 @@ func TestRequireBearerToken(t *testing.T) {
 			got := rec.Header().Get("WWW-Authenticate")
 			if got != tt.wantHeader {
 				t.Errorf("WWW-Authenticate = %q, want %q", got, tt.wantHeader)
+			}
+		})
+	}
+}
+
+// TestRequireBearerToken_ClockSkew verifies that the ClockSkew option
+// extends the expiration check tolerance: a token whose Expiration is in the
+// recent past is accepted iff the elapsed interval is within ClockSkew.
+func TestRequireBearerToken_ClockSkew(t *testing.T) {
+	tests := []struct {
+		name       string
+		clockSkew  time.Duration
+		expiredAgo time.Duration
+		wantStatus int
+	}{
+		{
+			name:       "no skew, fresh token accepted",
+			clockSkew:  0,
+			expiredAgo: -time.Minute, // expires in 1 minute
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "no skew, expired token rejected",
+			clockSkew:  0,
+			expiredAgo: 5 * time.Second, // expired 5s ago
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "with skew, recently-expired token accepted",
+			clockSkew:  30 * time.Second,
+			expiredAgo: 5 * time.Second,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "with skew, token expired beyond tolerance rejected",
+			clockSkew:  10 * time.Second,
+			expiredAgo: 30 * time.Second,
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verifier := func(_ context.Context, _ string, _ *http.Request) (*TokenInfo, error) {
+				return &TokenInfo{Expiration: time.Now().Add(-tt.expiredAgo)}, nil
+			}
+			handler := RequireBearerToken(verifier, &RequireBearerTokenOptions{
+				ClockSkew: tt.clockSkew,
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Header.Set("Authorization", "Bearer anything")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 		})
 	}

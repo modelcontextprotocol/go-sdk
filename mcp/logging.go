@@ -68,7 +68,19 @@ func compareLevels(l1, l2 LoggingLevel) int {
 	return cmp.Compare(mcpLevelToSlog(l1), mcpLevelToSlog(l2))
 }
 
+type logLevelContextKey struct{}
+
+func logLevelFromContext(ctx context.Context) (LoggingLevel, bool) {
+	v, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
+	return v, ok
+}
+
 // LoggingHandlerOptions are options for a LoggingHandler.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingHandlerOptions struct {
 	// The value for the "logger" field of logging notifications.
 	LoggerName string
@@ -79,6 +91,11 @@ type LoggingHandlerOptions struct {
 }
 
 // A LoggingHandler is a [slog.Handler] for MCP.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 type LoggingHandler struct {
 	opts LoggingHandlerOptions
 	ss   *ServerSession
@@ -101,6 +118,11 @@ func ensureLogger(l *slog.Logger) *slog.Logger {
 
 // NewLoggingHandler creates a [LoggingHandler] that logs to the given [ServerSession] using a
 // [slog.JSONHandler].
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingHandler {
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
@@ -131,6 +153,9 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 func (h *LoggingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	// This is also checked in ServerSession.LoggingMessage, so checking it here
 	// is just an optimization that skips building the JSON.
+	if mcpLevel, ok := logLevelFromContext(ctx); ok {
+		return mcpLevel != "" && level >= mcpLevelToSlog(mcpLevel)
+	}
 	h.ss.mu.Lock()
 	mcpLevel := h.ss.state.LogLevel
 	h.ss.mu.Unlock()

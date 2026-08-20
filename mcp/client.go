@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +34,11 @@ type Client struct {
 	sessions                []*ClientSession
 	sendingMethodHandler_   MethodHandler
 	receivingMethodHandler_ MethodHandler
+	// sendMethods is the list of methods this client may send to a
+	// server: it always contains the standard server methods (from
+	// serverMethodInfos) plus any custom methods registered via
+	// [AddSendingCustomMethod].
+	sendMethods map[string]methodInfo
 }
 
 // NewClient creates a new [Client].
@@ -58,13 +65,21 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 		opts.Logger = ensureLogger(nil)
 	}
 
-	return &Client{
+	sendMethods := make(map[string]methodInfo, len(serverMethodInfos))
+	maps.Copy(sendMethods, serverMethodInfos)
+
+	c := &Client{
 		impl:                    impl,
 		opts:                    opts,
 		roots:                   newFeatureSet(func(r *Root) string { return r.URI }),
 		sendingMethodHandler_:   defaultSendingMethodHandler,
 		receivingMethodHandler_: defaultReceivingMethodHandler[*ClientSession],
+		sendMethods:             sendMethods,
 	}
+	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
+		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
+	}
+	return c
 }
 
 // ClientOptions configures the behavior of the client.
@@ -78,6 +93,12 @@ type ClientOptions struct {
 	// &SamplingCapabilities{}. If [ClientOptions.Capabilities] is set and has a
 	// non nil value for [ClientCapabilities.Sampling], that value overrides the
 	// inferred capability.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to calling LLM provider APIs
+	// directly from your server. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	CreateMessageHandler func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error)
 	// CreateMessageWithToolsHandler handles incoming sampling/createMessage
 	// requests that may involve tool use. It returns
@@ -91,6 +112,12 @@ type ClientOptions struct {
 	//
 	// It is a panic to set both CreateMessageHandler and
 	// CreateMessageWithToolsHandler.
+	//
+	// Deprecated: the sampling feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). Migrate to calling LLM provider APIs
+	// directly from your server. See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	CreateMessageWithToolsHandler func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error)
 	// ElicitationHandler handles incoming requests for elicitation/create.
 	//
@@ -148,16 +175,35 @@ type ClientOptions struct {
 	// ElicitationCompleteHandler handles incoming notifications for notifications/elicitation/complete.
 	ElicitationCompleteHandler func(context.Context, *ElicitationCompleteNotificationRequest)
 	// Handlers for notifications from the server.
-	ToolListChangedHandler      func(context.Context, *ToolListChangedRequest)
-	PromptListChangedHandler    func(context.Context, *PromptListChangedRequest)
-	ResourceListChangedHandler  func(context.Context, *ResourceListChangedRequest)
-	ResourceUpdatedHandler      func(context.Context, *ResourceUpdatedNotificationRequest)
+	ToolListChangedHandler     func(context.Context, *ToolListChangedRequest)
+	PromptListChangedHandler   func(context.Context, *PromptListChangedRequest)
+	ResourceListChangedHandler func(context.Context, *ResourceListChangedRequest)
+	ResourceUpdatedHandler     func(context.Context, *ResourceUpdatedNotificationRequest)
+	// LoggingMessageHandler handles incoming notifications/message
+	// notifications from the server.
+	//
+	// Deprecated: the logging feature is deprecated as of protocol version
+	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
+	// window (at least twelve months). See
+	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	LoggingMessageHandler       func(context.Context, *LoggingMessageRequest)
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationClientRequest)
+	// MultiRoundTrip configures the automatic MultiRoundTrip (Multi Round-Trip Requests) middleware.
+	// By default (nil), the middleware is enabled with default settings.
+	// Set Disabled to true to opt out of automatic MultiRoundTrip handling.
+	MultiRoundTrip *MultiRoundTripOptions
 	// If non-zero, defines an interval for regular "ping" requests.
 	// If the peer fails to respond to pings originating from the keepalive check,
 	// the session is automatically closed.
+	// NOTE: The keepalive feature is only available for protocol versions < 2026-07-28
 	KeepAlive time.Duration
+	// KeepAliveFailureThreshold is the number of consecutive keepalive ping
+	// failures tolerated before the session is closed. A value of 0 or 1
+	// closes the session on the first failure (the default). Higher values
+	// align with the spec's "multiple failed pings MAY trigger a connection
+	// reset" guidance, letting a transient miss pass without tearing down an
+	// otherwise live session. Has no effect unless KeepAlive is non-zero.
+	KeepAliveFailureThreshold int
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
@@ -199,11 +245,12 @@ func (e unsupportedProtocolVersionError) Error() string {
 	return fmt.Sprintf("unsupported protocol version: %q", e.version)
 }
 
-// ClientSessionOptions is reserved for future use.
+// ClientSessionOptions configures a client session created by [Client.Connect].
 type ClientSessionOptions struct {
-	// protocolVersion overrides the protocol version sent in the initialize
-	// request, for testing. If empty, latestProtocolVersion is used.
-	protocolVersion string
+	// ProtocolVersion is the protocol version sent in the initialize (or
+	// discover) request. If empty, the latest supported version is used.
+	// The server may negotiate a different mutually supported version.
+	ProtocolVersion string
 }
 
 func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
@@ -265,9 +312,71 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	protocolVersion := latestProtocolVersion
-	if opts != nil && opts.protocolVersion != "" {
-		protocolVersion = opts.protocolVersion
+	if opts != nil && opts.ProtocolVersion != "" {
+		protocolVersion = opts.ProtocolVersion
 	}
+
+	if protocolVersion >= protocolVersion20260728 {
+		// Per SEP-2575, try the stateless server/discover RPC first. If the server
+		// signals it doesn't support it, fall back to the legacy initialize
+		// handshake.
+		discoverCtx := context.WithValue(ctx, protocolVersionContextKey{}, protocolVersion)
+		// We try to discover the server's capabilities. If the server rejects the
+		// requested version but specifies which versions it supports, we negotiate
+		// a mutually supported version and try again.
+		for range 2 {
+			discRes, err := c.discover(discoverCtx, cs)
+			if err == nil {
+				cs.state.InitializeResult = discRes
+				if hc, ok := cs.mcpConn.(clientConnection); ok {
+					hc.sessionUpdated(cs.state)
+				}
+				subscribeParams := &SubscriptionsListenParams{
+					Notifications: &NotificationSubscriptions{},
+				}
+				if c.opts.ToolListChangedHandler != nil {
+					subscribeParams.Notifications.ToolsListChanged = true
+				}
+				if c.opts.PromptListChangedHandler != nil {
+					subscribeParams.Notifications.PromptsListChanged = true
+				}
+				if c.opts.ResourceListChangedHandler != nil {
+					subscribeParams.Notifications.ResourcesListChanged = true
+				}
+				if subscribeParams.Notifications.ToolsListChanged ||
+					subscribeParams.Notifications.PromptsListChanged ||
+					subscribeParams.Notifications.ResourcesListChanged {
+					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
+					listenCtx, cancelListen := context.WithCancel(context.Background())
+					cs.listenCancel = cancelListen
+					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
+						cancelListen()
+						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
+					}
+				}
+				return cs, nil
+			}
+
+			// Try to negotiate a mutually supported version if the server
+			// reports an UnsupportedProtocolVersionError with a supported version.
+			var werr *jsonrpc.Error
+			if errors.As(err, &werr) && werr.Code == CodeUnsupportedProtocolVersion && len(werr.Data) > 0 {
+				var data UnsupportedProtocolVersionData
+				if err := json.Unmarshal(werr.Data, &data); err == nil {
+					if negotiatedVersion := negotiateMutuallySupportedVersion(data.Supported); negotiatedVersion != "" && negotiatedVersion >= protocolVersion20260728 {
+						discoverCtx = context.WithValue(ctx, protocolVersionContextKey{}, negotiatedVersion)
+						continue
+					}
+				}
+			}
+			// Per the spec, fall back to the legacy initialize handshake on any
+			// non-modern error from server/discover.
+			break
+		}
+		// Use the latest legacy protocol version for the fallback initialize.
+		protocolVersion = protocolVersion20251125
+	}
+
 	params := &InitializeParams{
 		ProtocolVersion: protocolVersion,
 		ClientInfo:      c.impl,
@@ -280,6 +389,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		return nil, err
 	}
 	if !slices.Contains(supportedProtocolVersions, res.ProtocolVersion) {
+		_ = cs.Close()
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
 	cs.state.InitializeResult = res
@@ -299,6 +409,54 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	return cs, nil
 }
 
+// discover sends a SEP-2575 server/discover request to probe the server for
+// stateless protocol support.
+func (c *Client) discover(ctx context.Context, cs *ClientSession) (*InitializeResult, error) {
+	protocolVersion := protocolVersionFromContext(ctx)
+	caps := c.capabilities(protocolVersion)
+	params := &DiscoverParams{
+		Meta: Meta{
+			MetaKeyProtocolVersion:    protocolVersion,
+			MetaKeyClientInfo:         c.impl,
+			MetaKeyClientCapabilities: caps.toV2(),
+		},
+	}
+	req := &DiscoverRequest{Session: cs, Params: params}
+	res, err := handleSend[*DiscoverResult](ctx, methodDiscover, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Pick the highest protocol version that both the server and this SDK support.
+	// Since supportedProtocolVersions is defined in descending order (newest to oldest),
+	// the first match we find is the highest supported version.
+	var negotiated string
+	if slices.Contains(res.SupportedVersions, protocolVersion) {
+		negotiated = protocolVersion
+	} else {
+		negotiated = negotiateMutuallySupportedVersion(res.SupportedVersions)
+	}
+	if negotiated == "" || negotiated < protocolVersion20260728 {
+		// If there is no overlap, fall back to initialize so version
+		// negotiation can happen via the legacy path.
+		return nil, &jsonrpc2.WireError{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+		}
+	}
+
+	var serverInfo *Implementation
+	if v, ok := decodeMetaValue[*Implementation](res.GetMeta(), MetaKeyServerInfo); ok {
+		serverInfo = v
+	}
+	return &InitializeResult{
+		Capabilities:    res.Capabilities,
+		Instructions:    res.Instructions,
+		ProtocolVersion: negotiated,
+		ServerInfo:      serverInfo,
+	}, nil
+}
+
 // A ClientSession is a logical connection with an MCP server. Its
 // methods can be used to send requests or notifications to the server. Create
 // a session by calling [Client.Connect].
@@ -315,22 +473,32 @@ type ClientSession struct {
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
+	listenCancel    context.CancelFunc
 	mcpConn         Connection
 
 	// No mutex is (currently) required to guard the session state, because it is
 	// only set synchronously during Client.Connect.
 	state clientSessionState
 
+	// Per-method TTL caches for list results (SEP-2549).
+	toolsCache             methodCache[*ListToolsResult]
+	promptsCache           methodCache[*ListPromptsResult]
+	resourcesCache         methodCache[*ListResourcesResult]
+	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
+	readResourceCache      methodCache[*ReadResourceResult]
+
 	// Pending URL elicitations waiting for completion notifications.
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// toolCacheMu guards toolCache.
-	toolCacheMu sync.RWMutex
-	// toolCache stores tool definitions keyed by name.
-	// It is used to look up x-mcp-header annotations when
-	// constructing Mcp-Param-* headers for tools/call requests.
-	toolCache map[string]*Tool
+	// resourceSubsMu guards resourceSubs.
+	resourceSubsMu sync.Mutex
+	// resourceSubs maps a subscribed resource URI to the cancel func of the
+	// goroutine running its dedicated subscriptions/listen stream. Populated
+	// only under SEP-2575; the legacy protocol routes Subscribe and
+	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
+	// RPCs and leaves this map untouched.
+	resourceSubs map[string]context.CancelFunc
 }
 
 type clientSessionState struct {
@@ -338,6 +506,45 @@ type clientSessionState struct {
 }
 
 func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
+
+// usesNewProtocol reports whether this session has negotiated a protocol
+// version >= 2026-07-28, which requires the SEP-2575 per-request `_meta`
+// triple on every outgoing request.
+func (cs *ClientSession) usesNewProtocol() bool {
+	res := cs.state.InitializeResult
+	return res != nil && res.ProtocolVersion >= protocolVersion20260728
+}
+
+// injectRequestMeta populates the SEP-2575 per-request `_meta` fields
+// (protocolVersion, optional clientInfo, clientCapabilities) on the given
+// outgoing request params. Keys already present in params.Meta are not
+// overwritten. Per PR modelcontextprotocol/modelcontextprotocol#3002
+// clientInfo is SHOULD (not MUST), and is omitted when the client has no
+// [Implementation] configured.
+func injectRequestMeta[T any, P interface {
+	*T
+	Params
+}](cs *ClientSession, params P) P {
+	res := cs.state.InitializeResult
+	if params == nil {
+		params = new(T)
+	}
+	m := params.GetMeta()
+	if m == nil {
+		m = map[string]any{}
+	}
+	if _, ok := m[MetaKeyProtocolVersion]; !ok {
+		m[MetaKeyProtocolVersion] = res.ProtocolVersion
+	}
+	if _, ok := m[MetaKeyClientInfo]; !ok && cs.client.impl != nil {
+		m[MetaKeyClientInfo] = cs.client.impl
+	}
+	if _, ok := m[MetaKeyClientCapabilities]; !ok {
+		m[MetaKeyClientCapabilities] = cs.client.capabilities(res.ProtocolVersion).toV2()
+	}
+	params.SetMeta(m)
+	return params
+}
 
 func (cs *ClientSession) ID() string {
 	if c, ok := cs.mcpConn.(hasSessionID); ok {
@@ -361,6 +568,10 @@ func (cs *ClientSession) Close() error {
 	if cs.keepaliveCancel != nil {
 		cs.keepaliveCancel()
 	}
+	if cs.listenCancel != nil {
+		cs.listenCancel()
+	}
+	cs.cancelAllResourceSubscriptions()
 	err := cs.conn.Close()
 
 	if cs.onClose != nil && cs.calledOnClose.CompareAndSwap(false, true) {
@@ -376,19 +587,22 @@ func (cs *ClientSession) Wait() error {
 	return cs.conn.Wait()
 }
 
-func (cs *ClientSession) cacheTools(tools []*Tool) {
-	cs.toolCacheMu.Lock()
-	defer cs.toolCacheMu.Unlock()
-	cs.toolCache = make(map[string]*Tool, len(tools))
-	for _, tool := range tools {
-		cs.toolCache[tool.Name] = tool
+// lookupTool returns the most recently seen definition of the tool with the
+// given name across all cached ListTools results, or nil if no such tool has
+// been seen. It is used by CallTool to inject the tool definition into the
+// outgoing request context for transport-layer features (e.g. x-mcp-header
+// param annotations).
+func (cs *ClientSession) lookupTool(name string) *Tool {
+	cs.toolsCache.mu.Lock()
+	defer cs.toolsCache.mu.Unlock()
+	for _, entry := range cs.toolsCache.cachedValues {
+		for _, t := range entry.result.Tools {
+			if t.Name == name {
+				return t
+			}
+		}
 	}
-}
-
-func (cs *ClientSession) getCachedTool(name string) *Tool {
-	cs.toolCacheMu.RLock()
-	defer cs.toolCacheMu.RUnlock()
-	return cs.toolCache[name]
+	return nil
 }
 
 // registerElicitationWaiter registers a waiter for an elicitation complete
@@ -433,12 +647,18 @@ func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await 
 
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
-	startKeepalive(cs, interval, &cs.keepaliveCancel, cs.client.opts.Logger)
+	startKeepalive(cs, interval, cs.client.opts.KeepAliveFailureThreshold, &cs.keepaliveCancel, cs.client.opts.Logger)
 }
 
 // AddRoots adds the given roots to the client,
 // replacing any with the same URIs,
 // and notifies any connected servers.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (c *Client) AddRoots(roots ...*Root) {
 	// Only notify if something could change.
 	if len(roots) == 0 {
@@ -451,6 +671,12 @@ func (c *Client) AddRoots(roots ...*Root) {
 // RemoveRoots removes the roots with the given URIs,
 // and notifies any connected servers if the list has changed.
 // It is not an error to remove a nonexistent root.
+//
+// Deprecated: the roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to passing paths via tool parameters,
+// resource URIs, or configuration. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (c *Client) RemoveRoots(uris ...string) {
 	changeAndNotify(c, notificationRootsListChanged, &RootsListChangedParams{},
 		func() bool { return c.roots.remove(uris...) })
@@ -942,10 +1168,13 @@ var clientMethodInfos = map[string]methodInfo{
 	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
 	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
+	notificationSubscriptionsAck:    newClientMethodInfo(clientMethod((*Client).callSubscriptionsAckHandler), notification|missingParamsOK),
 }
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
-	return serverMethodInfos
+	cs.client.mu.Lock()
+	defer cs.client.mu.Unlock()
+	return cs.client.sendMethods
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
@@ -998,23 +1227,50 @@ func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 }
 
 // ListPrompts lists prompts that are currently available on the server.
+//
+// Results may be served from a client-side TTL cache populated by previous
+// calls; see SEP-2549.
 func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsParams) (*ListPromptsResult, error) {
-	return handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.promptsCache, params); ok {
+			return result, nil
+		}
+		params = injectRequestMeta(cs, params)
+	}
+	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.promptsCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
 }
 
 // ListTools lists tools that are currently available on the server.
 func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams) (*ListToolsResult, error) {
+	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.toolsCache, params); ok {
+			return result, nil
+		}
+		params = injectRequestMeta(cs, params)
+	}
 	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
-	cs.cacheTools(result.Tools)
+	if cs.usesNewProtocol() {
+		cs.toolsCache.put(params.Cursor, result)
+	}
 	return result, nil
 }
 
@@ -1029,12 +1285,23 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		// Avoid sending nil over the wire.
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.getCachedTool(params.Name); tool != nil {
+	if tool := cs.lookupTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
+	}
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
 }
 
+// SetLoggingLevel sets the minimum severity level for log messages sent by
+// the server.
+//
+// Deprecated: the logging feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
+// (at least twelve months). Migrate to consuming stderr output (for STDIO
+// servers) or OpenTelemetry. See
+// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
@@ -1042,38 +1309,161 @@ func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLogging
 
 // ListResources lists the resources that are currently available on the server.
 func (cs *ClientSession) ListResources(ctx context.Context, params *ListResourcesParams) (*ListResourcesResult, error) {
-	return handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourcesCache, params); ok {
+			return result, nil
+		}
+		params = injectRequestMeta(cs, params)
+	}
+	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.resourcesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ListResourceTemplates lists the resource templates that are currently available on the server.
 func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *ListResourceTemplatesParams) (*ListResourceTemplatesResult, error) {
-	return handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	if cs.usesNewProtocol() {
+		if result, ok := cachedListResult(&cs.resourceTemplatesCache, params); ok {
+			return result, nil
+		}
+		params = injectRequestMeta(cs, params)
+	}
+	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.resourceTemplatesCache.put(params.Cursor, result)
+	}
+	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	return handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	if cs.usesNewProtocol() {
+		var uri string
+		if params != nil {
+			uri = params.URI
+		}
+		if result, ok := cs.readResourceCache.get(uri); ok {
+			return result, nil
+		}
+		params = injectRequestMeta(cs, params)
+	}
+	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	if err != nil {
+		return nil, err
+	}
+	if cs.usesNewProtocol() {
+		cs.readResourceCache.put(params.URI, result)
+	}
+	return result, nil
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
 	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Subscribe sends a "resources/subscribe" request to the server, asking for
 // notifications when the specified resource changes.
 func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
+	if !cs.usesNewProtocol() {
+		_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
+		return err
+	}
+	if params == nil || params.URI == "" {
+		return fmt.Errorf("Subscribe: missing URI")
+	}
+	uri := params.URI
+
+	var listenCtx context.Context
+	cs.resourceSubsMu.Lock()
+	if _, exists := cs.resourceSubs[uri]; !exists {
+		var cancel context.CancelFunc
+		listenCtx, cancel = context.WithCancel(context.Background())
+		if cs.resourceSubs == nil {
+			cs.resourceSubs = make(map[string]context.CancelFunc)
+		}
+		cs.resourceSubs[uri] = cancel
+	}
+	cs.resourceSubsMu.Unlock()
+	if listenCtx == nil {
+		// Already subscribed to this URI
+		return nil
+	}
+
+	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{
+			ResourceSubscriptions: []string{uri},
+		},
+	})
+}
+
+// Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
+//
+// Under the legacy protocol it sends a "resources/unsubscribe" request.
+//
+// Under SEP-2575 it cancels the background "subscriptions/listen" stream
+// opened by Subscribe for the URI. Unsubscribe is idempotent: calling it for
+// a URI that is not currently subscribed is a no-op.
+func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
+	if !cs.usesNewProtocol() {
+		_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
+		return err
+	}
+	if params == nil || params.URI == "" {
+		return fmt.Errorf("Unsubscribe: missing URI")
+	}
+	cs.resourceSubsMu.Lock()
+	cancel, ok := cs.resourceSubs[params.URI]
+	delete(cs.resourceSubs, params.URI)
+	cs.resourceSubsMu.Unlock()
+	if ok {
+		cancel()
+	}
+	return nil
+}
+
+// cancelAllResourceSubscriptions cancels every active SEP-2575 resource
+// subscription opened via Subscribe. The listen goroutines exit
+// asynchronously as their contexts unwind. Called from Close.
+func (cs *ClientSession) cancelAllResourceSubscriptions() {
+	cs.resourceSubsMu.Lock()
+	subs := cs.resourceSubs
+	cs.resourceSubs = nil
+	cs.resourceSubsMu.Unlock()
+	for _, cancel := range subs {
+		cancel()
+	}
+}
+
+// SubscriptionsListen opens a SEP-2575 "subscriptions/listen" stream.
+//
+// The server's first message on the stream is "notifications/subscriptions/acknowledged";
+// subsequent opted-in notifications (e.g. tools/list_changed) are delivered through the
+// usual handlers registered in [ClientOptions].
+func (cs *ClientSession) subscriptionsListen(ctx context.Context, params *SubscriptionsListenParams) error {
+	params = injectRequestMeta(cs, params)
+	_, err := handleSend[*SubscriptionsListenResult](ctx, methodSubscriptionsListen, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
 
-// Unsubscribe sends a "resources/unsubscribe" request to the server, cancelling
-// a previous subscription.
-func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
-	return err
+func (c *Client) callSubscriptionsAckHandler(context.Context, *ClientRequest[*SubscriptionsAcknowledgedParams]) (Result, error) {
+	return nil, nil
 }
 
 func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.toolsCache.invalidate()
+	}
 	if h := c.opts.ToolListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1081,6 +1471,9 @@ func (c *Client) callToolChangedHandler(ctx context.Context, req *ToolListChange
 }
 
 func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.promptsCache.invalidate()
+	}
 	if h := c.opts.PromptListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1088,6 +1481,10 @@ func (c *Client) callPromptChangedHandler(ctx context.Context, req *PromptListCh
 }
 
 func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceListChangedRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		cs.resourcesCache.invalidate()
+		cs.resourceTemplatesCache.invalidate()
+	}
 	if h := c.opts.ResourceListChangedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1095,6 +1492,9 @@ func (c *Client) callResourceChangedHandler(ctx context.Context, req *ResourceLi
 }
 
 func (c *Client) callResourceUpdatedHandler(ctx context.Context, req *ResourceUpdatedNotificationRequest) (Result, error) {
+	if cs, ok := req.GetSession().(*ClientSession); ok && req.Params != nil {
+		cs.readResourceCache.invalidateKey(req.Params.URI)
+	}
 	if h := c.opts.ResourceUpdatedHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1217,4 +1617,68 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			*params.cursorPtr() = *nextCursorVal
 		}
 	}
+}
+
+// AddSendingCustomMethod registers a custom JSON-RPC method
+// that the client may send to the server.
+//
+// Registration is decoupled from invocation: extensions typically call this
+// during setup, while the actual call site uses [CallCustomMethod].
+//
+//	if err := mcp.AddSendingCustomMethod[*SearchParams, *SearchResult](c, "acme/search"); err != nil {
+//	    return err
+//	}
+//	// ... later, anywhere a *ClientSession is available:
+//	result, err := mcp.CallCustomMethod[*SearchParams, *SearchResult](
+//	    ctx, cs, "acme/search", &SearchParams{Query: "hello"})
+//
+// AddSendingCustomMethod returns an error if method is the name of a standard
+// MCP method. Registering the same method twice replaces the previous
+// registration.
+func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
+	c *Client,
+	method string,
+) error {
+	if _, ok := serverMethodInfos[method]; ok {
+		return fmt.Errorf("mcp: AddSendingCustomMethod: %q shadows a standard MCP method", method)
+	}
+
+	mi := methodInfo{
+		newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		},
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendMethods[method] = mi
+	return nil
+}
+
+// CallCustomMethod sends a custom (non-standard) JSON-RPC method to the
+// server and decodes the response into R.
+//
+// The method must have been registered on the session's client via
+// [AddSendingCustomMethod].
+func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
+	ctx context.Context,
+	cs *ClientSession,
+	method string,
+	params P,
+) (R, error) {
+	c := cs.client
+	c.mu.Lock()
+	_, ok := c.sendMethods[method]
+	c.mu.Unlock()
+	if !ok {
+		var zero R
+		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
+	}
+	if cs.usesNewProtocol() {
+		params = injectRequestMeta(cs, params)
+	}
+	return handleSend[R](ctx, method, &ClientRequest[P]{
+		Session: cs,
+		Params:  params,
+	})
 }

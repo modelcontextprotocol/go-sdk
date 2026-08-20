@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -85,6 +86,29 @@ type Config struct {
 	// ScopesSupported is an optional list of scopes to advertise in the
 	// authorization server metadata.
 	ScopesSupported []string
+	// TokenScopeFunc, if set, is called with the scope from the authorization
+	// request and returns the scope string to include in the token response.
+	TokenScopeFunc func(requestedScope string) string
+	// AccessTokenTTL, if non-zero, is the expires_in (in seconds) returned by the
+	// /token endpoint for both the authorization_code and refresh_token grants.
+	// When zero a default of 3600 is used. Set it small to force a client's reuse
+	// token source to treat the access token as expired and refresh it.
+	AccessTokenTTL int
+	// IssueRefreshToken, if true, includes a refresh_token in token responses and
+	// enables grant_type=refresh_token at the /token endpoint.
+	IssueRefreshToken bool
+}
+
+// testRefreshToken is the refresh token issued and accepted by the fake server
+// when Config.IssueRefreshToken is set.
+const testRefreshToken = "test_refresh_token"
+
+// accessTokenExpiresIn returns the expires_in value to use in token responses.
+func (s *FakeAuthorizationServer) accessTokenExpiresIn() int {
+	if s.config.AccessTokenTTL != 0 {
+		return s.config.AccessTokenTTL
+	}
+	return 3600
 }
 
 // FakeAuthorizationServer is a fake OAuth 2.0 Authorization Server for testing.
@@ -98,6 +122,7 @@ type FakeAuthorizationServer struct {
 
 type codeInfo struct {
 	CodeChallenge string
+	Scope         string
 }
 
 // NewFakeAuthorizationServer creates a new FakeAuthorizationServer.
@@ -174,6 +199,8 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "client_secret_basic"},
+		// Advertise RFC 9207 support: the authorize endpoint includes "iss" in responses.
+		AuthorizationResponseIssParameterSupported: true,
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -259,11 +286,13 @@ func (s *FakeAuthorizationServer) handleAuthorize(w http.ResponseWriter, r *http
 	code := rand.Text()
 	s.codes[code] = codeInfo{
 		CodeChallenge: codeChallenge,
+		Scope:         r.URL.Query().Get("scope"),
 	}
 
 	state := r.URL.Query().Get("state")
+	issuer := s.URL() + s.config.IssuerPath
 
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, code, state)
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s&iss=%s", redirectURI, code, state, url.QueryEscape(issuer))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -289,6 +318,8 @@ func (s *FakeAuthorizationServer) handleToken(w http.ResponseWriter, r *http.Req
 		s.handleJWTBearerGrant(w, r)
 	case "client_credentials":
 		s.handleClientCredentialsGrant(w, r)
+	case "refresh_token":
+		s.handleRefreshTokenGrant(w, r)
 	default:
 		http.Error(w, fmt.Sprintf("unsupported grant_type: %s", grantType), http.StatusBadRequest)
 	}
@@ -317,11 +348,41 @@ func (s *FakeAuthorizationServer) handleAuthorizationCodeGrant(w http.ResponseWr
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
-		"expires_in":   3600,
+		"expires_in":   s.accessTokenExpiresIn(),
+	}
+	if s.config.IssueRefreshToken {
+		resp["refresh_token"] = testRefreshToken
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(codeInfo.Scope); scope != "" {
+			resp["scope"] = scope
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleRefreshTokenGrant implements grant_type=refresh_token (RFC 6749 Section
+// 6) when Config.IssueRefreshToken is set, returning a distinct access token so
+// callers can observe that a refresh occurred.
+func (s *FakeAuthorizationServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	if !s.config.IssueRefreshToken {
+		http.Error(w, "refresh_token grant not supported", http.StatusBadRequest)
+		return
+	}
+	if r.Form.Get("refresh_token") != testRefreshToken {
+		http.Error(w, "invalid refresh_token", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"access_token":  "test_access_token_refreshed",
+		"token_type":    "Bearer",
+		"expires_in":    s.accessTokenExpiresIn(),
+		"refresh_token": testRefreshToken,
 	})
 }
 
@@ -355,13 +416,18 @@ func (s *FakeAuthorizationServer) handleClientCredentialsGrant(w http.ResponseWr
 		http.Error(w, "client_credentials grant not supported", http.StatusBadRequest)
 		return
 	}
-	// Client was already authenticated in handleToken.
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
 		"expires_in":   3600,
-	})
+	}
+	if s.config.TokenScopeFunc != nil {
+		if scope := s.config.TokenScopeFunc(r.Form.Get("scope")); scope != "" {
+			resp["scope"] = scope
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *FakeAuthorizationServer) authenticateClient(r *http.Request) error {

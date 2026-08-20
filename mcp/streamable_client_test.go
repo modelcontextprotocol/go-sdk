@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -102,6 +103,23 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 
 	resp, ok := s.responses[key]
 	if !ok {
+		if key.jsonrpcMethod == "server/discover" {
+			// Return MethodNotFound to trigger fallback to legacy initialize.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			respErr := &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: `method not found: "server/discover"`,
+			}
+			var id jsonrpc.ID
+			if jsonrpcReq != nil {
+				id = jsonrpcReq.ID
+			}
+			respMsg, _ := jsonrpc2.NewResponse(id, nil, respErr)
+			data, _ := jsonrpc2.EncodeMessage(respMsg)
+			w.Write(data)
+			return
+		}
 		s.t.Errorf("missing response for %v", key)
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return
@@ -142,7 +160,8 @@ var (
 			Logging:     &LoggingCapabilities{},
 			Tools:       &ToolCapabilities{ListChanged: true},
 		},
-		ProtocolVersion: latestProtocolVersion,
+		// Pin negotiated version to 2025-11-25
+		ProtocolVersion: protocolVersion20251125,
 		ServerInfo:      &Implementation{Name: "testServer", Version: "v1.0.0"},
 	}
 	initResp = resp(1, initResult, nil)
@@ -175,13 +194,13 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 			},
 			{"POST", "123", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
-				wantProtocolVersion: latestProtocolVersion,
+				wantProtocolVersion: protocolVersion20251125,
 			},
 			{"GET", "123", "", ""}: {
 				header: header{
 					"Content-Type": "text/event-stream",
 				},
-				wantProtocolVersion: latestProtocolVersion,
+				wantProtocolVersion: protocolVersion20251125,
 			},
 			{"DELETE", "123", "", ""}: {},
 		},
@@ -192,7 +211,10 @@ func TestStreamableClientTransportLifecycle(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	// Pin to 2025-11-25: the fixture's canned initialize response uses
+	// hardcoded id=1, which only matches when initialize is the first
+	// request. Under 2026-07-28 the client probes server/discover first.
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -226,7 +248,7 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 			},
 			{"POST", "123", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
-				wantProtocolVersion: latestProtocolVersion,
+				wantProtocolVersion: protocolVersion20251125,
 			},
 			{"GET", "123", "", ""}: {
 				status: http.StatusMethodNotAllowed,
@@ -242,7 +264,10 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	// Pin to 2025-11-25: the fixture's canned initialize response uses
+	// hardcoded id=1, which only matches when initialize is the first
+	// request. Under 2026-07-28 the client probes server/discover first.
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -289,14 +314,14 @@ func TestStreamableClientGETHandling(t *testing.T) {
 					},
 					{"POST", "123", notificationInitialized, ""}: {
 						status:              http.StatusAccepted,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
 							"Content-Type": test.contentType,
 						},
 						status:              test.status,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"DELETE", "123", "", ""}: {optional: true},
 				},
@@ -306,7 +331,9 @@ func TestStreamableClientGETHandling(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{
+				ProtocolVersion: protocolVersion20251125,
+			})
 			if err == nil {
 				defer session.Close()
 			}
@@ -358,14 +385,14 @@ func TestStreamableClientStrictness(t *testing.T) {
 					},
 					{"POST", "123", notificationInitialized, ""}: {
 						status:              test.initializedStatus,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
 							"Content-Type": "text/event-stream",
 						},
 						status:              test.getStatus,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"POST", "123", methodListTools, ""}: {
 						header: header{
@@ -383,7 +410,11 @@ func TestStreamableClientStrictness(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL, strict: test.strict}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			// Pin to 2025-11-25: the fixture's canned initialize response
+			// uses hardcoded id=1, which only matches when initialize is
+			// the first request. Under 2026-07-28 the client probes
+			// server/discover first.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if (err != nil) != test.wantConnectError {
 				t.Errorf("client.Connect() returned error %v; want error: %t", err, test.wantConnectError)
 			}
@@ -423,7 +454,7 @@ func TestStreamableClientUnresumableRequest(t *testing.T) {
 
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 	client := NewClient(testImpl, nil)
-	cs, err := client.Connect(ctx, transport, nil)
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err == nil {
 		cs.Close()
 		t.Fatalf("Connect succeeded unexpectedly")
@@ -497,7 +528,7 @@ func TestStreamableClientResumption_Cancelled(t *testing.T) {
 					},
 					{"POST", "123", notificationInitialized, ""}: {
 						status:              http.StatusAccepted,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"GET", "123", "", ""}: {
 						header: header{
@@ -540,7 +571,11 @@ data: { "jsonrpc": "2.0", "method": "notifications/message", "params": { "level"
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
-			cs, err := client.Connect(ctx, transport, nil)
+			// Pin to 2025-11-25: the fixture's canned initialize response
+			// uses hardcoded id=1, which only matches when initialize is
+			// the first request. Under 2026-07-28 the client probes
+			// server/discover first.
+			cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -640,7 +675,7 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 					},
 					{"POST", "123", notificationInitialized, ""}: {
 						status:              http.StatusAccepted,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					{"GET", "123", "", ""}: {
 						status: http.StatusMethodNotAllowed,
@@ -668,7 +703,11 @@ func TestStreamableClientTransientErrors(t *testing.T) {
 
 			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			// Pin to 2025-11-25: the fixture's canned initialize response
+			// uses hardcoded id=1, which only matches when initialize is
+			// the first request. Under 2026-07-28 the client probes
+			// server/discover first.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("Connect failed: %v", err)
 			}
@@ -729,7 +768,7 @@ func TestStreamableClientRetryWithoutProgress(t *testing.T) {
 			},
 			{"POST", "test-session", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
-				wantProtocolVersion: latestProtocolVersion,
+				wantProtocolVersion: protocolVersion20251125,
 			},
 			{"GET", "test-session", "", ""}: {
 				// Disable standalone SSE stream to simplify the test.
@@ -771,7 +810,10 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 		MaxRetries: maxRetries,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	// Pin to 2025-11-25: the fixture's canned initialize response uses
+	// hardcoded id=1, which only matches when initialize is the first
+	// request. Under 2026-07-28 the client probes server/discover first.
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -832,13 +874,13 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 					},
 					{"POST", "123", notificationInitialized, ""}: {
 						status:              http.StatusAccepted,
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 					},
 					getRequestKey: {
 						header: header{
 							"Content-Type": "text/event-stream",
 						},
-						wantProtocolVersion: latestProtocolVersion,
+						wantProtocolVersion: protocolVersion20251125,
 						optional:            !test.expectGETRequest,
 					},
 					{"DELETE", "123", "", ""}: {
@@ -855,7 +897,11 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 				DisableStandaloneSSE: test.disableStandaloneSSE,
 			}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, nil)
+			// Pin to 2025-11-25: the fixture's canned initialize response
+			// uses hardcoded id=1, which only matches when initialize is
+			// the first request. Under 2026-07-28 the client probes
+			// server/discover first.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -949,7 +995,7 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 			},
 			{"POST", "123", notificationInitialized, ""}: {
 				status:              http.StatusAccepted,
-				wantProtocolVersion: latestProtocolVersion,
+				wantProtocolVersion: protocolVersion20251125,
 			},
 			{"GET", "123", "", ""}: {
 				header: header{
@@ -973,7 +1019,10 @@ func TestStreamableClientOAuth_AuthorizationHeader(t *testing.T) {
 		OAuthHandler: oauthHandler,
 	}
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	// Pin to 2025-11-25: the fixture's canned initialize response uses
+	// hardcoded id=1, which only matches when initialize is the first
+	// request. Under 2026-07-28 the client probes server/discover first.
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -1210,5 +1259,667 @@ func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
 	// Expect the connection to fail with the sentinel error, not the RetrieveError.
 	if !errors.Is(err, errTestAuthorizeFailed) {
 		t.Fatalf("client.Connect() error = %v, want %v", err, errTestAuthorizeFailed)
+	}
+}
+
+// discoverResult is the canned successful DiscoverResult returned by
+// fakeStreamableServer setups in the tests below.
+var discoverResult = &DiscoverResult{
+	Meta: Meta{
+		MetaKeyServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
+	},
+	SupportedVersions: []string{protocolVersion20260728},
+	Capabilities: &ServerCapabilities{
+		Tools: &ToolCapabilities{ListChanged: true},
+	},
+	Instructions: "test discover",
+}
+
+// TestStreamableClientConnect_DiscoverSuccess verifies that Client.Connect on
+// the streamable transport:
+//   - sends a POST server/discover with Mcp-Protocol-Version: 2026-07-28 and
+//     the SEP-2575 per-request _meta triple in the body,
+//   - on a successful DiscoverResult, skips the legacy initialize handshake
+//     entirely, and
+//   - seeds ClientSession.InitializeResult() from the discover response,
+//     picking a mutually-supported protocol version.
+func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
+	ctx := context.Background()
+
+	var (
+		gotDiscoverMu sync.Mutex
+		gotDiscover   *jsonrpc.Request
+	)
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "sess-1",
+				},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					gotDiscoverMu.Lock()
+					gotDiscover = r
+					gotDiscoverMu.Unlock()
+					return jsonBody(t, resp(1, discoverResult, nil)), http.StatusOK
+				},
+			},
+			{"DELETE", "sess-1", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	if missing := fake.missingRequests(); len(missing) > 0 {
+		t.Errorf("missing expected requests: %v", missing)
+	}
+
+	gotDiscoverMu.Lock()
+	defer gotDiscoverMu.Unlock()
+	if gotDiscover == nil {
+		t.Fatal("server did not receive server/discover")
+	}
+
+	// Inspect the discover request body for the SEP-2575 _meta triple.
+	var body struct {
+		Meta map[string]any `json:"_meta"`
+	}
+	if err := json.Unmarshal(gotDiscover.Params, &body); err != nil {
+		t.Fatalf("decoding discover params: %v", err)
+	}
+	if v, _ := body.Meta[MetaKeyProtocolVersion].(string); v != protocolVersion20260728 {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, protocolVersion20260728)
+	}
+	if _, ok := body.Meta[MetaKeyClientInfo]; !ok {
+		t.Errorf("_meta[%s] missing", MetaKeyClientInfo)
+	}
+	if _, ok := body.Meta[MetaKeyClientCapabilities]; !ok {
+		t.Errorf("_meta[%s] missing", MetaKeyClientCapabilities)
+	}
+
+	ir := session.InitializeResult()
+	if ir == nil {
+		t.Fatal("InitializeResult is nil after Connect")
+	}
+	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+	if ir.ServerInfo == nil || ir.ServerInfo.Name != "discoverServer" {
+		t.Errorf("InitializeResult.ServerInfo = %+v, want Name=discoverServer", ir.ServerInfo)
+	}
+	if ir.Instructions != "test discover" {
+		t.Errorf("InitializeResult.Instructions = %q, want %q", ir.Instructions, "test discover")
+	}
+}
+
+// TestStreamableClientConnSetMCPHeaders_ProtocolVersion covers
+// streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
+// header value.
+//
+// Ordinarily initializedResult is populated by sessionUpdated, called
+// through a type assertion to the unexported clientConnection interface
+// (see Client.Connect). That assertion silently fails, leaving
+// initializedResult nil for the life of the session, whenever the
+// Connection returned by a Transport is wrapped by another type exposing
+// only the exported Connection interface (a real pattern for transports
+// that intercept traffic, e.g. to filter notifications): Go does not
+// promote unexported interface methods across an embedded interface
+// boundary. Every SEP-2575 (>= 2026-07-28) request already carries its own
+// `_meta.protocolVersion` field, so setMCPHeaders falls back to reading it
+// from the outgoing message when initializedResult is unset.
+func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name              string
+		initializedResult *InitializeResult
+		msg               jsonrpc.Message
+		ctxVersion        string
+		want              string
+	}{
+		{
+			name:              "nil checked",
+			initializedResult: nil,
+			msg:               (*jsonrpc.Request)(nil),
+			want:              "",
+		},
+		{
+			name:              "message meta wins when initializedResult unset",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20260728}}),
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "initializedResult used when message has no meta",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "initializedResult used for nil message (GET/DELETE)",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               nil,
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "message meta preferred over stale initializedResult",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20260728}}),
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "no header when neither source is set",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			want:              "",
+		},
+		{
+			// A process that is both a server and a client (a proxy) carries the
+			// inbound request's version on the context of the outgoing call. The
+			// version this connection negotiated must win over it.
+			name:              "initializedResult preferred over request context",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "request context used when initializedResult unset",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "message meta preferred over request context",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20251125}}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := &streamableClientConn{initializedResult: tt.initializedResult}
+			httpReq, err := http.NewRequest(http.MethodPost, "http://test.invalid", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.ctxVersion != "" {
+				httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), protocolVersionContextKey{}, tt.ctxVersion))
+			}
+			if err := conn.setMCPHeaders(httpReq, tt.msg); err != nil {
+				t.Fatalf("setMCPHeaders: %v", err)
+			}
+			if got := httpReq.Header.Get(protocolVersionHeader); got != tt.want {
+				t.Errorf("Mcp-Protocol-Version header = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStreamableClientConnect_DiscoverMethodNotFound verifies that Client.Connect
+// falls back to the legacy initialize handshake when the server responds to
+// server/discover with a JSON-RPC "Method not found" error.
+func TestStreamableClientConnect_DiscoverMethodNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	// Each request gets a fresh jsonrpc2 ID from the same client connection.
+	// Use responseFunc to echo the request's ID back so the client matches
+	// the response to the in-flight call regardless of ordering.
+	echoErr := func(err error) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Error: err.(*jsonrpc.Error)}), http.StatusOK
+		}
+	}
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: echoErr(&jsonrpc.Error{
+					Code:    jsonrpc.CodeMethodNotFound,
+					Message: "method not found",
+				}),
+			},
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "fallback",
+				},
+				responseFunc: echoResult(initResult),
+			},
+			{"POST", "fallback", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"GET", "fallback", "", ""}: {
+				header:              header{"Content-Type": "text/event-stream"},
+				wantProtocolVersion: protocolVersion20251125,
+				optional:            true,
+			},
+			{"DELETE", "fallback", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, protocolVersion20251125)
+	}
+}
+
+// TestStreamableClientConnect_DiscoverUnsupportedVersion verifies that
+// Client.Connect falls back to the legacy initialize handshake when the
+// server responds to server/discover with the SEP-2575
+// UnsupportedProtocolVersionError JSON-RPC code.
+func TestStreamableClientConnect_DiscoverUnsupportedVersion(t *testing.T) {
+	ctx := context.Background()
+
+	echoErr := func(err error) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Error: err.(*jsonrpc.Error)}), http.StatusOK
+		}
+	}
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: echoErr(&jsonrpc.Error{
+					Code:    CodeUnsupportedProtocolVersion,
+					Message: "unsupported protocol version",
+				}),
+			},
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "fallback",
+				},
+				responseFunc: echoResult(initResult),
+			},
+			{"POST", "fallback", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"GET", "fallback", "", ""}: {
+				header:              header{"Content-Type": "text/event-stream"},
+				wantProtocolVersion: protocolVersion20251125,
+				optional:            true,
+			},
+			{"DELETE", "fallback", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, protocolVersion20251125)
+	}
+}
+
+// TestStreamableClientConnect_DiscoverMethodNotFoundVPre verifies that
+// Client.Connect falls back to the legacy initialize handshake when a
+// pre-SEP-2575 (vPre) server rejects server/discover.
+func TestStreamableClientConnect_DiscoverMethodNotFoundVPre(t *testing.T) {
+	ctx := context.Background()
+
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				wantProtocolVersion: protocolVersion20260728,
+				// Reproduce the exact body a vPre server produces via
+				// http.Error(w, err.Error(), 400) where err comes from
+				// checkRequest. http.Error appends a trailing newline.
+				body:   "JSON RPC not handled: \"server/discover\" unsupported\n",
+				status: http.StatusBadRequest,
+				header: header{"Content-Type": "text/plain; charset=utf-8"},
+			},
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "fallback",
+				},
+				responseFunc: echoResult(initResult),
+			},
+			{"POST", "fallback", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"DELETE", "fallback", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:             httpServer.URL,
+		DisableStandaloneSSE: true,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, protocolVersion20251125)
+	}
+}
+
+// TestStreamableClientConnect_DiscoverUnsupportedProtocolVersion verifies that
+// Client.Connect falls back to the legacy initialize handshake when a
+// server rejects server/discover with a plain HTTP 400 containing "Unsupported protocol version".
+func TestStreamableClientConnect_DiscoverUnsupportedVersionVPre(t *testing.T) {
+	ctx := context.Background()
+
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				wantProtocolVersion: protocolVersion20260728,
+				body:                "Bad Request: Unsupported protocol version\n",
+				status:              http.StatusBadRequest,
+				header:              header{"Content-Type": "text/plain; charset=utf-8"},
+			},
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "fallback",
+				},
+				responseFunc: echoResult(initResult),
+			},
+			{"POST", "fallback", notificationInitialized, ""}: {
+				status:              http.StatusAccepted,
+				wantProtocolVersion: protocolVersion20251125,
+			},
+			{"DELETE", "fallback", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{
+		Endpoint:             httpServer.URL,
+		DisableStandaloneSSE: true,
+	}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The fallback initialize explicitly requests protocolVersion20251125
+	// (see client.go), so the server negotiates that version.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q (initialize fallback)", got, protocolVersion20251125)
+	}
+}
+
+// TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation verifies that
+// when Client.Connect over a streamable transport receives an
+// UnsupportedProtocolVersion error containing Data.Supported, it negotiates a
+// mutually supported version and retries server/discover.
+func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testing.T) {
+	ctx := context.Background()
+
+	const unsupportedClientVersion = "2099-12-31"
+
+	var discoverCalls atomic.Int32
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type": "application/json",
+				},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					n := discoverCalls.Add(1)
+					if n == 1 {
+						data, _ := json.Marshal(UnsupportedProtocolVersionData{
+							Supported: []string{protocolVersion20260728},
+						})
+						respMsg := &jsonrpc.Response{
+							ID: r.ID,
+							Error: &jsonrpc.Error{
+								Code:    CodeUnsupportedProtocolVersion,
+								Message: "unsupported protocol version",
+								Data:    data,
+							},
+						}
+						return jsonBody(t, respMsg), http.StatusOK
+					}
+					return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(discoverResult)}), http.StatusOK
+				},
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: unsupportedClientVersion})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	if got, want := discoverCalls.Load(), int32(2); got != want {
+		t.Errorf("discover call count = %d, want %d", got, want)
+	}
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20260728 {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+}
+
+// TestStreamableClientHandlerErrorPropagation verifies that per-call
+// handler-level HTTP errors carrying a JSON-RPC error body do not tear down
+// the session, and that setting MCPGODEBUG=noprotocolerrorbody=1 restores the
+// pre-fix behavior in which non-transient errors permanently failed the
+// connection.
+func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
+	ctx := context.Background()
+
+	// Build a JSON-RPC error response body for a given tools/call request.
+	jsonRPCErrorBody := func(id int64, code int64, msg string) string {
+		return jsonBody(t, resp(id, nil, &jsonrpc.Error{Code: code, Message: msg}))
+	}
+
+	tests := []struct {
+		name              string
+		callStatus        int    // HTTP status returned for the tools/call
+		callBody          string // response body for the tools/call ("" for empty; may be a JSON-RPC error)
+		disableBodyDecode bool   // if true, sets noprotocolerrorbody="1" for the duration of the test
+		wantErrRejected   bool   // whether the returned error should match errors.Is(err, jsonrpc2.ErrRejected)
+		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
+	}{
+		{
+			// SEP-2575 §"Missing Required Capabilities": server returns
+			// -32021 at HTTP 400. Session must survive.
+			name:             "400 with JSON-RPC error body (default)",
+			callStatus:       http.StatusBadRequest,
+			callBody:         jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			// Same server response, but the user opted out via
+			// MCPGODEBUG=noprotocolerrorbody=1. Pre-fix behavior: the
+			// session is torn down.
+			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1)",
+			callStatus:        http.StatusBadRequest,
+			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
+			disableBodyDecode: true,
+			wantErrRejected:   false,
+			wantSessionAlive:  false,
+		},
+		{
+			// Legacy server returns plain-text 400 with no JSON-RPC
+			// body: cannot be classified as a per-call rejection, so the
+			// session is still torn down.
+			name:             "400 with plain-text body",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
+			// SEP-2575: server returns -32601 for an unimplemented
+			// method at HTTP 404. Must be treated as a per-call
+			// rejection, not a terminated session.
+			name:             "404 with JSON-RPC MethodNotFound body",
+			callStatus:       http.StatusNotFound,
+			callBody:         jsonRPCErrorBody(1, jsonrpc.CodeMethodNotFound, `method not found: "tools/call"`),
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			// A bare 404 with no JSON-RPC body means the session has
+			// been terminated. Session must not survive.
+			name:             "404 with empty body (terminated session)",
+			callStatus:       http.StatusNotFound,
+			callBody:         "",
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.disableBodyDecode {
+				prev := noprotocolerrorbody
+				noprotocolerrorbody = "1"
+				t.Cleanup(func() { noprotocolerrorbody = prev })
+			}
+
+			// Track how many tools/call requests we've served: first
+			// returns the error under test, subsequent calls succeed so
+			// we can observe whether the session is still alive.
+			var callsServed atomic.Int32
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodDiscover, ""}: {
+						header: header{
+							"Content-Type": "application/json",
+						},
+						wantProtocolVersion: protocolVersion20260728,
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return jsonBody(t, resp(r.ID.Raw().(int64), discoverResult, nil)), http.StatusOK
+						},
+					},
+					{"POST", "", "tools/call", ""}: {
+						header: header{"Content-Type": "application/json"},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							if callsServed.Add(1) == 1 {
+								return test.callBody, test.callStatus
+							}
+							return jsonBody(t, resp(r.ID.Raw().(int64), &CallToolResult{}, nil)), 0
+						},
+						optional: true,
+					},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			defer session.Close()
+
+			// First call: triggers the error under test.
+			_, err = session.CallTool(ctx, &CallToolParams{Name: "nonexistent"})
+			if err == nil {
+				t.Fatal("first CallTool succeeded unexpectedly, want error")
+			}
+			if got := errors.Is(err, jsonrpc2.ErrRejected); got != test.wantErrRejected {
+				t.Errorf("errors.Is(err, ErrRejected) = %v, want %v (err = %v)", got, test.wantErrRejected, err)
+			}
+
+			// Second call: verifies whether the session survived.
+			_, err = session.CallTool(ctx, &CallToolParams{Name: "nonexistent"})
+			if test.wantSessionAlive {
+				if err != nil {
+					t.Errorf("second CallTool failed: %v (session should survive per-call rejection)", err)
+				}
+			} else {
+				if err == nil {
+					t.Error("second CallTool succeeded unexpectedly, want session torn down")
+				}
+			}
+		})
 	}
 }

@@ -2,6 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//lint:file-ignore SA1019 examples exercise deprecated SEP-2577 logging APIs for demonstration.
+
 package mcp_test
 
 import (
@@ -11,6 +13,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -218,3 +221,89 @@ func Example_resources() {
 }
 
 // !-resources
+
+// !+mrtr
+
+// Example_mrtr demonstrates the [Multi Round-Trip Requests] pattern
+// (SEP-2322). A tool handler signals "I need more information from the user"
+// by returning a [mcp.CallToolResult] whose `InputRequests` field carries the
+// requests for the additional information. Each request can be an
+// [mcp.ElicitParams] (ask the user a question),
+// [mcp.CreateMessageParams] (sample from the client's LLM), or
+// [mcp.ListRootsParams] (list the client's roots).
+//
+// On protocol version `2026-07-28` and later, the client's
+// `clientMultiRoundTripMiddleware` fulfils each input request from the
+// configured handler and retries the original call transparently. On earlier
+// protocol versions, the server's `serverMultiRoundTripMiddleware` performs
+// the equivalent dance from the server side by calling the legacy
+// server-to-client API (`ServerSession.Elicit`, `CreateMessage`, or
+// `ListRoots`) and re-invoking the handler with the response. Either way,
+// the user-facing client call site sees only the final result.
+//
+// [Multi Round-Trip Requests]: https://modelcontextprotocol.io/specification/draft/basic/patterns#multi-round-trip-requests
+func Example_mrtr() {
+	ctx := context.Background()
+
+	// Server: a "greet" tool that asks the user for their name before
+	// returning a greeting. The handler runs twice per logical call:
+	// once to issue the elicitation, once to consume the response.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "greet"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			// First call: ask the user for their name. The map key
+			// ("user_name") is a label the handler chooses; the client must
+			// echo it back in InputResponses. The wire-level method name
+			// ("elicitation/create") is derived from the value's Go type.
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{
+					"user_name": &mcp.ElicitParams{
+						Message: "What's your name?",
+						RequestedSchema: &jsonschema.Schema{
+							Type: "object",
+							Properties: map[string]*jsonschema.Schema{
+								"name": {Type: "string"},
+							},
+						},
+					},
+				},
+				// RequestState is an opaque token the client echoes back on
+				// the retry, letting the handler resume its work without
+				// per-session storage.
+				RequestState: "step=1",
+			}, nil, nil
+		}
+		// Retry: read the elicitation response and produce the final greeting.
+		name := req.Params.InputResponses["user_name"].(*mcp.ElicitResult).Content["name"].(string)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Hello " + name}},
+		}, nil, nil
+	})
+
+	// Client: declares an elicitation handler. The SDK's MRTR middleware
+	// uses it to fulfil any input request the tool handler returns.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"name": "MCP Go"}}, nil
+		},
+	})
+
+	ct, st := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, st, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Single call site. The MRTR round trip is invisible to the caller.
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "greet"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
+}
+
+// !-mrtr
