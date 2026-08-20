@@ -2446,10 +2446,10 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 	}
 	if pv := protocolVersionFromMessage(msg); pv != "" {
 		req.Header.Set(protocolVersionHeader, pv)
-	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
-		req.Header.Set(protocolVersionHeader, pv)
 	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
