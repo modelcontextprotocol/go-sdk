@@ -423,9 +423,9 @@ if req.ClientCapabilities().HasExtension("io.example/my-extension") {
 
 #### Tasks
 
-[SEP-2663](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2663)
+[SEP-2663](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2663-tasks-extension.md)
 moved tasks out of the core protocol and into the
-[tasks extension](https://github.com/modelcontextprotocol/ext-tasks),
+[tasks extension](https://github.com/modelcontextprotocol/ext-tasks/blob/main/specification/draft/tasks.md),
 identified by the `mcp.ExtensionTasks` constant. A server that has negotiated
 it may answer a request with a durable task handle instead of the result that
 was asked for, which the client then polls to completion.

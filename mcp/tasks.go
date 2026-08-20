@@ -13,7 +13,7 @@ import "fmt"
 // extension by default: declaring it obliges a client to poll a task handle to
 // completion, and a server to serve the tasks/* methods.
 //
-// See https://github.com/modelcontextprotocol/ext-tasks.
+// See https://github.com/modelcontextprotocol/ext-tasks/blob/main/specification/draft/tasks.md.
 const ExtensionTasks = "io.modelcontextprotocol/tasks"
 
 // UnsupportedTaskResultError reports that a peer answered a request with a task
