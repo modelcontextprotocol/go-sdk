@@ -123,10 +123,14 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		return nil, jsonrpc2.ErrNotHandled
 	}
 	params := req.GetParams()
-	if cs, ok := req.GetSession().(*ClientSession); ok && cs.usesNewProtocol() {
-		if params != nil && !clientMethodUsesLegacyCompatPath(method) {
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		if cs.usesNewProtocol() && params != nil && !clientMethodUsesLegacyCompatPath(method) {
 			params = cloneParams(params)
 			params = injectRequestMetaParams(cs, params)
+		} else if params != nil && params.isNil() {
+			// Keep nil optional params omitted from the wire for legacy and
+			// compatibility methods; a typed nil otherwise marshals as JSON null.
+			params = nil
 		}
 	}
 	if initParams, ok := params.(*InitializeParams); ok {

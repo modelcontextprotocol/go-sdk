@@ -3572,8 +3572,9 @@ func TestCallCustomMethodInjectsMetaOnNewProtocol(t *testing.T) {
 
 // TestCallCustomMethodTypedNilParams exercises the typed-nil params path.
 // User param types embed ParamsBase, so the inherited isNil forwarder would
-// dereference a typed-nil outer if injectRequestMeta were called with it.
-// CallCustomMethod must allocate a fresh value before the meta-injection step.
+// dereference a typed-nil outer if the default sending handler inspected it
+// without first cloning it. The handler must allocate a fresh value before
+// the meta-injection step.
 func TestCallCustomMethodTypedNilParams(t *testing.T) {
 	type pingParams struct{ ParamsBase }
 	type pingResult struct{ ResultBase }
