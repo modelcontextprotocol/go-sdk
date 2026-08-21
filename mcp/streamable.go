@@ -2445,7 +2445,13 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 					return err
 				}
 			} else if token != nil {
-				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+				if p, ok := c.oauthHandler.(auth.RequestPreparer); ok {
+					if err := p.PrepareRequest(c.ctx, req, token); err != nil {
+						return err
+					}
+				} else {
+					req.Header.Set("Authorization", token.Type()+" "+token.AccessToken)
+				}
 			}
 		}
 	}
