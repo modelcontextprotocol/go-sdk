@@ -114,7 +114,7 @@ func TestElicitationURLMode(t *testing.T) {
 				},
 				ElicitationHandler: tc.handler,
 			})
-			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -172,7 +172,7 @@ func TestElicitationCompleteNotification(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer ss.Close()
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -255,7 +255,7 @@ func TestElicitationNoValidationWithoutAccept(t *testing.T) {
 					return &ElicitResult{Action: tc.action, Content: tc.content}, nil
 				},
 			})
-			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}

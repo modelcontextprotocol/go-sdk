@@ -38,7 +38,7 @@ method. To receive notifications about root changes, set
 [`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler).
 For protocol versions `2026-07-28` and later, `ListRoots` requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 ```go
@@ -113,7 +113,7 @@ This function is invoked whenever the server requests sampling.
 
 For protocol versions `2026-07-28` and later, sampling requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 ```go
@@ -183,7 +183,7 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 
 For protocol versions `2026-07-28` and later, elicitation requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 ```go
@@ -257,14 +257,18 @@ default. The middleware:
 
 The middleware is enabled by default. To opt out, set
 [`ClientOptions.MultiRoundTrip.Disabled = true`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MultiRoundTripOptions);
-the client will then surface `InputRequiredResult` values directly to the
-caller and your code must fulfil the requests manually.
+the client will then surface input-required results directly to the caller
+(the returned `CallToolResult`, `GetPromptResult`, or `ReadResourceResult`
+will report `NeedsInput() == true` and expose the server's `InputRequests`
+and opaque `RequestState`). Your code must fulfil each request and re-issue
+the original call with `InputResponses` set and `RequestState` echoed
+back.
 
 For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
 requests on the legacy server-initiated channel; the MRTR machinery is a
 no-op in that direction. For legacy clients talking to MRTR-style servers,
 the server SDK applies the inverse compatibility shim — see the
-[server-side documentation](server.md#multi-round-trip-requests-mrtr).
+[server-side documentation](server.md#multi-round-trip-requests).
 
 ## Capabilities
 

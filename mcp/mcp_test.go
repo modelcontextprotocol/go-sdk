@@ -174,7 +174,7 @@ func TestEndToEnd(t *testing.T) {
 		//
 		// Pin the session to 2025-11-25 so the legacy
 		// semantics apply.
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -764,7 +764,7 @@ func TestMiddleware(t *testing.T) {
 	// Pin to 2025-11-25 because the test's expected wire sequence asserts
 	// the legacy initialize / notifications/initialized handshake, which
 	// 2026-07-28 replaces with server/discover.
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -854,7 +854,7 @@ func TestNoJSONNull(t *testing.T) {
 	}
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestElicitationUnsupportedMethod(t *testing.T) {
 			return &CreateMessageResult{Model: "aModel", Content: &TextContent{}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "value"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1558,7 +1558,7 @@ func TestElicitContentValidation(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"test": "potato"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1641,7 +1641,7 @@ func TestElicitationProgressToken(t *testing.T) {
 			return &ElicitResult{Action: "accept"}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1720,7 +1720,7 @@ func TestElicitationCapabilityDeclaration(t *testing.T) {
 		}
 		defer ss.Close()
 
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1757,7 +1757,7 @@ func TestElicitationDefaultValues(t *testing.T) {
 			return &ElicitResult{Action: "accept", Content: map[string]any{"default": "response"}}, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1912,7 +1912,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
 		// in 2026-07-28, so keepalive is only meaningful on legacy protocol
 		// versions.
-		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2087,7 +2087,7 @@ func TestSynchronousNotifications(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = ss.Close() })
-		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2475,7 +2475,15 @@ func TestSetErrorPreservesContent(t *testing.T) {
 	}
 }
 
-var ctrCmpOpts = []cmp.Option{cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{})}
+var ctrCmpOpts = []cmp.Option{
+	cmpopts.IgnoreUnexported(CallToolResult{}, GetPromptResult{}, ReadResourceResult{}),
+	// Server responses under the >= 2026-07-28 protocol carry an auto-populated
+	// [MetaKeyServerInfo] entry; tests that compare result bodies against
+	// hand-crafted expected values should ignore it.
+	cmpopts.IgnoreFields(CallToolResult{}, "Meta"),
+	cmpopts.IgnoreFields(GetPromptResult{}, "Meta"),
+	cmpopts.IgnoreFields(ReadResourceResult{}, "Meta"),
+}
 
 // runSubscriptionsListenTest exercises the SEP-2575 auto-listen flow end-to-end
 // against the supplied transport pair. It captures every notification and the
@@ -2493,7 +2501,7 @@ func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct
 	ctx, topCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer topCancel()
 
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2651,7 +2659,7 @@ func TestSubscriptionsListen_NoHandlersNoListen(t *testing.T) {
 			return next(ctx, method, req)
 		}
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2774,7 +2782,7 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 		},
 	})
 	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
-		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2843,7 +2851,7 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2920,7 +2928,7 @@ func TestResourceSubscriptions_Subscribe_Idempotent(t *testing.T) {
 	c := NewClient(testImpl, &ClientOptions{
 		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -2992,7 +3000,7 @@ func TestResourceSubscriptions_MultipleURIs(t *testing.T) {
 			events <- resourceSubEvent{uri: req.Params.URI, id: id}
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3097,7 +3105,7 @@ func TestSubscriptionsListen_MultipleSessions(t *testing.T) {
 		}
 		c := newSubListenClient(events)
 		cs, err := c.Connect(context.Background(), ct,
-			&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+			&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 		if err != nil {
 			t.Fatalf("client connect: %v", err)
 		}
@@ -3197,7 +3205,7 @@ func TestSubscriptionsListen_ResourceListChanged(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3241,7 +3249,7 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 	c := newSubListenClient(events)
 	cs, err := c.Connect(context.Background(), ct,
-		&ClientSessionOptions{protocolVersion: protocolVersion20260728})
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -3287,6 +3295,65 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 				inTool, inPrompt, inResource)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestServerSessionCloseWithActiveListen is a regression test for
+// modelcontextprotocol/go-sdk#1160: ServerSession.Close must not deadlock
+// when the client has an active subscriptions/listen stream. Previously,
+// the server-side handler parked on ctx.Done and Close waited forever for
+// the in-flight request to drain.
+//
+// The client's auto-listen (triggered by registering a list-changed handler)
+// opens the stream on Connect — no explicit Subscribe is needed. The server
+// must expose the corresponding list-changed capability, which happens
+// automatically when at least one tool/prompt/resource is registered.
+func TestServerSessionCloseWithActiveListen(t *testing.T) {
+	ctx := context.Background()
+	s := NewServer(&Implementation{Name: "s", Version: "0"}, nil)
+	AddTool(s, &Tool{Name: "t"}, sayHi)
+
+	ct, st := NewInMemoryTransports()
+	if _, err := s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	c := NewClient(&Implementation{Name: "c", Version: "0"}, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {},
+	})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	// Give the auto-listen request time to reach the server-side handler.
+	time.Sleep(20 * time.Millisecond)
+
+	var ss *ServerSession
+	for x := range s.Sessions() {
+		ss = x
+		break
+	}
+	if ss == nil {
+		t.Fatal("no server session found")
+	}
+
+	// Sanity check: the auto-listen must actually have registered an entry in
+	// listenIDs, otherwise the test below would trivially pass without
+	// exercising the fix.
+	ss.mu.Lock()
+	n := len(ss.listenIDs)
+	ss.mu.Unlock()
+	if n == 0 {
+		t.Fatal("expected auto-listen to register a request ID on the server session")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- ss.Close() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServerSession.Close deadlocked with an active subscriptions/listen")
 	}
 }
 
@@ -3420,7 +3487,7 @@ func TestCallCustomMethodTypedNilParams(t *testing.T) {
 	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3430,4 +3497,80 @@ func TestCallCustomMethodTypedNilParams(t *testing.T) {
 	if _, err := CallCustomMethod[*pingParams, *pingResult](ctx, cs, "acme/ping", typedNil); err != nil {
 		t.Fatalf("CallCustomMethod with typed-nil params: %v", err)
 	}
+}
+
+func TestServerLogLevelDoesNotLeakBetweenNewProtocolRequests(t *testing.T) {
+	ctx := context.Background()
+	s := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	logged := make(chan LoggingLevel, 1)
+	s.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationLoggingMessage {
+				logged <- req.GetParams().(*LoggingMessageParams).Level
+				return nil, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	AddTool(s, &Tool{Name: "blocked-log"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+		close(started)
+		<-release
+		if err := req.Session.Log(ctx, &LoggingMessageParams{Level: "warning", Data: "request log"}); err != nil {
+			return nil, nil, err
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+	})
+	AddTool(s, &Tool{Name: "noop"}, func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+	})
+
+	withLogLevel := &CallToolParams{Name: "blocked-log"}
+	withLogLevel.SetMeta(newProtocolMeta("warning"))
+	errc := make(chan error, 1)
+	go func() {
+		_, err := ss.handle(ctx, req(1, methodCallTool, withLogLevel))
+		errc <- err
+	}()
+
+	<-started
+	withoutLogLevel := &CallToolParams{Name: "noop"}
+	withoutLogLevel.SetMeta(newProtocolMeta(""))
+	if _, err := ss.handle(ctx, req(2, methodCallTool, withoutLogLevel)); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-logged:
+		if got != "warning" {
+			t.Fatalf("logged level = %q, want warning", got)
+		}
+	default:
+		t.Fatal("request-scoped warning log was suppressed after another request cleared session log level")
+	}
+}
+
+func newProtocolMeta(logLevel LoggingLevel) Meta {
+	m := Meta{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         testImpl,
+		MetaKeyClientCapabilities: (&ClientCapabilities{}).toV2(),
+	}
+	if logLevel != "" {
+		m[MetaKeyLogLevel] = logLevel
+	}
+	return m
 }

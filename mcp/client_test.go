@@ -662,11 +662,13 @@ func TestClientConnectDiscover(t *testing.T) {
 			name: "discover success skips initialize",
 			discoverHandler: func() (Result, error) {
 				return &DiscoverResult{
+					Meta: Meta{
+						MetaKeyServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
+					},
 					SupportedVersions: []string{protocolVersion20260728},
 					Capabilities: &ServerCapabilities{
 						Tools: &ToolCapabilities{ListChanged: true},
 					},
-					ServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
 				}, nil
 			},
 			wantInitialize: false,
@@ -695,9 +697,11 @@ func TestClientConnectDiscover(t *testing.T) {
 			name: "no overlapping supported version falls back to initialize",
 			discoverHandler: func() (Result, error) {
 				return &DiscoverResult{
+					Meta: Meta{
+						MetaKeyServerInfo: &Implementation{Name: "discoverServer", Version: "v1.0.0"},
+					},
 					SupportedVersions: []string{otherVersionsOnly},
 					Capabilities:      &ServerCapabilities{},
-					ServerInfo:        &Implementation{Name: "discoverServer", Version: "v1.0.0"},
 				}, nil
 			},
 			wantInitialize: true,
@@ -736,7 +740,7 @@ func TestClientConnectDiscover(t *testing.T) {
 			defer ss.Close()
 
 			c := NewClient(testImpl, nil)
-			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
@@ -801,7 +805,7 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 			return nil, nil
 		},
 	})
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -847,7 +851,7 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "stdio-like-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -885,9 +889,11 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
 			if method == methodDiscover {
 				return &DiscoverResult{
+					Meta: Meta{
+						MetaKeyServerInfo: &Implementation{Name: "vpre-like-server", Version: "v1"},
+					},
 					SupportedVersions: []string{protocolVersion20251125},
 					Capabilities:      &ServerCapabilities{},
-					ServerInfo:        &Implementation{Name: "vpre-like-server", Version: "v1"},
 				}, nil
 			}
 			return next(ctx, method, req)
@@ -902,7 +908,7 @@ func TestInMemory_E2E_DiscoverFallback_NoOverlap(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -949,7 +955,7 @@ func TestInMemory_E2E_DiscoverFallback_MethodNotFound(t *testing.T) {
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -999,7 +1005,7 @@ func TestInMemory_E2E_DiscoverFallback_UnsupportedProtocolVersion(t *testing.T) 
 	defer ss.Close()
 
 	client := NewClient(&Implementation{Name: "new-client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -1062,7 +1068,7 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	defer ss.Close()
 
 	c := NewClient(testImpl, nil)
-	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{protocolVersion: unsupportedClientVersion})
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: unsupportedClientVersion})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

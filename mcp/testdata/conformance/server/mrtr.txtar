@@ -45,6 +45,12 @@ confirmThenGreet
 	"jsonrpc": "2.0",
 	"id": 1,
 	"result": {
+		"_meta": {
+			"io.modelcontextprotocol/serverInfo": {
+				"name": "testServer",
+				"version": "v1.0.0"
+			}
+		},
 		"content": null,
 		"requestState": "step=1",
 		"resultType": "input_required",
@@ -71,6 +77,12 @@ confirmThenGreet
 	"jsonrpc": "2.0",
 	"id": 2,
 	"result": {
+		"_meta": {
+			"io.modelcontextprotocol/serverInfo": {
+				"name": "testServer",
+				"version": "v1.0.0"
+			}
+		},
 		"content": [
 			{
 				"type": "text",
