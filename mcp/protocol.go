@@ -1192,7 +1192,19 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
 // setDefaultCacheableValues sets the default values for the cacheable fields.
-func (c *Cacheable) setDefaultCacheableValues() {
+// When defaults is non-nil, TTLMs is copied and CacheScope is copied only when
+// non-empty. An empty CacheScope on defaults (or a nil defaults pointer) falls
+// back to "public", matching the protocol default for an absent cacheScope.
+// Used by [Server.applyDefaultCacheable] after optionally invoking
+// ServerOptions.DefaultCacheable.
+func (c *Cacheable) setDefaultCacheableValues(defaults *Cacheable) {
+	if defaults != nil {
+		c.TTLMs = defaults.TTLMs
+		if defaults.CacheScope != "" {
+			c.CacheScope = defaults.CacheScope
+			return
+		}
+	}
 	c.CacheScope = "public"
 }
 

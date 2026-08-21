@@ -1691,3 +1691,98 @@ func TestServerSession_RejectsServerInitiated(t *testing.T) {
 		}
 	}
 }
+
+func TestServerDefaultCacheable(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name     string
+		callback func(context.Context, Request) Cacheable
+		want     Cacheable
+	}{
+		{
+			name: "historical defaults",
+			want: Cacheable{TTLMs: 0, CacheScope: "public"},
+		},
+		{
+			name: "private with TTL",
+			callback: func(context.Context, Request) Cacheable {
+				return Cacheable{TTLMs: 60_000, CacheScope: "private"}
+			},
+			want: Cacheable{TTLMs: 60_000, CacheScope: "private"},
+		},
+		{
+			// Callback may set only TTLMs; empty CacheScope must still become "public".
+			name: "empty CacheScope falls back to public",
+			callback: func(context.Context, Request) Cacheable {
+				return Cacheable{TTLMs: 60_000}
+			},
+			want: Cacheable{TTLMs: 60_000, CacheScope: "public"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, &ServerOptions{DefaultCacheable: tc.callback})
+			AddTool(server, &Tool{Name: "t", Description: "d"},
+				func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+					return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+				})
+			server.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+				return &GetPromptResult{}, nil
+			})
+			server.AddResource(&Resource{URI: "test://r", Name: "r"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+				return &ReadResourceResult{Contents: []*ResourceContents{{URI: "test://r", Text: "x"}}}, nil
+			})
+			server.AddResourceTemplate(&ResourceTemplate{URITemplate: "test://{id}", Name: "rt"},
+				func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+					return &ReadResourceResult{Contents: []*ResourceContents{{Text: "x"}}}, nil
+				})
+
+			ct, st := NewInMemoryTransports()
+			if _, err := server.Connect(ctx, st, nil); err != nil {
+				t.Fatal(err)
+			}
+			cs, err := NewClient(testImpl, nil).Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			check := func(t *testing.T, label string, got Cacheable) {
+				t.Helper()
+				if got != tc.want {
+					t.Errorf("%s Cacheable = %+v, want %+v", label, got, tc.want)
+				}
+			}
+
+			tools, err := cs.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(t, "ListTools", tools.Cacheable)
+
+			prompts, err := cs.ListPrompts(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(t, "ListPrompts", prompts.Cacheable)
+
+			resources, err := cs.ListResources(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(t, "ListResources", resources.Cacheable)
+
+			templates, err := cs.ListResourceTemplates(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(t, "ListResourceTemplates", templates.Cacheable)
+
+			read, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://r"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(t, "ReadResource", read.Cacheable)
+		})
+	}
+}
