@@ -470,6 +470,8 @@ type ClientSession struct {
 	calledOnClose atomic.Bool
 	onClose       func()
 
+	closing atomic.Bool
+
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
@@ -493,12 +495,16 @@ type ClientSession struct {
 
 	// resourceSubsMu guards resourceSubs.
 	resourceSubsMu sync.Mutex
-	// resourceSubs maps a subscribed resource URI to the cancel func of the
-	// goroutine running its dedicated subscriptions/listen stream. Populated
-	// only under SEP-2575; the legacy protocol routes Subscribe and
-	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
-	// RPCs and leaves this map untouched.
-	resourceSubs map[string]context.CancelFunc
+	// resourceSubs maps a subscribed resource URI to its dedicated
+	// subscriptions/listen stream. Populated only under SEP-2575; the legacy
+	// protocol routes Subscribe and Unsubscribe straight to the
+	// resources/subscribe and resources/unsubscribe RPCs and leaves this map
+	// untouched.
+	resourceSubs map[string]*resourceSubscription
+}
+
+type resourceSubscription struct {
+	cancel context.CancelFunc
 }
 
 type clientSessionState struct {
@@ -559,6 +565,7 @@ func (cs *ClientSession) ID() string {
 //
 // Close is idempotent and concurrency safe.
 func (cs *ClientSession) Close() error {
+	cs.closing.Store(true)
 	// Note: keepaliveCancel access is safe without a mutex because:
 	// 1. keepaliveCancel is only written once during Client.Connect (through startKeepalive),
 	//    which happens before any code that may call Close from another goroutine
@@ -1382,17 +1389,25 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	if params == nil || params.URI == "" {
 		return fmt.Errorf("Subscribe: missing URI")
 	}
+	if cs.closing.Load() {
+		return fmt.Errorf("%w: calling %q: client session is closing", ErrConnectionClosed, methodSubscriptionsListen)
+	}
 	uri := params.URI
 
 	var listenCtx context.Context
+	var cancel context.CancelFunc
+	var sub *resourceSubscription
 	cs.resourceSubsMu.Lock()
-	if _, exists := cs.resourceSubs[uri]; !exists {
-		var cancel context.CancelFunc
+	if cs.closing.Load() {
+		cs.resourceSubsMu.Unlock()
+		return fmt.Errorf("%w: calling %q: client session is closing", ErrConnectionClosed, methodSubscriptionsListen)
+	} else if _, exists := cs.resourceSubs[uri]; !exists {
 		listenCtx, cancel = context.WithCancel(context.Background())
 		if cs.resourceSubs == nil {
-			cs.resourceSubs = make(map[string]context.CancelFunc)
+			cs.resourceSubs = make(map[string]*resourceSubscription)
 		}
-		cs.resourceSubs[uri] = cancel
+		sub = &resourceSubscription{cancel: cancel}
+		cs.resourceSubs[uri] = sub
 	}
 	cs.resourceSubsMu.Unlock()
 	if listenCtx == nil {
@@ -1400,11 +1415,22 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 		return nil
 	}
 
-	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	if err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
-	})
+	}); err != nil {
+		cs.cancelResourceSubscription(uri, sub)
+		if cs.closing.Load() {
+			return fmt.Errorf("%w: calling %q: client session is closing", ErrConnectionClosed, methodSubscriptionsListen)
+		}
+		return err
+	}
+	if cs.closing.Load() {
+		cs.cancelResourceSubscription(uri, sub)
+		return fmt.Errorf("%w: calling %q: client session is closing", ErrConnectionClosed, methodSubscriptionsListen)
+	}
+	return nil
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
@@ -1423,13 +1449,22 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 		return fmt.Errorf("Unsubscribe: missing URI")
 	}
 	cs.resourceSubsMu.Lock()
-	cancel, ok := cs.resourceSubs[params.URI]
+	sub, ok := cs.resourceSubs[params.URI]
 	delete(cs.resourceSubs, params.URI)
 	cs.resourceSubsMu.Unlock()
 	if ok {
-		cancel()
+		sub.cancel()
 	}
 	return nil
+}
+
+func (cs *ClientSession) cancelResourceSubscription(uri string, sub *resourceSubscription) {
+	cs.resourceSubsMu.Lock()
+	if cs.resourceSubs[uri] == sub {
+		delete(cs.resourceSubs, uri)
+	}
+	cs.resourceSubsMu.Unlock()
+	sub.cancel()
 }
 
 // cancelAllResourceSubscriptions cancels every active SEP-2575 resource
@@ -1440,8 +1475,8 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 	subs := cs.resourceSubs
 	cs.resourceSubs = nil
 	cs.resourceSubsMu.Unlock()
-	for _, cancel := range subs {
-		cancel()
+	for _, sub := range subs {
+		sub.cancel()
 	}
 }
 
