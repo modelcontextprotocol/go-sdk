@@ -158,7 +158,7 @@ func (s *inFlightState) shuttingDown(errClosing error) error {
 	if s.readErr != nil {
 		// If the read side of the connection is broken, we cannot read new call
 		// requests, and cannot read responses to our outgoing calls.
-		return fmt.Errorf("%w: %v", errClosing, s.readErr)
+		return fmt.Errorf("%w: %w", errClosing, s.readErr)
 	}
 	if s.writeErr != nil {
 		// If the write side of the connection is broken, we cannot write responses

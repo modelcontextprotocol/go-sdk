@@ -25,3 +25,14 @@ func TestShuttingDownWrapsWriteError(t *testing.T) {
 		t.Errorf("shuttingDown() error = %v, want it to wrap io.EOF", err)
 	}
 }
+
+func TestShuttingDownWrapsReadError(t *testing.T) {
+	s := &inFlightState{readErr: io.EOF}
+	err := s.shuttingDown(ErrServerClosing)
+	if !errors.Is(err, ErrServerClosing) {
+		t.Errorf("shuttingDown() error = %v, want it to wrap ErrServerClosing", err)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("shuttingDown() error = %v, want it to wrap io.EOF", err)
+	}
+}
