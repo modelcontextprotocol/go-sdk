@@ -86,6 +86,10 @@ func init() {
 	for _, scenario := range authScenarios {
 		registerScenario(scenario, runAuthClient)
 	}
+
+	// SEP-1932 DPoP baseline (nonce-less). Nonce posture is auth/dpop-nonce
+	// and is not implemented yet.
+	registerScenario("auth/dpop", runDpopClient)
 }
 
 // ============================================================================
