@@ -719,6 +719,9 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 			if err == nil {
 				err = writeErr
 			}
+			if writeErr != nil && c.onInternalError != nil {
+				c.onInternalError(fmt.Errorf("jsonrpc2: failed to write response for %q: %w", req.Method, writeErr))
+			}
 		} else {
 			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
 		}
@@ -728,10 +731,6 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		} else if err != nil {
 			err = fmt.Errorf("%w: %q notification failed: %v", ErrInternal, req.Method, err)
 		}
-	}
-	if err != nil {
-		// TODO: can/should we do anything with this error beyond writing it to the event log?
-		// (Is this the right label to attach to the log?)
 	}
 
 	// Cancel the request to free any associated resources.
