@@ -68,6 +68,13 @@ func compareLevels(l1, l2 LoggingLevel) int {
 	return cmp.Compare(mcpLevelToSlog(l1), mcpLevelToSlog(l2))
 }
 
+type logLevelContextKey struct{}
+
+func logLevelFromContext(ctx context.Context) (LoggingLevel, bool) {
+	v, ok := ctx.Value(logLevelContextKey{}).(LoggingLevel)
+	return v, ok
+}
+
 // LoggingHandlerOptions are options for a LoggingHandler.
 //
 // Deprecated: the logging feature is deprecated as of protocol version
@@ -146,6 +153,9 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 func (h *LoggingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	// This is also checked in ServerSession.LoggingMessage, so checking it here
 	// is just an optimization that skips building the JSON.
+	if mcpLevel, ok := logLevelFromContext(ctx); ok {
+		return mcpLevel != "" && level >= mcpLevelToSlog(mcpLevel)
+	}
 	h.ss.mu.Lock()
 	mcpLevel := h.ss.state.LogLevel
 	h.ss.mu.Unlock()
