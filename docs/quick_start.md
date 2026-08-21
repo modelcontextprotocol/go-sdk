@@ -7,7 +7,7 @@
 ## Installation
 
 ```
-go get github.com/modelcontextprotocol/go-sdk
+go get github.com/modelcontextprotocol/go-sdk/mcp
 ```
 
 ## Getting started

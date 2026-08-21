@@ -897,9 +897,17 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 		Capabilities:    req.ClientCapabilities(),
 		ClientInfo:      req.ClientInfo(),
 	}
-	req.Session.updateState(func(state *ServerSessionState) {
-		state.InitializeParams = init
-	})
+	// Only persist InitializeParams when the transport can actually serve
+	// the new protocol. On transports that cannot (notably stateful
+	// StreamableHTTPHandler), a discover request creates a session that
+	// is never surfaced to the client via Mcp-Session-Id; leaving
+	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
+	// close it instead of leaking.
+	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
+		req.Session.updateState(func(state *ServerSessionState) {
+			state.InitializeParams = init
+		})
+	}
 	res := &DiscoverResult{
 		SupportedVersions: versions,
 		Capabilities:      s.capabilities(),
@@ -1027,6 +1035,9 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err != nil {
 		return nil, err
 	}
+	if res == nil {
+		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
+	}
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
@@ -1034,7 +1045,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
-	if res == nil || res.Contents == nil {
+	if res.Contents == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
 	}
 	// As a convenience, populate some fields.
@@ -1489,6 +1500,12 @@ type ServerSession struct {
 
 	mu    sync.Mutex
 	state ServerSessionState
+	// listenIDs holds the request IDs of in-flight subscriptions/listen
+	// handlers on this session. subscriptions/listen parks on ctx.Done until
+	// cancelled, so ServerSession.Close must cancel these contexts explicitly
+	// via jsonrpc2.Connection.Cancel to avoid deadlocking on the jsonrpc2
+	// drain. See modelcontextprotocol/go-sdk#1160.
+	listenIDs []jsonrpc.ID
 }
 
 func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
@@ -1728,9 +1745,12 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 // (at least twelve months). See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (ss *ServerSession) Log(ctx context.Context, params *LoggingMessageParams) error {
-	ss.mu.Lock()
-	logLevel := ss.state.LogLevel
-	ss.mu.Unlock()
+	logLevel, ok := logLevelFromContext(ctx)
+	if !ok {
+		ss.mu.Lock()
+		logLevel = ss.state.LogLevel
+		ss.mu.Unlock()
+	}
 	if logLevel == "" {
 		// The spec is unclear, but seems to imply that no log messages are sent until the client
 		// sets the level.
@@ -1918,10 +1938,20 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// server->client calls and notifications to the incoming request from which
 	// they originated. See [idContextKey] for details.
 	ctx = context.WithValue(ctx, idContextKey{}, req.ID)
-	// For new-protocol requests, propagate the per-request log level.
 	if validatedMeta.usesNewProtocol {
-		ss.setLevel(ctx, &SetLoggingLevelParams{Level: validatedMeta.logLevel})
+		ctx = context.WithValue(ctx, logLevelContextKey{}, validatedMeta.logLevel)
 	}
+
+	// subscriptions/listen parks on ctx.Done until the peer cancels it (or the
+	// underlying reader breaks). Track the request ID so ServerSession.Close
+	// can cancel the in-flight handler via jsonrpc2.Connection.Cancel and
+	// avoid deadlocking on the jsonrpc2 drain.
+	if req.Method == methodSubscriptionsListen {
+		ss.mu.Lock()
+		ss.listenIDs = append(ss.listenIDs, req.ID)
+		ss.mu.Unlock()
+	}
+
 	res, err := handleReceive(ctx, ss, req)
 	if err != nil {
 		return nil, err
@@ -2025,6 +2055,18 @@ func (ss *ServerSession) Close() error {
 		//    Close is idempotent and conn.Close() handles concurrent calls correctly
 		ss.keepaliveCancel()
 	}
+
+	// Unblock any in-flight subscriptions/listen handlers, which otherwise park
+	// on ctx.Done and would deadlock conn.Close (which waits for in-flight
+	// requests to drain).
+	ss.mu.Lock()
+	ids := ss.listenIDs
+	ss.listenIDs = nil
+	ss.mu.Unlock()
+	for _, id := range ids {
+		ss.conn.Cancel(id)
+	}
+
 	err := ss.conn.Close()
 
 	if ss.onClose != nil && ss.calledOnClose.CompareAndSwap(false, true) {

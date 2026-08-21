@@ -30,7 +30,7 @@ method. To receive notifications about root changes, set
 [`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler).
 For protocol versions `2026-07-28` and later, `ListRoots` requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go roots -
@@ -57,7 +57,7 @@ This function is invoked whenever the server requests sampling.
 
 For protocol versions `2026-07-28` and later, sampling requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go sampling -
@@ -79,7 +79,7 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 
 For protocol versions `2026-07-28` and later, elicitation requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go elicitation -
@@ -117,7 +117,7 @@ For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
 requests on the legacy server-initiated channel; the MRTR machinery is a
 no-op in that direction. For legacy clients talking to MRTR-style servers,
 the server SDK applies the inverse compatibility shim — see the
-[server-side documentation](server.md#multi-round-trip-requests-mrtr).
+[server-side documentation](server.md#multi-round-trip-requests).
 
 ## Capabilities
 
