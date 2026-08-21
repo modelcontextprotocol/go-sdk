@@ -1384,6 +1384,7 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 		name              string
 		initializedResult *InitializeResult
 		msg               jsonrpc.Message
+		ctxVersion        string
 		want              string
 	}{
 		{
@@ -1422,6 +1423,30 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 			msg:               req(1, methodListTools, &ListToolsParams{}),
 			want:              "",
 		},
+		{
+			// A process that is both a server and a client (a proxy) carries the
+			// inbound request's version on the context of the outgoing call. The
+			// version this connection negotiated must win over it.
+			name:              "initializedResult preferred over request context",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "request context used when initializedResult unset",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "message meta preferred over request context",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20251125}}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1429,6 +1454,9 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 			httpReq, err := http.NewRequest(http.MethodPost, "http://test.invalid", nil)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.ctxVersion != "" {
+				httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), protocolVersionContextKey{}, tt.ctxVersion))
 			}
 			if err := conn.setMCPHeaders(httpReq, tt.msg); err != nil {
 				t.Fatalf("setMCPHeaders: %v", err)
