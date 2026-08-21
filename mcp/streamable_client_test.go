@@ -281,6 +281,48 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	}
 }
 
+// TestStreamableClientCloseUnresponsiveDelete checks that Close stays bounded
+// when the peer accepts the session-termination DELETE but never answers it.
+func TestStreamableClientCloseUnresponsiveDelete(t *testing.T) {
+	base := NewStreamableHTTPHandler(func(*http.Request) *Server {
+		return NewServer(testImpl, nil)
+	}, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			<-r.Context().Done()
+			return
+		}
+		base.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		// The DELETE handler only returns once its request is cancelled, so
+		// drop the connections before waiting for outstanding requests.
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(context.Background(),
+		&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	if session.ID() == "" {
+		t.Fatal("empty session ID: Close would not send DELETE")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeDeleteTimeout + 5*time.Second):
+		t.Fatal("Close() blocked on an unanswered DELETE")
+	}
+}
+
 func TestStreamableClientGETHandling(t *testing.T) {
 	ctx := context.Background()
 
@@ -1384,6 +1426,7 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 		name              string
 		initializedResult *InitializeResult
 		msg               jsonrpc.Message
+		ctxVersion        string
 		want              string
 	}{
 		{
@@ -1422,6 +1465,30 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 			msg:               req(1, methodListTools, &ListToolsParams{}),
 			want:              "",
 		},
+		{
+			// A process that is both a server and a client (a proxy) carries the
+			// inbound request's version on the context of the outgoing call. The
+			// version this connection negotiated must win over it.
+			name:              "initializedResult preferred over request context",
+			initializedResult: &InitializeResult{ProtocolVersion: protocolVersion20251125},
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
+		{
+			name:              "request context used when initializedResult unset",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20260728,
+		},
+		{
+			name:              "message meta preferred over request context",
+			initializedResult: nil,
+			msg:               req(1, methodListTools, &ListToolsParams{Meta: Meta{MetaKeyProtocolVersion: protocolVersion20251125}}),
+			ctxVersion:        protocolVersion20260728,
+			want:              protocolVersion20251125,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1429,6 +1496,9 @@ func TestStreamableClientConnSetMCPHeaders_ProtocolVersion(t *testing.T) {
 			httpReq, err := http.NewRequest(http.MethodPost, "http://test.invalid", nil)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.ctxVersion != "" {
+				httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), protocolVersionContextKey{}, tt.ctxVersion))
 			}
 			if err := conn.setMCPHeaders(httpReq, tt.msg); err != nil {
 				t.Fatalf("setMCPHeaders: %v", err)
