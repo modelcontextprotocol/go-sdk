@@ -337,12 +337,15 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, 
 		if !ok {
 			return nil, fmt.Errorf("MemoryEventStore.After: unknown stream ID %v in session %q", streamID, sessionID)
 		}
-		start := index + 1
-		if dl.first > start {
+		start := (index + 1) - dl.first
+		if start < 0 {
 			return nil, fmt.Errorf("MemoryEventStore.After: index %d, stream ID %v, session %q: %w",
 				index, streamID, sessionID, ErrEventsPurged)
 		}
-		return slices.Clone(dl.data[start-dl.first:]), nil
+		if start >= len(dl.data) {
+			return nil, nil
+		}
+		return slices.Clone(dl.data[start:]), nil
 	}
 
 	return func(yield func([]byte, error) bool) {
