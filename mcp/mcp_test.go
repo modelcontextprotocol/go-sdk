@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2166,6 +2167,57 @@ func TestNoDistributedDeadlock(t *testing.T) {
 	})
 }
 
+func TestClientNotifyProgressInjectsMetaOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	metaCh := make(chan Meta, 1)
+
+	server := NewServer(testImpl, &ServerOptions{
+		ProgressNotificationHandler: func(_ context.Context, req *ProgressNotificationServerRequest) {
+			metaCh <- maps.Clone(req.Params.Meta)
+		},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	client := NewClient(testImpl, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	if err := cs.NotifyProgress(ctx, &ProgressNotificationParams{
+		ProgressToken: "tok-1",
+		Progress:      1,
+		Message:       "working",
+	}); err != nil {
+		t.Fatalf("NotifyProgress: %v", err)
+	}
+
+	select {
+	case meta := <-metaCh:
+		if got, want := meta[MetaKeyProtocolVersion], any(protocolVersion20260728); got != want {
+			t.Fatalf("_meta[%s] = %v, want %v", MetaKeyProtocolVersion, got, want)
+		}
+		if _, ok := meta[MetaKeyClientCapabilities].(map[string]any); !ok {
+			t.Fatalf("_meta[%s] = %T, want map[string]any", MetaKeyClientCapabilities, meta[MetaKeyClientCapabilities])
+		}
+		info, ok := meta[MetaKeyClientInfo].(map[string]any)
+		if !ok {
+			t.Fatalf("_meta[%s] = %T, want map[string]any", MetaKeyClientInfo, meta[MetaKeyClientInfo])
+		}
+		if got, want := info["name"], any(testImpl.Name); got != want {
+			t.Fatalf("clientInfo.name = %v, want %v", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for progress notification")
+	}
+}
+
 var testImpl = &Implementation{Name: "test", Version: "v1.0.0"}
 
 // This test checks that when we use pointer types for tools, we get the same
@@ -3460,10 +3512,69 @@ func TestAddCustomMethodRejectsStandardMethods(t *testing.T) {
 	})
 }
 
+func TestCallCustomMethodInjectsMetaOnNewProtocol(t *testing.T) {
+	type pingParams struct{ ParamsBase }
+	type pingResult struct{ ResultBase }
+
+	ctx := context.Background()
+	metaCh := make(chan Meta, 1)
+	s := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(s, "acme/ping",
+		func(ctx context.Context, ss *ServerSession, p *pingParams) (*pingResult, error) {
+			metaCh <- maps.Clone(p.Meta)
+			return &pingResult{}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	c := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*pingParams, *pingResult](c, "acme/ping"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	params := &pingParams{ParamsBase: ParamsBase{Meta: Meta{"keep": "original"}}}
+	if _, err := CallCustomMethod[*pingParams, *pingResult](ctx, cs, "acme/ping", params); err != nil {
+		t.Fatalf("CallCustomMethod: %v", err)
+	}
+	if _, ok := params.Meta[MetaKeyProtocolVersion]; ok {
+		t.Fatalf("CallCustomMethod mutated caller params Meta: %v", params.Meta)
+	}
+
+	select {
+	case meta := <-metaCh:
+		if got, want := meta["keep"], any("original"); got != want {
+			t.Fatalf("_meta[keep] = %v, want %v", got, want)
+		}
+		if got, want := meta[MetaKeyProtocolVersion], any(protocolVersion20260728); got != want {
+			t.Fatalf("_meta[%s] = %v, want %v", MetaKeyProtocolVersion, got, want)
+		}
+		if _, ok := meta[MetaKeyClientCapabilities].(map[string]any); !ok {
+			t.Fatalf("_meta[%s] = %T, want map[string]any", MetaKeyClientCapabilities, meta[MetaKeyClientCapabilities])
+		}
+		if _, ok := meta[MetaKeyClientInfo].(map[string]any); !ok {
+			t.Fatalf("_meta[%s] = %T, want map[string]any", MetaKeyClientInfo, meta[MetaKeyClientInfo])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for custom method")
+	}
+}
+
 // TestCallCustomMethodTypedNilParams exercises the typed-nil params path.
 // User param types embed ParamsBase, so the inherited isNil forwarder would
-// dereference a typed-nil outer if injectRequestMeta were called with it.
-// CallCustomMethod must allocate a fresh value before the meta-injection step.
+// dereference a typed-nil outer if the default sending handler inspected it
+// without first cloning it. The handler must allocate a fresh value before
+// the meta-injection step.
 func TestCallCustomMethodTypedNilParams(t *testing.T) {
 	type pingParams struct{ ParamsBase }
 	type pingResult struct{ ResultBase }
