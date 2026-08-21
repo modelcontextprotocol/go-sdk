@@ -7,6 +7,7 @@ package jsonrpc2_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -144,6 +145,29 @@ func TestDecodeIDOnlyMessageIsResponse(t *testing.T) {
 	}
 	if _, ok := msg.(*jsonrpc2.Response); !ok {
 		t.Fatalf("message type = %T, want *jsonrpc2.Response", msg)
+	}
+}
+
+// TestWireErrorIs checks the errors.Is behavior of WireError, including that
+// comparing against a typed-nil *WireError does not panic.
+func TestWireErrorIs(t *testing.T) {
+	err := jsonrpc2.NewError(-32600, "invalid request")
+	for _, test := range []struct {
+		name   string
+		target error
+		want   bool
+	}{
+		{name: "same code", target: jsonrpc2.NewError(-32600, "other message"), want: true},
+		{name: "different code", target: jsonrpc2.NewError(-32601, "invalid request"), want: false},
+		{name: "typed nil WireError", target: (*jsonrpc2.WireError)(nil), want: false},
+		{name: "untyped nil", target: nil, want: false},
+		{name: "other error type", target: errors.New("invalid request"), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := errors.Is(err, test.target); got != test.want {
+				t.Errorf("errors.Is(%v, %v) = %v, want %v", err, test.target, got, test.want)
+			}
+		})
 	}
 }
 
