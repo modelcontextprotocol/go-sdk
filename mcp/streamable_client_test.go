@@ -145,6 +145,18 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
+	// On initialize no version has been negotiated yet, so the header carries
+	// what the request proposes and must agree with the body. Checked for every
+	// initialize rather than per-response, since it holds unconditionally.
+	if key.jsonrpcMethod == methodInitialize && jsonrpcReq != nil {
+		var params InitializeParams
+		if err := json.Unmarshal(jsonrpcReq.Params, &params); err != nil {
+			s.t.Errorf("%v: unmarshal initialize params: %v", key, err)
+		} else if got := req.Header.Get(protocolVersionHeader); got != params.ProtocolVersion {
+			s.t.Errorf("%v: protocol version header %q disagrees with body protocolVersion %q",
+				key, got, params.ProtocolVersion)
+		}
+	}
 	w.Write([]byte(body))
 	rc.Flush() // flush response
 
