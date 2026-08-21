@@ -337,21 +337,15 @@ func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, 
 		if !ok {
 			return nil, fmt.Errorf("MemoryEventStore.After: unknown stream ID %v in session %q", streamID, sessionID)
 		}
-		start := index + 1
-		if dl.first > start {
+		start := (index + 1) - dl.first
+		if start < 0 {
 			return nil, fmt.Errorf("MemoryEventStore.After: index %d, stream ID %v, session %q: %w",
 				index, streamID, sessionID, ErrEventsPurged)
 		}
-		// An index at or beyond the latest stored event has nothing after it, so
-		// there is nothing to replay. The boundary start == dl.first+len(dl.data)
-		// (resume from the last event seen) already yields an empty slice; guard
-		// the strictly-greater case too, otherwise dl.data[start-dl.first:]
-		// panics with a slice-bounds-out-of-range on an index past the end (for
-		// example a client-supplied Last-Event-ID beyond any event ever sent).
-		if start-dl.first > len(dl.data) {
+		if start >= len(dl.data) {
 			return nil, nil
 		}
-		return slices.Clone(dl.data[start-dl.first:]), nil
+		return slices.Clone(dl.data[start:]), nil
 	}
 
 	return func(yield func([]byte, error) bool) {
