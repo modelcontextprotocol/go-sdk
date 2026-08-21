@@ -2130,6 +2130,8 @@ type streamableClientConn struct {
 
 var _ clientConnection = (*streamableClientConn)(nil)
 
+func (*streamableClientConn) cancelsListenWithContext() bool { return true }
+
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult

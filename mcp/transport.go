@@ -262,16 +262,25 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 // response, if ever delivered, only marks subscription teardown — so the
 // caller has nothing useful to block on.
 //
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
+// Cancellation is driven by ctx. A carrier-bound transport closes its request.
+// Other transports send "notifications/cancelled" with the listen request ID.
+func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, mcpConn Connection, method string, params Params) {
 	call := conn.Call(ctx, method, params)
 
 	go func() {
 		<-ctx.Done()
+		if carrier, ok := mcpConn.(listenContextCanceller); ok && carrier.cancelsListenWithContext() {
+			conn.Retire(call, ctx.Err())
+			return
+		}
 		_ = cancelCall(ctx, conn, call)
 	}()
+}
+
+// listenContextCanceller identifies transports that cancel a listen request by
+// closing its carrier when the request context ends.
+type listenContextCanceller interface {
+	cancelsListenWithContext() bool
 }
 
 // call executes and awaits a jsonrpc2 call on the given connection,
@@ -361,6 +370,11 @@ type loggingConn struct {
 }
 
 func (c *loggingConn) SessionID() string { return c.delegate.SessionID() }
+
+func (c *loggingConn) cancelsListenWithContext() bool {
+	carrier, ok := c.delegate.(listenContextCanceller)
+	return ok && carrier.cancelsListenWithContext()
+}
 
 // Read is a stream middleware that logs incoming messages.
 func (s *loggingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
