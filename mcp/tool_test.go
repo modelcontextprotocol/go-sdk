@@ -59,6 +59,49 @@ func TestApplySchema(t *testing.T) {
 	}
 }
 
+func TestApplySchemaRejectsDeeplyNestedInput(t *testing.T) {
+	schema := &jsonschema.Schema{Type: "object"}
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nested := func(depth int) string {
+		var b strings.Builder
+		b.WriteString("{\"a\":")
+		for i := 0; i < depth; i++ {
+			b.WriteString("[")
+		}
+		b.WriteString("1")
+		for i := 0; i < depth; i++ {
+			b.WriteString("]")
+		}
+		b.WriteString("}")
+		return b.String()
+	}
+
+	// Deeply nested input must be rejected quickly, regardless of the schema.
+	// nested(depth) builds one object wrapper plus `depth` nested arrays, so the
+	// total nesting is depth+1.
+	for _, depth := range []int{maxJSONDepth, 2000, 20000} {
+		raw := json.RawMessage(nested(depth))
+		if _, err := applySchema(raw, resolved, false); err == nil {
+			t.Errorf("applySchema with depth %d: got nil error, want depth error", depth)
+		}
+	}
+
+	// Nesting at or below the limit must still validate.
+	if _, err := applySchema(json.RawMessage(nested(maxJSONDepth-1)), resolved, false); err != nil {
+		t.Errorf("applySchema with depth %d: unexpected error: %v", maxJSONDepth, err)
+	}
+
+	// Braces inside string literals must not count toward nesting depth.
+	data := `{"a":"[[[[[[[[[[[[[[[[[[[[","b":[1,2,3]}`
+	if _, err := applySchema(json.RawMessage(data), resolved, false); err != nil {
+		t.Errorf("applySchema with deep string literal: unexpected error: %v", err)
+	}
+}
+
 func TestApplySchemaOutput(t *testing.T) {
 	// SEP-2106: when forOutput is true, the schema may have a non-object root.
 	for _, tc := range []struct {
