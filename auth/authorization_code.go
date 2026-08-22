@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -155,6 +156,13 @@ type AuthorizationCodeHandlerConfig struct {
 	// and will trigger a call to [AuthorizationCodeHandler.Authorize].
 	InitialTokenSource oauth2.TokenSource
 }
+
+// noboundscopetodcr disables propagating discovered scopes into dynamic client
+// registration metadata. When set to "1", the client will not automatically
+// set the scope in DCR metadata from the requested scopes, restoring the
+// previous behavior. See the documentation for the mcpgodebug package for
+// instructions how to enable it.
+var noboundscopetodcr = mcpgodebug.Value("noboundscopetodcr")
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
 // the authorization code flow to obtain access tokens.
@@ -317,11 +325,6 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		}
 	}
 
-	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
-	if err != nil {
-		return err
-	}
-
 	requestedScopes := scopesFromChallenges(wwwChallenges)
 	if len(requestedScopes) == 0 && len(prm.ScopesSupported) > 0 {
 		requestedScopes = prm.ScopesSupported
@@ -348,6 +351,21 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	granted := h.grantedScopes[asm.Issuer]
 	h.mu.RUnlock()
 	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
+
+	// Propagate discovered scopes into the DCR metadata before registration,
+	// so the client is registered for the same scopes it will request.
+	// This prevents invalid_scope errors on strict authorization servers.
+	// Setting MCPGODEBUG=noboundscopetodcr=1 restores the previous behavior.
+	if noboundscopetodcr != "1" {
+		if dcrCfg := h.config.DynamicClientRegistrationConfig; dcrCfg != nil && dcrCfg.Metadata.Scope == "" && len(requestedScopes) > 0 {
+			dcrCfg.Metadata.Scope = strings.Join(requestedScopes, " ")
+		}
+	}
+
+	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
+	if err != nil {
+		return err
+	}
 
 	cfg := &oauth2.Config{
 		ClientID:     resolvedClientConfig.clientID,
