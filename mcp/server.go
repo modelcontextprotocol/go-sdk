@@ -1734,14 +1734,7 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 }
 
 // NotifyElicitationComplete tells the client that the out-of-band ("url" mode)
-// elicitation identified by params.ElicitationID has finished, so that the
-// client can dismiss any pending UI for it.
-//
-// A server that rejects a request with [URLElicitationRequiredError] must call
-// this once the user has completed the interaction: the client blocks the
-// originating request until the notification arrives, then retries it.
-// ElicitationID must match the one in the [ElicitParams] that requested the
-// elicitation.
+// elicitation identified by params.ElicitationID has finished.
 func (ss *ServerSession) NotifyElicitationComplete(ctx context.Context, params *ElicitationCompleteParams) error {
 	if params == nil {
 		return fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
