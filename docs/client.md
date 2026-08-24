@@ -2,6 +2,7 @@
 # Support for MCP client features
 
 1. [Roots](#roots)
+	1. [Roots list changed](#roots-list-changed)
 1. [Sampling](#sampling)
 1. [Elicitation](#elicitation)
 	1. [Requested schema: defaults and enums](#requested-schema:-defaults-and-enums)
@@ -90,6 +91,67 @@ func Example_roots() {
 		log.Fatal(err)
 	}
 	// Output: [file://a file://b]
+}
+```
+
+### Roots list changed
+
+`Client.AddRoots` and `Client.RemoveRoots` notify every connected server that
+the list changed. Servers observe this through
+[`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler);
+as with the server-side list-changed notifications, it reports only that
+something changed, so read the list back with `ServerSession.ListRoots`.
+
+```go
+func Example_rootsListChanged() {
+	ctx := context.Background()
+
+	changed := make(chan struct{}, 2)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		RootsListChangedHandler: func(context.Context, *mcp.RootsListChangedRequest) {
+			changed <- struct{}{}
+		},
+	})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	c.AddRoots(&mcp.Root{URI: "file:///project"})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	ss, err := s.Connect(ctx, t1, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ss.Close()
+
+	// ListRoots is a server-initiated request, so this session negotiates a
+	// protocol version that still allows one.
+	cs, err := c.Connect(ctx, t2, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Roots added after the client connects notify every connected server.
+	c.AddRoots(&mcp.Root{URI: "file:///scratch"})
+	<-changed
+
+	// The notification says only that the list changed, so read it back.
+	res, err := ss.ListRoots(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, root := range res.Roots {
+		fmt.Println(root.URI)
+	}
+
+	c.RemoveRoots("file:///scratch")
+	<-changed
+	fmt.Println("roots changed again")
+
+	// Output:
+	// file:///project
+	// file:///scratch
+	// roots changed again
 }
 ```
 

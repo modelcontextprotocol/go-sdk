@@ -112,6 +112,37 @@ notification.
 
 %include ../../mcp/server_example_test.go resources -
 
+### Binary resources
+
+A
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents)
+carries its data in either `Text` or `Blob`. Binary data goes in `Blob` as
+plain bytes — the SDK base64-encodes it on the wire — and leaves `Text` empty,
+so a client tells the two apart by which field is populated.
+
+%include ../../mcp/server_example_test.go binaryresource -
+
+### Resource subscriptions
+
+A client interested in changes to one resource subscribes to its URI with
+[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
+and stops with
+[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe).
+Set
+[`ServerOptions.SubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.SubscribeHandler)
+and
+[`UnsubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.UnsubscribeHandler)
+to track who is listening; setting either one gives the server the
+`resources.subscribe` capability.
+
+Publish a change with
+[`Server.ResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.ResourceUpdated),
+which notifies every session subscribed to that URI. The notification carries
+only the URI, not the new contents, so a client that wants them reads the
+resource again.
+
+%include ../../mcp/server_example_test.go subscribe -
+
 ## Tools
 
 MCP servers can provide
@@ -269,6 +300,26 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
     // ...
 }
 ```
+
+## List changed notifications
+
+Adding or removing a feature on a connected server sends the matching
+`notifications/*/list_changed` to every client, which dispatches it to
+[`ClientOptions.ToolListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ToolListChangedHandler),
+[`PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler),
+or
+[`ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler).
+A notification reports only that the list changed, so a client that needs the
+new contents lists them again.
+
+These notifications ride on capabilities, and capabilities are inferred from
+what is registered before [`Server.Connect`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.Connect)
+(see [Capabilities](#capabilities)). A server that registers its features
+afterwards, as the example below does, has to declare
+`ServerOptions.HasTools`, `HasPrompts`, or `HasResources` itself, or the
+client is never told.
+
+%include ../../mcp/server_example_test.go listchanged -
 
 ## Multi Round-Trip Requests
 

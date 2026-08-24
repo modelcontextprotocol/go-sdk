@@ -35,6 +35,16 @@ pattern.
 
 %include ../../mcp/client_example_test.go roots -
 
+### Roots list changed
+
+`Client.AddRoots` and `Client.RemoveRoots` notify every connected server that
+the list changed. Servers observe this through
+[`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler);
+as with the server-side list-changed notifications, it reports only that
+something changed, so read the list back with `ServerSession.ListRoots`.
+
+%include ../../mcp/client_example_test.go rootslistchanged -
+
 ## Sampling
 
 > **Note:** The sampling feature is deprecated as of protocol version

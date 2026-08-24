@@ -66,6 +66,61 @@ func Example_roots() {
 
 // !-roots
 
+// !+rootslistchanged
+
+func Example_rootsListChanged() {
+	ctx := context.Background()
+
+	changed := make(chan struct{}, 2)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		RootsListChangedHandler: func(context.Context, *mcp.RootsListChangedRequest) {
+			changed <- struct{}{}
+		},
+	})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	c.AddRoots(&mcp.Root{URI: "file:///project"})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	ss, err := s.Connect(ctx, t1, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ss.Close()
+
+	// ListRoots is a server-initiated request, so this session negotiates a
+	// protocol version that still allows one.
+	cs, err := c.Connect(ctx, t2, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Roots added after the client connects notify every connected server.
+	c.AddRoots(&mcp.Root{URI: "file:///scratch"})
+	<-changed
+
+	// The notification says only that the list changed, so read it back.
+	res, err := ss.ListRoots(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, root := range res.Roots {
+		fmt.Println(root.URI)
+	}
+
+	c.RemoveRoots("file:///scratch")
+	<-changed
+	fmt.Println("roots changed again")
+
+	// Output:
+	// file:///project
+	// file:///scratch
+	// roots changed again
+}
+
+// !-rootslistchanged
+
 // !+sampling
 
 func Example_sampling() {
