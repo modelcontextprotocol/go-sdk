@@ -94,7 +94,7 @@ pattern.
 
 %include ../../mcp/client_example_test.go elicitation -
 
-### Requested schema: defaults and enums
+### Schema defaults and enums
 
 `ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
 client renders as a form. Two field keywords shape that form.

@@ -5,7 +5,7 @@
 	1. [Roots list changed](#roots-list-changed)
 1. [Sampling](#sampling)
 1. [Elicitation](#elicitation)
-	1. [Requested schema: defaults and enums](#requested-schema:-defaults-and-enums)
+	1. [Schema defaults and enums](#schema-defaults-and-enums)
 	1. [Completing a URL elicitation](#completing-a-url-elicitation)
 1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 1. [Capabilities](#capabilities)
@@ -299,7 +299,7 @@ func Example_elicitation() {
 }
 ```
 
-### Requested schema: defaults and enums
+### Schema defaults and enums
 
 `ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
 client renders as a form. Two field keywords shape that form.
