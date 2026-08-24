@@ -405,6 +405,145 @@ func TestCloseMarksHeadersFlushed(t *testing.T) {
 	}
 }
 
+func TestPOSTStreamPrimeSkipsEarlyFlush(t *testing.T) {
+	release := make(chan struct{})
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"}, func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+	httpServer := httptest.NewServer(NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{EventStore: NewMemoryEventStore(nil)},
+	))
+	defer httpServer.Close()
+	defer close(release)
+
+	sessionID := handshake(t, httpServer.URL, protocolVersion20251125)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp := postJSON(t, ctx, httpServer.URL, sessionID, protocolVersion20251125,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slow","arguments":{}}}`)
+	defer resp.Body.Close()
+
+	buf := make([]byte, 256)
+	n, err := resp.Body.Read(buf)
+	if err != nil && n == 0 {
+		t.Fatalf("reading primed stream: %v", err)
+	}
+	got := buf[:n]
+	if !bytes.Contains(got, []byte("event: prime")) {
+		t.Fatalf("first bytes = %q, want a prime event", got)
+	}
+	if bytes.Contains(got, []byte(": ok")) {
+		t.Errorf("primed stream also wrote an early-flush comment: %q", got)
+	}
+}
+
+func TestGETResumeFlushesHeaders(t *testing.T) {
+	release := make(chan struct{})
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"}, func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+	httpServer := httptest.NewServer(NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{EventStore: NewMemoryEventStore(nil)},
+	))
+	defer httpServer.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	sessionID := handshake(t, httpServer.URL, protocolVersion20251125)
+
+	postCtx, postCancel := context.WithCancel(context.Background())
+	defer postCancel()
+	postResp := postJSON(t, postCtx, httpServer.URL, sessionID, protocolVersion20251125,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slow","arguments":{}}}`)
+
+	buf := make([]byte, 256)
+	n, err := postResp.Body.Read(buf)
+	if err != nil && n == 0 {
+		t.Fatalf("reading prime: %v", err)
+	}
+	eventID := sseField(buf[:n], "id:")
+	if eventID == "" {
+		t.Fatalf("prime event missing id: %q", buf[:n])
+	}
+
+	postCancel()
+	postResp.Body.Close()
+
+	var getResp *http.Response
+	var getCancel context.CancelFunc
+	defer func() {
+		if getCancel != nil {
+			getCancel()
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL, nil)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set(sessionIDHeader, sessionID)
+		req.Header.Set(protocolVersionHeader, protocolVersion20251125)
+		req.Header.Set(lastEventIDHeader, eventID)
+		getResp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			if time.Now().After(deadline) {
+				t.Fatalf("resume GET: %v", err)
+			}
+			continue
+		}
+		if getResp.StatusCode == http.StatusConflict {
+			getResp.Body.Close()
+			cancel()
+			if time.Now().After(deadline) {
+				t.Fatal("resume GET still 409: original POST did not release")
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		getCancel = cancel
+		break
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(getResp.Body)
+		t.Fatalf("resume GET status = %d, want 200; body = %s", getResp.StatusCode, body)
+	}
+
+	first := make([]byte, 64)
+	n, err = getResp.Body.Read(first)
+	if err != nil && n == 0 {
+		t.Fatalf("resume GET body: %v", err)
+	}
+	if !bytes.HasPrefix(first[:n], []byte(":")) {
+		t.Errorf("resume GET first bytes = %q, want an SSE comment", first[:n])
+	}
+}
+
 func TestFlushEarlyAfterSerializesWithDeliverLocked(t *testing.T) {
 	id := jsonrpc2.Int64ID(1)
 	for i := 0; i < 50; i++ {
@@ -469,4 +608,59 @@ func newHeaderCounter() (*headerCounter, http.ResponseWriter) {
 func (w *headerCounter) WriteHeader(code int) {
 	w.codes = append(w.codes, code)
 	w.ResponseRecorder.WriteHeader(code)
+}
+
+func (w *headerCounter) Write(p []byte) (int, error) {
+	if len(w.codes) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+func handshake(t *testing.T, url, proto string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` + proto + `","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`
+	initResp := postJSON(t, ctx, url, "", proto, initBody)
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	if sessionID == "" {
+		t.Fatal("no session ID from initialize")
+	}
+	notifResp := postJSON(t, ctx, url, sessionID, proto, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	io.Copy(io.Discard, notifResp.Body)
+	notifResp.Body.Close()
+	return sessionID
+}
+
+func postJSON(t *testing.T, ctx context.Context, url, sessionID, proto, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if sessionID != "" {
+		req.Header.Set(sessionIDHeader, sessionID)
+	}
+	if proto != "" {
+		req.Header.Set(protocolVersionHeader, proto)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	return resp
+}
+
+func sseField(body []byte, prefix string) string {
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
