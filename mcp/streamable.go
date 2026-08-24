@@ -1524,7 +1524,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
-				// Extract again the protcol version from the context to see what the client
+				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
@@ -2016,6 +2016,11 @@ const (
 	reconnectGrowFactor = 1.5
 	// reconnectMaxDelay caps the backoff delay, preventing it from growing indefinitely.
 	reconnectMaxDelay = 30 * time.Second
+	// closeDeleteTimeout bounds the session-termination DELETE sent by Close.
+	// That request is best-effort: a peer that accepts the connection but never
+	// answers must not be able to hold teardown open until the TCP timeout.
+	// See issue #1183.
+	closeDeleteTimeout = 5 * time.Second
 )
 
 var (
@@ -2448,10 +2453,10 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 	}
 	if pv := protocolVersionFromMessage(msg); pv != "" {
 		req.Header.Set(protocolVersionHeader, pv)
-	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
-		req.Header.Set(protocolVersionHeader, pv)
 	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
@@ -2769,7 +2774,9 @@ func (c *streamableClientConn) Close() error {
 			// No session was established (e.g. the server is stateless),
 			// so there is nothing to delete.
 		} else {
-			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
+			reqCtx, stop := context.WithTimeout(c.ctx, closeDeleteTimeout)
+			defer stop()
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodDelete, c.url, nil)
 			if err != nil {
 				c.closeErr = err
 			} else {

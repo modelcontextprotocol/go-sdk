@@ -30,10 +30,20 @@ method. To receive notifications about root changes, set
 [`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler).
 For protocol versions `2026-07-28` and later, `ListRoots` requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go roots -
+
+### Roots list changed
+
+`Client.AddRoots` and `Client.RemoveRoots` notify every connected server that
+the list changed. Servers observe this through
+[`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler);
+as with the server-side list-changed notifications, it reports only that
+something changed, so read the list back with `ServerSession.ListRoots`.
+
+%include ../../mcp/client_example_test.go rootslistchanged -
 
 ## Sampling
 
@@ -57,7 +67,7 @@ This function is invoked whenever the server requests sampling.
 
 For protocol versions `2026-07-28` and later, sampling requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go sampling -
@@ -79,10 +89,52 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 
 For protocol versions `2026-07-28` and later, elicitation requests are
 delivered via the
-[Multi Round-Trip Requests](protocol.md#multi-round-trip-requests-mrtr)
+[Multi Round-Trip Requests](#multi-round-trip-requests)
 pattern.
 
 %include ../../mcp/client_example_test.go elicitation -
+
+### Schema defaults and enums
+
+`ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
+client renders as a form. Two field keywords shape that form.
+
+A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034)) prefills a
+field. When the user accepts without supplying it, the SDK fills the field in
+from the schema before the result reaches either side's caller — the client
+does so after its elicitation handler returns, and `ServerSession.Elicit` does
+so again on receipt. This is unconditional; there is no opt-in flag. Marking a
+defaulted field `Required` defeats it: accepted content is validated against
+the schema before defaults are applied, so an answer that omits the field is
+rejected rather than defaulted.
+
+An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330)) restricts a
+field to a fixed set of values, which the client renders as a choice. Enums
+are supported only on `"string"` fields; declaring one on another type is
+rejected. To label the choices, set the legacy `enumNames` keyword through
+`Schema.Extra`, with exactly one name per enum value — a mismatched length is
+rejected.
+
+%include ../../mcp/client_example_test.go elicitationschema -
+
+### Completing a URL elicitation
+
+In URL mode the user finishes out of band, in a browser, so nothing in the
+elicitation result tells the client when they are done. The server signals that
+with
+[`ServerSession.NotifyElicitationComplete`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyElicitationComplete),
+passing the same `ElicitationID` the request carried; the client observes it
+through
+[`ClientOptions.ElicitationCompleteHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationCompleteHandler).
+Send it from whatever endpoint the hosted flow redirects back to.
+
+The notification matters most when a handler rejects a request with
+[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError):
+the client parks the original request until a notification names that
+`ElicitationID`, and then retries it automatically. Until one arrives, the
+client waits.
+
+%include ../../mcp/client_example_test.go elicitationcomplete -
 
 ## Multi Round-Trip Requests
 
@@ -117,7 +169,7 @@ For legacy (`<= 2025-11-25`) servers, the SDK transparently sends server
 requests on the legacy server-initiated channel; the MRTR machinery is a
 no-op in that direction. For legacy clients talking to MRTR-style servers,
 the server SDK applies the inverse compatibility shim — see the
-[server-side documentation](server.md#multi-round-trip-requests-mrtr).
+[server-side documentation](server.md#multi-round-trip-requests).
 
 ## Capabilities
 
