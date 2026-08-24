@@ -33,6 +33,24 @@ notification.
 
 %include ../../mcp/server_example_test.go prompts -
 
+### Prompt message content
+
+A
+[`PromptMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#PromptMessage)
+has two fields: a `Role`, either `"user"` or `"assistant"`, and a single
+`Content`. That is the same interface a tool result uses (see [Tool result
+content](#tool-result-content)), so a prompt message can hold an image, audio,
+or a resource's contents as readily as text.
+
+Media on its own says nothing about what the model should do with it, so send a
+text message alongside it. Embedding a resource puts its contents directly in
+the message, sparing the client a separate `resources/read`. Note that
+`ResourceContents.URI` is not checked against the resources the server has
+registered: it records where the contents came from, so use the URI of a real
+resource when there is one, as in the example below.
+
+%include ../../mcp/server_example_test.go promptcontent -
+
 ## Resources
 
 In MCP terms, a _resource_ is some data referenced by a URI.

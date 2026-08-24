@@ -2,6 +2,7 @@
 # Support for MCP server features
 
 1. [Prompts](#prompts)
+	1. [Prompt message content](#prompt-message-content)
 1. [Resources](#resources)
 1. [Tools](#tools)
 	1. [Tool result content](#tool-result-content)
@@ -113,6 +114,91 @@ func Example_prompts() {
 	// Output:
 	// greet
 	// user Say hi to Pat
+}
+```
+
+### Prompt message content
+
+A
+[`PromptMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#PromptMessage)
+has two fields: a `Role`, either `"user"` or `"assistant"`, and a single
+`Content`. That is the same interface a tool result uses (see [Tool result
+content](#tool-result-content)), so a prompt message can hold an image, audio,
+or a resource's contents as readily as text.
+
+Media on its own says nothing about what the model should do with it, so send a
+text message alongside it. Embedding a resource puts its contents directly in
+the message, sparing the client a separate `resources/read`. Note that
+`ResourceContents.URI` is not checked against the resources the server has
+registered: it records where the contents came from, so use the URI of a real
+resource when there is one, as in the example below.
+
+```go
+func Example_promptContent() {
+	ctx := context.Background()
+
+	const styleGuide = "- Prefer clarity over cleverness.\n"
+	screenshotPNG := []byte("\x89PNG\r\n\x1a\n")
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+
+	s.AddResource(&mcp.Resource{URI: "doc://style-guide", MIMEType: "text/markdown"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "doc://style-guide",
+					MIMEType: "text/markdown",
+					Text:     styleGuide,
+				}},
+			}, nil
+		})
+
+	s.AddPrompt(&mcp.Prompt{Name: "review_screenshot"},
+		func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{
+				Messages: []*mcp.PromptMessage{
+					{Role: "user", Content: &mcp.EmbeddedResource{
+						Resource: &mcp.ResourceContents{
+							URI:      "doc://style-guide",
+							MIMEType: "text/markdown",
+							Text:     styleGuide,
+						},
+					}},
+					{Role: "user", Content: &mcp.ImageContent{Data: screenshotPNG, MIMEType: "image/png"}},
+					{Role: "user", Content: &mcp.TextContent{Text: "Review the screenshot against the style guide."}},
+				},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: "review_screenshot"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		switch content := msg.Content.(type) {
+		case *mcp.TextContent:
+			fmt.Println(msg.Role, "text:", content.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("%s image: %s, %d bytes\n", msg.Role, content.MIMEType, len(content.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("%s embedded resource: %s (%s)\n", msg.Role, content.Resource.URI, content.Resource.MIMEType)
+		}
+	}
+	// Output:
+	// user embedded resource: doc://style-guide (text/markdown)
+	// user image: image/png, 8 bytes
+	// user text: Review the screenshot against the style guide.
 }
 ```
 
@@ -448,8 +534,6 @@ value either way.
 
 ```go
 func ExampleAddTool_contentTypes() {
-	// Image and audio data are raw bytes; the SDK base64-encodes them on the
-	// wire. A real server would read them from disk with os.ReadFile.
 	chartPNG := []byte("\x89PNG\r\n\x1a\n")
 	summaryWAV := []byte("RIFF....WAVE")
 

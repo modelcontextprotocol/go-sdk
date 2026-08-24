@@ -88,6 +88,77 @@ func Example_prompts() {
 
 // !-prompts
 
+// !+promptcontent
+
+func Example_promptContent() {
+	ctx := context.Background()
+
+	const styleGuide = "- Prefer clarity over cleverness.\n"
+	screenshotPNG := []byte("\x89PNG\r\n\x1a\n")
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+
+	s.AddResource(&mcp.Resource{URI: "doc://style-guide", MIMEType: "text/markdown"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "doc://style-guide",
+					MIMEType: "text/markdown",
+					Text:     styleGuide,
+				}},
+			}, nil
+		})
+
+	s.AddPrompt(&mcp.Prompt{Name: "review_screenshot"},
+		func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{
+				Messages: []*mcp.PromptMessage{
+					{Role: "user", Content: &mcp.EmbeddedResource{
+						Resource: &mcp.ResourceContents{
+							URI:      "doc://style-guide",
+							MIMEType: "text/markdown",
+							Text:     styleGuide,
+						},
+					}},
+					{Role: "user", Content: &mcp.ImageContent{Data: screenshotPNG, MIMEType: "image/png"}},
+					{Role: "user", Content: &mcp.TextContent{Text: "Review the screenshot against the style guide."}},
+				},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: "review_screenshot"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		switch content := msg.Content.(type) {
+		case *mcp.TextContent:
+			fmt.Println(msg.Role, "text:", content.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("%s image: %s, %d bytes\n", msg.Role, content.MIMEType, len(content.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("%s embedded resource: %s (%s)\n", msg.Role, content.Resource.URI, content.Resource.MIMEType)
+		}
+	}
+	// Output:
+	// user embedded resource: doc://style-guide (text/markdown)
+	// user image: image/png, 8 bytes
+	// user text: Review the screenshot against the style guide.
+}
+
+// !-promptcontent
+
 // !+logging
 
 func Example_logging() {
