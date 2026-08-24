@@ -145,7 +145,7 @@ In order to implement a tool, the user must do all of the following:
 - Unmarshal the input schema into a Go value
 - Execute the tool logic.
 - Marshal the tool's structured output (if any) to JSON, and store it in the
-  result's `StructuredOutput` field as well as the unstructured `Content` field.
+  result's `StructuredContent` field as well as the unstructured `Content` field.
 - Validate that output JSON against the tool's output schema.
 - If any tool errors occurred, pack them into the unstructured content and set
   `IsError` to `true.`
@@ -180,7 +180,7 @@ This does the following automatically:
 - Tool arguments are validated against the input schema.
 - Tool arguments are marshaled into the `In` value.
 - Tool output (the `Out` value) is marshaled into the result's
-  `StructuredOutput`, as well as the unstructured `Content`.
+  `StructuredContent`, as well as the unstructured `Content`.
 - Output is validated against the tool's output schema.
 - If an ordinary error is returned, it is stored int the `CallToolResult` and
   `IsError` is set to `true`.
@@ -201,6 +201,39 @@ the `Tool.InputSchema` explicitly:
 _See [mcp/tool_example_test.go](https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/tool_example_test.go) for the full
 example, or [examples/server/toolschemas](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/toolschemas/main.go)
 for more examples of customizing tool schemas._
+
+### Tool result content
+
+Alongside its structured output, a tool result carries a list of
+[`Content`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Content)
+blocks in `CallToolResult.Content`, and may mix as many kinds as it needs:
+
+| Type | Carries |
+| --- | --- |
+| [`TextContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#TextContent) | plain text |
+| [`ImageContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ImageContent) | image data, with a MIME type |
+| [`AudioContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#AudioContent) | audio data, with a MIME type |
+| [`EmbeddedResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#EmbeddedResource) | the contents of a resource, inline |
+| [`ResourceLink`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceLink) | a reference to a resource the client can read separately |
+
+`ImageContent.Data` and `AudioContent.Data` are plain `[]byte`; the SDK
+base64-encodes them on the wire, so handlers never encode by hand, and base64
+carried over from another MCP SDK must be decoded before it is assigned. An
+`EmbeddedResource` wraps a
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents),
+which holds either `Text` or, for binary data, `Blob`. Prefer a `ResourceLink`
+when the client may not need the contents, since an embedded resource is
+transferred whether it is used or not.
+
+When a handler bound with `AddTool` leaves `Content` unset, the SDK fills it
+with the JSON encoding of the output value; set `Content` explicitly, as below,
+to return anything else. `StructuredContent` is still populated from the output
+value either way.
+
+%include ../../mcp/tool_example_test.go contenttypes -
+
+`ToolUseContent` and `ToolResultContent` also implement `Content`, but are only
+valid in sampling messages, not in tool results.
 
 **Stateless server deployments:** Some deployments create a new
 [`Server`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server)
