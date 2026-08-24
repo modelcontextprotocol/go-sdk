@@ -281,6 +281,48 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	}
 }
 
+// TestStreamableClientCloseUnresponsiveDelete checks that Close stays bounded
+// when the peer accepts the session-termination DELETE but never answers it.
+func TestStreamableClientCloseUnresponsiveDelete(t *testing.T) {
+	base := NewStreamableHTTPHandler(func(*http.Request) *Server {
+		return NewServer(testImpl, nil)
+	}, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			<-r.Context().Done()
+			return
+		}
+		base.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		// The DELETE handler only returns once its request is cancelled, so
+		// drop the connections before waiting for outstanding requests.
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(context.Background(),
+		&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	if session.ID() == "" {
+		t.Fatal("empty session ID: Close would not send DELETE")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeDeleteTimeout + 5*time.Second):
+		t.Fatal("Close() blocked on an unanswered DELETE")
+	}
+}
+
 func TestStreamableClientGETHandling(t *testing.T) {
 	ctx := context.Background()
 
