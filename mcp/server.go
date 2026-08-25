@@ -1962,6 +1962,19 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		ss.mu.Lock()
 		ss.listenIDs = append(ss.listenIDs, req.ID)
 		ss.mu.Unlock()
+		// The listen completes when the handler returns (peer cancellation,
+		// stream break, or error); drop the ID so completed listens don't
+		// accumulate in the slice indefinitely.
+		defer func() {
+			ss.mu.Lock()
+			for i, id := range ss.listenIDs {
+				if id == req.ID {
+					ss.listenIDs = append(ss.listenIDs[:i], ss.listenIDs[i+1:]...)
+					break
+				}
+			}
+			ss.mu.Unlock()
+		}()
 	}
 
 	res, err := handleReceive(ctx, ss, req)
