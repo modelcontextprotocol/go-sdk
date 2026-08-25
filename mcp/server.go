@@ -1733,6 +1733,18 @@ func (ss *ServerSession) Elicit(ctx context.Context, params *ElicitParams) (*Eli
 	return res, nil
 }
 
+// NotifyElicitationComplete tells the client that the out-of-band ("url" mode)
+// elicitation identified by params.ElicitationID has finished.
+func (ss *ServerSession) NotifyElicitationComplete(ctx context.Context, params *ElicitationCompleteParams) error {
+	if params == nil {
+		return fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+	if params.ElicitationID == "" {
+		return fmt.Errorf("%w: ElicitationID cannot be empty", jsonrpc2.ErrInvalidParams)
+	}
+	return handleNotify(ctx, notificationElicitationComplete, newServerRequest(ss, orZero[Params](params)))
+}
+
 // Log sends a log message to the client.
 //
 // For new-protocol (>= 2026-07-28) requests, the level is taken from the
