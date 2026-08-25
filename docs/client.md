@@ -2,8 +2,11 @@
 # Support for MCP client features
 
 1. [Roots](#roots)
+	1. [Roots list changed](#roots-list-changed)
 1. [Sampling](#sampling)
 1. [Elicitation](#elicitation)
+	1. [Schema defaults and enums](#schema-defaults-and-enums)
+	1. [Completing a URL elicitation](#completing-a-url-elicitation)
 1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 1. [Capabilities](#capabilities)
 	1. [Capability inference](#capability-inference)
@@ -88,6 +91,67 @@ func Example_roots() {
 		log.Fatal(err)
 	}
 	// Output: [file://a file://b]
+}
+```
+
+### Roots list changed
+
+`Client.AddRoots` and `Client.RemoveRoots` notify every connected server that
+the list changed. Servers observe this through
+[`ServerOptions.RootsListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.RootsListChangedHandler);
+as with the server-side list-changed notifications, it reports only that
+something changed, so read the list back with `ServerSession.ListRoots`.
+
+```go
+func Example_rootsListChanged() {
+	ctx := context.Background()
+
+	changed := make(chan struct{}, 2)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		RootsListChangedHandler: func(context.Context, *mcp.RootsListChangedRequest) {
+			changed <- struct{}{}
+		},
+	})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	c.AddRoots(&mcp.Root{URI: "file:///project"})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	ss, err := s.Connect(ctx, t1, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ss.Close()
+
+	// ListRoots is a server-initiated request, so this session negotiates a
+	// protocol version that still allows one.
+	cs, err := c.Connect(ctx, t2, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Roots added after the client connects notify every connected server.
+	c.AddRoots(&mcp.Root{URI: "file:///scratch"})
+	<-changed
+
+	// The notification says only that the list changed, so read it back.
+	res, err := ss.ListRoots(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, root := range res.Roots {
+		fmt.Println(root.URI)
+	}
+
+	c.RemoveRoots("file:///scratch")
+	<-changed
+	fmt.Println("roots changed again")
+
+	// Output:
+	// file:///project
+	// file:///scratch
+	// roots changed again
 }
 ```
 
@@ -232,6 +296,154 @@ func Example_elicitation() {
 		log.Fatal(err)
 	}
 	// Output: value
+}
+```
+
+### Schema defaults and enums
+
+`ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
+client renders as a form. Two field keywords shape that form.
+
+A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034)) prefills a
+field. When the user accepts without supplying it, the SDK fills the field in
+from the schema before the result reaches either side's caller — the client
+does so after its elicitation handler returns, and `ServerSession.Elicit` does
+so again on receipt. This is unconditional; there is no opt-in flag. Marking a
+defaulted field `Required` defeats it: accepted content is validated against
+the schema before defaults are applied, so an answer that omits the field is
+rejected rather than defaulted.
+
+An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330)) restricts a
+field to a fixed set of values, which the client renders as a choice. Enums
+are supported only on `"string"` fields; declaring one on another type is
+rejected. To label the choices, set the legacy `enumNames` keyword through
+`Schema.Extra`, with exactly one name per enum value — a mismatched length is
+rejected.
+
+```go
+func Example_elicitationSchema() {
+	ctx := context.Background()
+	ct, st := mcp.NewInMemoryTransports()
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "export_report"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{"format": &mcp.ElicitParams{
+					Message: "Export quarterly-sales as which format?",
+					RequestedSchema: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"format": {
+								Type:    "string",
+								Title:   "Format",
+								Enum:    []any{"pdf", "csv"},
+								Default: json.RawMessage(`"pdf"`),
+								Extra:   map[string]any{"enumNames": []any{"PDF document", "CSV spreadsheet"}},
+							},
+						},
+					},
+				}},
+			}, nil, nil
+		}
+		res := req.Params.InputResponses["format"].(*mcp.ElicitResult)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Exported as " + res.Content["format"].(string)}},
+		}, nil, nil
+	})
+	if _, err := s.Connect(ctx, st, nil); err != nil {
+		log.Fatal(err)
+	}
+
+	// The user accepts without filling anything in.
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "export_report"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Content[0].(*mcp.TextContent).Text)
+	// Output: Exported as pdf
+}
+```
+
+### Completing a URL elicitation
+
+In URL mode the user finishes out of band, in a browser, so nothing in the
+elicitation result tells the client when they are done. The server signals that
+with
+[`ServerSession.NotifyElicitationComplete`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyElicitationComplete),
+passing the same `ElicitationID` the request carried; the client observes it
+through
+[`ClientOptions.ElicitationCompleteHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationCompleteHandler).
+Send it from whatever endpoint the hosted flow redirects back to.
+
+The notification matters most when a handler rejects a request with
+[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError):
+the client parks the original request until a notification names that
+`ElicitationID`, and then retries it automatically. Until one arrives, the
+client waits.
+
+```go
+func Example_elicitationComplete() {
+	ctx := context.Background()
+	ct, st := mcp.NewInMemoryTransports()
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ss.Close()
+
+	done := make(chan struct{})
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		Capabilities: &mcp.ClientCapabilities{
+			Elicitation: &mcp.ElicitationCapabilities{URL: &mcp.URLElicitationCapabilities{}},
+		},
+		ElicitationHandler: func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			fmt.Println("opening", req.Params.URL)
+			return &mcp.ElicitResult{Action: "accept"}, nil
+		},
+		ElicitationCompleteHandler: func(_ context.Context, req *mcp.ElicitationCompleteNotificationRequest) {
+			fmt.Println("flow finished:", req.Params.ElicitationID)
+			close(done)
+		},
+	})
+	cs, err := c.Connect(ctx, ct, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	const elicitationID = "connect-calendar-1"
+	if _, err := ss.Elicit(ctx, &mcp.ElicitParams{
+		Message:       "Grant calendar access",
+		URL:           "https://calendar.example.com/consent?state=" + elicitationID,
+		ElicitationID: elicitationID,
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// The hosted page redirects back to the server, whose callback endpoint
+	// signals that the user is done.
+	if err := ss.NotifyElicitationComplete(ctx, &mcp.ElicitationCompleteParams{ElicitationID: elicitationID}); err != nil {
+		log.Fatal(err)
+	}
+	<-done
+
+	// Output:
+	// opening https://calendar.example.com/consent?state=connect-calendar-1
+	// flow finished: connect-calendar-1
 }
 ```
 
