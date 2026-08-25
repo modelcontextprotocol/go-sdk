@@ -2,14 +2,14 @@
 # Support for the MCP base protocol
 
 1. [Lifecycle](#lifecycle)
-	1. [Discovery (`server/discover`)](#discovery-(server/discover))
-	1. [Per-request `_meta` keys](#per-request-meta-keys)
-	1. [Per-response `_meta` keys](#per-response-meta-keys)
-	1. [Subscriptions (`subscriptions/listen`)](#subscriptions-(subscriptions/listen))
+	1. [Discovery](#discovery)
+	1. [Per-request metadata keys](#per-request-metadata-keys)
+	1. [Per-response metadata keys](#per-response-metadata-keys)
+	1. [Subscriptions](#subscriptions)
 1. [Transports](#transports)
 	1. [Stdio Transport](#stdio-transport)
 	1. [Streamable Transport](#streamable-transport)
-	1. [SSE Transport (legacy)](#sse-transport-(legacy))
+	1. [Legacy SSE Transport](#legacy-sse-transport)
 	1. [Custom transports](#custom-transports)
 	1. [Concurrency](#concurrency)
 1. [Authorization](#authorization)
@@ -111,7 +111,7 @@ func Example_lifecycle() {
 }
 ```
 
-### Discovery (`server/discover`)
+### Discovery
 
 Introduced in `2026-07-28` by
 [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
@@ -128,7 +128,7 @@ request. Servers implementing `2026-07-28` MUST implement it.
   fails or the server does not support the latest version, the client falls back to the
   legacy `initialize` handshake.
 
-### Per-request `_meta` keys
+### Per-request metadata keys
 
 When the negotiated protocol version is `2026-07-28` or later, every request
 carries these keys inside its `_meta` map (constants live in
@@ -147,7 +147,7 @@ request, and populates `clientInfo` when configured with an `*Implementation`
 `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`, and
 `ServerRequest[P].ClientCapabilities()`.
 
-### Per-response `_meta` keys
+### Per-response metadata keys
 
 Under the same protocol version, servers SHOULD identify themselves on every
 response. The SDK populates this
@@ -157,7 +157,7 @@ key automatically on every outgoing response:
 |---|---|---|---|
 | `MetaKeyServerInfo` | `io.modelcontextprotocol/serverInfo` | `*Implementation` | No |
 
-### Subscriptions (`subscriptions/listen`)
+### Subscriptions
 
 Introduced in `2026-07-28` by
 [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
@@ -343,7 +343,7 @@ _See [examples/server/distributed](https://github.com/modelcontextprotocol/go-sd
 an example using stateless mode to implement a server distributed across
 multiple processes._
 
-### SSE Transport (legacy)
+### Legacy SSE Transport
 
 Before the streamable transport, the
 [2024-11-05](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports)

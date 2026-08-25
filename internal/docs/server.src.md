@@ -87,7 +87,7 @@ to be notified of changes to subscribed resources. On `2026-07-28` and
 later sessions the SDK delivers these notifications over a
 `subscriptions/listen` stream instead of the legacy `resources/subscribe`
 RPC; see [Subscriptions
-(`subscriptions/listen`)](protocol.md#subscriptions-subscriptionslisten)
+(`subscriptions/listen`)](protocol.md#subscriptions)
 for the wire-level details.
 
 **Server-side**:
