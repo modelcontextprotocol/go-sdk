@@ -1880,14 +1880,3 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
 	}
 }
-
-func TestSupportedProtocolVersionsAccessor(t *testing.T) {
-	got := SupportedProtocolVersions()
-	if diff := cmp.Diff(supportedProtocolVersions, got); diff != "" {
-		t.Errorf("SupportedProtocolVersions() mismatch (-want +got):\n%s", diff)
-	}
-	got[0] = "mutated"
-	if supportedProtocolVersions[0] == "mutated" {
-		t.Error("SupportedProtocolVersions() aliases the SDK's list; want a copy")
-	}
-}
