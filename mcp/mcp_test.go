@@ -3341,10 +3341,7 @@ func TestServerSessionCloseWithActiveListen(t *testing.T) {
 	// Sanity check: the auto-listen must actually have registered an entry in
 	// listenIDs, otherwise the test below would trivially pass without
 	// exercising the fix.
-	ss.mu.Lock()
-	n := len(ss.listenIDs)
-	ss.mu.Unlock()
-	if n == 0 {
+	if n := listenIDsCount(ss); n == 0 {
 		t.Fatal("expected auto-listen to register a request ID on the server session")
 	}
 
@@ -3354,6 +3351,90 @@ func TestServerSessionCloseWithActiveListen(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("ServerSession.Close deadlocked with an active subscriptions/listen")
+	}
+}
+
+// listenIDsCount reports how many request IDs are currently recorded in the
+// session's listenIDs set.
+func listenIDsCount(ss *ServerSession) int {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return len(ss.listenIDs)
+}
+
+// A completed listen stream must not leave a stale entry in the session.
+func TestListenPrunedAfterSingleCompletion(t *testing.T) {
+	cs, ss, cleanup := basicClientServerConnection(t, nil, nil, func(s *Server) {
+		AddTool(s, &Tool{Name: "t"}, sayHi)
+	})
+	_ = cleanup
+
+	ctx := context.Background()
+	lctx, cancel := context.WithCancel(ctx)
+	go cs.subscriptionsListen(lctx, &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{ToolsListChanged: true},
+	})
+	time.Sleep(30 * time.Millisecond)
+	cancel() // peer cancels: server handler returns
+	time.Sleep(30 * time.Millisecond)
+
+	if n := listenIDsCount(ss); n != 0 {
+		t.Fatalf("completed listen left %d stale entry/ies", n)
+	}
+}
+
+// Completed listens must not accumulate: the slice grows without bound today.
+func TestListenIDsDoNotAccumulate(t *testing.T) {
+	cs, ss, cleanup := basicClientServerConnection(t, nil, nil, func(s *Server) {
+		AddTool(s, &Tool{Name: "t"}, sayHi)
+	})
+	_ = cleanup
+
+	ctx := context.Background()
+
+	const cycles = 15
+	for range cycles {
+		lctx, cancel := context.WithCancel(ctx)
+		go cs.subscriptionsListen(lctx, &SubscriptionsListenParams{
+			Notifications: &NotificationSubscriptions{ToolsListChanged: true},
+		})
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	if n := listenIDsCount(ss); n != 0 {
+		t.Fatalf("listenIDs grew unbounded: %d stale entries after %d completed listens", n, cycles)
+	}
+}
+
+// The leak is reachable through the public Subscribe/Unsubscribe API: every
+// subscription opens a listen stream and unsubscribing completes it, so a real
+// client cycling subscriptions on a long-lived session leaks one entry per cycle.
+func TestListenIDsLeakViaPublicSubscribeUnsubscribe(t *testing.T) {
+	cs, ss, cleanup := basicClientServerConnection(t, nil, nil, func(s *Server) {
+		AddTool(s, &Tool{Name: "t"}, sayHi)
+	})
+	_ = cleanup
+
+	ctx := context.Background()
+
+	const cycles = 3
+	for i := range cycles {
+		uri := fmt.Sprintf("resource://cycle-%d", i)
+		if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+			t.Fatalf("Subscribe %d: %v", i, err)
+		}
+		time.Sleep(15 * time.Millisecond)
+		if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+			t.Fatalf("Unsubscribe %d: %v", i, err)
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	if n := listenIDsCount(ss); n != 0 {
+		t.Fatalf("public Subscribe/Unsubscribe leaked %d stale listenIDs after %d cycles", n, cycles)
 	}
 }
 
