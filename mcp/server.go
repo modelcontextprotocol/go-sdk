@@ -229,7 +229,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.GetSessionID = rand.Text
 	}
 
-	protocolVersions := slices.Clone(supportedProtocolVersions)
+	protocolVersions := SupportedProtocolVersions()
 	if len(opts.SupportedProtocolVersions) > 0 {
 		for _, v := range opts.SupportedProtocolVersions {
 			if !slices.Contains(supportedProtocolVersions, v) {
