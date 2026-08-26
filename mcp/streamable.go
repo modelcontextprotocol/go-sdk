@@ -1541,7 +1541,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					// Advertise only the legacy versions this stateful server accepts
 					// (i.e. exclude 2026-07-28, since that's what the request asked for
 					// and what we're rejecting).
-					legacyVersions := slices.DeleteFunc(slices.Clone(supportedProtocolVersions), func(v string) bool {
+					advertised := supportedProtocolVersions
+					if c.server != nil {
+						advertised = c.server.protocolVersions
+					}
+					legacyVersions := slices.DeleteFunc(slices.Clone(advertised), func(v string) bool {
 						return v >= protocolVersion20260728
 					})
 					data, _ := json.Marshal(UnsupportedProtocolVersionData{

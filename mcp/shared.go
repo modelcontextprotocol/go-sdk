@@ -63,16 +63,24 @@ var supportedProtocolVersions = []string{
 	protocolVersion20241105,
 }
 
+// SupportedProtocolVersions returns the protocol versions supported by this
+// version of the SDK, newest first.
+//
+// Use it to discover the values accepted by
+// [ServerOptions.SupportedProtocolVersions]. The returned slice is a copy:
+// modifying it does not change what the SDK supports.
+func SupportedProtocolVersions() []string { return slices.Clone(supportedProtocolVersions) }
+
 // negotiatedVersion returns the effective protocol version to use, given a
-// client version.
-func negotiatedVersion(clientVersion string) string {
+// client version and the versions the server supports.
+func negotiatedVersion(clientVersion string, supported []string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
-	// client's version, use the latest version.
+	// client's version, use the latest version we do support.
 	//
 	// Cap the supported versions at the legacy protocolVersion20251125, as this
 	// method is used by the initialize method which is deprecated in
 	// version protocolVersion20260728.
-	if slices.Contains(supportedProtocolVersions, clientVersion) && clientVersion < protocolVersion20260728 {
+	if slices.Contains(supported, clientVersion) && clientVersion < protocolVersion20260728 {
 		return clientVersion
 	}
 	return protocolVersion20251125
