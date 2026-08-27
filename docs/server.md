@@ -996,6 +996,30 @@ server.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 })
 ```
 
+**Per-resource cache hints.** For `resources/read`, a resource or resource
+template can declare its caching policy at registration through
+`CacheHint`, without central URI matching in middleware. The matched
+resource's hint applies only to its `resources/read` result, takes precedence
+over the server default, and is never emitted in `resources/list` or
+`resources/templates/list`. A value the handler sets on the result still wins
+over the hint.
+
+```go
+// Public static documentation, cacheable by any intermediary.
+server.AddResource(&mcp.Resource{
+    URI:       "docs://style-guide",
+    Name:      "style-guide",
+    CacheHint: &mcp.CacheHint{TTLMs: 60_000, CacheScope: "public"},
+}, docHandler)
+
+// Tenant-specific data, cacheable only by the requesting client.
+server.AddResourceTemplate(&mcp.ResourceTemplate{
+    URITemplate: "tenant://{id}/profile",
+    Name:        "tenant-profile",
+    CacheHint:   &mcp.CacheHint{TTLMs: 5_000, CacheScope: "private"},
+}, tenantHandler)
+```
+
 ## Utilities
 
 ### Completion

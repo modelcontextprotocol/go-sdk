@@ -1196,6 +1196,37 @@ func (c *Cacheable) setDefaultCacheableValues() {
 	c.CacheScope = "public"
 }
 
+// CacheHint declares a caching policy for a single resource or resource
+// template, applied to its resources/read result at registration time. See
+// [Resource.CacheHint] and [ResourceTemplate.CacheHint].
+type CacheHint struct {
+	// TTLMs is the freshness hint in milliseconds, with the same semantics
+	// as [Cacheable.TTLMs].
+	TTLMs int
+	// CacheScope is the intended cache scope ("public" or "private"), with
+	// the same semantics as [Cacheable.CacheScope]. If empty, the server
+	// default ("public") applies.
+	CacheScope string
+}
+
+// applyCacheHint fills the cacheable fields from a registration-level hint,
+// falling back to the server default ("public", TTL 0) when the hint is nil.
+// Values already set on the result by the handler take precedence over the
+// hint, and the hint takes precedence over the default.
+func (c *Cacheable) applyCacheHint(hint *CacheHint) {
+	if c.CacheScope == "" {
+		switch {
+		case hint != nil && hint.CacheScope != "":
+			c.CacheScope = hint.CacheScope
+		default:
+			c.CacheScope = "public"
+		}
+	}
+	if c.TTLMs == 0 && hint != nil {
+		c.TTLMs = hint.TTLMs
+	}
+}
+
 // The server's response to a prompts/list request from the client.
 type ListPromptsResult struct {
 	completeResultWithType
@@ -1693,6 +1724,10 @@ type Resource struct {
 	URI string `json:"uri"`
 	// Icons for the resource, if any.
 	Icons []Icon `json:"icons,omitempty"`
+	// CacheHint declares a caching policy applied to this resource's
+	// resources/read result (SEP-2549). When set, it takes precedence over
+	// the server default and is not emitted in resources/list.
+	CacheHint *CacheHint `json:"-"`
 }
 
 type ResourceListChangedParams struct {
@@ -1736,6 +1771,11 @@ type ResourceTemplate struct {
 	URITemplate string `json:"uriTemplate"`
 	// Icons for the resource template, if any.
 	Icons []Icon `json:"icons,omitempty"`
+	// CacheHint declares a caching policy applied to the resources/read
+	// result of resources matched by this template (SEP-2549). When set, it
+	// takes precedence over the server default and is not emitted in
+	// resources/templates/list.
+	CacheHint *CacheHint `json:"-"`
 }
 
 // The sender or recipient of messages and data in a conversation.

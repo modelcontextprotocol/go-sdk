@@ -1025,7 +1025,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	uri := req.Params.URI
 	// Look up the resource URI in the lists of resources and resource templates.
 	// This is a security check as well as an information lookup.
-	handler, mimeType, ok := s.lookupResourceHandler(uri)
+	handler, mimeType, hint, ok := s.lookupResourceHandler(uri)
 	if !ok {
 		// Don't expose the server configuration to the client.
 		// Treat an unregistered resource the same as a registered one that couldn't be found.
@@ -1041,7 +1041,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	res.applyCacheHint(hint)
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
@@ -1060,22 +1060,23 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	return res, nil
 }
 
-// lookupResourceHandler returns the resource handler and MIME type for the resource or
-// resource template matching uri. If none, the last return value is false.
-func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, bool) {
+// lookupResourceHandler returns the resource handler, MIME type, and cache
+// hint for the resource or resource template matching uri. If none, the last
+// return value is false.
+func (s *Server) lookupResourceHandler(uri string) (ResourceHandler, string, *CacheHint, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Try resources first.
 	if r, ok := s.resources.get(uri); ok {
-		return r.handler, r.resource.MIMEType, true
+		return r.handler, r.resource.MIMEType, r.resource.CacheHint, true
 	}
 	// Look for matching template.
 	for rt := range s.resourceTemplates.all() {
 		if rt.Matches(uri) {
-			return rt.handler, rt.resourceTemplate.MIMEType, true
+			return rt.handler, rt.resourceTemplate.MIMEType, rt.resourceTemplate.CacheHint, true
 		}
 	}
-	return nil, "", false
+	return nil, "", nil, false
 }
 
 // fileResourceHandler returns a ReadResourceHandler that reads paths using dir as
