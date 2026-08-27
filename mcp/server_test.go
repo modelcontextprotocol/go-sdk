@@ -10,11 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -1821,66 +1818,34 @@ func TestServerSupportedProtocolVersions(t *testing.T) {
 // [CodeUnsupportedProtocolVersion] when its version is excluded by
 // [ServerOptions.SupportedProtocolVersions].
 func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
+	ctx := context.Background()
 	server := NewServer(testImpl, &ServerOptions{
 		SupportedProtocolVersions: []string{protocolVersion20251125},
 	})
-	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
-		&StreamableHTTPOptions{Stateless: true})
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	_ = ct
 
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  methodListTools,
-		"params": map[string]any{
-			"_meta": map[string]any{
-				MetaKeyProtocolVersion:    protocolVersion20260728,
-				MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
-				MetaKeyClientCapabilities: map[string]any{},
-			},
-		},
+	params := fmt.Sprintf(`{"_meta":{%q:%q,%q:{}}}`,
+		MetaKeyProtocolVersion, protocolVersion20260728, MetaKeyClientCapabilities)
+	_, err = ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodListTools,
+		Params: json.RawMessage(params),
 	})
-	if err != nil {
-		t.Fatal(err)
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
-	req.Header.Set(methodHeader, methodListTools)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	jsonPayload := respBody
-	if i := bytes.Index(respBody, []byte("data: ")); i >= 0 {
-		jsonPayload = respBody[i+len("data: "):]
-		if j := bytes.IndexByte(jsonPayload, '\n'); j >= 0 {
-			jsonPayload = jsonPayload[:j]
-		}
-	}
-	var rpcResp struct {
-		Error *jsonrpc.Error `json:"error"`
-	}
-	if err := json.Unmarshal(jsonPayload, &rpcResp); err != nil {
-		t.Fatalf("unmarshal response %q: %v", respBody, err)
-	}
-	if rpcResp.Error == nil {
-		t.Fatalf("got no error for an excluded protocol version; body = %s", respBody)
-	}
-	if rpcResp.Error.Code != CodeUnsupportedProtocolVersion {
-		t.Errorf("error code = %d, want %d; body = %s", rpcResp.Error.Code, CodeUnsupportedProtocolVersion, respBody)
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
 	}
 	var data UnsupportedProtocolVersionData
-	if err := json.Unmarshal(rpcResp.Error.Data, &data); err != nil {
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
 		t.Fatalf("unmarshal error data: %v", err)
 	}
 	if diff := cmp.Diff([]string{protocolVersion20251125}, data.Supported); diff != "" {
