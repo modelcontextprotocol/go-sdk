@@ -175,26 +175,7 @@ type ServerOptions struct {
 	// four list methods, and resources/read.
 	//
 	// It is called once per such result, after the corresponding handler has
-	// returned, with c holding the values that handler produced. For results
-	// the SDK builds itself c is zero-valued; for resources/read it holds
-	// whatever the [ResourceHandler] set, so a policy may defer to a handler
-	// that expressed an opinion:
-	//
-	//	SetCacheable: func(_ context.Context, req mcp.Request, c *mcp.Cacheable) {
-	//		if c.CacheScope == "" && isTenantScoped(req) {
-	//			c.CacheScope = "private"
-	//		}
-	//	}
-	//
-	// The callback overwrites rather than defaults: whatever it leaves in c is
-	// what goes on the wire, except that an empty CacheScope is filled with
-	// "public", the protocol default for an absent cacheScope. It is passed
-	// the request so that policy can vary by method, session, or
-	// authorization context.
-	//
-	// SetCacheable is called without any server lock held, so it may call back
-	// into the server. Receiving middleware still runs after it and may
-	// overwrite the result.
+	// returned, with c holding the values that handler produced.
 	SetCacheable func(ctx context.Context, req Request, c *Cacheable)
 }
 
