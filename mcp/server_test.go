@@ -1017,6 +1017,62 @@ func TestClientRootCapabilities(t *testing.T) {
 	}
 }
 
+func TestServerDiscover(t *testing.T) {
+	const instructions = "use carefully"
+	s := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, &ServerOptions{
+		Instructions: instructions,
+		HasTools:     true,
+	})
+
+	t.Run("nil session uses SDK supported versions", func(t *testing.T) {
+		got := s.Discover(nil)
+		if got == nil {
+			t.Fatal("Discover(nil) returned nil")
+		}
+		if diff := cmp.Diff(supportedProtocolVersions, got.SupportedVersions); diff != "" {
+			t.Errorf("SupportedVersions mismatch (-want +got):\n%s", diff)
+		}
+		if got.Instructions != instructions {
+			t.Errorf("Instructions = %q, want %q", got.Instructions, instructions)
+		}
+		if got.Capabilities == nil || got.Capabilities.Tools == nil {
+			t.Errorf("Capabilities.Tools = %v, want non-nil when HasTools is set", got.Capabilities)
+		}
+		if got.CacheScope != "public" {
+			t.Errorf("CacheScope = %q, want public", got.CacheScope)
+		}
+	})
+
+	t.Run("session versions and no state mutation", func(t *testing.T) {
+		ctx := context.Background()
+		_, st := NewInMemoryTransports()
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		if ss.InitializeParams() != nil {
+			t.Fatal("session already initialized before Discover")
+		}
+		got := s.Discover(ss)
+		if got == nil {
+			t.Fatal("Discover(session) returned nil")
+		}
+		// In-memory transport does not filter versions; session should
+		// advertise the full SDK list.
+		if diff := cmp.Diff(supportedProtocolVersions, got.SupportedVersions); diff != "" {
+			t.Errorf("SupportedVersions mismatch (-want +got):\n%s", diff)
+		}
+		if got.Instructions != instructions {
+			t.Errorf("Instructions = %q, want %q", got.Instructions, instructions)
+		}
+		if ss.InitializeParams() != nil {
+			t.Error("Discover(session) mutated session identity; want no side effects")
+		}
+	})
+}
+
 func TestServerRejectsDuplicateInitialize(t *testing.T) {
 	ctx := context.Background()
 
