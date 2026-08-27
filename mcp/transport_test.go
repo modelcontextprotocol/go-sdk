@@ -60,6 +60,8 @@ func TestIOConnRead(t *testing.T) {
 		input           string
 		want            string
 		protocolVersion string
+		// supported is the server's negotiable set; nil means the SDK default.
+		supported []string
 	}{
 		{
 			name:  "valid json input",
@@ -100,6 +102,16 @@ func TestIOConnRead(t *testing.T) {
 			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2025-06-18)",
 			protocolVersion: protocolVersion20250618,
 		},
+		{
+			// The client asked for a version the server does not negotiate, so
+			// the connection must land on the server's counter-offer (which
+			// forbids batching) rather than echoing the client's request.
+			name:            "batching at a version the server excludes",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2025-11-25)",
+			protocolVersion: protocolVersion20241105,
+			supported:       []string{protocolVersion20251125},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,7 +124,7 @@ func TestIOConnRead(t *testing.T) {
 					InitializeParams: &InitializeParams{
 						ProtocolVersion: tt.protocolVersion,
 					},
-				})
+				}, tt.supported)
 			}
 			_, err := tr.Read(context.Background())
 			if err == nil && tt.want != "" {
