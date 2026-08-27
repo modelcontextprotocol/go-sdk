@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1688,6 +1690,333 @@ func TestServerSession_RejectsServerInitiated(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestServerSetCacheable(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name     string
+		callback func(context.Context, Request, *Cacheable)
+		want     Cacheable
+	}{
+		{
+			name: "no callback yields the protocol default",
+			want: Cacheable{TTLMs: 0, CacheScope: "public"},
+		},
+		{
+			name: "callback sets both fields",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				c.TTLMs, c.CacheScope = 60_000, "private"
+			},
+			want: Cacheable{TTLMs: 60_000, CacheScope: "private"},
+		},
+		{
+			// A callback that only cares about freshness leaves the scope
+			// alone, and the protocol default is materialized for it.
+			name: "unset CacheScope becomes public",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				c.TTLMs = 60_000
+			},
+			want: Cacheable{TTLMs: 60_000, CacheScope: "public"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(testImpl, &ServerOptions{SetCacheable: tc.callback})
+			AddTool(s, &Tool{Name: "t", Description: "d"},
+				func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+					return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+				})
+			s.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+				return &GetPromptResult{}, nil
+			})
+			s.AddResource(&Resource{URI: "test://r", Name: "r"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+				return &ReadResourceResult{Contents: []*ResourceContents{{URI: req.Params.URI, Text: "x"}}}, nil
+			})
+			s.AddResourceTemplate(&ResourceTemplate{URITemplate: "tmpl://{id}", Name: "rt"},
+				func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+					return &ReadResourceResult{Contents: []*ResourceContents{{Text: "x"}}}, nil
+				})
+
+			cs := mustConnect(t, s, nil)
+
+			check := func(label string, got Cacheable) {
+				t.Helper()
+				if got != tc.want {
+					t.Errorf("%s Cacheable = %+v, want %+v", label, got, tc.want)
+				}
+			}
+
+			tools, err := cs.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("ListTools", tools.Cacheable)
+
+			prompts, err := cs.ListPrompts(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("ListPrompts", prompts.Cacheable)
+
+			resources, err := cs.ListResources(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("ListResources", resources.Cacheable)
+
+			templates, err := cs.ListResourceTemplates(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("ListResourceTemplates", templates.Cacheable)
+
+			read, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://r"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("ReadResource", read.Cacheable)
+		})
+	}
+}
+
+// A resource handler is the innermost authority on its own result: the server
+// may fill in what the handler left unset, but must not overwrite it.
+func TestReadResourceHandlerCacheable(t *testing.T) {
+	ctx := context.Background()
+	handlerValue := Cacheable{TTLMs: 9_000, CacheScope: "private"}
+
+	for _, tc := range []struct {
+		name     string
+		callback func(context.Context, Request, *Cacheable)
+		want     Cacheable
+	}{
+		{
+			name: "handler value survives",
+			want: handlerValue,
+		},
+		{
+			// The callback is handed what the handler produced, so a policy
+			// can single out the results that expressed no opinion.
+			name: "callback may defer to the handler",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				if c.CacheScope == "" {
+					c.CacheScope = "public"
+					c.TTLMs = 1_000
+				}
+			},
+			want: handlerValue,
+		},
+		{
+			name: "callback may overrule the handler",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				c.TTLMs, c.CacheScope = 0, "public"
+			},
+			want: Cacheable{TTLMs: 0, CacheScope: "public"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(testImpl, &ServerOptions{SetCacheable: tc.callback})
+			s.AddResource(&Resource{URI: "test://r", Name: "r"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+				return &ReadResourceResult{
+					Cacheable: handlerValue,
+					Contents:  []*ResourceContents{{URI: req.Params.URI, Text: "x"}},
+				}, nil
+			})
+
+			res, err := mustConnect(t, s, nil).ReadResource(ctx, &ReadResourceParams{URI: "test://r"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Cacheable != tc.want {
+				t.Errorf("Cacheable = %+v, want %+v", res.Cacheable, tc.want)
+			}
+		})
+	}
+}
+
+// SetCacheable is user code, so it must not run under the server lock: the
+// list methods hold that lock while paginating, and a callback that inspects
+// the server would deadlock there. Probing the lock rather than re-entering it
+// keeps a regression a test failure instead of a hang.
+func TestSetCacheableNotUnderServerLock(t *testing.T) {
+	ctx := context.Background()
+
+	var (
+		s         *Server
+		underLock atomic.Bool
+	)
+	s = NewServer(testImpl, &ServerOptions{
+		SetCacheable: func(context.Context, Request, *Cacheable) {
+			if s.mu.TryLock() {
+				s.mu.Unlock()
+			} else {
+				underLock.Store(true)
+			}
+		},
+	})
+	AddTool(s, &Tool{Name: "t", Description: "d"},
+		func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	s.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
+	s.AddResource(&Resource{URI: "test://r", Name: "r"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{Contents: []*ResourceContents{{URI: req.Params.URI, Text: "x"}}}, nil
+	})
+	s.AddResourceTemplate(&ResourceTemplate{URITemplate: "tmpl://{id}", Name: "rt"},
+		func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+			return &ReadResourceResult{Contents: []*ResourceContents{{Text: "x"}}}, nil
+		})
+
+	cs := mustConnect(t, s, nil)
+
+	check := func(method string, call func() error) {
+		t.Helper()
+		underLock.Store(false)
+		if err := call(); err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		if underLock.Load() {
+			t.Errorf("%s: SetCacheable ran while the server lock was held", method)
+		}
+	}
+	check("tools/list", func() error { _, err := cs.ListTools(ctx, nil); return err })
+	check("prompts/list", func() error { _, err := cs.ListPrompts(ctx, nil); return err })
+	check("resources/list", func() error { _, err := cs.ListResources(ctx, nil); return err })
+	check("resources/templates/list", func() error { _, err := cs.ListResourceTemplates(ctx, nil); return err })
+	check("resources/read", func() error {
+		_, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://r"})
+		return err
+	})
+}
+
+// cacheWireLog is a concurrency-safe io.Writer for capturing a transport log.
+type cacheWireLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *cacheWireLog) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *cacheWireLog) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// The schema makes ttlMs and cacheScope required members of CacheableResult, so
+// every response carrying them must put both on the wire, with cacheScope one
+// of the two legal values. In particular the zero value must still serialize:
+// ttlMs 0 is meaningful ("immediately stale") and an empty cacheScope is not a
+// legal value at all.
+func TestCacheableWireFormat(t *testing.T) {
+	ctx := context.Background()
+
+	s := NewServer(testImpl, nil)
+	AddTool(s, &Tool{Name: "t", Description: "d"},
+		func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	s.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
+	s.AddResource(&Resource{URI: "test://r", Name: "r"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{Contents: []*ResourceContents{{URI: req.Params.URI, Text: "x"}}}, nil
+	})
+	s.AddResourceTemplate(&ResourceTemplate{URITemplate: "tmpl://{id}", Name: "rt"},
+		func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+			return &ReadResourceResult{Contents: []*ResourceContents{{Text: "x"}}}, nil
+		})
+
+	log := new(cacheWireLog)
+	st, ct := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+	cs, err := NewClient(testImpl, nil).Connect(ctx,
+		&LoggingTransport{Transport: ct, Writer: log},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.ListPrompts(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.ListResources(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.ListResourceTemplates(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://r"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each cacheable result is identifiable on the wire by a field unique to
+	// it, so that the scan below can prove it covered every one of them.
+	kinds := map[string]string{
+		"supportedVersions": "server/discover",
+		"tools":             "tools/list",
+		"prompts":           "prompts/list",
+		"resources":         "resources/list",
+		"resourceTemplates": "resources/templates/list",
+		"contents":          "resources/read",
+	}
+	seen := make(map[string]bool)
+
+	// "read: " lines on the client transport are the raw server responses.
+	for line := range strings.SplitSeq(log.String(), "\n") {
+		body, ok := strings.CutPrefix(line, "read: ")
+		if !ok {
+			continue
+		}
+		var msg struct {
+			Result map[string]json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(body), &msg); err != nil {
+			continue // not a response
+		}
+		_, hasTTL := msg.Result["ttlMs"]
+		scope, hasScope := msg.Result["cacheScope"]
+		if !hasTTL && !hasScope {
+			continue
+		}
+		for field, method := range kinds {
+			if _, ok := msg.Result[field]; ok {
+				seen[method] = true
+			}
+		}
+		if !hasTTL {
+			t.Errorf("response has cacheScope but no ttlMs: %s", body)
+		}
+		if !hasScope {
+			t.Errorf("response has ttlMs but no cacheScope: %s", body)
+			continue
+		}
+		if got := string(scope); got != `"public"` && got != `"private"` {
+			t.Errorf("cacheScope = %s, want \"public\" or \"private\": %s", got, body)
+		}
+	}
+	// Guard against the loop above silently matching nothing, and against a
+	// result type quietly dropping out of the cacheable set.
+	for _, method := range kinds {
+		if !seen[method] {
+			t.Errorf("no cacheable response observed for %s", method)
 		}
 	}
 }
