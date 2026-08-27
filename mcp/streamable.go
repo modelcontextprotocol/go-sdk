@@ -1524,7 +1524,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
 			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
-				// Extract again the protcol version from the context to see what the client
+				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
 				// server/discover is exempt from the stateful
@@ -2016,6 +2016,11 @@ const (
 	reconnectGrowFactor = 1.5
 	// reconnectMaxDelay caps the backoff delay, preventing it from growing indefinitely.
 	reconnectMaxDelay = 30 * time.Second
+	// closeDeleteTimeout bounds the session-termination DELETE sent by Close.
+	// That request is best-effort: a peer that accepts the connection but never
+	// answers must not be able to hold teardown open until the TCP timeout.
+	// See issue #1183.
+	closeDeleteTimeout = 5 * time.Second
 )
 
 var (
@@ -2342,13 +2347,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-		if requestMethod == methodDiscover && !errors.Is(err, jsonrpc2.ErrRejected) {
-			// Wrap the discover failure with ErrRejected so the jsonrpc2 layer
-			// doesn't set writeErr, which would prevent the legacy initialize
-			// fallback from succeeding on the same connection. This covers the
-			// case where a legacy server rejects server/discover with a
-			// non-JSON-RPC body (e.g. plain text 400), which checkResponse
-			// cannot classify as a per-call rejection on its own.
+		if (requestMethod == methodDiscover || requestMethod == methodSubscriptionsListen) && !errors.Is(err, jsonrpc2.ErrRejected) {
+			// Wrap the discover or subscriptions/listen failure with ErrRejected so
+			// the jsonrpc2 layer doesn't set writeErr, which would break the connection
+			// (preventing the legacy initialize fallback from succeeding, or breaking
+			// subsequent RPCs if subscriptions/listen fails). This covers the case
+			// where a server rejects these requests with a non-JSON-RPC body (e.g.
+			// plain text 404 or 400), which checkResponse cannot classify as a
+			// per-call rejection on its own.
 			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
@@ -2446,10 +2452,10 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request, msg jsonrpc.Mess
 	}
 	if pv := protocolVersionFromMessage(msg); pv != "" {
 		req.Header.Set(protocolVersionHeader, pv)
-	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
-		req.Header.Set(protocolVersionHeader, pv)
 	} else if c.initializedResult != nil {
 		req.Header.Set(protocolVersionHeader, c.initializedResult.ProtocolVersion)
+	} else if pv := protocolVersionFromContext(req.Context()); pv != "" {
+		req.Header.Set(protocolVersionHeader, pv)
 	}
 	if c.sessionID != "" {
 		req.Header.Set(sessionIDHeader, c.sessionID)
@@ -2587,10 +2593,11 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 	// §2.5.3: "The server MAY terminate the session at any time, after
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
-	if resp.StatusCode == http.StatusNotFound {
+	// Only a stateful connection with a known session ID can experience ErrSessionMissing.
+	if sessionID := c.SessionID(); resp.StatusCode == http.StatusNotFound && sessionID != "" {
 		// Return an ErrSessionMissing to avoid sending a redundant DELETE when the
 		// session is already gone.
-		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
+		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, sessionID, ErrSessionMissing)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
@@ -2767,7 +2774,9 @@ func (c *streamableClientConn) Close() error {
 			// No session was established (e.g. the server is stateless),
 			// so there is nothing to delete.
 		} else {
-			req, err := http.NewRequestWithContext(c.ctx, http.MethodDelete, c.url, nil)
+			reqCtx, stop := context.WithTimeout(c.ctx, closeDeleteTimeout)
+			defer stop()
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodDelete, c.url, nil)
 			if err != nil {
 				c.closeErr = err
 			} else {

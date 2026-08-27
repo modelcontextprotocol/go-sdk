@@ -43,7 +43,7 @@ type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error
 //   - If the Out type is not the empty interface [any], it provides the
 //     default output schema for the tool (which again may be overridden in
 //     [AddTool]).
-//   - The Out value is used to populate result.StructuredOutput.
+//   - The Out value is used to populate result.StructuredContent.
 //   - If [CallToolResult.Content] is unset, it is populated with the JSON
 //     content of the output.
 //   - An error result is treated as a tool error, rather than a protocol
