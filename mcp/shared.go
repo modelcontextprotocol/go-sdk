@@ -72,7 +72,7 @@ var supportedProtocolVersions = []string{
 func SupportedProtocolVersions() []string { return slices.Clone(supportedProtocolVersions) }
 
 // negotiatedVersion returns the effective protocol version to use, given a
-// client version and the versions the server supports.
+// client version and the versions the server supports, newest first.
 func negotiatedVersion(clientVersion string, supported []string) string {
 	// In general, prefer to use the clientVersion, but if we don't support the
 	// client's version, use the latest version we do support.
@@ -83,6 +83,18 @@ func negotiatedVersion(clientVersion string, supported []string) string {
 	if slices.Contains(supported, clientVersion) && clientVersion < protocolVersion20260728 {
 		return clientVersion
 	}
+	for _, v := range supported {
+		if v < protocolVersion20260728 {
+			return v
+		}
+	}
+	// No listed version can carry this handshake, which happens only when the
+	// server is restricted to protocolVersion20260728 and later. There is no
+	// right answer: no version is both supported by the server and reachable
+	// by initialize. Name the newest handshake-era version rather than a
+	// version the client could mistake for a successful negotiation into the
+	// new protocol, and let it disconnect. This is the one case where the
+	// answer is not drawn from supported.
 	return protocolVersion20251125
 }
 

@@ -1759,12 +1759,19 @@ func TestServerSupportedProtocolVersions(t *testing.T) {
 				want:      protocolVersion20251125,
 			},
 			{
-				// The lifecycle spec requires an answer the client can act on,
-				// so the legacy fallback stays at the SDK's newest legacy
-				// version even when the option excludes it.
-				name:      "fallback is exempt from the restriction",
+				name:      "fallback is the newest configured version",
 				supported: []string{protocolVersion20250326},
 				client:    protocolVersion20241105,
+				want:      protocolVersion20250326,
+			},
+			{
+				// Nothing the server supports can carry an initialize
+				// handshake, so the answer names a handshake-era version the
+				// client can act on rather than one it could mistake for the
+				// new protocol.
+				name:      "server with no handshake version",
+				supported: []string{protocolVersion20260728},
+				client:    protocolVersion20250618,
 				want:      protocolVersion20251125,
 			},
 			{

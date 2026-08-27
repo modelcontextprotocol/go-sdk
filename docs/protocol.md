@@ -147,12 +147,14 @@ support, never widen it; naming a version the SDK does not know panics. A
 `2026-07-28` request at an excluded version is rejected with error code
 `-32022`.
 
-The legacy `initialize` handshake is exempt where it cannot honor the
-restriction: the lifecycle spec requires the server to answer a request it does
-not support with a version it does, and that fallback remains the SDK's newest
-legacy version (`2025-11-25`) even when the option excludes it. Narrow the set
-to a single legacy revision only if you also expect clients to respect what
-`server/discover` advertises.
+The legacy `initialize` handshake never rejects. The lifecycle spec requires
+the server to answer a request it does not support with a version it does, so
+an excluded version is answered with the newest listed version that handshake
+can negotiate — and the client is expected to disconnect when it cannot speak
+it. A set holding no such version (one restricted to `2026-07-28` and later) is
+answered with `2025-11-25`, the newest handshake-era version, so that the client
+disconnects rather than reading the answer as a negotiation into the new
+protocol.
 
 ### Per-request metadata keys
 

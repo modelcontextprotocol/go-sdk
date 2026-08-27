@@ -187,11 +187,14 @@ type ServerOptions struct {
 	// A request using the >= 2026-07-28 protocol at an excluded version is
 	// rejected with error code [CodeUnsupportedProtocolVersion].
 	//
-	// The legacy initialize handshake is exempt from the restriction when it
-	// cannot honor it: the lifecycle spec requires the server to answer an
-	// unsupported request with a version it does support, and that fallback
-	// remains the SDK's newest legacy version, which may lie outside this
-	// list.
+	// The legacy initialize handshake never rejects. The lifecycle spec
+	// requires the server to answer a request it does not support with a
+	// version it does, so an excluded version is answered with the newest
+	// listed version that handshake can negotiate, and the client is expected
+	// to disconnect when it cannot speak it. A list holding no such version
+	// (one restricted to 2026-07-28 and later) is answered with 2025-11-25,
+	// the newest handshake-era version, so that the client disconnects rather
+	// than reading the answer as a negotiation into the new protocol.
 	SupportedProtocolVersions []string
 }
 
@@ -239,6 +242,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		protocolVersions = slices.DeleteFunc(protocolVersions, func(v string) bool {
 			return !slices.Contains(opts.SupportedProtocolVersions, v)
 		})
+	}
+	if len(protocolVersions) == 0 {
+		panic("no supported protocol versions")
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
