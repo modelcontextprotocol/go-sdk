@@ -74,8 +74,8 @@ func SupportedProtocolVersions() []string { return slices.Clone(supportedProtoco
 // negotiatedVersion returns the effective protocol version to use, given a
 // client version and the versions the server supports, newest first.
 func negotiatedVersion(clientVersion string, supported []string) string {
-	// In general, prefer to use the clientVersion, but if we don't support the
-	// client's version, use the latest version we do support.
+	// In general, prefer to use the clientVersion, but if not supported
+	// by the server, use the latest version the server supports.
 	//
 	// Cap the supported versions at the legacy protocolVersion20251125, as this
 	// method is used by the initialize method which is deprecated in
@@ -88,13 +88,13 @@ func negotiatedVersion(clientVersion string, supported []string) string {
 			return v
 		}
 	}
-	// No listed version can carry this handshake, which happens only when the
-	// server is restricted to protocolVersion20260728 and later. There is no
-	// right answer: no version is both supported by the server and reachable
-	// by initialize. Name the newest handshake-era version rather than a
-	// version the client could mistake for a successful negotiation into the
-	// new protocol, and let it disconnect. This is the one case where the
-	// answer is not drawn from supported.
+	// If the server was enforced to support only protocolVersion20260728 and
+	// later, the initialize function should not be called.
+	// If a client calls the initialize function, return the protocolVersion20251125.
+	// As according to spec (https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation):
+	// "If the server supports the requested protocol version, it MUST respond with the same version."
+	// "Otherwise, the server MUST respond with another protocol version it supports."
+	// "This SHOULD be the latest version supported by the server."
 	return protocolVersion20251125
 }
 
