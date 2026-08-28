@@ -175,16 +175,9 @@ type ServerOptions struct {
 	GetSessionID func() string
 
 	// SupportedProtocolVersions, if non-empty, restricts the protocol versions
-	// this server advertises in "server/discover" and is willing to negotiate,
-	// to those listed. If empty, every version returned by
+	// this server advertises. If empty, every version returned by
 	// [SupportedProtocolVersions] is used.
-	//
-	// Entries must come from [SupportedProtocolVersions], the set of valid
-	// values: the list can only narrow support, never widen it, and
-	// [NewServer] panics if it names a version that is not there. The order of
-	// entries is irrelevant; the server always prefers the newest mutually
-	// supported version.
-	//
+	// The list can only narrow support, never widen it.
 	// A request using the >= 2026-07-28 protocol at an excluded version is
 	// rejected with error code [CodeUnsupportedProtocolVersion].
 	//
