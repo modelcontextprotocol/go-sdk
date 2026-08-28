@@ -180,9 +180,10 @@ func TestScanEvents(t *testing.T) {
 
 // endlessReader streams a fixed prefix once, then repeats fill forever.
 type endlessReader struct {
-	prefix string
-	sent   bool
-	repeat byte
+	prefix   string
+	sent     bool
+	repeat   string
+	repIndex int
 }
 
 func (r *endlessReader) Read(p []byte) (int, error) {
@@ -192,7 +193,8 @@ func (r *endlessReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	for i := range p {
-		p[i] = r.repeat
+		p[i] = r.repeat[r.repIndex%len(r.repeat)]
+		r.repIndex++
 	}
 	return len(p), nil
 }
@@ -232,7 +234,7 @@ func TestScanEventsMaxEventSize(t *testing.T) {
 		},
 		{
 			name:         "unbounded rejected",
-			reader:       &endlessReader{prefix: "data: ", repeat: byte(wantByte)},
+			reader:       &endlessReader{prefix: "data: ", repeat: string(wantByte)},
 			maxEventSize: 1024,
 			wantErr:      true,
 		},
@@ -297,7 +299,7 @@ func TestScanEventsMaxEventSize(t *testing.T) {
 				t.Fatalf("got %d events, want %d", len(res.events), len(tt.wantDataLengths))
 			}
 			for i, wantLen := range tt.wantDataLengths {
-				wantRepeated := string([]byte{wantByte})
+				wantRepeated := string(wantByte)
 				if got := res.events[i].Data; string(got) != strings.Repeat(wantRepeated, wantLen) {
 					t.Errorf("event %d: got %d data bytes, want %d bytes of %s", i, len(got), wantLen, wantRepeated)
 				}
