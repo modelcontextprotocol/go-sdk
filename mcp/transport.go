@@ -116,11 +116,7 @@ type serverConnection interface {
 	Connection
 
 	// sessionUpdated is called whenever the server session state changes.
-	//
-	// supported is the set of protocol versions the server negotiates, newest
-	// first, so that a connection deriving the session's effective version
-	// reaches the same answer the initialize handshake did.
-	sessionUpdated(state ServerSessionState, supported []string)
+	sessionUpdated(ServerSessionState)
 }
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
@@ -530,21 +526,14 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 
 func (c *ioConn) SessionID() string { return "" }
 
-func (c *ioConn) sessionUpdated(state ServerSessionState, supported []string) {
-	protocolVersion := ""
-	if state.InitializeParams != nil {
-		protocolVersion = state.InitializeParams.ProtocolVersion
-	}
+func (c *ioConn) sessionUpdated(state ServerSessionState) {
+	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
 		// where specifying the protocol version in the HTTP header
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	if supported == nil {
-		supported = supportedProtocolVersions
-	}
-	protocolVersion = negotiatedVersion(protocolVersion, supported)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()

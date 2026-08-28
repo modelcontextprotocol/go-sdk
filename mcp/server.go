@@ -176,13 +176,14 @@ type ServerOptions struct {
 
 	// SupportedProtocolVersions, if non-empty, restricts the protocol versions
 	// this server advertises in "server/discover" and is willing to negotiate,
-	// to those listed. If empty, every version supported by this version of the
-	// SDK is used.
+	// to those listed. If empty, every version returned by
+	// [SupportedProtocolVersions] is used.
 	//
-	// The value can only narrow support, never widen it: [NewServer] panics if
-	// it names a version the SDK does not support. The order of entries is
-	// irrelevant; the server always prefers the newest mutually supported
-	// version.
+	// Entries must come from [SupportedProtocolVersions], the set of valid
+	// values: the list can only narrow support, never widen it, and
+	// [NewServer] panics if it names a version that is not there. The order of
+	// entries is irrelevant; the server always prefers the newest mutually
+	// supported version.
 	//
 	// A request using the >= 2026-07-28 protocol at an excluded version is
 	// rejected with error code [CodeUnsupportedProtocolVersion].
@@ -242,9 +243,6 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		protocolVersions = slices.DeleteFunc(protocolVersions, func(v string) bool {
 			return !slices.Contains(opts.SupportedProtocolVersions, v)
 		})
-	}
-	if len(protocolVersions) == 0 {
-		panic("no supported protocol versions")
 	}
 
 	if opts.Logger == nil { // ensure we have a logger
@@ -1557,7 +1555,7 @@ func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	copy := ss.state
 	ss.mu.Unlock()
 	if c, ok := ss.mcpConn.(serverConnection); ok {
-		c.sessionUpdated(copy, ss.server.protocolVersions)
+		c.sessionUpdated(copy)
 	}
 }
 
@@ -2064,12 +2062,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
-	var wasInit bool
+	var (
+		wasInit    bool
+		negotiated string
+	)
 	ss.updateState(func(state *ServerSessionState) {
 		wasInit = state.InitializeParams != nil
 		if !wasInit {
 			state.InitializeParams = params
+			state.NegotiatedProtocolVersion = negotiatedVersion(params.ProtocolVersion, ss.server.protocolVersions)
 		}
+		negotiated = state.NegotiatedProtocolVersion
 	})
 	if wasInit {
 		ss.server.opts.Logger.Error("duplicate initialize request")
@@ -2080,7 +2083,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
-		ProtocolVersion: negotiatedVersion(params.ProtocolVersion, s.protocolVersions),
+		ProtocolVersion: negotiated,
 		Capabilities:    s.capabilities(),
 		Instructions:    s.opts.Instructions,
 		ServerInfo:      s.impl,

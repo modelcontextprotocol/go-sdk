@@ -124,7 +124,7 @@ func TestIOConnRead(t *testing.T) {
 					InitializeParams: &InitializeParams{
 						ProtocolVersion: tt.protocolVersion,
 					},
-				}, tt.supported)
+				})
 			}
 			_, err := tr.Read(context.Background())
 			if err == nil && tt.want != "" {
