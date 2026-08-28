@@ -44,6 +44,10 @@ type Server struct {
 	// fixed at creation
 	impl *Implementation
 	opts ServerOptions
+	// protocolVersions is the descending-ordered list of protocol versions
+	// this server advertises and negotiates: [supportedProtocolVersions],
+	// narrowed by [ServerOptions.SupportedProtocolVersions].
+	protocolVersions []string
 
 	mu                          sync.Mutex
 	prompts                     *featureSet[*serverPrompt]
@@ -169,6 +173,23 @@ type ServerOptions struct {
 	// GetSessionID is not consulted when [StreamableHTTPOptions.Stateless] is
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
+
+	// SupportedProtocolVersions, if non-empty, restricts the protocol versions
+	// this server advertises. If empty, every version returned by
+	// [SupportedProtocolVersions] is used.
+	// The list can only narrow support, never widen it.
+	// A request using the >= 2026-07-28 protocol at an excluded version is
+	// rejected with error code [CodeUnsupportedProtocolVersion].
+	//
+	// The legacy initialize handshake never rejects. The lifecycle spec
+	// requires the server to answer a request it does not support with a
+	// version it does, so an excluded version is answered with the newest
+	// listed version that handshake can negotiate, and the client is expected
+	// to disconnect when it cannot speak it. A list holding no such version
+	// (one restricted to 2026-07-28 and later) is answered with 2025-11-25,
+	// the newest handshake-era version, so that the client disconnects rather
+	// than reading the answer as a negotiation into the new protocol.
+	SupportedProtocolVersions []string
 }
 
 // NewServer creates a new MCP server. The resulting server has no features:
@@ -205,6 +226,18 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		opts.GetSessionID = rand.Text
 	}
 
+	protocolVersions := SupportedProtocolVersions()
+	if len(opts.SupportedProtocolVersions) > 0 {
+		for _, v := range opts.SupportedProtocolVersions {
+			if !slices.Contains(supportedProtocolVersions, v) {
+				panic(fmt.Errorf("unsupported protocol version %q", v))
+			}
+		}
+		protocolVersions = slices.DeleteFunc(protocolVersions, func(v string) bool {
+			return !slices.Contains(opts.SupportedProtocolVersions, v)
+		})
+	}
+
 	if opts.Logger == nil { // ensure we have a logger
 		opts.Logger = ensureLogger(nil)
 	}
@@ -215,6 +248,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 	s := &Server{
 		impl:                        impl,
 		opts:                        opts,
+		protocolVersions:            protocolVersions,
 		prompts:                     newFeatureSet(func(p *serverPrompt) string { return p.prompt.Name }),
 		tools:                       newFeatureSet(func(t *serverTool) string { return t.tool.Name }),
 		resources:                   newFeatureSet(func(r *serverResource) string { return r.resource.URI }),
@@ -886,7 +920,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	versions := req.Session.supportedVersions
 	req.Session.mu.Unlock()
 	if versions == nil {
-		versions = slices.Clone(supportedProtocolVersions)
+		versions = slices.Clone(s.protocolVersions)
 	}
 	// Read the request-scoped identity/capabilities before acquiring the
 	// session lock: these accessors may fall back to Session.InitializeParams
@@ -903,7 +937,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	// is never surfaced to the client via Mcp-Session-Id; leaving
 	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
 	// close it instead of leaking.
-	if supportedVersion := negotiateMutuallySupportedVersion(versions); supportedVersion >= protocolVersion20260728 {
+	if slices.ContainsFunc(versions, func(v string) bool { return v >= protocolVersion20260728 }) {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
 		})
@@ -917,16 +951,16 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 	return res, nil
 }
 
-// filterSupportedVersions returns the subset of [supportedProtocolVersions]
-// that the Transport can serve. If t does not implement [ProtocolVersionSupporter], every
-// SDK-supported version is included.
-func filterSupportedVersions(t Transport) []string {
+// filterSupportedVersions returns the subset of versions that the Transport
+// can serve. If t does not implement [ProtocolVersionSupporter], every version
+// is included.
+func filterSupportedVersions(t Transport, versions []string) []string {
 	pvs, ok := t.(ProtocolVersionSupporter)
 	if !ok {
-		return slices.Clone(supportedProtocolVersions)
+		return slices.Clone(versions)
 	}
-	out := make([]string, 0, len(supportedProtocolVersions))
-	for _, v := range supportedProtocolVersions {
+	out := make([]string, 0, len(versions))
+	for _, v := range versions {
 		if pvs.SupportsProtocolVersion(v) {
 			out = append(out, v)
 		}
@@ -1398,7 +1432,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 	// but without the lock the Go memory model gives the read goroutine no
 	// guarantee of seeing this write, and -race flags it.
 	ss.mu.Lock()
-	ss.supportedVersions = filterSupportedVersions(t)
+	ss.supportedVersions = filterSupportedVersions(t, s.protocolVersions)
 	ss.mu.Unlock()
 
 	// Start keepalive before returning the session to avoid race conditions with Close.
@@ -1492,7 +1526,7 @@ type ServerSession struct {
 	mcpConn         Connection
 	keepaliveCancel context.CancelFunc
 
-	// supportedVersions is the subset of [supportedProtocolVersions] that the
+	// supportedVersions is the subset of [Server.protocolVersions] that the
 	// transport can actually serve, computed once at connection time from
 	// [ProtocolVersionSupporter] (if implemented by the transport) and used by
 	// the SEP-2575 server/discover handler.
@@ -1896,9 +1930,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	if validatedMeta.usesNewProtocol &&
-		!slices.Contains(supportedProtocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
+		!slices.Contains(ss.server.protocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
 		data, _ := json.Marshal(UnsupportedProtocolVersionData{
-			Supported: supportedProtocolVersions,
+			Supported: ss.server.protocolVersions,
 			Requested: validatedMeta.initializeParams.ProtocolVersion,
 		})
 		return nil, &jsonrpc.Error{
@@ -2021,12 +2055,17 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
 	}
-	var wasInit bool
+	var (
+		wasInit    bool
+		negotiated string
+	)
 	ss.updateState(func(state *ServerSessionState) {
 		wasInit = state.InitializeParams != nil
 		if !wasInit {
 			state.InitializeParams = params
+			state.NegotiatedProtocolVersion = negotiatedVersion(params.ProtocolVersion, ss.server.protocolVersions)
 		}
+		negotiated = state.NegotiatedProtocolVersion
 	})
 	if wasInit {
 		ss.server.opts.Logger.Error("duplicate initialize request")
@@ -2037,7 +2076,7 @@ func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParam
 	return &InitializeResult{
 		// TODO(rfindley): alter behavior when falling back to an older version:
 		// reject unsupported features.
-		ProtocolVersion: negotiatedVersion(params.ProtocolVersion),
+		ProtocolVersion: negotiated,
 		Capabilities:    s.capabilities(),
 		Instructions:    s.opts.Instructions,
 		ServerInfo:      s.impl,

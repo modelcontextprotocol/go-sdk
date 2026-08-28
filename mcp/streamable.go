@@ -363,13 +363,21 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 
 	// [§2.7] of the spec (2025-06-18): validate the MCP-Protocol-Version
-	// header. If provided, it must be a supported version. If absent, the
-	// version is unknown (the request may be an initialize for any version).
+	// header. If provided, it must be a version the server negotiates, which
+	// [ServerOptions.SupportedProtocolVersions] may have narrowed. If absent,
+	// the version is unknown (the request may be an initialize for any
+	// version).
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
-	if protocolVersion != "" && !slices.Contains(supportedProtocolVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
-		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedProtocolVersions, ",")), http.StatusBadRequest)
+	var supportedVersions []string
+	if server := h.getServer(req); server != nil {
+		supportedVersions = server.protocolVersions
+	} else {
+		supportedVersions = supportedProtocolVersions
+	}
+	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
+		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
 		return
 	}
 	req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, protocolVersion))
@@ -1541,7 +1549,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					// Advertise only the legacy versions this stateful server accepts
 					// (i.e. exclude 2026-07-28, since that's what the request asked for
 					// and what we're rejecting).
-					legacyVersions := slices.DeleteFunc(slices.Clone(supportedProtocolVersions), func(v string) bool {
+					advertised := supportedProtocolVersions
+					if c.server != nil {
+						advertised = c.server.protocolVersions
+					}
+					legacyVersions := slices.DeleteFunc(slices.Clone(advertised), func(v string) bool {
 						return v >= protocolVersion20260728
 					})
 					data, _ := json.Marshal(UnsupportedProtocolVersionData{
