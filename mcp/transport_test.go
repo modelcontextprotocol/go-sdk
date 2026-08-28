@@ -56,12 +56,15 @@ func TestBatchFraming(t *testing.T) {
 
 func TestIOConnRead(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		want            string
+		name  string
+		input string
+		want  string
+		// protocolVersion is the version negotiated by 'initialize'; empty
+		// means no session state was pushed to the connection.
 		protocolVersion string
-		// supported is the server's negotiable set; nil means the SDK default.
-		supported []string
+		// requested is the version the client asked for, which differs from
+		// protocolVersion when the server counter-offered.
+		requested string
 	}{
 		{
 			name:  "valid json input",
@@ -104,13 +107,13 @@ func TestIOConnRead(t *testing.T) {
 		},
 		{
 			// The client asked for a version the server does not negotiate, so
-			// the connection must land on the server's counter-offer (which
-			// forbids batching) rather than echoing the client's request.
-			name:            "batching at a version the server excludes",
+			// the connection must follow the server's counter-offer (which
+			// forbids batching) rather than the client's request.
+			name:            "batching at a counter-offered version",
 			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
 			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2025-11-25)",
-			protocolVersion: protocolVersion20241105,
-			supported:       []string{protocolVersion20251125},
+			requested:       protocolVersion20241105,
+			protocolVersion: protocolVersion20251125,
 		},
 	}
 	for _, tt := range tests {
@@ -120,10 +123,15 @@ func TestIOConnRead(t *testing.T) {
 			})
 			t.Cleanup(func() { tr.Close() })
 			if tt.protocolVersion != "" {
+				requested := tt.requested
+				if requested == "" {
+					requested = tt.protocolVersion
+				}
 				tr.sessionUpdated(ServerSessionState{
 					InitializeParams: &InitializeParams{
-						ProtocolVersion: tt.protocolVersion,
+						ProtocolVersion: requested,
 					},
+					NegotiatedProtocolVersion: tt.protocolVersion,
 				})
 			}
 			_, err := tr.Read(context.Background())
