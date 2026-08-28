@@ -363,7 +363,7 @@ func readEventLine(r *bufio.Reader, budget int) ([]byte, error) {
 		}
 		line = append(line, frag...)
 		if errors.Is(err, bufio.ErrBufferFull) {
-			continue // lookign for delim
+			continue // looking for delim
 		}
 		return line, err
 	}
