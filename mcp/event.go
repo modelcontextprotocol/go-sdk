@@ -65,6 +65,10 @@ func writeEvent(w http.ResponseWriter, evt Event) (int, error) {
 	return n, err
 }
 
+// defaultMaxEventSize bounds the number of bytes buffered for a single SSE
+// event before the input gets rejected.
+const defaultMaxEventSize = 16 << 20 // 16 MiB
+
 // scanEvents iterates SSE events in the given scanner. The iterated error is
 // terminal: if encountered, the stream is corrupt or broken and should no
 // longer be used.
@@ -72,6 +76,13 @@ func writeEvent(w http.ResponseWriter, evt Event) (int, error) {
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
 func scanEvents(r io.Reader) iter.Seq2[Event, error] {
+	return scanEventsLimited(r, defaultMaxEventSize)
+}
+
+// scanEventsLimited is [scanEvents] with an explicit per-event byte budget.
+// When maxEventSize > 0, an event is reported as [errMalformedEvent] when
+// its size exceed it. A non-positive maxEventSize disables the cap.
+func scanEventsLimited(r io.Reader, maxEventSize int) iter.Seq2[Event, error] {
 	reader := bufio.NewReader(r)
 
 	// TODO: investigate proper behavior when events are out of order, or have
@@ -94,8 +105,9 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 		//  - Lines starting with ":" are ignored.
 		//  - Records are terminated with two consecutive newlines.
 		var (
-			evt     Event
-			dataBuf *bytes.Buffer // if non-nil, preceding field was also data
+			evt        Event
+			dataBuf    *bytes.Buffer // if non-nil, preceding field was also data
+			eventBytes int           // bytes read for the current, in-progress event
 		)
 		yieldEvent := func() bool {
 			if dataBuf != nil {
@@ -112,11 +124,20 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 			return true
 		}
 		for {
-			line, err := reader.ReadBytes('\n')
+			budget := -1
+			if maxEventSize > 0 {
+				budget = maxEventSize - eventBytes
+			}
+			line, err := readEventLine(reader, budget)
+			if errors.Is(err, errEventTooLarge) {
+				yield(Event{}, fmt.Errorf("%w: SSE event exceeded %d bytes without terminating", errMalformedEvent, maxEventSize))
+				return
+			}
 			if err != nil && !errors.Is(err, io.EOF) {
 				yield(Event{}, fmt.Errorf("error reading event: %v", err))
 				return
 			}
+			eventBytes += len(line)
 			line = bytes.TrimRight(line, "\r\n")
 			isEOF := errors.Is(err, io.EOF)
 
@@ -124,6 +145,7 @@ func scanEvents(r io.Reader) iter.Seq2[Event, error] {
 				if !yieldEvent() {
 					return
 				}
+				eventBytes = 0 // reset the budget between events
 				if isEOF {
 					return
 				}
@@ -321,6 +343,31 @@ var ErrEventsPurged = errors.New("data purged")
 // This is a hard error indicating corrupted data or protocol violations, as opposed to
 // transient I/O errors which may be retryable.
 var errMalformedEvent = errors.New("malformed event")
+
+// errEventTooLarge is returned by [readEventLine] when a single line would
+// exceed the remaining per-event byte budget.
+var errEventTooLarge = errors.New("SSE event exceeded maximum size")
+
+// readEventLine reads a single '\n'-terminated line from r. When budget >= 0 it
+// reads at most budget bytes, returning [errEventTooLarge] once that budget is
+// exceeded before a newline arrives.
+func readEventLine(r *bufio.Reader, budget int) ([]byte, error) {
+	if budget < 0 {
+		return r.ReadBytes('\n')
+	}
+	var line []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(line)+len(frag) > budget {
+			return nil, errEventTooLarge
+		}
+		line = append(line, frag...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue // lookign for delim
+		}
+		return line, err
+	}
+}
 
 // After implements [EventStore.After].
 func (s *MemoryEventStore) After(_ context.Context, sessionID, streamID string, index int) iter.Seq2[[]byte, error] {
