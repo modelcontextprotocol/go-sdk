@@ -5,10 +5,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -165,5 +168,115 @@ func TestIOConnRead_EmptyMethod(t *testing.T) {
 	}
 	if req.ID != jsonrpc2.Int64ID(5) {
 		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+}
+
+// bufWriteCloser is a concurrency-safe io.WriteCloser over a bytes.Buffer.
+type bufWriteCloser struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *bufWriteCloser) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *bufWriteCloser) Close() error { return nil }
+
+func (b *bufWriteCloser) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestIOConnRead_MalformedFrameRecovers verifies that a syntactically malformed
+// frame does not end the session: the transport replies with a JSON-RPC parse
+// error (-32700) and resynchronizes to the next newline-delimited frame, so the
+// following valid request is still delivered. This matches JSON-RPC 2.0 and the
+// behavior of other MCP server libraries; previously a single bad frame
+// terminated the stdio session.
+func TestIOConnRead_MalformedFrameRecovers(t *testing.T) {
+	out := &bufWriteCloser{}
+	tr := newIOConn(rwc{
+		rc: io.NopCloser(strings.NewReader("{bad json\n" + `{"jsonrpc":"2.0","id":7,"method":"ping"}` + "\n")),
+		wc: out,
+	})
+	t.Cleanup(func() { tr.Close() })
+
+	// The next Read must skip the malformed frame and return the valid one.
+	msg, err := tr.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read after malformed frame: error = %v, want nil (session must survive)", err)
+	}
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok {
+		t.Fatalf("message type = %T, want *jsonrpc.Request", msg)
+	}
+	if req.Method != "ping" || req.ID != jsonrpc2.Int64ID(7) {
+		t.Errorf("recovered request = {method:%q id:%v}, want {ping 7}", req.Method, req.ID.Raw())
+	}
+
+	// A -32700 parse-error response must have been written for the bad frame.
+	if got := out.String(); !strings.Contains(got, "-32700") || !strings.Contains(got, "parse error") {
+		t.Errorf("expected a -32700 parse-error response, wrote: %q", got)
+	}
+}
+
+// TestIOConnRead_MalformedFrameEdgeCases covers consecutive malformed frames and
+// malformed frames at end-of-stream (with and without a trailing newline). Each
+// Read is guarded by a timeout so a regression that hangs the session is caught
+// as a failure rather than hanging the suite.
+func TestIOConnRead_MalformedFrameEdgeCases(t *testing.T) {
+	const ping = `{"jsonrpc":"2.0","id":9,"method":"ping"}`
+	tests := []struct {
+		name       string
+		input      string
+		wantMethod string // "" means expect io.EOF (no valid frame follows)
+	}{
+		{"two malformed then valid", "{bad1\nalso bad}\n" + ping + "\n", "ping"},
+		{"malformed then EOF with newline", "{bad\n", ""},
+		{"malformed then EOF without newline", "{bad", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := &bufWriteCloser{}
+			tr := newIOConn(rwc{rc: io.NopCloser(strings.NewReader(tt.input)), wc: out})
+			t.Cleanup(func() { tr.Close() })
+
+			type result struct {
+				msg jsonrpc.Message
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				m, e := tr.Read(context.Background())
+				done <- result{m, e}
+			}()
+
+			select {
+			case r := <-done:
+				if tt.wantMethod == "" {
+					if r.err != io.EOF {
+						t.Errorf("err = %v, want io.EOF (session should end cleanly after the bad frame)", r.err)
+					}
+				} else {
+					if r.err != nil {
+						t.Fatalf("err = %v, want nil", r.err)
+					}
+					req, ok := r.msg.(*jsonrpc.Request)
+					if !ok || req.Method != tt.wantMethod {
+						t.Errorf("got %#v, want a %q request", r.msg, tt.wantMethod)
+					}
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Read blocked: the session neither recovered nor terminated")
+			}
+
+			if !strings.Contains(out.String(), "-32700") {
+				t.Errorf("expected a -32700 response for the malformed frame, wrote: %q", out.String())
+			}
+		})
 	}
 }
