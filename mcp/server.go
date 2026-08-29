@@ -33,6 +33,26 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
+// demotesessionlifecyclelog, when set to "1" via MCPGODEBUG, demotes routine
+// session bookkeeping records ("server connecting", "server session
+// connected", "server session disconnected", "session initialized", "client
+// log level set") from info to debug. On stateless streamable HTTP a session
+// is minted per request, so these fire constantly and drown out the server's
+// own logs (#1204). It is gated behind MCPGODEBUG because demoting them
+// changes log output that existing users may rely on.
+var demotesessionlifecyclelog = mcpgodebug.Value("demotesessionlifecyclelog")
+
+// logSessionLifecycle logs a routine session bookkeeping record at debug when
+// MCPGODEBUG=demotesessionlifecyclelog=1, and at info (the historical level)
+// otherwise.
+func logSessionLifecycle(l *slog.Logger, msg string, args ...any) {
+	if demotesessionlifecyclelog == "1" {
+		l.Debug(msg, args...)
+		return
+	}
+	l.Info(msg, args...)
+}
+
 // DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
@@ -1367,7 +1387,7 @@ func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *Serv
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
-	s.opts.Logger.Info("server session connected", "session_id", ss.ID())
+	logSessionLifecycle(s.opts.Logger, "server session connected", "session_id", ss.ID())
 	return ss
 }
 
@@ -1387,7 +1407,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 	delete(s.promptChangeSubscriptions, cc)
 	delete(s.resourceChangeSubscriptions, cc)
 
-	s.opts.Logger.Info("server session disconnected", "session_id", cc.ID())
+	logSessionLifecycle(s.opts.Logger, "server session disconnected", "session_id", cc.ID())
 }
 
 // ServerSessionOptions configures the server session.
@@ -1413,7 +1433,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		onClose = opts.onClose
 	}
 
-	s.opts.Logger.Info("server connecting")
+	logSessionLifecycle(s.opts.Logger, "server connecting")
 	ss, err := connect(ctx, t, s, state, onClose, s.opts.Logger)
 	if err != nil {
 		s.opts.Logger.Error("server connect error", "error", err)
@@ -1471,7 +1491,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
 	}
-	ss.server.opts.Logger.Info("session initialized")
+	logSessionLifecycle(ss.server.opts.Logger, "session initialized")
 	return nil, nil
 }
 
@@ -2100,7 +2120,7 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})
-	ss.server.opts.Logger.Info("client log level set", "level", params.Level)
+	logSessionLifecycle(ss.server.opts.Logger, "client log level set", "level", params.Level)
 	return &emptyResult{}, nil
 }
 
