@@ -3712,6 +3712,126 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	}
 }
 
+// TestStreamableStateless_NotificationMetaValidation checks that the SEP-2575
+// per-request `_meta` triple is required of calls only. NotificationParams
+// declares `_meta` optional with no protocolVersion, so a notification that
+// omits it is well-formed and must be accepted with 202.
+func TestStreamableStateless_NotificationMetaValidation(t *testing.T) {
+	newProtocolMeta := map[string]any{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+		MetaKeyClientCapabilities: map[string]any{},
+	}
+
+	tests := []struct {
+		name       string
+		message    map[string]any
+		wantStatus int
+	}{
+		{
+			name: "cancelled without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params":  map[string]any{"requestID": 1, "reason": "context canceled"},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "progress without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationProgress,
+				"params":  map[string]any{"progressToken": "t", "progress": 1},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "notification with matching meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta":     newProtocolMeta,
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			// A notification that volunteers a version is still held to the
+			// header-match rule, so relaxing the requirement does not open a
+			// hole for inconsistent messages.
+			name: "notification with mismatched meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion:    "2025-06-18",
+						MetaKeyClientCapabilities: map[string]any{},
+					},
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Calls remain subject to the requirement.
+			name: "call without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"method":  "tools/list",
+				"params":  map[string]any{},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+			req.Header.Set(methodHeader, test.message["method"].(string))
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, respBody)
+			}
+			if test.wantStatus == http.StatusAccepted && len(respBody) > 0 {
+				t.Errorf("accepted notification returned body %q, want empty", respBody)
+			}
+		})
+	}
+}
+
 // TestStreamableClientUnsupportedVersionFallback exercises the full
 // SEP-2575 fallback. The client requests protocolVersion20260728, which the
 // server is configured to NOT advertise in supportedProtocolVersions for the

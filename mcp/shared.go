@@ -560,7 +560,15 @@ type validatedMeta struct {
 // a non-nil error. clientInfo is optional; if present but invalid, an error is
 // returned. Otherwise, it returns usesNewProtocol set to true and the populated
 // initializeParams.
+// Notifications always report usesNewProtocol false and never error.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
+	// SEP-2575 defines the `_meta` triple for calls only: NotificationParams
+	// declares `_meta` optional with no protocolVersion, so a notification
+	// neither selects the new protocol nor is discarded for carrying an
+	// incomplete triple.
+	if !req.IsCall() {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
