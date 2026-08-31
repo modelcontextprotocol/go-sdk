@@ -157,14 +157,26 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
+	cancelMeta := cancellationMeta(req.GetSession())
 	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
+		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params, cancelMeta)
 	} else {
-		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
+		if err := call(ctx, req.GetSession().getConn(), method, params, res, cancelMeta); err != nil {
 			return nil, err
 		}
 	}
 	return res, nil
+}
+
+// cancellationMeta returns the SEP-2575 per-request _meta envelope for the
+// "notifications/cancelled" the transport may send on sess's behalf, or nil
+// when the session's protocol does not require one. Without it, a
+// >= 2026-07-28 server rejects the cancellation (CodeInvalidParams).
+func cancellationMeta(sess Session) Meta {
+	if cs, ok := sess.(*ClientSession); ok && cs.usesNewProtocol() {
+		return injectRequestMeta(cs, &CancelledParams{}).GetMeta()
+	}
+	return nil
 }
 
 // Helper method to avoid typed nil.

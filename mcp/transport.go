@@ -267,18 +267,18 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 // Cancellation is driven by ctx: when it is cancelled, a background goroutine
 // sends a "notifications/cancelled" notification referencing the listen's
 // request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
+func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, cancelMeta Meta) {
 	call := conn.Call(ctx, method, params)
 
 	go func() {
 		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
+		_ = cancelCall(ctx, conn, call, cancelMeta)
 	}()
 }
 
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
-func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
+func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result, cancelMeta Meta) error {
 	// The "%w"s in this function expose jsonrpc.Error as part of the API.
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
@@ -295,7 +295,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		// Setting MCPGODEBUG=blockingcancelnotify=1 restores the previous
 		// behavior of waiting synchronously for delivery inside cancelCall.
 		if blockingcancelnotify == "1" {
-			err := cancelCall(ctx, conn, call)
+			err := cancelCall(ctx, conn, call, cancelMeta)
 			return errors.Join(ctx.Err(), err)
 		}
 		conn.Retire(call, ctx.Err())
@@ -303,6 +303,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 			defer stop()
 			_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+				Meta:      cancelMeta,
 				Reason:    ctx.Err().Error(),
 				RequestID: call.ID().Raw(),
 			})
@@ -327,10 +328,11 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 // Therefore, we choose to eagerly retire calls, removing them from the
 // outgoingCalls map, when the caller context is cancelled: if the caller will
 // never receive the response, there's no need to track it.
-func cancelCall(ctx context.Context, conn *jsonrpc2.Connection, call *jsonrpc2.AsyncCall) error {
+func cancelCall(ctx context.Context, conn *jsonrpc2.Connection, call *jsonrpc2.AsyncCall, meta Meta) error {
 	notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 	defer cancelNotify()
 	err := conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+		Meta:      meta,
 		Reason:    ctx.Err().Error(),
 		RequestID: call.ID().Raw(),
 	})

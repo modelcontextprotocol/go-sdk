@@ -2632,6 +2632,132 @@ func TestSubscriptionsListen_Streamable(t *testing.T) {
 		&StreamableClientTransport{Endpoint: httpServer.URL}, events)
 }
 
+// TestSubscriptionsListen_CancellationCarriesMeta verifies that the
+// notifications/cancelled a new-protocol client emits — on Unsubscribe and on
+// a canceled in-flight call — carries the SEP-2575 _meta envelope, so a
+// stateless server accepts it (202) instead of rejecting it with
+// CodeInvalidParams, a rejection that permanently failed the connection.
+func TestSubscriptionsListen_CancellationCarriesMeta(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+	})
+	started := make(chan struct{}, 1)
+	AddTool(server, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+			started <- struct{}{}
+			<-ctx.Done() // unblocked by the aborted POST (PropagateRequestCancellation)
+			return nil, nil, ctx.Err()
+		})
+
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true, PropagateRequestCancellation: true},
+	)
+
+	type cancelledPost struct {
+		metaVersion string
+		status      int
+	}
+	posts := make(chan cancelledPost, 4)
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var msg struct {
+			Method string `json:"method"`
+			Params struct {
+				Meta map[string]any `json:"_meta"`
+			} `json:"params"`
+		}
+		isCancelled := json.Unmarshal(body, &msg) == nil && msg.Method == notificationCancelled
+		sw := &statusCapturingWriter{ResponseWriter: w, code: http.StatusOK}
+		handler.ServeHTTP(sw, r)
+		if isCancelled {
+			version, _ := msg.Params.Meta[MetaKeyProtocolVersion].(string)
+			posts <- cancelledPost{metaVersion: version, status: sw.code}
+		}
+	})
+
+	httpServer := httptest.NewServer(mustNotPanic(t, wrapped))
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	cs, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cs.Close()
+	if v := cs.InitializeResult().ProtocolVersion; v < protocolVersion20260728 {
+		t.Fatalf("negotiated %q, want >= %q", v, protocolVersion20260728)
+	}
+
+	expectCancelled := func(what string) {
+		t.Helper()
+		select {
+		case p := <-posts:
+			if p.metaVersion == "" {
+				t.Errorf("%s: notifications/cancelled missing _meta %q", what, MetaKeyProtocolVersion)
+			}
+			if p.status != http.StatusAccepted {
+				t.Errorf("%s: notifications/cancelled got HTTP %d, want %d", what, p.status, http.StatusAccepted)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no notifications/cancelled observed", what)
+		}
+	}
+
+	// Trigger 1: Unsubscribe cancels the per-URI listen call.
+	const uri = "test://resource"
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	expectCancelled("unsubscribe")
+
+	// Trigger 2: canceling an in-flight call.
+	callCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = cs.CallTool(callCtx, &CallToolParams{Name: "slow"})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow tool never started — session unusable after Unsubscribe")
+	}
+	cancel()
+	<-done
+	expectCancelled("canceled call")
+
+	// A rejected cancellation used to fail the connection; the session must
+	// remain usable.
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools after cancellations: %v", err)
+	}
+}
+
+// statusCapturingWriter records the response status, passing SSE flushes through.
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *statusCapturingWriter) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusCapturingWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // TestSubscriptionsListen_NoHandlersNoListen verifies that a new-protocol
 // client without any list-changed handlers registered does not open an
 // auto-listen on connect, and therefore does not receive any acknowledgment
