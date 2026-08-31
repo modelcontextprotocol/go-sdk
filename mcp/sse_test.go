@@ -24,7 +24,7 @@ import (
 // stdio and Streamable HTTP (see #1112).
 func TestSSEServerTransport_SupportedVersions(t *testing.T) {
 	var tr SSEServerTransport
-	versions := filterSupportedVersions(&tr)
+	versions := filterSupportedVersions(&tr, supportedProtocolVersions)
 	if slices.Contains(versions, protocolVersion20260728) {
 		t.Errorf("filterSupportedVersions(SSEServerTransport) = %v, must not include %q",
 			versions, protocolVersion20260728)

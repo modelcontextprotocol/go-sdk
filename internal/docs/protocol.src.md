@@ -72,6 +72,20 @@ request. Servers implementing `2026-07-28` MUST implement it.
   fails or the server does not support the latest version, the client falls back to the
   legacy `initialize` handshake.
 
+A server advertises and negotiates every protocol version the SDK supports;
+set [`ServerOptions.SupportedProtocolVersions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions)
+to narrow that set, for example to stop serving a revision your deployment has
+retired.
+
+```go
+server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v1.0.0"}, &mcp.ServerOptions{
+	SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"},
+})
+```
+
+The set can only narrow support, never widen it; the field's documentation
+covers how each protocol era answers a request at an excluded version.
+
 ### Per-request metadata keys
 
 When the negotiated protocol version is `2026-07-28` or later, every request
