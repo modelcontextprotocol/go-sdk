@@ -137,7 +137,7 @@ func TestScanEvents(t *testing.T) {
 			r := strings.NewReader(tt.input)
 			var got []Event
 			var err error
-			for e, err2 := range scanEvents(r) {
+			for e, err2 := range scanEventsLimited(r, DefaultMaxEventSize) {
 				if err2 != nil {
 					err = err2
 					break

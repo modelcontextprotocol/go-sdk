@@ -65,23 +65,20 @@ func writeEvent(w http.ResponseWriter, evt Event) (int, error) {
 	return n, err
 }
 
-// defaultMaxEventSize bounds the number of bytes buffered for a single SSE
-// event before the input gets rejected.
-const defaultMaxEventSize = 16 << 20 // 16 MiB
+// DefaultMaxEventSize is the default maximum number of bytes buffered while
+// reading a single server-sent event before the input is rejected.
+const DefaultMaxEventSize = 16 << 20 // 16 MiB
 
-// scanEvents iterates SSE events in the given scanner. The iterated error is
-// terminal: if encountered, the stream is corrupt or broken and should no
-// longer be used.
+// scanEventsLimited iterates SSE events in the given reader, buffering at most
+// maxEventSize bytes per event. When maxEventSize > 0, an event is reported as
+// [errMalformedEvent] once its size exceeds it; a non-positive maxEventSize
+// disables the cap.
+//
+// The iterated error is terminal: if encountered, the stream is corrupt or
+// broken and should no longer be used.
 //
 // TODO(rfindley): consider a different API here that makes failure modes more
 // apparent.
-func scanEvents(r io.Reader) iter.Seq2[Event, error] {
-	return scanEventsLimited(r, defaultMaxEventSize)
-}
-
-// scanEventsLimited is [scanEvents] with an explicit per-event byte budget.
-// When maxEventSize > 0, an event is reported as [errMalformedEvent] when
-// its size exceed it. A non-positive maxEventSize disables the cap.
 func scanEventsLimited(r io.Reader, maxEventSize int) iter.Seq2[Event, error] {
 	reader := bufio.NewReader(r)
 
