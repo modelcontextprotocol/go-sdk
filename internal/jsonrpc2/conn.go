@@ -158,12 +158,12 @@ func (s *inFlightState) shuttingDown(errClosing error) error {
 	if s.readErr != nil {
 		// If the read side of the connection is broken, we cannot read new call
 		// requests, and cannot read responses to our outgoing calls.
-		return fmt.Errorf("%w: %v", errClosing, s.readErr)
+		return fmt.Errorf("%w: %w", errClosing, s.readErr)
 	}
 	if s.writeErr != nil {
 		// If the write side of the connection is broken, we cannot write responses
 		// for incoming calls, and cannot write requests for outgoing calls.
-		return fmt.Errorf("%w: %v", errClosing, s.writeErr)
+		return fmt.Errorf("%w: %w", errClosing, s.writeErr)
 	}
 	return nil
 }
@@ -172,7 +172,7 @@ func (s *inFlightState) shuttingDown(errClosing error) error {
 type incomingRequest struct {
 	*Request // the request being processed
 	ctx      context.Context
-	cancel   context.CancelFunc
+	cancel   context.CancelCauseFunc
 }
 
 // Reader abstracts the transport mechanics from the JSON RPC protocol.
@@ -458,7 +458,7 @@ func (c *Connection) Cancel(id ID) {
 		req = s.incomingByID[id]
 	})
 	if req != nil {
-		req.cancel()
+		req.cancel(nil)
 	}
 }
 
@@ -552,9 +552,11 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Cancel any incoming requests still in flight: with the reader gone we
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
-		// Mirrors the equivalent cleanup on write failure.
+		// The read error (typically io.EOF from the peer disconnecting) is the
+		// cause, rather than a directional ErrServerClosing/ErrClientClosing
+		// sentinel: at this layer the connection has no designated end.
 		for _, r := range s.incomingByID {
-			r.cancel()
+			r.cancel(err)
 		}
 	})
 }
@@ -564,7 +566,7 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter Preempter) {
 	// In theory notifications cannot be cancelled, but we build them a cancel
 	// context anyway.
-	reqCtx, cancel := context.WithCancel(ctx)
+	reqCtx, cancel := context.WithCancelCause(ctx)
 	req := &incomingRequest{
 		Request: msg,
 		ctx:     reqCtx,
@@ -665,15 +667,14 @@ func (c *Connection) handleAsync() {
 			return
 		}
 
-		// Only deliver to the Handler if not already canceled.
+		// Only deliver to the Handler if not already canceled. If the request
+		// was canceled with a cause (e.g. a write failure cancels every
+		// in-flight request), report that cause rather than the bare
+		// context.Canceled.
 		if err := req.ctx.Err(); err != nil {
-			c.updateInFlight(func(s *inFlightState) {
-				if s.writeErr != nil {
-					// Assume that req.ctx was canceled due to s.writeErr.
-					// TODO(#51365): use a Context API to plumb this through req.ctx.
-					err = fmt.Errorf("%w: %v", ErrServerClosing, s.writeErr)
-				}
-			})
+			if cause := context.Cause(req.ctx); cause != nil {
+				err = cause
+			}
 			c.processResult("handleAsync", req, nil, err)
 			continue
 		}
@@ -734,7 +735,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 	}
 
 	// Cancel the request to free any associated resources.
-	req.cancel()
+	req.cancel(nil)
 	c.updateInFlight(func(s *inFlightState) {
 		if s.incoming == 0 {
 			panic("jsonrpc2: processResult called when incoming count is already zero")
@@ -777,7 +778,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 			if s.writeErr == nil {
 				s.writeErr = err
 				for _, r := range s.incomingByID {
-					r.cancel()
+					r.cancel(fmt.Errorf("%w: %v", ErrServerClosing, err))
 				}
 			}
 		})

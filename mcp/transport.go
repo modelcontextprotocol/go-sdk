@@ -114,6 +114,8 @@ type clientConnection interface {
 // TODO: should this interface be exported?
 type serverConnection interface {
 	Connection
+
+	// sessionUpdated is called whenever the server session state changes.
 	sessionUpdated(ServerSessionState)
 }
 
@@ -525,17 +527,13 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 func (c *ioConn) SessionID() string { return "" }
 
 func (c *ioConn) sessionUpdated(state ServerSessionState) {
-	protocolVersion := ""
-	if state.InitializeParams != nil {
-		protocolVersion = state.InitializeParams.ProtocolVersion
-	}
+	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
 		// where specifying the protocol version in the HTTP header
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	protocolVersion = negotiatedVersion(protocolVersion)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()
