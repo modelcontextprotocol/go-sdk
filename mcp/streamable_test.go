@@ -4040,6 +4040,52 @@ func TestStreamableServerRejectsDuplicateInFlightRequestID(t *testing.T) {
 	}
 }
 
+// TestStreamableServerPreservesSingleRequestBatchResponse verifies that a
+// single-request JSON-RPC batch is returned as a one-element JSON array.
+func TestStreamableServerPreservesSingleRequestBatchResponse(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{JSONResponse: true},
+	)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := []byte(`[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}]`)
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusOK, data)
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(data, &messages); err != nil {
+		t.Fatalf("response is not a JSON array: %v; body = %s", err, data)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("response contains %d messages, want 1; body = %s", len(messages), data)
+	}
+	if _, err := jsonrpc2.DecodeMessage(messages[0]); err != nil {
+		t.Fatalf("response item is not a JSON-RPC message: %v", err)
+	}
+}
+
 // TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
 // enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
 // bodies. The limit must apply uniformly regardless of transfer encoding:
