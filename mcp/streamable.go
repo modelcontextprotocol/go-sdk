@@ -988,6 +988,10 @@ type stream struct {
 	// Note: if we remove support for batching, this could just be a bool.
 	pendingJSONMessages []json.RawMessage
 
+	// isBatch reports whether the request that opened the stream was a JSON-RPC
+	// batch. Batch responses must remain arrays even when they contain one item.
+	isBatch bool
+
 	// w is the HTTP response writer for this stream. A non-nil w indicates
 	// that the stream is claimed by an HTTP request (the hanging POST or GET);
 	// it is set to nil when the request completes.
@@ -1138,7 +1142,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 		if done {
 			// Flush all pending messages as JSON response.
 			var toWrite []byte
-			if len(s.pendingJSONMessages) == 1 {
+			if len(s.pendingJSONMessages) == 1 && !s.isBatch {
 				toWrite = s.pendingJSONMessages[0]
 			} else {
 				toWrite, err = json.Marshal(s.pendingJSONMessages)
@@ -1691,6 +1695,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	stream.isListen = isSubscriptionsListen
+	stream.isBatch = isBatch
 
 	// subscriptions/listen is inherently a long-lived SSE endpoint (SEP-2575):
 	// it has no synchronous result, the response stream stays open until the
