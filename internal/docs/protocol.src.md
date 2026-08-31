@@ -55,7 +55,7 @@ it is the client's responsibility to end the session.
 
 %include ../../mcp/mcp_example_test.go lifecycle -
 
-### Discovery (`server/discover`)
+### Discovery
 
 Introduced in `2026-07-28` by
 [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
@@ -72,7 +72,21 @@ request. Servers implementing `2026-07-28` MUST implement it.
   fails or the server does not support the latest version, the client falls back to the
   legacy `initialize` handshake.
 
-### Per-request `_meta` keys
+A server advertises and negotiates every protocol version the SDK supports;
+set [`ServerOptions.SupportedProtocolVersions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions)
+to narrow that set, for example to stop serving a revision your deployment has
+retired.
+
+```go
+server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v1.0.0"}, &mcp.ServerOptions{
+	SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"},
+})
+```
+
+The set can only narrow support, never widen it; the field's documentation
+covers how each protocol era answers a request at an excluded version.
+
+### Per-request metadata keys
 
 When the negotiated protocol version is `2026-07-28` or later, every request
 carries these keys inside its `_meta` map (constants live in
@@ -91,7 +105,7 @@ request, and populates `clientInfo` when configured with an `*Implementation`
 `ServerRequest[P].ProtocolVersion()`, `ServerRequest[P].ClientInfo()`, and
 `ServerRequest[P].ClientCapabilities()`.
 
-### Per-response `_meta` keys
+### Per-response metadata keys
 
 Under the same protocol version, servers SHOULD identify themselves on every
 response. The SDK populates this
@@ -101,7 +115,7 @@ key automatically on every outgoing response:
 |---|---|---|---|
 | `MetaKeyServerInfo` | `io.modelcontextprotocol/serverInfo` | `*Implementation` | No |
 
-### Subscriptions (`subscriptions/listen`)
+### Subscriptions
 
 Introduced in `2026-07-28` by
 [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575),
@@ -266,6 +280,34 @@ to see the logical session
 _See [examples/server/distributed](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/distributed/main.go) for
 an example using stateless mode to implement a server distributed across
 multiple processes._
+
+### Legacy SSE Transport
+
+Before the streamable transport, the
+[2024-11-05](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports)
+spec defined an HTTP transport built from two endpoints: a hanging GET that
+streams server-to-client messages as server-sent events, and a per-session
+endpoint the client POSTs its messages to. The SDK still implements it, for
+talking to peers that predate the streamable transport. New deployments should
+use the [streamable transport](#streamable-transport) instead.
+
+It is implemented across three types, mirroring the streamable ones:
+
+- [`SSEHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#SSEHandler):
+  an `http.Handler` that creates a session per incoming GET and routes POSTs to
+  the right session. Construct it with
+  [`NewSSEHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#NewSSEHandler),
+  which takes a function returning the `Server` to serve a given request.
+- [`SSEServerTransport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#SSEServerTransport):
+  one such session. Reach for it directly only when serving the two endpoints
+  yourself; `SSEHandler` creates these for you.
+- [`SSEClientTransport`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#SSEClientTransport):
+  the client side, which needs only the `Endpoint` of the GET.
+
+%include ../../mcp/sse_example_test.go ssehandler -
+
+_See [examples/server/sse](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/sse/main.go)
+for a standalone server._
 
 ### Custom transports
 
