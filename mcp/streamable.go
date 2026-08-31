@@ -1526,9 +1526,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// The new (>= 2026-07-28) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
 			//
-			// The `_meta` triple is defined for calls only, and the transport
-			// leaves header requirements for notification POSTs undefined, so
-			// a notification is validated only if it volunteered a version.
+			// The `_meta` triple is defined for calls only, notifications are
+			// excluded.
 			//
 			// TODO: this validation can be moved within validateMcpHeaders.
 			var metaVersion string
