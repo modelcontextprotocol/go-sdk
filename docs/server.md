@@ -1000,9 +1000,7 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 
 `SetCacheable` may run with the server's lock held, so it must not call back
 into the `Server`: adding or removing a feature, or ranging over
-`Server.Sessions`, deadlocks. Receiving middleware runs after it without the
-lock, which remains the escape hatch for policy that needs the server itself or
-has to inspect the result body.
+`Server.Sessions`, deadlocks.
 
 ## Utilities
 

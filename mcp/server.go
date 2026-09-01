@@ -181,7 +181,7 @@ type ServerOptions struct {
 	// It is called once per such result, after the corresponding handler has
 	// returned, with c holding the values that handler produced.
 	SetCacheable func(ctx context.Context, req Request, c *Cacheable)
-  
+
 	// SupportedProtocolVersions, if non-empty, restricts the protocol versions
 	// this server advertises. If empty, every version returned by
 	// [SupportedProtocolVersions] is used.

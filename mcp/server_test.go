@@ -1769,6 +1769,9 @@ func TestServerSetCacheable(t *testing.T) {
 				check(uri, res.Cacheable, want)
 			}
 		})
+	}
+}
+
 // TestServerSupportedProtocolVersions verifies that
 // [ServerOptions.SupportedProtocolVersions] narrows both the versions the
 // server advertises in server/discover and the versions it negotiates,
