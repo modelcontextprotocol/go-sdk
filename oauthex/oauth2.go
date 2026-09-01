@@ -105,7 +105,12 @@ func checkHTTPSOrLoopback(addr string) error {
 func newDiscoveryClient(c *http.Client) *http.Client {
 	transport := defaultDiscoveryTransport
 	if c != nil && c.Transport != nil {
-		transport = newDiscoveryTransport(c.Transport)
+		// a caller that has taken over dialing or TLS opts out of the checks
+		if t, ok := c.Transport.(*http.Transport); ok && t.DialContext == nil && t.DialTLSContext == nil && t.DialTLS == nil {
+			transport = newDiscoveryTransport(t)
+		} else {
+			transport = c.Transport
+		}
 	}
 	discoveryClient := &http.Client{
 		Transport: transport,
@@ -131,15 +136,18 @@ func newDiscoveryClient(c *http.Client) *http.Client {
 }
 
 // newDiscoveryTransport creates an http.RoundTripper with extra protections enabled,
-// unless the provided client had a custom RoundTripper installed.
-func newDiscoveryTransport(base http.RoundTripper) http.RoundTripper {
-	t, ok := base.(*http.Transport)
-	if !ok { // allow a custom http.RoundTripper to opt-out of the checks
-		return base
+// unless the provided RoundTripper is not *http.Transport.
+func newDiscoveryTransport(rt http.RoundTripper) http.RoundTripper {
+	base, ok := rt.(*http.Transport)
+	if !ok {
+		return rt
 	}
-	result := t.Clone()
-	result.DialTLSContext = nil
-	result.DialTLS = nil
+	// If a proxy is configured Control checks should be disabled, because they will
+	// basically be running for proxy dials.
+	if proxyConfigured(base) {
+		return rt
+	}
+	result := base.Clone()
 	result.DialContext = (&net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -159,6 +167,18 @@ func newDiscoveryTransport(base http.RoundTripper) http.RoundTripper {
 		},
 	}).DialContext
 	return result
+}
+
+func proxyConfigured(t *http.Transport) bool {
+	if t.Proxy == nil {
+		return false
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://check-proxy-existence.com", nil)
+	if err != nil {
+		return false
+	}
+	u, err := t.Proxy(req)
+	return err == nil && u != nil
 }
 
 func checkLoopbackRedirect(ctx context.Context, host string) error {
