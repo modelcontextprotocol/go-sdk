@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -477,6 +478,25 @@ type msgOrErr struct {
 	err error
 }
 
+// errParseError signals from the read loop to [ioConn.Read] that a frame could
+// not be parsed as JSON. The underlying stream is intact: Read replies with a
+// JSON-RPC parse error (-32700) and the read loop resynchronizes to the next
+// newline-delimited frame, keeping the session alive rather than ending it on a
+// single malformed message (per JSON-RPC 2.0).
+var errParseError = errors.New("jsonrpc2: parse error")
+
+// parseErrorResponse is a JSON-RPC 2.0 parse error with a null id, which is the
+// correct id for a frame too malformed to recover one from.
+var parseErrorResponse = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}` + "\n")
+
+// writeParseError writes a -32700 parse-error response, serialized with Write.
+func (t *ioConn) writeParseError() error {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	_, err := t.rwc.Write(parseErrorResponse)
+	return err
+}
+
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	var (
 		incoming = make(chan msgOrErr)
@@ -507,6 +527,27 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 					err = readErr
 				}
 			}
+			// A JSON syntax error means this frame is malformed, but the stream
+			// itself is fine. Signal Read to reply with -32700, resynchronize to
+			// the next newline-delimited frame, and keep reading, rather than
+			// ending the session on a single bad message.
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				select {
+				case incoming <- msgOrErr{err: errParseError}:
+				case <-closed:
+					return
+				}
+				// Skip the malformed frame up to the next newline, then continue
+				// with a fresh decoder over the remaining stream. If there is no
+				// newline before EOF, the next Decode returns io.EOF and the loop
+				// ends through the normal path below (which unblocks Read).
+				resync := bufio.NewReader(io.MultiReader(dec.Buffered(), rwc))
+				_, _ = resync.ReadBytes('\n')
+				dec = json.NewDecoder(resync)
+				continue
+			}
+
 			select {
 			case incoming <- msgOrErr{msg: raw, err: err}:
 			case <-closed:
@@ -619,18 +660,29 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	}
 
 	var raw json.RawMessage
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 
-	case v := <-t.incoming:
-		if v.err != nil {
-			return nil, v.err
+		case v := <-t.incoming:
+			if errors.Is(v.err, errParseError) {
+				// Malformed frame: reply -32700 and keep the session alive. The
+				// read loop has already resynchronized to the next frame.
+				if werr := t.writeParseError(); werr != nil {
+					return nil, werr
+				}
+				continue
+			}
+			if v.err != nil {
+				return nil, v.err
+			}
+			raw = v.msg
+
+		case <-t.closed:
+			return nil, io.EOF
 		}
-		raw = v.msg
-
-	case <-t.closed:
-		return nil, io.EOF
+		break
 	}
 
 	msgs, batch, err := readBatch(raw)
