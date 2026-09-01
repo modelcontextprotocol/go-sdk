@@ -1962,7 +1962,7 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !validatedMeta.usesNewProtocol {
+		if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() {
 			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 		}

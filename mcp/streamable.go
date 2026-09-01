@@ -1530,12 +1530,15 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			// The new (>= 2026-07-28) protocol is supported on the HTTP transport
 			// only when [StreamableHTTPOptions.Stateless] is true.
 			//
+			// The `_meta` triple is defined for calls only, notifications are
+			// excluded.
+			//
 			// TODO: this validation can be moved within validateMcpHeaders.
 			var metaVersion string
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
-			if protocolVersion >= protocolVersion20260728 || metaVersion != "" {
+			if (jreq.IsCall() && protocolVersion >= protocolVersion20260728) || metaVersion != "" {
 				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
