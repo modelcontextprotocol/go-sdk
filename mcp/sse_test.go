@@ -24,7 +24,7 @@ import (
 // stdio and Streamable HTTP (see #1112).
 func TestSSEServerTransport_SupportedVersions(t *testing.T) {
 	var tr SSEServerTransport
-	versions := filterSupportedVersions(&tr)
+	versions := filterSupportedVersions(&tr, supportedProtocolVersions)
 	if slices.Contains(versions, protocolVersion20260728) {
 		t.Errorf("filterSupportedVersions(SSEServerTransport) = %v, must not include %q",
 			versions, protocolVersion20260728)
@@ -379,6 +379,55 @@ func TestSSELocalhostProtection(t *testing.T) {
 
 			if got := resp.StatusCode; got != tt.wantStatus {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestSSEServerTransportMaxRequestBodyBytes exercises the limit on the exported
+// [SSEServerTransport] directly, since it is documented as usable on its own.
+func TestSSEServerTransportMaxRequestBodyBytes(t *testing.T) {
+	requestOfSize := func(n int) []byte {
+		b := bytes.Repeat([]byte(" "), n)
+		b[0], b[n-1] = '{', '}'
+		return b
+	}
+	testCases := []struct {
+		name     string
+		limit    int64
+		request  []byte
+		wantCode int
+	}{
+		{
+			name:     "over limit returns",
+			limit:    1024,
+			request:  requestOfSize(2048),
+			wantCode: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:     "under limit accepted",
+			limit:    1024,
+			request:  []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`),
+			wantCode: http.StatusAccepted,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &SSEServerTransport{
+				Endpoint:            "/msg",
+				Response:            httptest.NewRecorder(),
+				MaxRequestBodyBytes: tc.limit,
+			}
+			if _, err := tr.Connect(context.Background()); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/msg", bytes.NewReader(tc.request))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			tr.ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantCode)
 			}
 		})
 	}

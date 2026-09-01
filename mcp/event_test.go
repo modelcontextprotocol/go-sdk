@@ -299,7 +299,11 @@ func TestMemoryEventStoreAfter(t *testing.T) {
 		{"S1", "1", 0, []string{"d2", "d3"}, ""},
 		{"S1", "1", 1, []string{"d3"}, ""},
 		{"S1", "1", 2, nil, ""},
+		{"S1", "1", 3, nil, ""},
+		{"S1", "1", 100, nil, ""}, // past the end of stream "1" (highest is 2)
 		{"S1", "2", 0, nil, ""},
+		{"S1", "2", 1, nil, ""},
+		{"S1", "2", 100, nil, ""},
 		{"S1", "3", 0, nil, "unknown stream ID"},
 		{"S2", "0", 0, nil, "unknown session ID"},
 	} {

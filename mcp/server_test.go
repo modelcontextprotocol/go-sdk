@@ -1691,3 +1691,164 @@ func TestServerSession_RejectsServerInitiated(t *testing.T) {
 		}
 	}
 }
+
+// TestServerSupportedProtocolVersions verifies that
+// [ServerOptions.SupportedProtocolVersions] narrows both the versions the
+// server advertises in server/discover and the versions it negotiates,
+// and that it cannot widen SDK support.
+func TestServerSupportedProtocolVersions(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("discover advertises the configured subset", func(t *testing.T) {
+		server := NewServer(testImpl, &ServerOptions{
+			// Deliberately unordered: the server must advertise newest first.
+			SupportedProtocolVersions: []string{protocolVersion20251125, protocolVersion20260728},
+		})
+		var advertised []string
+		server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+			return func(ctx context.Context, method string, req Request) (Result, error) {
+				res, err := next(ctx, method, req)
+				if method == methodDiscover && err == nil {
+					advertised = res.(*DiscoverResult).SupportedVersions
+				}
+				return res, err
+			}
+		})
+
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatalf("server.Connect: %v", err)
+		}
+		defer ss.Close()
+
+		cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{
+			ProtocolVersion: protocolVersion20260728,
+		})
+		if err != nil {
+			t.Fatalf("client.Connect: %v", err)
+		}
+		defer cs.Close()
+
+		want := []string{protocolVersion20260728, protocolVersion20251125}
+		if diff := cmp.Diff(want, advertised); diff != "" {
+			t.Errorf("DiscoverResult.SupportedVersions mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("initialize negotiates within the configured subset", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			supported []string
+			client    string
+			want      string
+		}{
+			{
+				name:      "requested version supported",
+				supported: []string{protocolVersion20251125, protocolVersion20250618},
+				client:    protocolVersion20250618,
+				want:      protocolVersion20250618,
+			},
+			{
+				name:      "requested version excluded",
+				supported: []string{protocolVersion20251125, protocolVersion20250618},
+				client:    protocolVersion20241105,
+				want:      protocolVersion20251125,
+			},
+			{
+				name:      "fallback is the newest configured version",
+				supported: []string{protocolVersion20250326},
+				client:    protocolVersion20241105,
+				want:      protocolVersion20250326,
+			},
+			{
+				// Nothing the server supports can carry an initialize
+				// handshake, so the answer names a handshake-era version the
+				// client can act on rather than one it could mistake for the
+				// new protocol.
+				name:      "server with no handshake version",
+				supported: []string{protocolVersion20260728},
+				client:    protocolVersion20250618,
+				want:      protocolVersion20251125,
+			},
+			{
+				name:      "unrestricted server keeps the default behavior",
+				supported: nil,
+				client:    protocolVersion20241105,
+				want:      protocolVersion20241105,
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				server := NewServer(testImpl, &ServerOptions{SupportedProtocolVersions: test.supported})
+				ct, st := NewInMemoryTransports()
+				ss, err := server.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatalf("server.Connect: %v", err)
+				}
+				defer ss.Close()
+
+				cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{
+					ProtocolVersion: test.client,
+				})
+				if err != nil {
+					t.Fatalf("client.Connect: %v", err)
+				}
+				defer cs.Close()
+
+				if got := cs.InitializeResult().ProtocolVersion; got != test.want {
+					t.Errorf("negotiated protocol version = %q, want %q", got, test.want)
+				}
+			})
+		}
+	})
+
+	t.Run("unknown version panics", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("NewServer did not panic on an unsupported protocol version")
+			}
+		}()
+		NewServer(testImpl, &ServerOptions{SupportedProtocolVersions: []string{"1999-01-01"}})
+	})
+}
+
+// TestServerSupportedProtocolVersions_NewProtocol verifies that a request
+// using the SEP-2575 per-request protocol is rejected with
+// [CodeUnsupportedProtocolVersion] when its version is excluded by
+// [ServerOptions.SupportedProtocolVersions].
+func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20251125},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	_ = ct
+
+	params := fmt.Sprintf(`{"_meta":{%q:%q,%q:{}}}`,
+		MetaKeyProtocolVersion, protocolVersion20260728, MetaKeyClientCapabilities)
+	_, err = ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodListTools,
+		Params: json.RawMessage(params),
+	})
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
+	}
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
+		t.Fatalf("unmarshal error data: %v", err)
+	}
+	if diff := cmp.Diff([]string{protocolVersion20251125}, data.Supported); diff != "" {
+		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+}

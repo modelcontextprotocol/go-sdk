@@ -3712,6 +3712,126 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	}
 }
 
+// TestStreamableStateless_NotificationMetaValidation checks that the SEP-2575
+// per-request `_meta` triple is required of calls only. NotificationParams
+// declares `_meta` optional with no protocolVersion, so a notification that
+// omits it is well-formed and must be accepted with 202.
+func TestStreamableStateless_NotificationMetaValidation(t *testing.T) {
+	newProtocolMeta := map[string]any{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+		MetaKeyClientCapabilities: map[string]any{},
+	}
+
+	tests := []struct {
+		name       string
+		message    map[string]any
+		wantStatus int
+	}{
+		{
+			name: "cancelled without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params":  map[string]any{"requestID": 1, "reason": "context canceled"},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "progress without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationProgress,
+				"params":  map[string]any{"progressToken": "t", "progress": 1},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "notification with matching meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta":     newProtocolMeta,
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			// A notification that volunteers a version is still held to the
+			// header-match rule, so relaxing the requirement does not open a
+			// hole for inconsistent messages.
+			name: "notification with mismatched meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion:    "2025-06-18",
+						MetaKeyClientCapabilities: map[string]any{},
+					},
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Calls remain subject to the requirement.
+			name: "call without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"method":  "tools/list",
+				"params":  map[string]any{},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+			req.Header.Set(methodHeader, test.message["method"].(string))
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, respBody)
+			}
+			if test.wantStatus == http.StatusAccepted && len(respBody) > 0 {
+				t.Errorf("accepted notification returned body %q, want empty", respBody)
+			}
+		})
+	}
+}
+
 // TestStreamableClientUnsupportedVersionFallback exercises the full
 // SEP-2575 fallback. The client requests protocolVersion20260728, which the
 // server is configured to NOT advertise in supportedProtocolVersions for the
@@ -4040,6 +4160,52 @@ func TestStreamableServerRejectsDuplicateInFlightRequestID(t *testing.T) {
 	}
 }
 
+// TestStreamableServerPreservesSingleRequestBatchResponse verifies that a
+// single-request JSON-RPC batch is returned as a one-element JSON array.
+func TestStreamableServerPreservesSingleRequestBatchResponse(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{JSONResponse: true},
+	)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := []byte(`[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}]`)
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusOK, data)
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(data, &messages); err != nil {
+		t.Fatalf("response is not a JSON array: %v; body = %s", err, data)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("response contains %d messages, want 1; body = %s", len(messages), data)
+	}
+	if _, err := jsonrpc2.DecodeMessage(messages[0]); err != nil {
+		t.Fatalf("response item is not a JSON-RPC message: %v", err)
+	}
+}
+
 // TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
 // enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
 // bodies. The limit must apply uniformly regardless of transfer encoding:
@@ -4140,4 +4306,81 @@ func TestStreamableMaxRequestBodyBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStreamableSupportedProtocolVersions_Header verifies that the
+// MCP-Protocol-Version header is validated against
+// [ServerOptions.SupportedProtocolVersions], and not merely against the
+// versions the SDK knows about.
+func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
+	const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+
+	newServer := func(t *testing.T, stateless bool) *httptest.Server {
+		server := NewServer(testImpl, &ServerOptions{
+			SupportedProtocolVersions: []string{protocolVersion20251125},
+		})
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+			&StreamableHTTPOptions{Stateless: stateless})
+		httpServer := httptest.NewServer(handler)
+		t.Cleanup(httpServer.Close)
+		return httpServer
+	}
+	post := func(t *testing.T, url, version, sessionID string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(initBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(protocolVersionHeader, version)
+		if sessionID != "" {
+			req.Header.Set(sessionIDHeader, sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	for _, stateless := range []bool{false, true} {
+		for _, test := range []struct {
+			version    string
+			wantStatus int
+		}{
+			{protocolVersion20251125, http.StatusOK},
+			// Supported by the SDK, but excluded by the server.
+			{protocolVersion20250618, http.StatusBadRequest},
+			// Unknown to the SDK: rejected before any server is consulted.
+			{"1999-01-01", http.StatusBadRequest},
+		} {
+			t.Run(fmt.Sprintf("stateless=%v/%s", stateless, test.version), func(t *testing.T) {
+				resp := post(t, newServer(t, stateless).URL, test.version, "")
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != test.wantStatus {
+					t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, body)
+				}
+			})
+		}
+	}
+
+	t.Run("existing session", func(t *testing.T) {
+		httpServer := newServer(t, false)
+		resp := post(t, httpServer.URL, protocolVersion20251125, "")
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		sessionID := resp.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatalf("initialize response missing %s header", sessionIDHeader)
+		}
+
+		resp = post(t, httpServer.URL, protocolVersion20250618, sessionID)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusBadRequest, body)
+		}
+	})
 }
