@@ -2148,21 +2148,21 @@ type streamableClientConn struct {
 var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
+	// 2026-07-28 removed both protocol-level sessions (SEP-2567) and the
+	// standalone HTTP GET SSE stream (SEP-2575).
+	modern := state.InitializeResult != nil &&
+		state.InitializeResult.ProtocolVersion >= protocolVersion20260728
+
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
-	// Protocol-level sessions were removed in 2026-07-28 (SEP-2567): a client
-	// must not echo an Mcp-Session-Id, so drop one that the initial response
-	// adopted before the negotiated version was known.
-	if state.InitializeResult != nil &&
-		state.InitializeResult.ProtocolVersion >= protocolVersion20260728 {
+	if modern {
+		// A client must not echo an Mcp-Session-Id, so drop one that the initial
+		// response adopted before the negotiated version was known.
 		c.sessionID = ""
 	}
 	c.mu.Unlock()
 
-	// Under SEP-2575 (protocol version >= 2026-07-28) the standalone HTTP GET
-	// SSE stream is removed.
-	if state.InitializeResult == nil ||
-		state.InitializeResult.ProtocolVersion >= protocolVersion20260728 {
+	if state.InitializeResult == nil || modern {
 		return
 	}
 
