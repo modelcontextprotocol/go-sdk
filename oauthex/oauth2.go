@@ -106,7 +106,7 @@ func newDiscoveryClient(c *http.Client) *http.Client {
 	transport := defaultDiscoveryTransport
 	if c != nil && c.Transport != nil {
 		// a caller that has taken over dialing or TLS opts out of the checks
-		if t, ok := c.Transport.(*http.Transport); ok && t.DialContext == nil && t.DialTLSContext == nil && t.DialTLS == nil {
+		if t, ok := c.Transport.(*http.Transport); ok && t.DialContext == nil && t.DialTLSContext == nil {
 			transport = newDiscoveryTransport(t)
 		} else {
 			transport = c.Transport
