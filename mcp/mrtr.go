@@ -53,13 +53,19 @@ func handleMultiRoundTripResult(ss *ServerSession, logger *slog.Logger, res mult
 	if clientSupportsMultiRoundTrip(ss) {
 		// For older clients the resultType is left unset. Input requests will be handled
 		// by serverMultiRoundTripMiddleware client calls and handler reinvocation.
-		if hasInputRequests {
-			res.setResultType(resultTypeInputRequired)
-		} else {
-			res.setResultType(resultTypeComplete)
-		}
+		setMultiRoundTripResultType(res)
 	}
 	return nil
+}
+
+// setMultiRoundTripResultType labels res complete or input_required by
+// whether it carries input requests.
+func setMultiRoundTripResultType(res multiRoundTripResponse) {
+	if res.inputRequests() != nil {
+		res.setResultType(resultTypeInputRequired)
+	} else {
+		res.setResultType(resultTypeComplete)
+	}
 }
 
 func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
