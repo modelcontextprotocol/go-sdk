@@ -72,6 +72,12 @@ func TestDiscoveryClientRedirect(t *testing.T) {
 			wantBlocked: true,
 		},
 		{
+			name:        "redirect to hostname resolving to loopback blocked",
+			req:         newRequestTo("https://localhost/"),
+			via:         []*http.Request{newRequestTo("https://93.184.216.34/")},
+			wantBlocked: true,
+		},
+		{
 			name:        "custom client with no custom check",
 			custom:      &http.Client{},
 			req:         newRequestTo("https://127.0.0.1/"),

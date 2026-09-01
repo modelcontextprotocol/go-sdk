@@ -25,6 +25,8 @@ import (
 
 const maxDiscoveryRedirects = 10
 
+var defaultDiscoveryTransport = newDiscoveryTransport(http.DefaultTransport)
+
 type httpStatusError struct {
 	StatusCode int
 }
@@ -101,8 +103,12 @@ func checkHTTPSOrLoopback(addr string) error {
 }
 
 func newDiscoveryClient(c *http.Client) *http.Client {
+	transport := defaultDiscoveryTransport
+	if c != nil && c.Transport != nil {
+		transport = newDiscoveryTransport(c.Transport)
+	}
 	discoveryClient := &http.Client{
-		Transport: newDiscoveryTransport(c),
+		Transport: transport,
 
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if c != nil && c.CheckRedirect != nil {
@@ -112,12 +118,9 @@ func newDiscoveryClient(c *http.Client) *http.Client {
 				return fmt.Errorf("max redirects exceeded (%d)", maxDiscoveryRedirects)
 			}
 			if prev := via[len(via)-1]; prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
-				return fmt.Errorf("redirect to %q security downgrade", req.URL.Scheme)
+				return fmt.Errorf("redirect to non-HTTPS scheme %q is a security downgrade", req.URL.Scheme)
 			}
-			if util.IsLoopback(req.URL.Host) {
-				return fmt.Errorf("redirect into loopback address %q", req.URL.Host)
-			}
-			return nil
+			return checkLoopbackRedirect(req.Context(), req.URL.Hostname())
 		},
 	}
 	if c != nil {
@@ -129,16 +132,14 @@ func newDiscoveryClient(c *http.Client) *http.Client {
 
 // newDiscoveryTransport creates an http.RoundTripper with extra protections enabled,
 // unless the provided client had a custom RoundTripper installed.
-func newDiscoveryTransport(c *http.Client) http.RoundTripper {
-	base := http.DefaultTransport
-	if c != nil && c.Transport != nil {
-		base = c.Transport
-	}
+func newDiscoveryTransport(base http.RoundTripper) http.RoundTripper {
 	t, ok := base.(*http.Transport)
-	if !ok { // do not override a custom http.RoundTripper
+	if !ok { // allow a custom http.RoundTripper to opt-out of the checks
 		return base
 	}
 	result := t.Clone()
+	result.DialTLSContext = nil
+	result.DialTLS = nil
 	result.DialContext = (&net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -158,4 +159,29 @@ func newDiscoveryTransport(c *http.Client) http.RoundTripper {
 		},
 	}).DialContext
 	return result
+}
+
+func checkLoopbackRedirect(ctx context.Context, host string) error {
+	doCheck := func(ip netip.Addr) error {
+		if ip.Unmap().IsLoopback() {
+			return fmt.Errorf("redirect into loopback address %q", host)
+		}
+		if util.IsPrivateOrReserved(ip) {
+			return fmt.Errorf("redirect into non-public address %q", host)
+		}
+		return nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return doCheck(ip)
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve redirect host %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if err := doCheck(ip); err != nil {
+			return err
+		}
+	}
+	return nil
 }
