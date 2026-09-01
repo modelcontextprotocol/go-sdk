@@ -2253,7 +2253,7 @@ type PromptCapabilities struct {
 
 // ResourceCapabilities describes the server's support for resources.
 type ResourceCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
 	// Subscribe reports whether this server supports subscribing to resource
@@ -2263,7 +2263,7 @@ type ResourceCapabilities struct {
 
 // ToolCapabilities describes the server's support for tools.
 type ToolCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the tool list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }

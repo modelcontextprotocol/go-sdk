@@ -3298,6 +3298,83 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 }
 
+// TestSubscriptionsListen_RespectsServerCapabilities verifies that during
+// Connect the client only opens a SEP-2575 subscriptions/listen stream for the
+// change notifications the server advertised during capability negotiation.
+func TestSubscriptionsListen_RespectsServerCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		caps       *ServerCapabilities
+		wantListen bool
+	}{
+		{
+			name:       "advertised",
+			caps:       &ServerCapabilities{Tools: &ToolCapabilities{ListChanged: true}},
+			wantListen: true,
+		},
+		{
+			name:       "not advertised",
+			caps:       &ServerCapabilities{Tools: &ToolCapabilities{}},
+			wantListen: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, &ServerOptions{Capabilities: tc.caps})
+			AddTool(server, &Tool{Name: "t1"}, sayHi)
+
+			listenSeen := make(chan struct{}, 1)
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == methodSubscriptionsListen {
+						select {
+						case listenSeen <- struct{}{}:
+						default:
+						}
+					}
+					return next(ctx, method, req)
+				}
+			})
+
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(context.Background(), st, nil)
+			if err != nil {
+				t.Fatalf("server connect: %v", err)
+			}
+			defer ss.Close()
+
+			c := NewClient(testImpl, &ClientOptions{
+				ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {},
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatalf("client connect: %v", err)
+			}
+			defer cs.Close()
+
+			if _, err := cs.ListTools(ctx, nil); err != nil {
+				t.Fatalf("ListTools: %v", err)
+			}
+
+			if tc.wantListen {
+				select {
+				case <-listenSeen:
+				case <-time.After(5 * time.Second):
+					t.Fatal("expected subscriptions/listen, but none was sent")
+				}
+				return
+			}
+
+			select {
+			case <-listenSeen:
+				t.Fatal("client sent subscriptions/listen for an unadvertised capability")
+			case <-time.After(notificationDelay * 20):
+			}
+		})
+	}
+}
+
 // TestServerSessionCloseWithActiveListen is a regression test for
 // modelcontextprotocol/go-sdk#1160: ServerSession.Close must not deadlock
 // when the client has an active subscriptions/listen stream. Previously,
