@@ -397,9 +397,9 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 })
 ```
 
-`SetCacheable` runs without any server lock held, so it may call back into the
-server. Receiving middleware still runs after it, which remains the escape
-hatch for policy that has to inspect the result body.
+`SetCacheable` may run with the server's lock held, so it must not call back
+into the `Server`: adding or removing a feature, or ranging over
+`Server.Sessions`, deadlocks.
 
 ## Utilities
 

@@ -1191,13 +1191,13 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 // GetCacheScope returns the cache scope.
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
-// normalizeCacheable fills in the protocol default for any cache field left
+// normalize fills in the protocol default for any cache field left
 // unset. An absent cacheScope means "public", but the field is required on the
 // wire, so the default is materialized here rather than sent empty.
 //
 // Values already present are preserved: this must not undo a decision made by
 // a resource handler or by [ServerOptions.SetCacheable].
-func (c *Cacheable) normalizeCacheable() {
+func (c *Cacheable) normalize() {
 	if c.CacheScope == "" {
 		c.CacheScope = "public"
 	}

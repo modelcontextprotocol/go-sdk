@@ -845,17 +845,17 @@ func (s *Server) Sessions() iter.Seq[*ServerSession] {
 }
 
 func (s *Server) listPrompts(ctx context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if req.Params == nil {
 		req.Params = &ListPromptsParams{}
 	}
-	s.mu.Lock()
 	res, err := paginateList(s.prompts, s.opts.PageSize, req.Params, &ListPromptsResult{}, func(res *ListPromptsResult, prompts []*serverPrompt) {
 		res.Prompts = []*Prompt{} // avoid JSON null
 		for _, p := range prompts {
 			res.Prompts = append(res.Prompts, p.prompt)
 		}
 	})
-	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -943,17 +943,17 @@ func filterSupportedVersions(t Transport) []string {
 }
 
 func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	s.mu.Lock()
 	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
 			res.Tools = append(res.Tools, t.tool)
 		}
 	})
-	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -991,17 +991,17 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 }
 
 func (s *Server) listResources(ctx context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if req.Params == nil {
 		req.Params = &ListResourcesParams{}
 	}
-	s.mu.Lock()
 	res, err := paginateList(s.resources, s.opts.PageSize, req.Params, &ListResourcesResult{}, func(res *ListResourcesResult, resources []*serverResource) {
 		res.Resources = []*Resource{} // avoid JSON null
 		for _, r := range resources {
 			res.Resources = append(res.Resources, r.resource)
 		}
 	})
-	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1010,10 +1010,11 @@ func (s *Server) listResources(ctx context.Context, req *ListResourcesRequest) (
 }
 
 func (s *Server) listResourceTemplates(ctx context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if req.Params == nil {
 		req.Params = &ListResourceTemplatesParams{}
 	}
-	s.mu.Lock()
 	res, err := paginateList(s.resourceTemplates, s.opts.PageSize, req.Params, &ListResourceTemplatesResult{},
 		func(res *ListResourceTemplatesResult, rts []*serverResourceTemplate) {
 			res.ResourceTemplates = []*ResourceTemplate{} // avoid JSON null
@@ -1021,7 +1022,6 @@ func (s *Server) listResourceTemplates(ctx context.Context, req *ListResourceTem
 				res.ResourceTemplates = append(res.ResourceTemplates, rt.resourceTemplate)
 			}
 		})
-	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1075,13 +1075,13 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 // then rewrite it, and any cacheScope still unset is filled with the protocol
 // default.
 //
-// Callers must not hold s.mu: SetCacheable is user code and may call back into
-// the server.
+// The list methods call this with s.mu held, so SetCacheable must not call
+// back into the server; see its documentation.
 func (s *Server) resolveCacheable(ctx context.Context, req Request, c *Cacheable) {
 	if s.opts.SetCacheable != nil {
 		s.opts.SetCacheable(ctx, req, c)
 	}
-	c.normalizeCacheable()
+	c.normalize()
 }
 
 // lookupResourceHandler returns the resource handler and MIME type for the resource or
