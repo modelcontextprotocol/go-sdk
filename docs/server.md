@@ -975,26 +975,32 @@ results: clients use `ttlMs` as a freshness hint to reduce polling,
 and `cacheScope` (`"public"` or `"private"`) controls whether shared
 intermediaries may cache the response.
 
-**Server-side defaults.** After paginating, the SDK sets `CacheScope = "public"`
-and leaves `TTLMs = 0` (which the client cache treats as "immediately
-stale"). A handler that wants its responses cached must set `TTLMs`
-explicitly on the returned result.
+**Server-side defaults.** The SDK fills in `CacheScope = "public"` whenever a
+result leaves it empty, since the field is required on the wire. Everything
+else is left as produced: a `ResourceHandler` that sets `TTLMs` or `CacheScope`
+on its `ReadResourceResult` keeps those values. The list results and
+`server/discover` are built by the SDK itself, so they start out with
+`TTLMs = 0`, which a client cache treats as "immediately stale".
+
+**Setting a policy.** `ServerOptions.SetCacheable` decides the fields for every
+result that carries them. It runs after the corresponding handler, receives
+what that handler produced, and may keep, adjust, or replace it. The request is
+passed in so that policy can vary by method, session, or authorization context.
 
 ```go
-mcp.AddTool(server, &mcp.Tool{Name: "expensive"}, func(...) (*mcp.CallToolResult, any, error) {
-    // ...
-})
-// Override the default for tools/list:
-server.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
-    return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-        res, err := next(ctx, method, req)
-        if lr, ok := res.(*mcp.ListToolsResult); ok {
-            lr.TTLMs = 30_000 // 30s cache freshness hint
+server := mcp.NewServer(impl, &mcp.ServerOptions{
+    SetCacheable: func(_ context.Context, req mcp.Request, c *mcp.Cacheable) {
+        // A 30s freshness hint, except where the handler chose its own.
+        if c.TTLMs == 0 {
+            c.TTLMs = 30_000
         }
-        return res, err
-    }
+    },
 })
 ```
+
+`SetCacheable` may run with the server's lock held, so it must not call back
+into the `Server`: adding or removing a feature, or ranging over
+`Server.Sessions`, deadlocks.
 
 ## Utilities
 
