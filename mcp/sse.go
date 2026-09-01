@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -65,6 +66,12 @@ type SSEOptions struct {
 	// Only disable this if you understand the security implications.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	DisableLocalhostProtection bool
+
+	// MaxRequestBodyBytes limits the number of bytes read from an incoming
+	// POST body before the server responds with 413 Request Entity Too Large.
+	// It matches [StreamableHTTPOptions.MaxRequestBodyBytes]: if zero,
+	// [DefaultMaxRequestBodyBytes] is used; a negative value disables the limit.
+	MaxRequestBodyBytes int64
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -122,6 +129,12 @@ type SSEServerTransport struct {
 	// Response is the hanging response body to the incoming GET request.
 	Response http.ResponseWriter
 
+	// MaxRequestBodyBytes limits the number of bytes read from a POSTed
+	// message body before [SSEServerTransport.ServeHTTP] responds with 413
+	// Request Entity Too Large. If zero, [DefaultMaxRequestBodyBytes] is used;
+	// a negative value disables the limit. See [SSEOptions.MaxRequestBodyBytes].
+	MaxRequestBodyBytes int64
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -143,9 +156,22 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	limit := t.MaxRequestBodyBytes
+	if limit == 0 {
+		limit = DefaultMaxRequestBodyBytes
+	}
+	if limit > 0 && req.Body != nil {
+		req.Body = http.MaxBytesReader(w, req.Body, limit)
+	}
+
 	// Read and parse the message.
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -260,7 +286,11 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w}
+	transport := &SSEServerTransport{
+		Endpoint:            endpoint.RequestURI(),
+		Response:            w,
+		MaxRequestBodyBytes: h.opts.MaxRequestBodyBytes,
+	}
 
 	// The session is terminated when the request exits.
 	h.mu.Lock()
