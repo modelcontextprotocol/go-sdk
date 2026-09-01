@@ -11,13 +11,19 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
+
+const maxDiscoveryRedirects = 10
 
 type httpStatusError struct {
 	StatusCode int
@@ -35,10 +41,7 @@ func getJSON[T any](ctx context.Context, c *http.Client, url string, limit int64
 	if err != nil {
 		return nil, err
 	}
-	if c == nil {
-		c = http.DefaultClient
-	}
-	res, err := c.Do(req)
+	res, err := newDiscoveryClient(c).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -91,5 +94,68 @@ func checkHTTPSOrLoopback(addr string) error {
 	if !util.IsLoopback(u.Host) && u.Scheme != "https" {
 		return fmt.Errorf("URL %q does not use HTTPS or is not a loopback address", addr)
 	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil && util.IsPrivateOrReserved(ip) {
+		return fmt.Errorf("URL %q refers to a non-public address", addr)
+	}
 	return nil
+}
+
+func newDiscoveryClient(c *http.Client) *http.Client {
+	discoveryClient := &http.Client{
+		Transport: newDiscoveryTransport(c),
+
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if c != nil && c.CheckRedirect != nil {
+				return c.CheckRedirect(req, via)
+			}
+			if len(via) >= maxDiscoveryRedirects {
+				return fmt.Errorf("max redirects exceeded (%d)", maxDiscoveryRedirects)
+			}
+			if prev := via[len(via)-1]; prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+				return fmt.Errorf("redirect to %q security downgrade", req.URL.Scheme)
+			}
+			if util.IsLoopback(req.URL.Host) {
+				return fmt.Errorf("redirect into loopback address %q", req.URL.Host)
+			}
+			return nil
+		},
+	}
+	if c != nil {
+		discoveryClient.Timeout = c.Timeout
+		discoveryClient.Jar = c.Jar
+	}
+	return discoveryClient
+}
+
+// newDiscoveryTransport creates an http.RoundTripper with extra protections enabled,
+// unless the provided client had a custom RoundTripper installed.
+func newDiscoveryTransport(c *http.Client) http.RoundTripper {
+	base := http.DefaultTransport
+	if c != nil && c.Transport != nil {
+		base = c.Transport
+	}
+	t, ok := base.(*http.Transport)
+	if !ok { // do not override a custom http.RoundTripper
+		return base
+	}
+	result := t.Clone()
+	result.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				host = address
+			}
+			ip, err := netip.ParseAddr(host)
+			if err != nil {
+				return fmt.Errorf("non-ip address: %w", err)
+			}
+			if util.IsPrivateOrReserved(ip) {
+				return fmt.Errorf("non-public ip address: %q", ip)
+			}
+			return nil
+		},
+	}).DialContext
+	return result
 }
