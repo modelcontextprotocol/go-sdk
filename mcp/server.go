@@ -174,6 +174,14 @@ type ServerOptions struct {
 	// true, since stateless servers do not maintain sessions.
 	GetSessionID func() string
 
+	// SetCacheable, if non-nil, decides the cache-control fields (ttlMs and
+	// cacheScope) of every result that carries them: server/discover, the
+	// four list methods, and resources/read.
+	//
+	// It is called once per such result, after the corresponding handler has
+	// returned, with c holding the values that handler produced.
+	SetCacheable func(ctx context.Context, req Request, c *Cacheable)
+
 	// SupportedProtocolVersions, if non-empty, restricts the protocol versions
 	// this server advertises. If empty, every version returned by
 	// [SupportedProtocolVersions] is used.
@@ -870,7 +878,7 @@ func (s *Server) Sessions() iter.Seq[*ServerSession] {
 	return slices.Values(clients)
 }
 
-func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {
+func (s *Server) listPrompts(ctx context.Context, req *ListPromptsRequest) (*ListPromptsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -885,7 +893,7 @@ func (s *Server) listPrompts(_ context.Context, req *ListPromptsRequest) (*ListP
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
 
@@ -915,7 +923,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 // the server's capabilities, the server's identity, and the server's
 // instructions, allowing clients to negotiate without performing the legacy
 // initialize handshake.
-func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
+func (s *Server) discover(ctx context.Context, req *ServerRequest[*DiscoverParams]) (*DiscoverResult, error) {
 	req.Session.mu.Lock()
 	versions := req.Session.supportedVersions
 	req.Session.mu.Unlock()
@@ -947,7 +955,7 @@ func (s *Server) discover(_ context.Context, req *ServerRequest[*DiscoverParams]
 		Capabilities:      s.capabilities(),
 		Instructions:      s.opts.Instructions,
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
 
@@ -968,7 +976,7 @@ func filterSupportedVersions(t Transport, versions []string) []string {
 	return out
 }
 
-func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
+func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -983,7 +991,7 @@ func (s *Server) listTools(_ context.Context, req *ListToolsRequest) (*ListTools
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
 
@@ -1016,7 +1024,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	return res, err
 }
 
-func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
+func (s *Server) listResources(ctx context.Context, req *ListResourcesRequest) (*ListResourcesResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -1031,11 +1039,11 @@ func (s *Server) listResources(_ context.Context, req *ListResourcesRequest) (*L
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
 
-func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
+func (s *Server) listResourceTemplates(ctx context.Context, req *ListResourceTemplatesRequest) (*ListResourceTemplatesResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -1051,7 +1059,7 @@ func (s *Server) listResourceTemplates(_ context.Context, req *ListResourceTempl
 	if err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
 
@@ -1075,7 +1083,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
 		return nil, err
 	}
-	res.setDefaultCacheableValues()
+	s.resolveCacheable(ctx, req, &res.Cacheable)
 	if res.resultType == resultTypeInputRequired {
 		return res, nil
 	}
@@ -1092,6 +1100,22 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 		}
 	}
 	return res, nil
+}
+
+// resolveCacheable settles the cache-control fields of an outgoing result.
+//
+// On entry c holds whatever the feature handler produced, which is the zero
+// value for results the SDK builds itself. [ServerOptions.SetCacheable] may
+// then rewrite it, and any cacheScope still unset is filled with the protocol
+// default.
+//
+// The list methods call this with s.mu held, so SetCacheable must not call
+// back into the server; see its documentation.
+func (s *Server) resolveCacheable(ctx context.Context, req Request, c *Cacheable) {
+	if s.opts.SetCacheable != nil {
+		s.opts.SetCacheable(ctx, req, c)
+	}
+	c.normalize()
 }
 
 // lookupResourceHandler returns the resource handler and MIME type for the resource or

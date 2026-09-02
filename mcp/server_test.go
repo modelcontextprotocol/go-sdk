@@ -1692,6 +1692,86 @@ func TestServerSession_RejectsServerInitiated(t *testing.T) {
 	}
 }
 
+func TestServerSetCacheable(t *testing.T) {
+	ctx := context.Background()
+	// The values an opinionated resource handler sets on its own result.
+	handlerValue := Cacheable{TTLMs: 9_000, CacheScope: "private"}
+
+	for _, tc := range []struct {
+		name        string
+		callback    func(context.Context, Request, *Cacheable)
+		wantSDK     Cacheable // for a result whose fields nobody set
+		wantHandler Cacheable // for a result the handler set fields on
+	}{
+		{
+			name:        "no callback",
+			wantSDK:     Cacheable{TTLMs: 0, CacheScope: "public"},
+			wantHandler: handlerValue,
+		},
+		{
+			name: "callback overrules the handler",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				c.TTLMs, c.CacheScope = 60_000, "private"
+			},
+			wantSDK:     Cacheable{TTLMs: 60_000, CacheScope: "private"},
+			wantHandler: Cacheable{TTLMs: 60_000, CacheScope: "private"},
+		},
+		{
+			// The callback is handed what the handler produced, so it can
+			// single out the results that expressed no opinion. The scope it
+			// leaves empty is still filled with the protocol default.
+			name: "callback defers to the handler",
+			callback: func(_ context.Context, _ Request, c *Cacheable) {
+				if c.CacheScope == "" {
+					c.TTLMs = 1_000
+				}
+			},
+			wantSDK:     Cacheable{TTLMs: 1_000, CacheScope: "public"},
+			wantHandler: handlerValue,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(testImpl, &ServerOptions{SetCacheable: tc.callback})
+			s.AddResource(&Resource{URI: "test://plain", Name: "plain"},
+				func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+					return &ReadResourceResult{Contents: []*ResourceContents{{URI: req.Params.URI, Text: "x"}}}, nil
+				})
+			s.AddResource(&Resource{URI: "test://opinionated", Name: "opinionated"},
+				func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+					return &ReadResourceResult{
+						Cacheable: handlerValue,
+						Contents:  []*ResourceContents{{URI: req.Params.URI, Text: "x"}},
+					}, nil
+				})
+			cs := mustConnect(t, s, nil)
+
+			check := func(label string, got, want Cacheable) {
+				t.Helper()
+				if got != want {
+					t.Errorf("%s Cacheable = %+v, want %+v", label, got, want)
+				}
+			}
+
+			tools, err := cs.ListTools(ctx, nil) // built by the SDK, never by a handler
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("tools/list", tools.Cacheable, tc.wantSDK)
+
+			for uri, want := range map[string]Cacheable{
+				"test://plain":       tc.wantSDK,
+				"test://opinionated": tc.wantHandler,
+			} {
+				res, err := cs.ReadResource(ctx, &ReadResourceParams{URI: uri})
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(uri, res.Cacheable, want)
+			}
+		})
+	}
+}
+
 // TestServerSupportedProtocolVersions verifies that
 // [ServerOptions.SupportedProtocolVersions] narrows both the versions the
 // server advertises in server/discover and the versions it negotiates,
