@@ -119,13 +119,22 @@ type serverConnection interface {
 	sessionUpdated(ServerSessionState)
 }
 
+// DefaultMaxLineLength is the default maximum number of bytes buffered while
+// decoding a single inbound JSON-RPC frame.
+const DefaultMaxLineLength = 16 * 1024 * 1024
+
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConnLimited(rwc{os.Stdin, nopCloserWriter{os.Stdout}}, t.MaxLineLength), nil
 }
 
 // nopCloserWriter is an io.WriteCloser with a trivial Close method.
@@ -140,11 +149,15 @@ func (nopCloserWriter) Close() error { return nil }
 type IOTransport struct {
 	Reader io.ReadCloser
 	Writer io.WriteCloser
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.Reader, t.Writer}), nil
+	return newIOConnLimited(rwc{t.Reader, t.Writer}, t.MaxLineLength), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
@@ -478,6 +491,17 @@ type msgOrErr struct {
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	return newIOConnLimited(rwc, DefaultMaxLineLength)
+}
+
+// newIOConnLimited builds an [ioConn] over rwc that bounds the number of bytes
+// buffered while decoding a single inbound JSON-RPC frame to maxLineLength.
+// maxLineLength == 0 selects [DefaultMaxLineLength], a negative value means no cap.
+func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
+	limit := maxLineLength
+	if limit == 0 {
+		limit = DefaultMaxLineLength
+	}
 	var (
 		incoming = make(chan msgOrErr)
 		closed   = make(chan struct{})
@@ -489,7 +513,15 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
-		dec := json.NewDecoder(rwc)
+		var (
+			reader  io.Reader = rwc
+			limiter *frameLimitReader
+		)
+		if limit > 0 {
+			limiter = &frameLimitReader{r: rwc, limit: limit}
+			reader = limiter
+		}
+		dec := json.NewDecoder(reader)
 		for {
 			var raw json.RawMessage
 			err := dec.Decode(&raw)
@@ -515,6 +547,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 			if err != nil {
 				return
 			}
+			if limiter != nil {
+				limiter.resetFrame()
+			}
 		}
 	}()
 	return &ioConn{
@@ -523,6 +558,32 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 		closed:   closed,
 	}
 }
+
+// errFrameTooLarge means that a single inbound JSON-RPC frame exceeded the configured byte
+// limit before the value was completely received.
+var errFrameTooLarge = errors.New("inbound JSON-RPC frame exceeded the configured maximum line length")
+
+// frameLimitReader bounds the number of bytes [json.Decoder] may buffer while
+// decoding a single JSON value. Read returns [errFrameTooLarge] once the budget is exhausted.
+type frameLimitReader struct {
+	r     io.Reader
+	limit int
+	count int
+}
+
+func (r *frameLimitReader) Read(p []byte) (int, error) {
+	if r.count >= r.limit {
+		return 0, errFrameTooLarge
+	}
+	if len(p) > r.limit-r.count {
+		p = p[:r.limit-r.count]
+	}
+	n, err := r.r.Read(p)
+	r.count += n
+	return n, err
+}
+
+func (r *frameLimitReader) resetFrame() { r.count = 0 }
 
 func (c *ioConn) SessionID() string { return "" }
 
