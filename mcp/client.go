@@ -204,7 +204,18 @@ type ClientOptions struct {
 	// reset" guidance, letting a transient miss pass without tearing down an
 	// otherwise live session. Has no effect unless KeepAlive is non-zero.
 	KeepAliveFailureThreshold int
+	// ListMaxPages is the maximum number of pages to fetch during automatic
+	// pagination of list operations (Tools, Resources, ResourceTemplates,
+	// Prompts). A value of 0 uses the default of [DefaultListMaxPages] (64).
+	// A negative value means unlimited. A positive value caps the number of
+	// pages. This prevents runaway pagination loops caused by server-side
+	// cursor cycles.
+	ListMaxPages int
 }
+
+// DefaultListMaxPages is the default value for [ClientOptions.ListMaxPages],
+// matching the TypeScript SDK's DEFAULT_LIST_MAX_PAGES.
+const DefaultListMaxPages = 64
 
 // toolContextKeyType is the context key type for passing tool definitions
 // from CallTool to the transport layer.
@@ -1556,7 +1567,7 @@ func (cs *ClientSession) Tools(ctx context.Context, params *ListToolsParams) ite
 	if params == nil {
 		params = &ListToolsParams{}
 	}
-	return paginate(ctx, params, cs.ListTools, func(res *ListToolsResult) []*Tool {
+	return paginate(ctx, params, cs.client.opts.ListMaxPages, cs.ListTools, func(res *ListToolsResult) []*Tool {
 		return res.Tools
 	})
 }
@@ -1569,7 +1580,7 @@ func (cs *ClientSession) Resources(ctx context.Context, params *ListResourcesPar
 	if params == nil {
 		params = &ListResourcesParams{}
 	}
-	return paginate(ctx, params, cs.ListResources, func(res *ListResourcesResult) []*Resource {
+	return paginate(ctx, params, cs.client.opts.ListMaxPages, cs.ListResources, func(res *ListResourcesResult) []*Resource {
 		return res.Resources
 	})
 }
@@ -1582,7 +1593,7 @@ func (cs *ClientSession) ResourceTemplates(ctx context.Context, params *ListReso
 	if params == nil {
 		params = &ListResourceTemplatesParams{}
 	}
-	return paginate(ctx, params, cs.ListResourceTemplates, func(res *ListResourceTemplatesResult) []*ResourceTemplate {
+	return paginate(ctx, params, cs.client.opts.ListMaxPages, cs.ListResourceTemplates, func(res *ListResourceTemplatesResult) []*ResourceTemplate {
 		return res.ResourceTemplates
 	})
 }
@@ -1595,16 +1606,38 @@ func (cs *ClientSession) Prompts(ctx context.Context, params *ListPromptsParams)
 	if params == nil {
 		params = &ListPromptsParams{}
 	}
-	return paginate(ctx, params, cs.ListPrompts, func(res *ListPromptsResult) []*Prompt {
+	return paginate(ctx, params, cs.client.opts.ListMaxPages, cs.ListPrompts, func(res *ListPromptsResult) []*Prompt {
 		return res.Prompts
 	})
 }
 
 // paginate is a generic helper function to provide a paginated iterator.
-func paginate[P listParams, R listResult[T], T any](ctx context.Context, params P, listFunc func(context.Context, P) (R, error), items func(R) []*T) iter.Seq2[*T, error] {
+//
+// It fetches pages by calling listFunc until the result has no NextCursor,
+// maxPages is exceeded (if non-zero), or a cursor cycle is detected.
+// The caller's params struct is not mutated; a local copy is used instead.
+func paginate[P listParams, R listResult[T], T any](ctx context.Context, params P, maxPages int, listFunc func(context.Context, P) (R, error), items func(R) []*T) iter.Seq2[*T, error] {
 	return func(yield func(*T, error) bool) {
+		// Copy the underlying struct so we don't mutate the caller's params.
+		// P is always a pointer to a struct (e.g. *ListToolsParams).
+		// We use reflect to create a shallow copy of the pointed-to struct.
+		localParams := params
+		if v := reflect.ValueOf(params); v.Kind() == reflect.Pointer {
+			cp := reflect.New(v.Type().Elem())
+			cp.Elem().Set(v.Elem())
+			localParams = cp.Interface().(P)
+		}
+		var seen map[string]bool
+		pages := 0
+		// 0 means use default (64); negative means unlimited.
+		effectiveMax := maxPages
+		if effectiveMax == 0 {
+			effectiveMax = DefaultListMaxPages
+		}
+
 		for {
-			res, err := listFunc(ctx, params)
+			pages++
+			res, err := listFunc(ctx, localParams)
 			if err != nil {
 				yield(nil, err)
 				return
@@ -1618,7 +1651,21 @@ func paginate[P listParams, R listResult[T], T any](ctx context.Context, params 
 			if nextCursorVal == nil || *nextCursorVal == "" {
 				return
 			}
-			*params.cursorPtr() = *nextCursorVal
+			// Check max pages limit.
+			if effectiveMax > 0 && pages >= effectiveMax {
+				yield(nil, fmt.Errorf("mcp: pagination exceeded maximum page limit of %d", effectiveMax))
+				return
+			}
+			// Detect cursor cycles to prevent infinite loops.
+			if seen == nil {
+				seen = make(map[string]bool)
+			}
+			if seen[*nextCursorVal] {
+				yield(nil, fmt.Errorf("mcp: pagination detected cursor cycle: %q", *nextCursorVal))
+				return
+			}
+			seen[*nextCursorVal] = true
+			*localParams.cursorPtr() = *nextCursorVal
 		}
 	}
 }
