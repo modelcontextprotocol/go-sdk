@@ -48,7 +48,7 @@ func annotateResultType(res Result) {
 		r.setResultType(resultTypeComplete)
 	case multiRoundTripResponse:
 		// A middleware can return one of these without reaching the
-		// dispatcher, leaving the field unset.
+		// dispatcher. This leaves the field unset.
 		setMultiRoundTripResultType(r)
 	}
 }
@@ -233,8 +233,8 @@ type CallToolParams struct {
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses. Set it when retrying
-	// a call that asked for input. See [CallToolResult.NeedsInput].
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -255,8 +255,8 @@ type CallToolParamsRaw struct {
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses. Set it when retrying
-	// a call that asked for input. See [CallToolResult.NeedsInput].
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -310,9 +310,9 @@ type CallToolResult struct {
 	IsError bool `json:"isError,omitempty"`
 
 	// InputRequests is a map of server-assigned IDs to input requests.
-	// Set only when the result needs more client input.
+	// It is set only when the result needs more client input.
 	// The client must fulfill these and echo the IDs back in InputResponses
-	// when retrying the call.
+	// when it retries the call.
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 
 	// RequestState is an opaque string the client must echo back when
@@ -324,7 +324,7 @@ type CallToolResult struct {
 
 	// resultType records whether the call finished or needs more client input.
 	// Empty or resultTypeComplete means it finished. resultTypeInputRequired
-	// means the client should fulfill InputRequests and retry.
+	// means the client must fulfill InputRequests and retry.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
 	// The error passed to setError, if any.
@@ -969,8 +969,8 @@ type GetPromptParams struct {
 	// The name of the prompt or prompt template.
 	Name string `json:"name"`
 
-	// InputResponses maps input request IDs to responses. Set it when retrying
-	// a call that asked for input. See [CallToolResult.NeedsInput].
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`
@@ -1601,8 +1601,8 @@ type ReadResourceParams struct {
 	// the server how to interpret it.
 	URI string `json:"uri"`
 
-	// InputResponses maps input request IDs to responses. Set it when retrying
-	// a call that asked for input. See [CallToolResult.NeedsInput].
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`

@@ -2039,8 +2039,8 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if err != nil {
 		return nil, err
 	}
-	// A middleware can return a typed nil, which satisfies Result but panics
-	// when annotated.
+	// A middleware can return a typed nil value that satisfies the Result
+	// interface. Annotating that value panics.
 	if validatedMeta.usesNewProtocol && res != nil && !res.isNil() {
 		annotateResultType(res)
 		annotateServerInfo(res, ss.server.impl)
