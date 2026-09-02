@@ -1544,7 +1544,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	var respBody []byte
 	if contentType == "text/event-stream" {
 		r := readerInto{resp.Body, new(bytes.Buffer)}
-		for evt, err := range scanEvents(r) {
+		for evt, err := range scanEventsLimited(r, DefaultMaxEventSize) {
 			if err != nil {
 				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
@@ -2856,6 +2856,69 @@ data: {"jsonrpc":"2.0","id":1,"result":{}}
 	}
 }
 
+// TestProcessStreamMaxEventSize verifies that a streamableClientConn honors its
+// configured maxEventSize.
+func TestProcessStreamMaxEventSize(t *testing.T) {
+	jsonrpcEventOfSize := func(padSize int) string {
+		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"pad":%q}}`, strings.Repeat("A", padSize))
+		return "data: " + msg + "\n\n"
+	}
+
+	tests := []struct {
+		name         string
+		maxEventSize int
+		event        string
+		wantFail     bool
+	}{
+		{
+			name:         "event over cap is rejected",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: 1024,
+			wantFail:     true,
+		},
+		{
+			name:         "event under cap is accepted",
+			event:        jsonrpcEventOfSize(1024),
+			maxEventSize: 4096,
+			wantFail:     false,
+		},
+		{
+			name:         "negative cap disables the limit",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: -1,
+			wantFail:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(tt.event)),
+			}
+			conn := &streamableClientConn{
+				ctx:          ctx,
+				done:         make(chan struct{}),
+				incoming:     make(chan jsonrpc.Message, 10),
+				failed:       make(chan struct{}),
+				logger:       ensureLogger(nil),
+				maxEventSize: tt.maxEventSize,
+			}
+			conn.processStream(ctx, "test", resp, nil)
+
+			err := conn.failure()
+			if tt.wantFail && err == nil {
+				t.Fatal("failure() = nil, want a non-nil error for an oversized event")
+			}
+			if !tt.wantFail && err != nil {
+				t.Fatalf("failure() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
@@ -2878,7 +2941,7 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 	var events []Event
 
 	// Scan all events
-	for evt, err := range scanEvents(reader) {
+	for evt, err := range scanEventsLimited(reader, DefaultMaxEventSize) {
 		if err != nil {
 			if err != io.EOF {
 				t.Fatalf("scanEvents error: %v", err)

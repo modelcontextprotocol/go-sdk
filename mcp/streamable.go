@@ -2018,6 +2018,11 @@ type StreamableClientTransport struct {
 	// OAuthHandler is an optional field that, if provided, will be used to authorize the requests.
 	OAuthHandler auth.OAuthHandler
 
+	// MaxEventSize bounds the number of bytes buffered while reading a single
+	// server-sent event. A value of 0 selects [DefaultMaxEventSize], a negative
+	// value disables the cap.
+	MaxEventSize int
+
 	// TODO(rfindley): propose exporting these.
 	// If strict is set, the transport is in 'strict mode', where any violation
 	// of the MCP spec causes a failure.
@@ -2105,6 +2110,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
 		oauthHandler:         t.OAuthHandler,
+		maxEventSize:         t.MaxEventSize,
 	}
 	return conn, nil
 }
@@ -2125,6 +2131,10 @@ type streamableClientConn struct {
 
 	// oauthHandler is the OAuth handler for the connection.
 	oauthHandler auth.OAuthHandler // from [StreamableClientTransport.OAuthHandler]
+
+	// maxEventSize bounds the number of bytes buffered while reading a single
+	// server-sent event. Resolved from [StreamableClientTransport.MaxEventSize].
+	maxEventSize int
 
 	// Guard calls to Close, as it may be called multiple times.
 	closeOnce sync.Once
@@ -2635,7 +2645,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
-	for evt, err := range scanEvents(resp.Body) {
+	for evt, err := range scanEventsLimited(resp.Body, c.maxEventSize) {
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", 0, true // don't reconnect: client cancelled

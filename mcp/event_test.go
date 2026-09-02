@@ -5,9 +5,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -134,7 +137,7 @@ func TestScanEvents(t *testing.T) {
 			r := strings.NewReader(tt.input)
 			var got []Event
 			var err error
-			for e, err2 := range scanEvents(r) {
+			for e, err2 := range scanEventsLimited(r, DefaultMaxEventSize) {
 				if err2 != nil {
 					err = err2
 					break
@@ -169,6 +172,136 @@ func TestScanEvents(t *testing.T) {
 				}
 				if g, w := string(got[i].Data), string(tt.want[i].Data); g != w {
 					t.Errorf("event %d: data = %q, want %q", i, g, w)
+				}
+			}
+		})
+	}
+}
+
+// endlessReader streams a fixed prefix once, then repeats fill forever.
+type endlessReader struct {
+	prefix   string
+	sent     bool
+	repeat   string
+	repIndex int
+}
+
+func (r *endlessReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		n := copy(p, r.prefix)
+		r.sent = true
+		return n, nil
+	}
+	for i := range p {
+		p[i] = r.repeat[r.repIndex%len(r.repeat)]
+		r.repIndex++
+	}
+	return len(p), nil
+}
+
+func (r *endlessReader) Close() error { return nil }
+
+// TestScanEventsMaxEventSize verifies that scanEvents bounds the bytes
+// buffered for a single event.
+func TestScanEventsMaxEventSize(t *testing.T) {
+	wantByte := byte('A')
+	eventOfSize := func(size int) []byte {
+		var buf bytes.Buffer
+		buf.WriteString("data: ")
+		buf.Write(bytes.Repeat([]byte{wantByte}, size))
+		buf.WriteString("\n\n")
+		return buf.Bytes()
+	}
+
+	tests := []struct {
+		name            string
+		reader          io.Reader
+		maxEventSize    int
+		wantErr         bool
+		wantDataLengths []int
+	}{
+		{
+			name:            "negative budget disables the cap",
+			reader:          bytes.NewReader(eventOfSize(512)),
+			maxEventSize:    -1,
+			wantDataLengths: []int{512},
+		},
+		{
+			name:            "long line under cap", // bufio.Reader default buf size is 1 << 12
+			reader:          bytes.NewReader(eventOfSize(1 << 14)),
+			maxEventSize:    1 << 15,
+			wantDataLengths: []int{1 << 14},
+		},
+		{
+			name:         "unbounded rejected",
+			reader:       &endlessReader{prefix: "data: ", repeat: string(wantByte)},
+			maxEventSize: 1024,
+			wantErr:      true,
+		},
+
+		{
+			name: "consecutive data fields longer than limit",
+			reader: strings.NewReader(func() string {
+				var b strings.Builder
+				for range 2048 {
+					b.WriteString("data: \n")
+				}
+				return b.String()
+			}()),
+			maxEventSize: 1024,
+			wantErr:      true,
+		},
+		{
+			name:            "budget resets between events",
+			reader:          bytes.NewReader(append(eventOfSize(3*1024), eventOfSize(3*1024)...)),
+			maxEventSize:    4 * 1024,
+			wantDataLengths: []int{3 * 1024, 3 * 1024},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			type result struct {
+				events []Event
+				err    error
+			}
+
+			done := make(chan result, 1)
+			go func() {
+				var events []Event
+				for e, err := range scanEventsLimited(tt.reader, tt.maxEventSize) {
+					if err != nil {
+						done <- result{events, err}
+						return
+					}
+					events = append(events, e)
+				}
+				done <- result{events, nil}
+			}()
+
+			var res result
+			select {
+			case res = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("scanEvents did not return")
+			}
+
+			if tt.wantErr {
+				if !errors.Is(res.err, errMalformedEvent) {
+					t.Fatalf("got error %v, want errMalformedEvent", res.err)
+				}
+				return
+			}
+			if res.err != nil {
+				t.Fatalf("unexpected error: %v", res.err)
+			}
+			if len(res.events) != len(tt.wantDataLengths) {
+				t.Fatalf("got %d events, want %d", len(res.events), len(tt.wantDataLengths))
+			}
+			for i, wantLen := range tt.wantDataLengths {
+				wantRepeated := string(wantByte)
+				if got := res.events[i].Data; string(got) != strings.Repeat(wantRepeated, wantLen) {
+					t.Errorf("event %d: got %d data bytes, want %d bytes of %s", i, len(got), wantLen, wantRepeated)
 				}
 			}
 		})
