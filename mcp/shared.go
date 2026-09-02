@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -466,27 +467,39 @@ const (
 	codeUnsupportedMethod = -31001
 )
 
-// notifySessions calls Notify on all the sessions.
+// notifyTimeout bounds each session's notification send in notifySessions
+// and Server.notifySubscribedSessions.
+//
+// TODO: make this configurable.
+const notifyTimeout = 10 * time.Second
+
+// notifySessions calls Notify on all the sessions, concurrently and each
+// under its own deadline, so that one session whose write stalls (a peer that
+// has stopped reading) neither delays nor fails delivery to the others. It
+// returns once every session has been attempted.
 // Should be called on a copy of the peer sessions.
 // The logger must be non-nil.
 func notifySessions[S Session, P Params](sessions []S, method string, params P, logger *slog.Logger) {
 	if sessions == nil {
 		return
 	}
-	// Notify with the background context, so the messages are sent on the
-	// standalone stream.
-	// TODO: make this timeout configurable, or call handleNotify asynchronously.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// TODO: there's a potential spec violation here, when the feature list
 	// changes before the session (client or server) is initialized.
+	var wg sync.WaitGroup
 	for _, s := range sessions {
-		req := newRequest(s, params)
-		if err := handleNotify(ctx, method, req); err != nil {
-			logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Notify with the background context, so the messages are sent on
+			// the standalone stream.
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			if err := handleNotify(ctx, method, newRequest(s, params)); err != nil {
+				logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 func newRequest[S Session, P Params](s S, p P) Request {
