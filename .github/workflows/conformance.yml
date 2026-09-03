@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  CONFORMANCE_VERSION: "0.2.0-alpha.10"
+  CONFORMANCE_VERSION: "0.2.0-alpha.11"
 
 jobs:
   server-conformance:
@@ -32,7 +32,7 @@ jobs:
           node-version: 22
       - name: Build everything-server
         run: go build -o everything-server ./conformance/everything-server
-      - name: Run conformance tests (stateful, legacy spec versions)
+      - name: Run conformance tests (2025-11-25, stateful)
         run: |
           ./everything-server -http=":3001" -stateless=false &
           SERVER_PID=$!
@@ -40,10 +40,9 @@ jobs:
           timeout 30 bash -c 'until curl -s http://localhost:3001/mcp > /dev/null; do sleep 0.5; done'
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
             --url http://localhost:3001/mcp \
-            --suite active \
-            --spec-version 2025-11-25 \
+            --requirements 2025-11-25 \
             --expected-failures ./conformance/baseline.yml
-      - name: Run conformance tests (stateless, 2026-07-28, full suite)
+      - name: Run conformance tests (2026-07-28, stateless)
         run: |
           ./everything-server -http=":3001" -stateless &
           SERVER_PID=$!
@@ -51,8 +50,7 @@ jobs:
           timeout 30 bash -c 'until curl -s http://localhost:3001/mcp > /dev/null; do sleep 0.5; done'
           npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
             --url http://localhost:3001/mcp \
-            --suite all \
-            --spec-version 2026-07-28 \
+            --requirements 2026-07-28 \
             --expected-failures ./conformance/baseline.yml
 
   client-conformance:
