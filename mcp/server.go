@@ -1521,6 +1521,33 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
+// SendNotification sends a custom notification to the client associated with
+// this session. It supports protocol extensions such as notifications/foobar/stats.
+func (ss *ServerSession) SendNotification(ctx context.Context, method string, params any) error {
+	return handleNotify(
+		ctx,
+		"x-notifications/"+method,
+		newServerRequest(ss, Params(&customNotificationParams{payload: params})),
+	)
+}
+
+// SendSubscriptionNotification sends a custom notification on the
+// subscriptions/listen stream represented by ctx. It adds the subscription ID
+// to the notification metadata.
+func (ss *ServerSession) SendSubscriptionNotification(ctx context.Context, method string, params any) error {
+	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
+	if !ok || !requestID.IsValid() {
+		return fmt.Errorf("mcp: SendSubscriptionNotification: context has no subscription ID")
+	}
+	customParams := &customNotificationParams{payload: params}
+	injectMetaSubscriptionID(customParams, requestID)
+	return handleNotify(
+		ctx,
+		"x-notifications/"+method,
+		newServerRequest(ss, Params(customParams)),
+	)
+}
+
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
 // notification on the listen stream represented by this session, indicating
 // the subscription filter the server accepted (SEP-2575).
@@ -1935,8 +1962,11 @@ func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 	return s.receivingMethodHandler_
 }
 
-// getConn implements [session.getConn].
+// getConn implements [Session.getConn].
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
+
+// getMCPConn implements [Session.getMCPConn].
+func (ss *ServerSession) getMCPConn() Connection { return ss.mcpConn }
 
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {

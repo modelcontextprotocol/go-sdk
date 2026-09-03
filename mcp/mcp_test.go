@@ -839,6 +839,76 @@ func (b *safeBuffer) Bytes() []byte {
 	return b.buf.Bytes()
 }
 
+type statsNotificationParams struct {
+	ParamsBase
+	Status string `json:"status"`
+}
+
+func TestSendNotification(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		var clientLog, serverLog safeBuffer
+
+		server := NewServer(testImpl, nil)
+		ss, err := server.Connect(ctx, &LoggingTransport{Transport: st, Writer: &serverLog}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+
+		client := NewClient(testImpl, nil)
+		received := make(chan *statsNotificationParams, 1)
+		if err := AddReceivingCustomNotification(client, "notifications/foobar/stats", func(_ context.Context, _ *ClientSession, params *statsNotificationParams) {
+			received <- params
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cs, err := client.Connect(ctx, &LoggingTransport{Transport: ct, Writer: &clientLog}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+
+		if err := cs.SendNotification(ctx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
+			t.Fatal(err)
+		}
+		subscriptionID, err := jsonrpc.MakeID("subscription-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscriptionCtx := context.WithValue(ctx, idContextKey{}, subscriptionID)
+		if err := ss.SendSubscriptionNotification(subscriptionCtx, "notifications/foobar/stats", map[string]any{"status": "ok"}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case params := <-received:
+			if params.Status != "ok" {
+				t.Errorf("received status %q, want ok", params.Status)
+			}
+			if got := params.Meta[MetaKeySubscriptionID]; got != "subscription-1" {
+				t.Errorf("received subscription ID %v, want subscription-1", got)
+			}
+		default:
+			t.Error("custom notification handler was not called")
+		}
+
+		for _, test := range []struct {
+			name string
+			log  *safeBuffer
+			want string
+		}{
+			{"client", &clientLog, `"method":"notifications/foobar/stats","params":{"status":"ok"}`},
+			{"server", &serverLog, `"method":"notifications/foobar/stats","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":"subscription-1"},"status":"ok"}`},
+		} {
+			if !bytes.Contains(test.log.Bytes(), []byte(test.want)) {
+				t.Errorf("%s log does not contain %q:\n%s", test.name, test.want, test.log.Bytes())
+			}
+		}
+	})
+}
+
 func TestNoJSONNull(t *testing.T) {
 	ctx := context.Background()
 	var ct, st Transport = NewInMemoryTransports()
@@ -2740,22 +2810,8 @@ type resourceSubEvent struct {
 	id  string // _meta subscription ID, stringified
 }
 
-// TestResourceSubscriptionsSEP2575_Streamable verifies the Subscribe ->
-// ResourceUpdated path on a stateless Streamable HTTP server.
-//
-// Caveat: per-subscription Unsubscribe is intentionally NOT verified here.
-// In stateless Streamable HTTP mode the subscriptions/listen handler blocks
-// on its request context, and neither the HTTP POST disconnect nor the
-// separate notifications/cancelled POST currently propagates to that
-// handler's context. The handler only unwinds when the server next attempts
-// a write to the (now-dead) SSE stream and the writeErr branch in the
-// jsonrpc2 layer cancels the in-flight request. To keep the test
-// hermetic we therefore trigger a write at the end by adding a resource,
-// which fires notifications/resources/list_changed on the auto-listen path
-// (if any) and on the per-URI listen, causing the listen handler to unwind.
-// The spec-correct fix is to plumb the POST's request context down to the
-// subscriptionsListen handler so HTTP disconnect is observed directly; this
-// is tracked separately.
+// TestResourceSubscriptions_Streamable verifies resource subscription
+// delivery and cancellation on a stateless Streamable HTTP server.
 func TestResourceSubscriptions_Streamable(t *testing.T) {
 
 	subCh := make(chan string, 8)
@@ -2812,13 +2868,23 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 		t.Fatal("timed out waiting for resource update")
 	}
 
-	// See test header comment for the explanation of this teardown ritual:
-	// close the client, then drop server-side TCP, then drive a write that
-	// will fail (any extra ResourceUpdated for our URI), to unblock the
-	// in-flight listen handler so httpServer.Close can return.
-	_ = cs.Close()
-	httpServer.CloseClientConnections()
-	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("unsubscribe r1: %v", err)
+	}
+	select {
+	case got := <-unsubCh:
+		if got != "file:///r1" {
+			t.Fatalf("got URI %q, want %q", got, "file:///r1")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for UnsubscribeHandler")
+	}
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Fatalf("list tools after unsubscribe: %v", err)
+	}
+	if err := cs.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
 	httpServer.Close()
 }
 
