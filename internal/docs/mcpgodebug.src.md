@@ -43,6 +43,16 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   soon as its context is cancelled and cannot be delayed by a slow or
   unresponsive peer. See issue #1150.
 
+- `demotesessionlifecyclelog` added. If set to `1`, the five routine session
+  bookkeeping records ("server connecting", "server session connected",
+  "server session disconnected", "session initialized", "client log level
+  set") are emitted at debug level instead of info. On a stateless streamable
+  HTTP server a session is minted per request, so these records fire on every
+  request and bury the server's own logs. See issue #1204. Unlike the other
+  options on this page this one is opt-in: the default keeps emitting the
+  records at info, because demoting them changes log output existing users may
+  rely on.
+
 ### 1.7.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
