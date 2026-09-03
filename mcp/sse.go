@@ -397,6 +397,11 @@ type SSEClientTransport struct {
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
 	HTTPClient *http.Client
+
+	// MaxEventSize bounds the number of bytes buffered while reading a single
+	// server-sent event. A value of 0 selects [DefaultMaxEventSize], a negative
+	// value disables the cap.
+	MaxEventSize int
 }
 
 // Connect connects through the client endpoint.
@@ -427,9 +432,14 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		return nil, fmt.Errorf("failed to connect: %s", http.StatusText(resp.StatusCode))
 	}
 
+	maxEventSize := c.MaxEventSize
+	if maxEventSize == 0 {
+		maxEventSize = DefaultMaxEventSize
+	}
+
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
-		for evt, err = range scanEvents(resp.Body) {
+		for evt, err = range scanEventsLimited(resp.Body, maxEventSize) {
 			break
 		}
 		if err != nil {
@@ -458,7 +468,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	go func() {
 		defer s.Close() // close the transport when the GET exits
 
-		for evt, err := range scanEvents(resp.Body) {
+		for evt, err := range scanEventsLimited(resp.Body, maxEventSize) {
 			if err != nil {
 				return
 			}

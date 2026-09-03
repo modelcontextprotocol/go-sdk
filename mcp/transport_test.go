@@ -6,9 +6,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -165,5 +168,86 @@ func TestIOConnRead_EmptyMethod(t *testing.T) {
 	}
 	if req.ID != jsonrpc2.Int64ID(5) {
 		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+}
+
+// TestIOConnFrameCap verifies single inbound frame cap enforcement.
+func TestIOConnFrameCap(t *testing.T) {
+	tests := []struct {
+		name             string
+		r                io.ReadCloser
+		limit            int
+		wantMessageCount int
+		wantErr          bool
+	}{
+		{
+			name:    "infinite string",
+			r:       &endlessReader{prefix: `"`, repeat: "A"},
+			limit:   1024,
+			wantErr: true,
+		},
+		{
+			name:    "cap does not reset per new line",
+			r:       &endlessReader{prefix: "[", repeat: "0,\n"},
+			limit:   1024,
+			wantErr: true,
+		},
+		{
+			name:  "cap resets per message",
+			limit: 1024, // < 600 * 3
+			r: io.NopCloser(strings.NewReader(func() string {
+				var b strings.Builder
+				for i := range 3 {
+					fmt.Fprintf(&b, `{"jsonrpc":"2.0","id":%d,"method":"test","params":{"pad":"`, i)
+					b.WriteString(strings.Repeat("A", 600))
+					b.WriteString(`"}}`)
+					b.WriteByte('\n')
+				}
+				return b.String()
+			}())),
+			wantMessageCount: 3,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := newIOConnLimited(rwc{rc: tt.r}, tt.limit)
+			t.Cleanup(func() { tr.Close() })
+
+			read := func() (jsonrpc.Message, error) {
+				type result struct {
+					msg jsonrpc.Message
+					err error
+				}
+				done := make(chan result, 1)
+
+				go func() {
+					msg, err := tr.Read(context.Background())
+					done <- result{msg, err}
+				}()
+
+				select {
+				case r := <-done:
+					return r.msg, r.err
+				case <-time.After(10 * time.Second):
+					t.Fatal("Read() did not return: frame cap failed to trip")
+					return nil, nil
+				}
+			}
+
+			for i := range tt.wantMessageCount {
+				msg, err := read()
+				if err != nil {
+					t.Fatalf("Read() #%d error = %v, want nil", i, err)
+				}
+				if msg == nil {
+					t.Fatalf("Read() #%d returned nil message", i)
+				}
+			}
+			if tt.wantErr {
+				if _, err := read(); !errors.Is(err, errFrameTooLarge) {
+					t.Fatalf("Read() error = %v, want errFrameTooLarge", err)
+				}
+			}
+		})
 	}
 }
