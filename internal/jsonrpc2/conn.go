@@ -51,6 +51,9 @@ type Connection struct {
 	state   inFlightState // accessed only in updateInFlight
 	done    chan struct{} // closed (under stateMu) when state.closed is true and all goroutines have completed
 
+	closing     chan struct{} // closed once when Close is first called
+	closingOnce sync.Once
+
 	writer  Writer
 	handler Handler
 
@@ -236,6 +239,7 @@ func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
 	c := &Connection{
 		state:           inFlightState{closer: cfg.Closer},
 		done:            make(chan struct{}),
+		closing:         make(chan struct{}),
 		writer:          cfg.Writer,
 		onDone:          cfg.OnDone,
 		onInternalError: cfg.OnInternalError,
@@ -502,10 +506,21 @@ func (c *Connection) wait(fromWait bool) error {
 // with IDs will receive immediate responses with ErrServerClosing, and no new
 // requests (not even notifications!) will be enqueued to the Handler.
 func (c *Connection) Close() error {
+	// Signal that teardown has begun so background best-effort work (e.g. a
+	// cancellation notify to an unresponsive peer) can stop instead of blocking
+	// the wait below.
+	c.closingOnce.Do(func() { close(c.closing) })
 	// Stop handling new requests, and interrupt the reader (by closing the
 	// connection) as soon as the active requests finish.
 	c.updateInFlight(func(s *inFlightState) { s.connClosing = true })
 	return c.wait(false)
+}
+
+// Closing returns a channel that is closed when Close is first called, i.e. when
+// the connection begins tearing down. Background best-effort work can select on
+// it to stop promptly rather than delaying teardown.
+func (c *Connection) Closing() <-chan struct{} {
+	return c.closing
 }
 
 // readIncoming collects inbound messages from the reader and delivers them, either responding
