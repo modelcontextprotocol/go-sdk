@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -32,6 +33,11 @@ func MakeID(v any) (ID, error) {
 	case nil:
 		return ID{}, nil
 	case float64:
+		// JSON-RPC request IDs are integers; reject fractional or out-of-range
+		// values instead of silently truncating them.
+		if v != math.Trunc(v) || v >= 9.223372036854775808e18 || v < -9.223372036854775808e18 {
+			return ID{}, fmt.Errorf("%w: request id must be an integer, got %v", ErrParse, v)
+		}
 		return Int64ID(int64(v)), nil
 	case string:
 		return StringID(v), nil
