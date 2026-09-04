@@ -301,6 +301,9 @@ func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHan
 		r := &ClientRequest[P]{Session: s.(*ClientSession)}
 		if p != nil {
 			r.Params = p.(P)
+		} else {
+			r.Params = P(new(T))
+			r.missingParams = true
 		}
 		return r
 	}
@@ -316,6 +319,9 @@ func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHan
 		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re}
 		if p != nil {
 			r.Params = p.(P)
+		} else {
+			r.Params = P(new(T))
+			r.missingParams = true
 		}
 		return r
 	}
@@ -615,15 +621,17 @@ type Request interface {
 
 // A ClientRequest is a request to a client.
 type ClientRequest[P Params] struct {
-	Session *ClientSession
-	Params  P
+	Session       *ClientSession
+	Params        P
+	missingParams bool
 }
 
 // A ServerRequest is a request to a server.
 type ServerRequest[P Params] struct {
-	Session *ServerSession
-	Params  P
-	Extra   *RequestExtra
+	Session       *ServerSession
+	Params        P
+	Extra         *RequestExtra
+	missingParams bool
 }
 
 // RequestExtra is extra information included in requests, typically from
@@ -659,8 +667,30 @@ func (*ServerRequest[P]) isRequest() {}
 func (r *ClientRequest[P]) GetSession() Session { return r.Session }
 func (r *ServerRequest[P]) GetSession() Session { return r.Session }
 
-func (r *ClientRequest[P]) GetParams() Params { return r.Params }
-func (r *ServerRequest[P]) GetParams() Params { return r.Params }
+func (r *ClientRequest[P]) GetParams() Params {
+	if r.missingParams {
+		return nil
+	}
+	return requestParams(r.Params)
+}
+
+func (r *ServerRequest[P]) GetParams() Params {
+	if r.missingParams {
+		return nil
+	}
+	return requestParams(r.Params)
+}
+
+func requestParams[P Params](params P) Params {
+	if any(params) == nil {
+		return nil
+	}
+	value := reflect.ValueOf(params)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
+		return nil
+	}
+	return params
+}
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
