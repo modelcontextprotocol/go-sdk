@@ -546,3 +546,8 @@ that optional capabilities outside the core protocol can be declared on the
 wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
 are per-extension settings objects.
 
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package provides typed clients for SEP-2640. Call `skills.AddClient` before
+connecting, then use `skills.List`, `skills.Get`, or `skills.ReadDirectory`.
+The `skills.All` and `skills.DirectoryEntries` iterators follow pagination
+cursors automatically without modifying caller-owned parameters.

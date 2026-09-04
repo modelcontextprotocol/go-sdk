@@ -1199,6 +1199,20 @@ capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
 per-extension settings objects.
 
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package implements SEP-2640. Use `skills.AddHandlers` to provide custom
+`skills/list` and `skills/get` handlers. An optional directory handler enables
+`resources/directory/read` and advertises `directoryRead: true`.
+
+Custom providers may return `skills.DynamicResources()` for generated skills
+that cannot publish stable file digests.
+
+SEP validation is enabled by default, including the 512-resource and 16 MiB
+per-skill limits. `skills.ServerOptions` supports additional validators and
+explicit unsafe overrides.
+
 ### Pagination
 
 Server-side feature lists may be
