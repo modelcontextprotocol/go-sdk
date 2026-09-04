@@ -190,7 +190,7 @@ func ProtectedResourceMetadataHandler(metadata *oauthex.ProtectedResourceMetadat
 		// Set CORS headers for cross-origin client discovery.
 		// OAuth metadata is public information, so allowing any origin is safe.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		// Handle CORS preflight requests
