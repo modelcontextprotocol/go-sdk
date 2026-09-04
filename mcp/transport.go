@@ -18,6 +18,7 @@ import (
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -27,6 +28,13 @@ import (
 // abandoned) must not be able to block the caller's return path or
 // re-trigger expensive recovery on its behalf. See issue #882.
 const notifyCancellationTimeout = 5 * time.Second
+
+// blockingcancelnotify, when set to "1" via MCPGODEBUG, restores the previous
+// behavior of blocking the caller's return on delivery of the best-effort
+// notifications/cancelled message (up to notifyCancellationTimeout). By
+// default, the call is retired immediately and the notification is sent
+// asynchronously so the caller returns as soon as its context is cancelled.
+var blockingcancelnotify = mcpgodebug.Value("blockingcancelnotify")
 
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
@@ -106,16 +114,27 @@ type clientConnection interface {
 // TODO: should this interface be exported?
 type serverConnection interface {
 	Connection
+
+	// sessionUpdated is called whenever the server session state changes.
 	sessionUpdated(ServerSessionState)
 }
 
+// DefaultMaxLineLength is the default maximum number of bytes buffered while
+// decoding a single inbound JSON-RPC frame.
+const DefaultMaxLineLength = 16 * 1024 * 1024
+
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConnLimited(rwc{os.Stdin, nopCloserWriter{os.Stdout}}, t.MaxLineLength), nil
 }
 
 // nopCloserWriter is an io.WriteCloser with a trivial Close method.
@@ -130,11 +149,15 @@ func (nopCloserWriter) Close() error { return nil }
 type IOTransport struct {
 	Reader io.ReadCloser
 	Writer io.WriteCloser
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.Reader, t.Writer}), nil
+	return newIOConnLimited(rwc{t.Reader, t.Writer}, t.MaxLineLength), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
@@ -276,8 +299,28 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
-		err := cancelCall(ctx, conn, call)
-		return errors.Join(ctx.Err(), err)
+		// The notifications/cancelled message is best-effort. Retire the call
+		// immediately (so an unresponsive peer cannot delay the eager
+		// retirement that cancelCall's docstring promises) and send the
+		// notification off the caller's return path so a slow or unresponsive
+		// peer cannot delay the caller past its own deadline. See issue #1150.
+		//
+		// Setting MCPGODEBUG=blockingcancelnotify=1 restores the previous
+		// behavior of waiting synchronously for delivery inside cancelCall.
+		if blockingcancelnotify == "1" {
+			err := cancelCall(ctx, conn, call)
+			return errors.Join(ctx.Err(), err)
+		}
+		conn.Retire(call, ctx.Err())
+		go func() {
+			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
+			defer stop()
+			_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+				Reason:    ctx.Err().Error(),
+				RequestID: call.ID().Raw(),
+			})
+		}()
+		return ctx.Err()
 	case err != nil:
 		return fmt.Errorf("calling %q: %w", method, err)
 	}
@@ -448,6 +491,17 @@ type msgOrErr struct {
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	return newIOConnLimited(rwc, DefaultMaxLineLength)
+}
+
+// newIOConnLimited builds an [ioConn] over rwc that bounds the number of bytes
+// buffered while decoding a single inbound JSON-RPC frame to maxLineLength.
+// maxLineLength == 0 selects [DefaultMaxLineLength], a negative value means no cap.
+func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
+	limit := maxLineLength
+	if limit == 0 {
+		limit = DefaultMaxLineLength
+	}
 	var (
 		incoming = make(chan msgOrErr)
 		closed   = make(chan struct{})
@@ -459,7 +513,15 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
-		dec := json.NewDecoder(rwc)
+		var (
+			reader  io.Reader = rwc
+			limiter *frameLimitReader
+		)
+		if limit > 0 {
+			limiter = &frameLimitReader{r: rwc, limit: limit}
+			reader = limiter
+		}
+		dec := json.NewDecoder(reader)
 		for {
 			var raw json.RawMessage
 			err := dec.Decode(&raw)
@@ -485,6 +547,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 			if err != nil {
 				return
 			}
+			if limiter != nil {
+				limiter.resetFrame()
+			}
 		}
 	}()
 	return &ioConn{
@@ -494,20 +559,42 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	}
 }
 
+// errFrameTooLarge means that a single inbound JSON-RPC frame exceeded the configured byte
+// limit before the value was completely received.
+var errFrameTooLarge = errors.New("inbound JSON-RPC frame exceeded the configured maximum line length")
+
+// frameLimitReader bounds the number of bytes [json.Decoder] may buffer while
+// decoding a single JSON value. Read returns [errFrameTooLarge] once the budget is exhausted.
+type frameLimitReader struct {
+	r     io.Reader
+	limit int
+	count int
+}
+
+func (r *frameLimitReader) Read(p []byte) (int, error) {
+	if r.count >= r.limit {
+		return 0, errFrameTooLarge
+	}
+	if len(p) > r.limit-r.count {
+		p = p[:r.limit-r.count]
+	}
+	n, err := r.r.Read(p)
+	r.count += n
+	return n, err
+}
+
+func (r *frameLimitReader) resetFrame() { r.count = 0 }
+
 func (c *ioConn) SessionID() string { return "" }
 
 func (c *ioConn) sessionUpdated(state ServerSessionState) {
-	protocolVersion := ""
-	if state.InitializeParams != nil {
-		protocolVersion = state.InitializeParams.ProtocolVersion
-	}
+	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
 		// where specifying the protocol version in the HTTP header
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	protocolVersion = negotiatedVersion(protocolVersion)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()

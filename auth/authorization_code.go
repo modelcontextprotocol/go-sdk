@@ -98,6 +98,15 @@ type AuthorizationCodeHandlerConfig struct {
 	// See [AuthorizationCodeFetcher] for details.
 	AuthorizationCodeFetcher AuthorizationCodeFetcher
 
+	// ScopeFilter, if non-nil, is called with the scopes discovered from the
+	// protected resource metadata (or WWW-Authenticate challenge) and returns
+	// the scopes to request during authorization. It gives the client full
+	// control to narrow, extend, or reorder that set — e.g. dropping Gmail's
+	// gmail.metadata, which the Gmail API refuses to combine with the search "q"
+	// parameter even alongside gmail.readonly. It runs before offline_access
+	// (see RequestRefreshToken) and the step-up union, so neither is affected.
+	ScopeFilter func(discovered []string) []string
+
 	// RequestRefreshToken indicates that the client intends to use refresh
 	// tokens and is capable of storing them securely.
 	//
@@ -114,6 +123,11 @@ type AuthorizationCodeHandlerConfig struct {
 	//
 	// See https://modelcontextprotocol.io/seps/2207-oidc-refresh-token-guidance.
 	RequestRefreshToken bool
+
+	// AcceptUnadvertisedIss accepts a matching RFC 9207 iss even when the
+	// authorization server metadata omits authorization_response_iss_parameter_supported.
+	// The zero value (false) keeps the historical reject-unadvertised-iss behavior.
+	AcceptUnadvertisedIss bool
 
 	// Client is an optional HTTP client to use for HTTP requests.
 	// It is used for the following requests:
@@ -318,6 +332,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		requestedScopes = prm.ScopesSupported
 	}
 
+	// Let the client adjust the discovered scopes before offline_access and the
+	// step-up union below so neither is affected.
+	if h.config.ScopeFilter != nil {
+		requestedScopes = h.config.ScopeFilter(requestedScopes)
+	}
+
 	// SEP-2207: when the client desires refresh tokens and the Authorization
 	// Server advertises offline_access support, add it to the requested scopes.
 	if h.config.RequestRefreshToken &&
@@ -352,7 +372,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return err
 	}
-	if err := validateIssuerResponse(authRes.Iss, asm.Issuer, asm.AuthorizationResponseIssParameterSupported); err != nil {
+	if err := validateIssuerResponse(authRes.Iss, asm.Issuer, asm.AuthorizationResponseIssParameterSupported, h.config.AcceptUnadvertisedIss); err != nil {
 		return err
 	}
 
@@ -601,10 +621,14 @@ func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg
 }
 
 // validateIssuerResponse validates the "iss" parameter in an authorization response
-// per [RFC 9207].
+// per [RFC 9207]. When the server advertises authorization_response_iss_parameter_supported,
+// iss is required and must match expectedIssuer. When it does not advertise support,
+// an empty iss is accepted; a present iss is compared to expectedIssuer (RFC 9207 §2.4)
+// and a mismatch is always rejected. A matching unadvertised iss is accepted only when
+// acceptUnadvertisedIss is true (local policy); the default is the historical reject.
 //
 // [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
-func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bool) error {
+func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported, acceptUnadvertisedIss bool) error {
 	if issParameterSupported {
 		if iss == "" {
 			return fmt.Errorf("authorization server advertises RFC 9207 iss parameter support but none was received in the authorization response")
@@ -612,12 +636,17 @@ func validateIssuerResponse(iss, expectedIssuer string, issParameterSupported bo
 		if iss != expectedIssuer {
 			return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
 		}
-	} else {
-		if iss != "" {
-			return fmt.Errorf("authorization server does not advertise RFC 9207 iss parameter support but iss was received in the authorization response")
-		}
+		return nil
 	}
-
+	if iss == "" {
+		return nil
+	}
+	if iss != expectedIssuer {
+		return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, expectedIssuer)
+	}
+	if !acceptUnadvertisedIss {
+		return fmt.Errorf("authorization server does not advertise RFC 9207 iss parameter support but iss was received in the authorization response")
+	}
 	return nil
 }
 

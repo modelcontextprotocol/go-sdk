@@ -348,7 +348,7 @@ func TestStreamableServerShutdown(t *testing.T) {
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint:   httpServer.URL,
 				MaxRetries: -1, // avoid slow tests during exponential retries
-			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -623,7 +623,7 @@ func TestStreamableServerDisconnect(t *testing.T) {
 			})
 			clientSession, err := client.Connect(ctx, &StreamableClientTransport{
 				Endpoint: httpServer.URL,
-			}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+			}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatalf("client.Connect() failed: %v", err)
 			}
@@ -698,7 +698,7 @@ func TestServerTransportCleanup(t *testing.T) {
 		// stateful HTTP server (which rejects the new protocol), opening
 		// an extra HTTP connection and therefore an extra session. Pinning
 		// to 2025-11-25 skips the discover probe.
-		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+		clientSession, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatalf("client.Connect() failed: %v", err)
 		}
@@ -1545,7 +1545,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	var respBody []byte
 	if contentType == "text/event-stream" {
 		r := readerInto{resp.Body, new(bytes.Buffer)}
-		for evt, err := range scanEvents(r) {
+		for evt, err := range scanEventsLimited(r, DefaultMaxEventSize) {
 			if err != nil {
 				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
@@ -2123,7 +2123,7 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2286,7 +2286,7 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
 	ctx := context.Background()
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2384,7 +2384,7 @@ func TestStreamableFilterValidToolsIntegration(t *testing.T) {
 	ctx := context.Background()
 	session, err := client.Connect(ctx, &StreamableClientTransport{
 		Endpoint: httpServer.URL,
-	}, &ClientSessionOptions{protocolVersion: minVersionForStandardHeaders})
+	}, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2645,7 +2645,7 @@ func TestStreamableSessionTimeout(t *testing.T) {
 	// protocol), opening an extra HTTP connection and therefore an extra
 	// session. Pinning to 2025-11-25 skips the discover probe.
 	client := NewClient(testImpl, nil)
-	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("client.Connect() failed: %v", err)
 	}
@@ -2857,6 +2857,69 @@ data: {"jsonrpc":"2.0","id":1,"result":{}}
 	}
 }
 
+// TestProcessStreamMaxEventSize verifies that a streamableClientConn honors its
+// configured maxEventSize.
+func TestProcessStreamMaxEventSize(t *testing.T) {
+	jsonrpcEventOfSize := func(padSize int) string {
+		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"pad":%q}}`, strings.Repeat("A", padSize))
+		return "data: " + msg + "\n\n"
+	}
+
+	tests := []struct {
+		name         string
+		maxEventSize int
+		event        string
+		wantFail     bool
+	}{
+		{
+			name:         "event over cap is rejected",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: 1024,
+			wantFail:     true,
+		},
+		{
+			name:         "event under cap is accepted",
+			event:        jsonrpcEventOfSize(1024),
+			maxEventSize: 4096,
+			wantFail:     false,
+		},
+		{
+			name:         "negative cap disables the limit",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: -1,
+			wantFail:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(tt.event)),
+			}
+			conn := &streamableClientConn{
+				ctx:          ctx,
+				done:         make(chan struct{}),
+				incoming:     make(chan jsonrpc.Message, 10),
+				failed:       make(chan struct{}),
+				logger:       ensureLogger(nil),
+				maxEventSize: tt.maxEventSize,
+			}
+			conn.processStream(ctx, "test", resp, nil)
+
+			err := conn.failure()
+			if tt.wantFail && err == nil {
+				t.Fatal("failure() = nil, want a non-nil error for an oversized event")
+			}
+			if !tt.wantFail && err != nil {
+				t.Fatalf("failure() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
@@ -2879,7 +2942,7 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 	var events []Event
 
 	// Scan all events
-	for evt, err := range scanEvents(reader) {
+	for evt, err := range scanEventsLimited(reader, DefaultMaxEventSize) {
 		if err != nil {
 			if err != io.EOF {
 				t.Fatalf("scanEvents error: %v", err)
@@ -2939,7 +3002,7 @@ func Test_ExportErrSessionMissing(t *testing.T) {
 	// first against a stateful HTTP server (which rejects the new
 	// protocol), opening an extra HTTP connection and therefore an extra
 	// session. Pinning to 2025-11-25 skips the discover probe.
-	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{protocolVersion: protocolVersion20251125})
+	session, err := client.Connect(ctx, clientTransport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -3505,8 +3568,171 @@ func TestStreamableStateful_RejectsNewProtocol(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
 	}
+	msg, err := jsonrpc.DecodeMessage(respBody)
+	if err != nil {
+		t.Fatalf("decoding response body as JSON-RPC: %v; body = %s", err, respBody)
+	}
+	jresp, ok := msg.(*jsonrpc.Response)
+	if !ok || jresp.Error == nil {
+		t.Fatalf("response is not a JSON-RPC error: %s", respBody)
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(jresp.Error, &jerr) {
+		t.Fatalf("response error is not *jsonrpc.Error: %v", jresp.Error)
+	}
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d (CodeUnsupportedProtocolVersion)", jerr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
+		t.Fatalf("decoding error data: %v; data = %s", err, jerr.Data)
+	}
+	if data.Requested != protocolVersion20260728 {
+		t.Errorf("data.Requested = %q, want %q", data.Requested, protocolVersion20260728)
+	}
+	if slices.Contains(data.Supported, protocolVersion20260728) {
+		t.Errorf("data.Supported = %v, must not contain the rejected version %q",
+			data.Supported, protocolVersion20260728)
+	}
+	if len(data.Supported) == 0 {
+		t.Errorf("data.Supported is empty; expected at least one legacy version")
+	}
+}
+
+// TestStreamableStateful_RejectsNewProtocol_LegacyPlainText verifies that
+// MCPGODEBUG=plaintextstatefulrejection=1 restores the pre-v1.8.0 plain-text
+// 400 body for the stateful/new-protocol rejection.
+func TestStreamableStateful_RejectsNewProtocol_LegacyPlainText(t *testing.T) {
+	prev := plaintextstatefulrejection
+	plaintextstatefulrejection = "1"
+	t.Cleanup(func() { plaintextstatefulrejection = prev })
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	initBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initReq, err := http.NewRequest(http.MethodPost, httpServer.URL, initBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, initResp.Body)
+	initResp.Body.Close()
+	sessionID := initResp.Header.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	body := newProtocolBody(t, "noop", struct{}{})
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(sessionIDHeader, sessionID)
+	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+	req.Header.Set(methodHeader, "tools/call")
+	req.Header.Set(nameHeader, "noop")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, respBody)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain; body = %s", ct, respBody)
+	}
 	if !strings.Contains(string(respBody), "stateless") {
 		t.Errorf("body = %q, want a message mentioning 'stateless'", respBody)
+	}
+}
+
+// TestCallCancellation_FastReturn verifies that a cancelled tool call
+// returns as soon as its context is cancelled, even when the peer is slow
+// to accept the follow-up notifications/cancelled POST.
+func TestCallCancellation_FastReturn(t *testing.T) {
+	// stallDuration is the time the middleware holds a
+	// notifications/cancelled POST. It must be larger than
+	// notifyCancellationTimeout so the blocking branch clearly overshoots
+	// even after cushioning for scheduler jitter.
+	const stallDuration = notifyCancellationTimeout + 2*time.Second
+
+	// callerDeadline is the deadline the client passes into CallTool. It
+	// must be short enough that any waiting on the cancel notification is
+	// obvious in the measured elapsed time.
+	const callerDeadline = 100 * time.Millisecond
+
+	// slack accounts for scheduling jitter around the deadline.
+	const slack = 500 * time.Millisecond
+
+	stallCancelNotify := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.Body != nil {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(notificationCancelled)) {
+					time.Sleep(stallDuration)
+				}
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			// Bound the handler above the caller deadline so the test
+			// always exercises the cancellation path, but not so long
+			// that a stuck cancellation makes the test slow.
+			select {
+			case <-ctx.Done():
+			case <-time.After(2 * stallDuration):
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(stallCancelNotify(handler))
+	t.Cleanup(httpServer.Close)
+
+	client := NewClient(testImpl, nil)
+	cs, err := client.Connect(context.Background(),
+		&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	callCtx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+	defer cancel()
+
+	start := time.Now()
+	_, err = cs.CallTool(callCtx, &CallToolParams{Name: "slow"})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CallTool error = %v, want context.DeadlineExceeded", err)
+	}
+	// The caller should return within slack of its own deadline.
+	if elapsed > callerDeadline+slack {
+		t.Errorf("CallTool returned after %v; want <= %v (caller deadline %v + slack %v)",
+			elapsed, callerDeadline+slack, callerDeadline, slack)
 	}
 }
 
@@ -3550,6 +3776,126 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	}
 }
 
+// TestStreamableStateless_NotificationMetaValidation checks that the SEP-2575
+// per-request `_meta` triple is required of calls only. NotificationParams
+// declares `_meta` optional with no protocolVersion, so a notification that
+// omits it is well-formed and must be accepted with 202.
+func TestStreamableStateless_NotificationMetaValidation(t *testing.T) {
+	newProtocolMeta := map[string]any{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+		MetaKeyClientCapabilities: map[string]any{},
+	}
+
+	tests := []struct {
+		name       string
+		message    map[string]any
+		wantStatus int
+	}{
+		{
+			name: "cancelled without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params":  map[string]any{"requestID": 1, "reason": "context canceled"},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "progress without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationProgress,
+				"params":  map[string]any{"progressToken": "t", "progress": 1},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "notification with matching meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta":     newProtocolMeta,
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			// A notification that volunteers a version is still held to the
+			// header-match rule, so relaxing the requirement does not open a
+			// hole for inconsistent messages.
+			name: "notification with mismatched meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion:    "2025-06-18",
+						MetaKeyClientCapabilities: map[string]any{},
+					},
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Calls remain subject to the requirement.
+			name: "call without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"method":  "tools/list",
+				"params":  map[string]any{},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+			req.Header.Set(methodHeader, test.message["method"].(string))
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, respBody)
+			}
+			if test.wantStatus == http.StatusAccepted && len(respBody) > 0 {
+				t.Errorf("accepted notification returned body %q, want empty", respBody)
+			}
+		})
+	}
+}
+
 // TestStreamableClientUnsupportedVersionFallback exercises the full
 // SEP-2575 fallback. The client requests protocolVersion20260728, which the
 // server is configured to NOT advertise in supportedProtocolVersions for the
@@ -3580,7 +3926,7 @@ func TestStreamableClientUnsupportedVersionFallback(t *testing.T) {
 	client := NewClient(testImpl, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
 
-	session, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -3683,6 +4029,70 @@ func TestStreamableStateful_AcceptsDiscover(t *testing.T) {
 	}
 }
 
+// On a stateful StreamableHTTPHandler, a v1.7.0-style client always
+// probes server/discover before falling back to initialize. That probe used
+// to create a ServerSession that was registered in the handler's session
+// map but never surfaced via Mcp-Session-Id, so the client could not DELETE
+// it and it was leaked for the lifetime of the process.
+//
+// The fix in Server.discover skips populating InitializeParams when the
+// transport cannot serve the new protocol, which lets the safety-net
+// cleanup in serveStatefulPOST close the otherwise-unaddressable session.
+func TestStreamableStateful_DiscoverDoesNotLeakSession(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop", Description: "noop"},
+		func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{}, nil, nil
+		})
+
+	// Stateful (default). SessionTimeout unset so nothing masks the leak
+	// via idle eviction.
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	countSessions := func() int {
+		n := 0
+		for range server.Sessions() {
+			n++
+		}
+		return n
+	}
+
+	const clients = 3
+	for i := 1; i <= clients; i++ {
+		c := NewClient(&Implementation{Name: "c", Version: "1.0.0"}, nil)
+		sess, err := c.Connect(ctx, &StreamableClientTransport{
+			Endpoint:             httpServer.URL,
+			DisableStandaloneSSE: true,
+			MaxRetries:           -1,
+		}, nil)
+		if err != nil {
+			t.Fatalf("client %d Connect: %v", i, err)
+		}
+		if _, err := sess.ListTools(ctx, nil); err != nil {
+			t.Fatalf("client %d ListTools: %v", i, err)
+		}
+		// Exactly one addressable session should exist while this client
+		// is connected. Anything more means a discover-only session
+		// slipped through.
+		if got := countSessions(); got != 1 {
+			t.Errorf("client %d connected: sessions = %d, want 1", i, got)
+		}
+		if err := sess.Close(); err != nil {
+			t.Fatalf("client %d Close: %v", i, err)
+		}
+		if got := countSessions(); got != 0 {
+			t.Errorf("client %d closed: sessions = %d, want 0", i, got)
+		}
+	}
+
+	if got := countSessions(); got != 0 {
+		t.Errorf("final leaked sessions = %d, want 0", got)
+	}
+}
+
 // TestStreamableHTTP_E2E_DiscoverSuccess is a full end-to-end smoke test for
 // SEP-2575 over the streamable HTTP transport.
 func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
@@ -3708,7 +4118,7 @@ func TestStreamableHTTP_E2E_DiscoverSuccess(t *testing.T) {
 
 	client := NewClient(&Implementation{Name: "e2e-client", Version: "v1"}, nil)
 	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
-	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{protocolVersion: protocolVersion20260728})
+	cs, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -4230,6 +4640,52 @@ func TestStreamableHTTPRequestSummaryExistingSessionBodyHandling(t *testing.T) {
 	}
 }
 
+// TestStreamableServerPreservesSingleRequestBatchResponse verifies that a
+// single-request JSON-RPC batch is returned as a one-element JSON array.
+func TestStreamableServerPreservesSingleRequestBatchResponse(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{JSONResponse: true},
+	)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := []byte(`[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}]`)
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusOK, data)
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(data, &messages); err != nil {
+		t.Fatalf("response is not a JSON array: %v; body = %s", err, data)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("response contains %d messages, want 1; body = %s", len(messages), data)
+	}
+	if _, err := jsonrpc2.DecodeMessage(messages[0]); err != nil {
+		t.Fatalf("response item is not a JSON-RPC message: %v", err)
+	}
+}
+
 // TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
 // enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
 // bodies. The limit must apply uniformly regardless of transfer encoding:
@@ -4330,4 +4786,81 @@ func TestStreamableMaxRequestBodyBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStreamableSupportedProtocolVersions_Header verifies that the
+// MCP-Protocol-Version header is validated against
+// [ServerOptions.SupportedProtocolVersions], and not merely against the
+// versions the SDK knows about.
+func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
+	const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+
+	newServer := func(t *testing.T, stateless bool) *httptest.Server {
+		server := NewServer(testImpl, &ServerOptions{
+			SupportedProtocolVersions: []string{protocolVersion20251125},
+		})
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+			&StreamableHTTPOptions{Stateless: stateless})
+		httpServer := httptest.NewServer(handler)
+		t.Cleanup(httpServer.Close)
+		return httpServer
+	}
+	post := func(t *testing.T, url, version, sessionID string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(initBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(protocolVersionHeader, version)
+		if sessionID != "" {
+			req.Header.Set(sessionIDHeader, sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	for _, stateless := range []bool{false, true} {
+		for _, test := range []struct {
+			version    string
+			wantStatus int
+		}{
+			{protocolVersion20251125, http.StatusOK},
+			// Supported by the SDK, but excluded by the server.
+			{protocolVersion20250618, http.StatusBadRequest},
+			// Unknown to the SDK: rejected before any server is consulted.
+			{"1999-01-01", http.StatusBadRequest},
+		} {
+			t.Run(fmt.Sprintf("stateless=%v/%s", stateless, test.version), func(t *testing.T) {
+				resp := post(t, newServer(t, stateless).URL, test.version, "")
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != test.wantStatus {
+					t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, body)
+				}
+			})
+		}
+	}
+
+	t.Run("existing session", func(t *testing.T) {
+		httpServer := newServer(t, false)
+		resp := post(t, httpServer.URL, protocolVersion20251125, "")
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		sessionID := resp.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatalf("initialize response missing %s header", sessionIDHeader)
+		}
+
+		resp = post(t, httpServer.URL, protocolVersion20250618, sessionID)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusBadRequest, body)
+		}
+	})
 }
