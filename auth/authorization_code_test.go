@@ -1560,3 +1560,168 @@ func TestInitialTokenSource(t *testing.T) {
 		t.Errorf("expected access token 'set_token', got '%s'", tok.AccessToken)
 	}
 }
+
+func TestPrepareRequest_DPoPOwnsScheme(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, fmt.Errorf("unused")
+		},
+		DPoP: &oauthex.DPoPConfig{},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name      string
+		tokenType string
+	}{
+		{name: "empty-token-type", tokenType: ""},
+		{name: "bearer-token-type", tokenType: "Bearer"},
+		{name: "dpop-token-type", tokenType: "DPoP"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "https://example.com/mcp", nil)
+			tok := &oauth2.Token{AccessToken: "access", TokenType: tt.tokenType}
+			if err := handler.PrepareRequest(t.Context(), req, tok); err != nil {
+				t.Fatalf("PrepareRequest: %v", err)
+			}
+			if got, want := req.Header.Get("Authorization"), "DPoP access"; got != want {
+				t.Errorf("Authorization = %q, want %q", got, want)
+			}
+			if req.Header.Get("DPoP") == "" {
+				t.Error("expected DPoP proof header")
+			}
+		})
+	}
+}
+
+func TestPrepareRequest_WithoutDPoP(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			return nil, fmt.Errorf("unused")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/mcp", nil)
+	tok := &oauth2.Token{AccessToken: "access", TokenType: "Bearer"}
+	if err := handler.PrepareRequest(t.Context(), req, tok); err != nil {
+		t.Fatalf("PrepareRequest: %v", err)
+	}
+	if got, want := req.Header.Get("Authorization"), "Bearer access"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	if req.Header.Get("DPoP") != "" {
+		t.Errorf("unexpected DPoP header %q", req.Header.Get("DPoP"))
+	}
+}
+
+// TestAuthorize_DPoPPrepareRequestAfterRefresh verifies that after a refresh
+// that returns token_type=Bearer (as many ASes do), PrepareRequest still emits
+// Authorization: DPoP and a proof. Scheme comes from client DPoP mode, not AS
+// token_type — so they cannot diverge the way token.Type() + a separate proof did.
+func TestAuthorize_DPoPPrepareRequestAfterRefresh(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		AccessTokenTTL:    1,
+		IssueRefreshToken: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+		DPoP: &oauthex.DPoPConfig{},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+
+	if err := handler.Authorize(t.Context(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+
+	tokenSource, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("TokenSource: %v", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("token refresh: %v", err)
+	}
+	if token.AccessToken != "test_access_token_refreshed" {
+		t.Fatalf("AccessToken = %q, want refreshed token", token.AccessToken)
+	}
+	// Fake AS returns Bearer; token.Type() alone would produce the wrong scheme.
+	if token.Type() != "Bearer" {
+		t.Fatalf("precondition: refreshed token.Type() = %q, want Bearer from fake AS", token.Type())
+	}
+
+	mcpReq := httptest.NewRequest(http.MethodPost, "https://example.com/mcp", nil)
+	if err := handler.PrepareRequest(t.Context(), mcpReq, token); err != nil {
+		t.Fatalf("PrepareRequest: %v", err)
+	}
+	wantAuth := "DPoP test_access_token_refreshed"
+	if got := mcpReq.Header.Get("Authorization"); got != wantAuth {
+		t.Errorf("Authorization = %q, want %q", got, wantAuth)
+	}
+	if mcpReq.Header.Get("DPoP") == "" {
+		t.Error("expected DPoP proof header after refresh")
+	}
+}
