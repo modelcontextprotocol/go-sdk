@@ -143,6 +143,16 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 		return nil, jsonrpc2.ErrNotHandled
 	}
 	params := req.GetParams()
+	if cs, ok := req.GetSession().(*ClientSession); ok {
+		if cs.usesNewProtocol() && params != nil && !clientMethodUsesLegacyCompatPath(method) {
+			params = cloneParams(params)
+			params = injectRequestMetaParams(cs, params)
+		} else if params != nil && params.isNil() {
+			// Keep nil optional params omitted from the wire for legacy and
+			// compatibility methods; a typed nil otherwise marshals as JSON null.
+			params = nil
+		}
+	}
 	if initParams, ok := params.(*InitializeParams); ok {
 		// Fix the marshaling of initialize params, to work around #607.
 		//
@@ -174,6 +184,22 @@ func orZero[T any, P *U, U any](p P) T {
 		return zero
 	}
 	return any(p).(T)
+}
+
+func cloneParams(params Params) Params {
+	if params == nil {
+		return nil
+	}
+	value := reflect.ValueOf(params)
+	if value.Kind() != reflect.Pointer {
+		return params
+	}
+	if value.IsNil() {
+		return reflect.New(value.Type().Elem()).Interface().(Params)
+	}
+	clone := reflect.New(value.Elem().Type())
+	clone.Elem().Set(value.Elem())
+	return clone.Interface().(Params)
 }
 
 func handleNotify(ctx context.Context, method string, req Request) error {
