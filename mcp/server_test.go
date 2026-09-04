@@ -1932,3 +1932,76 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestNotifySessionsIsolatesStalledPeer verifies that a session whose write
+// stalls — here a peer that never reads its end of the pipe — does not delay
+// or fail delivery to the other sessions in the same broadcast.
+func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	// The stalled session: nothing reads the client end until the end of the
+	// test, so the server's first write blocks (net.Pipe is synchronous).
+	stalledCT, stalledST := NewInMemoryTransports()
+	stalled, err := server.Connect(ctx, stalledST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The healthy session: a real client that records the notification.
+	got := make(chan string, 1)
+	healthyCT, healthyST := NewInMemoryTransports()
+	healthy, err := server.Connect(ctx, healthyST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			select {
+			case got <- req.Params.URI:
+			default:
+			}
+		},
+	})
+	cs, err := client.Connect(ctx, healthyCT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Stalled first: a serial implementation would sit on it and never reach
+	// the healthy session.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		notifySessions([]*ServerSession{stalled, healthy}, notificationResourceUpdated,
+			&ResourceUpdatedNotificationParams{URI: "test://stalled-peer"}, slog.Default())
+	}()
+
+	select {
+	case uri := <-got:
+		if uri != "test://stalled-peer" {
+			t.Fatalf("got notification for %q", uri)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy session was not notified while another session's write was stalled")
+	}
+
+	// Draining the stalled peer releases its write and lets the broadcast
+	// complete. (Session.Close cannot do this: it waits for in-flight writes
+	// before closing the underlying connection.)
+	stalledConn, err := stalledCT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stalledConn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("notifySessions did not return after the stalled peer read its message")
+	}
+	stalled.Close()
+	stalledConn.Close()
+}
