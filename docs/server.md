@@ -1199,6 +1199,72 @@ capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
 per-extension settings objects.
 
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package implements SEP-2640. Use `skills.AddHandlers` to provide custom
+`skills/list` and `skills/get` handlers. An optional directory handler enables
+`resources/directory/read` and advertises `directoryRead: true`.
+
+Custom providers may return `skills.DynamicResources()` for generated skills
+that cannot publish stable file digests.
+
+For skills stored on disk, `skills.AddDirectory` installs a filesystem-backed
+provider. By default it discovers skills and files on every request, so
+resources added after server startup are available without re-registering
+them. It also serves skill files through `resources/read` and supports
+paginated directory reads.
+
+```go
+if err := skills.AddDirectory(server, "./skills", &skills.DirectoryOptions{
+    PageSize: 100,
+}); err != nil {
+    return err
+}
+```
+
+Set `Cache` to `&skills.DirectoryCacheOptions{}` to load the catalog on the
+first request and cache it indefinitely. Set `Preload: true` to load it while
+constructing the provider, which also makes the constructor report initial scan
+and validation errors. A positive `MaxAge` expires the cache after that
+duration; the first request after expiry rebuilds it.
+
+Cached providers can also be invalidated by a clock or filesystem monitor through
+`DirectoryCacheOptions.Invalidate`. Signals are coalesced and consumed when a
+request arrives; use a buffered channel so producers do not block. Both
+`MaxAge` and `Invalidate` are lazy: they do not start a background goroutine.
+
+To rebuild before the next request, construct a provider directly and call
+`Refresh` from the application's watcher goroutine. The caller owns goroutine
+lifetime, cancellation, and error handling:
+
+```go
+provider, err := skills.NewDirectoryProvider("./skills", &skills.DirectoryOptions{
+    Cache: &skills.DirectoryCacheOptions{Preload: true},
+})
+if err != nil {
+    return err
+}
+if err := provider.AddTo(server); err != nil {
+    return err
+}
+go func() {
+    for range changed {
+        if err := provider.Refresh(ctx); err != nil {
+            logger.Error("refreshing skills", "error", err)
+        }
+    }
+}()
+```
+
+Register one filesystem provider per server. Applications that need to combine
+multiple filesystems can use an overlay `fs.FS` or aggregate them behind custom
+`AddHandlers` handlers.
+
+SEP validation is enabled by default, including the 512-resource and 16 MiB
+per-skill limits. `skills.ServerOptions` supports additional validators and
+explicit unsafe overrides.
+
 ### Pagination
 
 Server-side feature lists may be
