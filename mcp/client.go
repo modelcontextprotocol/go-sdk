@@ -474,6 +474,11 @@ type ClientSession struct {
 	calledOnClose atomic.Bool
 	onClose       func()
 
+	// closed is set before Close tears the session down. Subscribe checks it
+	// under resourceSubsMu so that a subscription registered after Close has
+	// started cannot leak an entry that Close already cleaned up.
+	closed atomic.Bool
+
 	conn            *jsonrpc2.Connection
 	client          *Client
 	keepaliveCancel context.CancelFunc
@@ -563,6 +568,10 @@ func (cs *ClientSession) ID() string {
 //
 // Close is idempotent and concurrency safe.
 func (cs *ClientSession) Close() error {
+	// Mark the session closed before cancelling subscriptions so that a racing
+	// Subscribe either registers before the cleanup sweep (and is cancelled by
+	// it) or observes the closed flag and reports ErrConnectionClosed.
+	cs.closed.Store(true)
 	// Note: keepaliveCancel access is safe without a mutex because:
 	// 1. keepaliveCancel is only written once during Client.Connect (through startKeepalive),
 	//    which happens before any code that may call Close from another goroutine
@@ -1390,6 +1399,13 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 
 	var listenCtx context.Context
 	cs.resourceSubsMu.Lock()
+	if cs.closed.Load() {
+		// Close already started: the session can no longer open listen
+		// streams, and Close may have swept the subscription map already, so
+		// registering here would leak an entry that nothing cancels.
+		cs.resourceSubsMu.Unlock()
+		return ErrConnectionClosed
+	}
 	if _, exists := cs.resourceSubs[uri]; !exists {
 		var cancel context.CancelFunc
 		listenCtx, cancel = context.WithCancel(context.Background())
@@ -1404,11 +1420,27 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 		return nil
 	}
 
-	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
 	})
+	if err != nil {
+		// The listen stream never started, so roll back the registration:
+		// the URI is not actually subscribed, and leaving the cancel func
+		// behind would leak it and misreport state to Unsubscribe. See
+		// https://github.com/modelcontextprotocol/go-sdk/issues/1171.
+		cs.resourceSubsMu.Lock()
+		cancel, ok := cs.resourceSubs[uri]
+		if ok {
+			delete(cs.resourceSubs, uri)
+		}
+		cs.resourceSubsMu.Unlock()
+		if ok {
+			cancel()
+		}
+	}
+	return err
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
