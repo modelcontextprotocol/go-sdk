@@ -329,23 +329,13 @@ type CallToolResult struct {
 	err error
 }
 
-// seterroroverwrite is a compatibility parameter that restores the pre-1.6.0
-// behavior of [CallToolResult.SetError], where Content was always overwritten
-// with the error text. See the documentation for the mcpgodebug package for
-// instructions on how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var seterroroverwrite = mcpgodebug.Value("seterroroverwrite")
-
 // SetError sets the error for the tool result and sets IsError to true.
 // If Content has not already been populated, it is set to the error text.
 // If Content has already been populated, it is left unchanged, allowing callers
 // to provide a user-friendly message while still recording the underlying error
 // for inspection via [GetError] in server middleware.
-//
-// To restore the previous behavior where Content was always overwritten,
-// set MCPGODEBUG=seterroroverwrite=1.
 func (r *CallToolResult) SetError(err error) {
-	if len(r.Content) == 0 || seterroroverwrite == "1" {
+	if len(r.Content) == 0 {
 		r.Content = []Content{&TextContent{Text: err.Error()}}
 	}
 	r.IsError = true
