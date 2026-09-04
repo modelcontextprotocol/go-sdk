@@ -999,6 +999,10 @@ type stream struct {
 	// the duration of the subscription, and act as the target for
 	// out-of-band notifications routed through this connection.
 	isListen bool
+
+	// headersFlushed records that the response headers have been committed, so
+	// the HTTP status can no longer be changed. See flushEarlyAfter.
+	headersFlushed bool
 }
 
 // close sends a 'close' event to the client (if protocolVersion >= 2025-11-25
@@ -1013,6 +1017,7 @@ func (s *stream) close(reconnectAfter time.Duration) {
 		return // stream not connected or already closed
 	}
 	if s.protocolVersion >= protocolVersion20251125 && reconnectAfter > 0 {
+		s.headersFlushed = true
 		reconnectStr := strconv.FormatInt(reconnectAfter.Milliseconds(), 10)
 		if _, err := writeEvent(s.w, Event{
 			Name:  "close",
@@ -1031,7 +1036,56 @@ func (s *stream) release() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.w = nil
-	s.done = nil // may already be nil, if the stream is done or closed
+	s.done = nil             // may already be nil, if the stream is done or closed
+	s.headersFlushed = false // per HTTP request; the stream object can be reused
+}
+
+// earlyFlushDelay is how long an SSE response to a POST may stay completely
+// silent before the server commits its headers and writes a keep-alive
+// comment.
+//
+// It is a delay rather than an immediate flush because committing the headers
+// fixes the HTTP status, and a protocol-level error must still be able to set
+// its own (SEP-2575, see extractErrorStatus). Dispatch-time errors finish
+// without handler I/O, so they win the race. A handler that later returns
+// InvalidParams after real work may miss the HTTP status override; that is
+// the tradeoff.
+const earlyFlushDelay = 1 * time.Second
+
+// writeSSEComment commits 200 and writes an SSE comment so a DATA frame
+// follows the HEADERS frame. On HTTP/2 a proxy may hold HEADERS until DATA
+// arrives; Flush alone is not enough. Comment lines are ignored by clients
+// per the SSE spec. See acquireStream and golang/go#31125.
+func writeSSEComment(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, ": ok\n\n")
+	_ = http.NewResponseController(w).Flush()
+}
+
+// flushEarlyAfter commits the response headers and writes an SSE comment once
+// the stream has been silent for d, so that a long-running call does not look
+// like a dead connection to clients that apply a first-byte timeout.
+//
+// This is one-shot, not a keep-alive ping. Idle timeouts after the first byte
+// are a different problem; JSON-RPC pings ride the standalone GET stream.
+//
+// Holding s.mu serialises this with deliverLocked, close, and priming.
+func (s *stream) flushEarlyAfter(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w == nil || s.headersFlushed {
+		return
+	}
+	s.headersFlushed = true
+	writeSSEComment(s.w)
 }
 
 // extractErrorStatus reports the HTTP status to send when the given
@@ -1098,7 +1152,13 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	// SEP-2575 protocol-level error override: write the error as a raw
 	// JSON-RPC response with the spec-mandated HTTP status, bypassing any
 	// SSE framing.
-	if overrideStatus != 0 {
+	//
+	// Only possible while the headers are uncommitted. If the stream has
+	// already been flushed to keep a long call alive (see flushEarlyAfter),
+	// the status is fixed at 200 and the error is delivered as an ordinary
+	// SSE event instead.
+	if overrideStatus != 0 && !s.headersFlushed {
+		s.headersFlushed = true
 		s.w.Header().Set("Content-Type", "application/json")
 		s.w.WriteHeader(overrideStatus)
 		if _, err := s.w.Write(data); err != nil {
@@ -1125,12 +1185,14 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 					return done, err
 				}
 			}
+			s.headersFlushed = true
 			if _, err := s.w.Write(toWrite); err != nil {
 				return done, err
 			}
 		}
 	} else {
 		// SSE mode: write event to response writer.
+		s.headersFlushed = true
 		s.lastIdx++
 		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
 			return done, err
@@ -1375,11 +1437,8 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		// proxy to forward both frames. See:
 		//   https://github.com/golang/go/issues/31125
 		//   https://github.com/caddyserver/caddy/issues/4247
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, ": ok\n\n")
-		rc := http.NewResponseController(w)
-		// Ignore returned error as flushing is best-effort.
-		_ = rc.Flush()
+		writeSSEComment(w)
+		s.headersFlushed = true
 	}
 
 	for _, data := range toReplay {
@@ -1391,6 +1450,7 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		if _, err := writeEvent(w, e); err != nil {
 			return nil, nil
 		}
+		s.headersFlushed = true
 	}
 
 	if tempStream || s.doneLocked() {
@@ -1404,6 +1464,14 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	s.done = make(chan struct{})
 	s.lastIdx = lastIdx
 	s.protocolVersion = protocolVersion
+	// Same first-byte problem as a hanging POST: a GET that resumes an
+	// in-flight stream with nothing left to replay would otherwise write
+	// nothing until the next event. The standalone stream (s.id == "")
+	// already flushed above; this covers Last-Event-ID resume.
+	if !s.headersFlushed {
+		writeSSEComment(s.w)
+		s.headersFlushed = true
+	}
 	return s, s.done
 }
 
@@ -1745,9 +1813,25 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			}
 			stream.lastIdx++
 			e := Event{Name: "prime", ID: formatEventID(stream.id, stream.lastIdx)}
+			stream.mu.Lock()
 			if _, err := writeEvent(w, e); err != nil {
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
+			stream.headersFlushed = true
+			stream.mu.Unlock()
+		}
+
+		// The first byte of this response may be minutes away: a tool call runs
+		// to completion before its result is written, and nothing else is sent
+		// in the meantime. Clients that apply a first-byte timeout cannot tell
+		// that silence apart from a dead connection.
+		//
+		// Keep the stream visibly alive by committing the headers and writing an
+		// SSE comment once it has been silent for earlyFlushDelay. See
+		// flushEarlyAfter. Started after any priming write so the two cannot
+		// race on s.w. Skip it if priming already committed the headers.
+		if !stream.headersFlushed {
+			go stream.flushEarlyAfter(req.Context(), earlyFlushDelay)
 		}
 	}
 
