@@ -43,6 +43,23 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   soon as its context is cancelled and cannot be delayed by a slow or
   unresponsive peer. See issue #1150.
 
+Options below were removed, according to plan:
+
+- `seterroroverwrite`. `SetError` now always preserves existing `Content`.
+
+- `enableoriginverification`. A nil
+  `StreamableHTTPOptions.CrossOriginProtection` now always means no
+  cross-origin protection. Wrap the handler with cross-origin protection
+  middleware instead.
+
+- `disablecontenttypecheck`. Content-Type validation on HTTP POST requests can
+  no longer be disabled.
+
+- `disablelocalhostprotection`, whose removal had been postponed to this
+  release. Set the `DisableLocalhostProtection` field in
+  `StreamableHTTPOptions` or `SSEOptions` to opt out of DNS rebinding
+  protection.
+
 ### 1.7.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

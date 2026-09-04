@@ -184,8 +184,7 @@ type StreamableHTTPOptions struct {
 	// CrossOriginProtection allows to customize cross-origin protection.
 	// The deny handler set in the CrossOriginProtection through SetDenyHandler
 	// is ignored.
-	// If nil, no cross-origin protection is applied. Use the `enableoriginverification`
-	// MCPGODEBUG compatibility parameter to enable the default protection until v1.8.0.
+	// If nil, no cross-origin protection is applied.
 	//
 	// Deprecated: wrap the handler with cross-origin protection middleware
 	// instead. For example:
@@ -240,10 +239,6 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	h.opts.Logger = ensureLogger(h.opts.Logger)
 
-	if h.opts.CrossOriginProtection == nil && enableoriginverification == "1" {
-		h.opts.CrossOriginProtection = &http.CrossOriginProtection{}
-	}
-
 	if h.opts.MaxRequestBodyBytes == 0 {
 		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
 	}
@@ -274,20 +269,6 @@ func (h *StreamableHTTPHandler) closeAll() {
 	}
 }
 
-// disablelocalhostprotection is a compatibility parameter that allows to disable
-// DNS rebinding protection, which was added in the 1.4.0 version of the SDK.
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var disablelocalhostprotection = mcpgodebug.Value("disablelocalhostprotection")
-
-// enableoriginverification is a compatibility parameter that restores the
-// default cross-origin protection behavior from v1.4.1-v1.5.0. When set to
-// "1", a zero-value CrossOriginProtection will be applied if none is
-// explicitly provided in StreamableHTTPOptions.
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var enableoriginverification = mcpgodebug.Value("enableoriginverification")
-
 // allowsessionsinstateless is a compatibility parameter that restores the old
 // behavior of reading and using Mcp-Session-Id headers in stateless mode. When
 // set to "1", stateless servers will read the session ID from the request
@@ -307,12 +288,6 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // ignores response bodies on non-2xx responses and any non-transient error
 // permanently fails the connection.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
-
-// disablecontenttypecheck is a compatibility parameter that allows to disable
-// Content-Type validation on POST requests.
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var disablecontenttypecheck = mcpgodebug.Value("disablecontenttypecheck")
 
 // plaintextstatefulrejection is a compatibility parameter that restores the
 // previous behavior of a stateful [StreamableHTTPHandler] when it receives a
@@ -341,7 +316,7 @@ func writeJSONRPCError(w http.ResponseWriter, status int, id jsonrpc.ID, jerr *j
 func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
-	if !h.opts.DisableLocalhostProtection && disablelocalhostprotection != "1" {
+	if !h.opts.DisableLocalhostProtection {
 		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
 			if util.IsLoopback(localAddr.String()) && !util.IsLoopback(req.Host) {
 				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
@@ -410,7 +385,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -644,7 +619,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 // ID, a new session is created (this is the normal path for the first
 // initialize request).
 func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *http.Request) {
-	if disablecontenttypecheck != "1" && baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
+	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
 	}
