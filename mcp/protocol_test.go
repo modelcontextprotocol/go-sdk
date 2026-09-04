@@ -1285,7 +1285,7 @@ func TestContentUnmarshal(t *testing.T) {
 		Meta:              Meta{"m": true},
 		Content:           content,
 		IsError:           true,
-		StructuredContent: 3.0,
+		StructuredContent: json.Number("3"),
 	}
 	var gotf CallToolResult
 	roundtrip(ctrf, &gotf)
