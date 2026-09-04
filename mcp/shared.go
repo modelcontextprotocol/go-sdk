@@ -809,6 +809,9 @@ type Result interface {
 	// isResult discourages implementation of Result outside of this package.
 	isResult()
 
+	// isNil returns true if the underlying value is nil.
+	isNil() bool
+
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
@@ -827,13 +830,15 @@ type ResultBase struct {
 	Meta `json:"_meta,omitempty"`
 }
 
-func (*ResultBase) isResult() {}
+func (*ResultBase) isResult()     {}
+func (x *ResultBase) isNil() bool { return x == nil }
 
 // emptyResult is returned by methods that have no result, like ping.
 // Those methods cannot return nil, because jsonrpc2 cannot handle nils.
 type emptyResult struct{}
 
 func (*emptyResult) isResult()               {}
+func (x *emptyResult) isNil() bool           { return x == nil }
 func (*emptyResult) GetMeta() map[string]any { panic("should never be called") }
 func (*emptyResult) SetMeta(map[string]any)  { panic("should never be called") }
 

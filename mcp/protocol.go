@@ -19,7 +19,7 @@ type resultType string
 
 const (
 	// resultTypeComplete indicates the result is final.
-	// This is the default when ResultType is empty.
+	// This is the default when resultType is empty.
 	resultTypeComplete resultType = "complete"
 
 	// resultTypeInputRequired indicates the server needs additional client
@@ -40,9 +40,16 @@ type completeResultResponse interface {
 	isCompleteResult()
 }
 
-func setCompleteResultType(res Result) {
-	if r, ok := res.(completeResultResponse); ok {
+// annotateResultType sets the resultType that protocol 2026-07-28 requires on
+// every result.
+func annotateResultType(res Result) {
+	switch r := res.(type) {
+	case completeResultResponse:
 		r.setResultType(resultTypeComplete)
+	case multiRoundTripResponse:
+		// A middleware can return one of these without reaching the
+		// dispatcher. This leaves the field unset.
+		setMultiRoundTripResultType(r)
 	}
 }
 
@@ -226,9 +233,8 @@ type CallToolParams struct {
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -249,9 +255,8 @@ type CallToolParamsRaw struct {
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -305,9 +310,9 @@ type CallToolResult struct {
 	IsError bool `json:"isError,omitempty"`
 
 	// InputRequests is a map of server-assigned IDs to input requests.
-	// Populated only when ResultType is ResultTypeInputRequired.
+	// It is set only when the result needs more client input.
 	// The client must fulfill these and echo the IDs back in InputResponses
-	// when retrying the call.
+	// when it retries the call.
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 
 	// RequestState is an opaque string the client must echo back when
@@ -317,10 +322,10 @@ type CallToolResult struct {
 	// Unauthenticated servers must encrypt, sign and verify this value.
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. Empty or ResultTypeComplete means the call succeeded
-	// normally. ResultTypeInputRequired means the client should fulfill the
-	// InputRequests and retry the call.
+	// resultType records whether the call finished or needs more client input.
+	// Empty or resultTypeComplete means it finished. resultTypeInputRequired
+	// means the client must fulfill InputRequests and retry.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 	// The error passed to setError, if any.
 	// It is not marshaled, and therefore it is only visible on the server.
@@ -348,7 +353,8 @@ func (r *CallToolResult) GetError() error {
 	return r.err
 }
 
-func (*CallToolResult) isResult() {}
+func (*CallToolResult) isResult()     {}
+func (x *CallToolResult) isNil() bool { return x == nil }
 
 func (r *CallToolResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *CallToolResult) requestState() string        { return r.RequestState }
@@ -363,7 +369,7 @@ func (r *CallToolResult) hasContent() bool {
 }
 
 // NeedsInput reports whether this result requires further client input.
-// This is true when the server returned ResultType "input_required".
+// This is true when the server returned a resultType of "input_required".
 // When NeedsInput returns true, check InputRequests for the set of
 // requests the server needs fulfilled before retrying the call.
 // An empty InputRequests with NeedsInput true indicates load-shedding.
@@ -655,7 +661,8 @@ type CompleteResult struct {
 	Completion CompletionResultDetails `json:"completion"`
 }
 
-func (*CompleteResult) isResult() {}
+func (*CompleteResult) isResult()     {}
+func (x *CompleteResult) isNil() bool { return x == nil }
 
 // CreateMessageParams holds parameters for a sampling/createMessage request.
 //
@@ -839,6 +846,7 @@ type CreateMessageResult struct {
 }
 
 func (*CreateMessageResult) isResult()        {}
+func (x *CreateMessageResult) isNil() bool    { return x == nil }
 func (*CreateMessageResult) isInputResponse() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
@@ -890,6 +898,7 @@ var createMessageWithToolsResultAllow = map[string]bool{
 }
 
 func (*CreateMessageWithToolsResult) isResult()        {}
+func (x *CreateMessageWithToolsResult) isNil() bool    { return x == nil }
 func (*CreateMessageWithToolsResult) isInputResponse() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
@@ -950,9 +959,8 @@ type GetPromptParams struct {
 	// The name of the prompt or prompt template.
 	Name string `json:"name"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`
@@ -972,19 +980,20 @@ type GetPromptResult struct {
 	Description string           `json:"description,omitempty"`
 	Messages    []*PromptMessage `json:"messages"`
 
-	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// InputRequests is set when the result needs more client input.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. See [CallToolResult.ResultType] for details.
+	// resultType records whether the call finished or needs more client input.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 }
 
-func (*GetPromptResult) isResult() {}
+func (*GetPromptResult) isResult()     {}
+func (x *GetPromptResult) isNil() bool { return x == nil }
 
 func (r *GetPromptResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *GetPromptResult) requestState() string        { return r.RequestState }
@@ -1094,7 +1103,8 @@ type InitializeResult struct {
 	ServerInfo      *Implementation `json:"serverInfo"`
 }
 
-func (*InitializeResult) isResult() {}
+func (*InitializeResult) isResult()     {}
+func (x *InitializeResult) isNil() bool { return x == nil }
 
 type InitializedParams struct {
 	// Meta is reserved by the protocol to allow clients and servers to attach
@@ -1137,7 +1147,8 @@ type DiscoverResult struct {
 	Instructions string `json:"instructions,omitempty"`
 }
 
-func (*DiscoverResult) isResult() {}
+func (*DiscoverResult) isResult()     {}
+func (x *DiscoverResult) isNil() bool { return x == nil }
 
 func (x *ListPromptsParams) isParams()              {}
 func (x *ListPromptsParams) isNil() bool            { return x == nil }
@@ -1207,6 +1218,7 @@ type ListPromptsResult struct {
 }
 
 func (x *ListPromptsResult) isResult()              {}
+func (x *ListPromptsResult) isNil() bool            { return x == nil }
 func (x *ListPromptsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourceTemplatesParams struct {
@@ -1238,6 +1250,7 @@ type ListResourceTemplatesResult struct {
 }
 
 func (x *ListResourceTemplatesResult) isResult()              {}
+func (x *ListResourceTemplatesResult) isNil() bool            { return x == nil }
 func (x *ListResourceTemplatesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourcesParams struct {
@@ -1269,6 +1282,7 @@ type ListResourcesResult struct {
 }
 
 func (x *ListResourcesResult) isResult()              {}
+func (x *ListResourcesResult) isNil() bool            { return x == nil }
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 // ListRootsParams holds parameters for a roots/list request.
@@ -1305,6 +1319,7 @@ type ListRootsResult struct {
 }
 
 func (*ListRootsResult) isResult()        {}
+func (x *ListRootsResult) isNil() bool    { return x == nil }
 func (*ListRootsResult) isInputResponse() {}
 
 type ListToolsParams struct {
@@ -1336,6 +1351,7 @@ type ListToolsResult struct {
 }
 
 func (x *ListToolsResult) isResult()              {}
+func (x *ListToolsResult) isNil() bool            { return x == nil }
 func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 // The severity of a log message.
@@ -1575,9 +1591,8 @@ type ReadResourceParams struct {
 	// the server how to interpret it.
 	URI string `json:"uri"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`
@@ -1596,19 +1611,20 @@ type ReadResourceResult struct {
 	Cacheable
 	Contents []*ResourceContents `json:"contents"`
 
-	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// InputRequests is set when the result needs more client input.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. See [CallToolResult.ResultType] for details.
+	// resultType records whether the call finished or needs more client input.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 }
 
-func (*ReadResourceResult) isResult() {}
+func (*ReadResourceResult) isResult()     {}
+func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
@@ -2114,7 +2130,8 @@ type SubscriptionsListenResult struct {
 	Meta `json:"_meta"`
 }
 
-func (*SubscriptionsListenResult) isResult() {}
+func (*SubscriptionsListenResult) isResult()     {}
+func (x *SubscriptionsListenResult) isNil() bool { return x == nil }
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -2191,6 +2208,7 @@ type ElicitResult struct {
 }
 
 func (*ElicitResult) isResult()        {}
+func (x *ElicitResult) isNil() bool    { return x == nil }
 func (*ElicitResult) isInputResponse() {}
 
 // ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
