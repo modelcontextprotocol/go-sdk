@@ -513,6 +513,36 @@ capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
 per-extension settings objects.
 
+Use `AddExtension` to declare one, and `HasExtension` to test what the client
+declared. Client capabilities are read from the request, since as of protocol
+version 2026-07-28 they travel in each request's `_meta` rather than in the
+initialize handshake:
+
+```go
+caps := &mcp.ServerCapabilities{}
+caps.AddExtension("io.example/my-extension", nil)
+server := mcp.NewServer(impl, &mcp.ServerOptions{Capabilities: caps})
+
+// Inside a tool handler:
+if req.ClientCapabilities().HasExtension("io.example/my-extension") {
+    // The client declared it too.
+}
+```
+
+#### Tasks
+
+[SEP-2663](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2663-tasks-extension.md)
+moved tasks out of the core protocol and into the
+[tasks extension](https://github.com/modelcontextprotocol/ext-tasks/blob/main/specification/draft/tasks.md),
+identified by the `mcp.ExtensionTasks` constant. A server that has negotiated
+it may answer a request with a durable task handle instead of the result that
+was asked for, which the client then polls to completion.
+
+**The SDK does not implement task execution**, and does not declare the
+extension by default. Declaring it is a promise to the peer: a server that
+declares it must serve `tasks/get`, `tasks/update` and `tasks/cancel`. Only
+declare it if you implement those yourself.
+
 ### Pagination
 
 Server-side feature lists may be
