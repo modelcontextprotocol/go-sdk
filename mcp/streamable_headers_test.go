@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -334,6 +335,23 @@ func TestValidateMcpHeaders(t *testing.T) {
 			nameHeader:   "code_review",
 			msg:          &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: "code_review"})},
 			wantErr:      false,
+		},
+		{
+			name:         "Base64-encoded Mcp-Name is decoded before comparison",
+			version:      minVersionForStandardHeaders,
+			methodHeader: "tools/call",
+			nameHeader:   base64Prefix + base64.StdEncoding.EncodeToString([]byte("café-tool")) + base64Suffix,
+			msg:          &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "café-tool"})},
+			wantErr:      false,
+		},
+		{
+			name:           "Mcp-Name with invalid Base64 encoding",
+			version:        minVersionForStandardHeaders,
+			methodHeader:   "tools/call",
+			nameHeader:     base64Prefix + "not valid base64!" + base64Suffix,
+			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
+			wantErr:        true,
+			wantErrContain: "invalid Base64 encoding",
 		},
 		{
 			name:         "valid initialize (no name needed)",
