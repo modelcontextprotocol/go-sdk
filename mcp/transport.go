@@ -315,6 +315,17 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		go func() {
 			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 			defer stop()
+			// If the connection starts tearing down, abandon the best-effort
+			// notify instead of blocking Close for up to notifyCancellationTimeout
+			// on an unresponsive peer: closing the connection already signals the
+			// cancellation. See issue #1189.
+			go func() {
+				select {
+				case <-conn.Closing():
+					stop()
+				case <-notifyCtx.Done():
+				}
+			}()
 			_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
 				Reason:    ctx.Err().Error(),
 				RequestID: call.ID().Raw(),
