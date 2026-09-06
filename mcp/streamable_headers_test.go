@@ -1593,3 +1593,57 @@ func TestValidateParamHeaders_NestedArguments(t *testing.T) {
 		t.Error("validateParamHeaders() = nil, want error for mismatched nested value")
 	}
 }
+
+// TestMcpNameHeaderEncodingRoundTrip verifies that a name which is not
+// header-safe is Base64-wrapped by the client per the 2026-07-28 transport
+// spec, and that the server's validation accepts what the client produced.
+func TestMcpNameHeaderEncodingRoundTrip(t *testing.T) {
+	tests := []struct {
+		name       string
+		msg        *jsonrpc.Request
+		wantHeader string
+	}{
+		{
+			name:       "ascii-safe tool name is sent as-is",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
+			wantHeader: "my-tool",
+		},
+		{
+			name:       "non-ascii tool name is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "café-tool"})},
+			wantHeader: encodeBase64("café-tool"),
+		},
+		{
+			name:       "prompt name with a leading space is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: " leading-space"})},
+			wantHeader: encodeBase64(" leading-space"),
+		},
+		{
+			name:       "resource uri with a control character is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///a\tb.txt"})},
+			wantHeader: encodeBase64("file:///a\tb.txt"),
+		},
+		{
+			name:       "name that looks like the sentinel is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "=?base64?abc?="})},
+			wantHeader: encodeBase64("=?base64?abc?="),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+			setStandardHeaders(context.Background(), header, tt.msg)
+
+			if got := header.Get(nameHeader); got != tt.wantHeader {
+				t.Errorf("Mcp-Name = %q, want %q", got, tt.wantHeader)
+			}
+
+			// The server must accept the headers the client just generated.
+			if err := validateMcpHeaders(header, tt.msg, nil); err != nil {
+				t.Errorf("validateMcpHeaders() on client-generated headers = %v, want nil", err)
+			}
+		})
+	}
+}

@@ -207,7 +207,12 @@ func setStandardHeaders(ctx context.Context, header http.Header, msg jsonrpc.Mes
 	case *jsonrpc.Request:
 		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			header.Set(nameHeader, name)
+			// Names are only SHOULD-constrained to header-safe characters, so a
+			// name outside the safe set is Base64-wrapped with the =?base64?...?=
+			// sentinel, the same rule applied to Mcp-Param-* values.
+			if encoded, ok := encodeHeaderValue(name); ok {
+				header.Set(nameHeader, encoded)
+			}
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok && tool != nil {
