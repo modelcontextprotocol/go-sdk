@@ -280,13 +280,25 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 // Cancellation is driven by ctx: when it is cancelled, a background goroutine
 // sends a "notifications/cancelled" notification referencing the listen's
 // request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
+func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) error {
 	call := conn.Call(ctx, method, params)
+	select {
+	case <-call.Ready():
+		if err := call.Await(ctx, nil); err != nil {
+			if errors.Is(err, jsonrpc2.ErrClientClosing) || errors.Is(err, jsonrpc2.ErrServerClosing) {
+				return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+			}
+			return fmt.Errorf("calling %q: %w", method, err)
+		}
+		return nil
+	default:
+	}
 
 	go func() {
 		<-ctx.Done()
 		_ = cancelCall(ctx, conn, call)
 	}()
+	return nil
 }
 
 // call executes and awaits a jsonrpc2 call on the given connection,
