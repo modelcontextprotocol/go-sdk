@@ -387,7 +387,12 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		Capabilities:    c.capabilities(protocolVersion),
 	}
 	req := &InitializeRequest{Session: cs, Params: params}
-	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
+	// No version is negotiated yet, so this request has no version of its own to
+	// state; a caller's value must not stand in for one. Cleared rather than sent,
+	// since a header a peer does not support fails the handshake the body would
+	// have negotiated down.
+	initializeCtx := context.WithValue(ctx, protocolVersionContextKey{}, "")
+	res, err := handleSend[*InitializeResult](initializeCtx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err

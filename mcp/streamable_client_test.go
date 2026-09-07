@@ -145,6 +145,14 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
+	// On initialize no version has been negotiated yet, so the request has none of
+	// its own to state and must not inherit the caller's. Checked for every
+	// initialize rather than per-response, since it holds unconditionally.
+	if key.jsonrpcMethod == methodInitialize {
+		if got := req.Header.Get(protocolVersionHeader); got != "" {
+			s.t.Errorf("%v: initialize carried protocol version header %q, want none", key, got)
+		}
+	}
 	w.Write([]byte(body))
 	rc.Flush() // flush response
 
@@ -173,6 +181,52 @@ func jsonBody(t *testing.T, msg jsonrpc2.Message) string {
 		t.Fatalf("encoding failed: %v", err)
 	}
 	return string(data)
+}
+
+// A server transport records its inbound request's version on the context it
+// passes down, so a process that is both a server and a client hands its client
+// leg a context already carrying a version. The initialize that leg sends has no
+// negotiated version of its own, and must not present the inherited one as one.
+func TestStreamableClientConnect_InitializeDoesNotInheritProtocolVersion(t *testing.T) {
+	ctx := context.WithValue(context.Background(), protocolVersionContextKey{}, protocolVersion20260728)
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			// Requests after negotiation are left unchecked here: which source wins
+			// once initializedResult is set is #1162, not this handshake.
+			{"POST", "123", notificationInitialized, ""}: {status: http.StatusAccepted},
+			{"GET", "123", "", ""}: {
+				header:   header{"Content-Type": "text/event-stream"},
+				optional: true,
+			},
+			{"DELETE", "123", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	// Pinned so initialize is the first request, matching the fixture's id=1.
+	session, err := NewClient(testImpl, nil).Connect(ctx,
+		&StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The header on initialize is asserted absent centrally, in ServeHTTP.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("negotiated protocol version = %q, want %q", got, protocolVersion20251125)
+	}
 }
 
 func TestStreamableClientTransportLifecycle(t *testing.T) {
