@@ -136,6 +136,54 @@ func TestDecodeResponseUnchanged(t *testing.T) {
 	}
 }
 
+func TestMakeIDRejectsNonInteger(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		id   any
+	}{
+		{name: "fractional", id: 1.9},
+		{name: "half", id: 2.5},
+		{name: "above int64 range", id: 9.3e18},
+		{name: "below int64 range", id: -9.3e18},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := jsonrpc2.MakeID(test.id); err == nil {
+				t.Errorf("MakeID(%v) = nil error, want ErrParse", test.id)
+			}
+		})
+	}
+}
+
+func TestMakeIDAcceptsInteger(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		id   any
+		want int64
+	}{
+		{name: "zero", id: float64(0), want: 0},
+		{name: "positive", id: float64(42), want: 42},
+		{name: "negative", id: float64(-7), want: -7},
+		{name: "max exact float64 integer", id: float64(1 << 53), want: 1 << 53},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id, err := jsonrpc2.MakeID(test.id)
+			if err != nil {
+				t.Fatalf("MakeID(%v) = error: %v", test.id, err)
+			}
+			if got := id.Raw(); got != test.want {
+				t.Errorf("MakeID(%v).Raw() = %v, want %v", test.id, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeMessageRejectsFractionalID(t *testing.T) {
+	encoded := []byte(`{"jsonrpc":"2.0","id":1.9,"method":"ping"}`)
+	if _, err := jsonrpc2.DecodeMessage(encoded); err == nil {
+		t.Fatal("DecodeMessage with fractional id = nil error, want error")
+	}
+}
+
 // Messages with an id but no "method" key are responses, not malformed requests.
 func TestDecodeIDOnlyMessageIsResponse(t *testing.T) {
 	encoded := []byte(`{"jsonrpc":"2.0","id":5}`)
