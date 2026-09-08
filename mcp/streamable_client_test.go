@@ -1406,6 +1406,58 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	}
 }
 
+func TestStreamableClientConnect_SubscriptionsListenError(t *testing.T) {
+	ctx := context.Background()
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, &jsonrpc.Response{
+						ID:     r.ID,
+						Result: mustMarshal(discoverResult),
+					}), http.StatusOK
+				},
+			},
+			{"POST", "", methodSubscriptionsListen, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, &jsonrpc.Response{
+						ID: r.ID,
+						Error: &jsonrpc.Error{
+							Code:    jsonrpc.CodeInvalidParams,
+							Message: "listen rejected",
+						},
+					}), http.StatusBadRequest
+				},
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {},
+	})
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err == nil {
+		session.Close()
+		t.Fatal("Connect succeeded despite rejected subscriptions/listen")
+	}
+	if !errors.Is(err, jsonrpc2.ErrRejected) {
+		t.Fatalf("Connect error = %v, want error wrapping jsonrpc2.ErrRejected", err)
+	}
+	if !strings.Contains(err.Error(), "opening subscriptions/listen") {
+		t.Fatalf("Connect error = %v, want subscriptions/listen context", err)
+	}
+}
+
 // TestStreamableClientConnSetMCPHeaders_ProtocolVersion covers
 // streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
 // header value.

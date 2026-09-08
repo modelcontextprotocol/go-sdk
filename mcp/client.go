@@ -355,6 +355,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					cs.listenCancel = cancelListen
 					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
 						cancelListen()
+						_ = cs.Close()
 						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
 					}
 				}

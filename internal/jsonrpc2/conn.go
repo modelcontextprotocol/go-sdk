@@ -411,6 +411,9 @@ type AsyncCall struct {
 // This can be used to cancel the call if needed.
 func (ac *AsyncCall) ID() ID { return ac.id }
 
+// Done is closed when the call has a response or terminal error.
+func (ac *AsyncCall) Done() <-chan struct{} { return ac.ready }
+
 // retire processes the response to the call.
 //
 // It is an error to call retire more than once: retire is guarded by the

@@ -158,7 +158,9 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
 	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
+		if err := callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params); err != nil {
+			return nil, err
+		}
 	} else {
 		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
 			return nil, err
