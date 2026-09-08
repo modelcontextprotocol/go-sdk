@@ -2136,14 +2136,21 @@ type streamableClientConn struct {
 var _ clientConnection = (*streamableClientConn)(nil)
 
 func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
+	// 2026-07-28 removed both protocol-level sessions (SEP-2567) and the
+	// standalone HTTP GET SSE stream (SEP-2575).
+	modern := state.InitializeResult != nil &&
+		state.InitializeResult.ProtocolVersion >= protocolVersion20260728
+
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
+	if modern {
+		// A client must not echo an Mcp-Session-Id, so drop one that the initial
+		// response adopted before the negotiated version was known.
+		c.sessionID = ""
+	}
 	c.mu.Unlock()
 
-	// Under SEP-2575 (protocol version >= 2026-07-28) the standalone HTTP GET
-	// SSE stream is removed.
-	if state.InitializeResult == nil ||
-		state.InitializeResult.ProtocolVersion >= protocolVersion20260728 {
+	if state.InitializeResult == nil || modern {
 		return
 	}
 
@@ -2371,12 +2378,18 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
 		c.mu.Lock()
+		// 2026-07-28 (SEP-2567) removed protocol-level sessions. Once the
+		// negotiated version is known to be modern, ignore an Mcp-Session-Id
+		// from a non-compliant server: don't adopt it, so it is never echoed on
+		// later requests or used to terminate the session with DELETE.
+		modern := c.initializedResult != nil &&
+			c.initializedResult.ProtocolVersion >= protocolVersion20260728
 		hadSessionID := c.sessionID
-		if hadSessionID == "" {
+		if !modern && hadSessionID == "" {
 			c.sessionID = sessionID
 		}
 		c.mu.Unlock()
-		if hadSessionID != "" && hadSessionID != sessionID {
+		if !modern && hadSessionID != "" && hadSessionID != sessionID {
 			resp.Body.Close()
 			return fmt.Errorf("mismatching session IDs %q and %q", hadSessionID, sessionID)
 		}
