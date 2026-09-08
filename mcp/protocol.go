@@ -47,9 +47,13 @@ func annotateResultType(res Result) {
 	case completeResultResponse:
 		r.setResultType(resultTypeComplete)
 	case multiRoundTripResponse:
-		// A middleware can return one of these without reaching the
-		// dispatcher. This leaves the field unset.
-		setMultiRoundTripResultType(r)
+		// These results are complete or input_required, so label them by
+		// whether the handler asked for more client input.
+		if r.inputRequests() != nil {
+			r.setResultType(resultTypeInputRequired)
+		} else {
+			r.setResultType(resultTypeComplete)
+		}
 	}
 }
 

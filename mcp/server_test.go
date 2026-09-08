@@ -1623,10 +1623,11 @@ func TestServerSessionHandle_SetsResultTypeWhenMiddlewareShortCircuits(t *testin
 }
 
 // TestServerSessionHandle_ResultTypeGate pins when a result carries resultType.
-// handle gates on the request's _meta, while handleMultiRoundTripResult gates
-// on the session's negotiated version, so the last case below gets no
-// resultType even though the session speaks 2026-07-28. Only a client that
-// mixes protocol versions reaches that, so it is recorded rather than fixed.
+// annotateResultType is the only setter, and handle gates it on the request's
+// _meta rather than on the version the session negotiated. So the last case
+// below gets no resultType even though the session speaks 2026-07-28. Only a
+// client that mixes protocol versions reaches that, so it is recorded rather
+// than fixed.
 func TestServerSessionHandle_ResultTypeGate(t *testing.T) {
 	version := func(v string) func(*ServerSessionState) {
 		return func(s *ServerSessionState) {
