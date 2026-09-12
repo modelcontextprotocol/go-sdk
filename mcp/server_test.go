@@ -1932,3 +1932,46 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestToolArgumentIntegerPrecision exercises the typed AddTool path end to end
+// with an integer outside the IEEE-754 safe range (issue #1201).
+func TestToolArgumentIntegerPrecision(t *testing.T) {
+	ctx := context.Background()
+
+	type input struct {
+		ID int64 `json:"id"`
+	}
+	const want int64 = 9007199254740993 // 2^53 + 1
+
+	var got int64
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	AddTool(server, &Tool{Name: "echo_id"},
+		func(_ context.Context, _ *CallToolRequest, in input) (*CallToolResult, input, error) {
+			got = in.ID
+			return nil, in, nil
+		})
+
+	cTransport, sTransport := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, sTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	cs, err := client.Connect(ctx, cTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	if _, err := cs.CallTool(ctx, &CallToolParams{
+		Name:      "echo_id",
+		Arguments: map[string]any{"id": want},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("handler received id %d, want %d", got, want)
+	}
+}

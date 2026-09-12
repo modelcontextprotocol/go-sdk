@@ -272,3 +272,107 @@ func TestValidateToolName(t *testing.T) {
 	})
 
 }
+
+// TestApplySchemaNumberPrecision verifies that applySchema preserves JSON
+// integers outside the IEEE-754 safe range, which a float64 round-trip would
+// silently round (issue #1201).
+func TestApplySchemaNumberPrecision(t *testing.T) {
+	schema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"id":     {Type: "integer"},
+			"nested": {Type: "object", Properties: map[string]*jsonschema.Schema{"id": {Type: "integer"}}},
+			"ids":    {Type: "array", Items: &jsonschema.Schema{Type: "integer"}},
+			"ratio":  {Type: "number"},
+			"x":      {Type: "integer", Default: json.RawMessage("3")},
+		},
+	}
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A default on the schema forces the re-marshalling path, which is where
+	// the rounding was observable.
+	for _, tt := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{"large int64", `{"id":9007199254740993}`, `{"id":9007199254740993,"x":3}`},
+		{"max int64", `{"id":9223372036854775807}`, `{"id":9223372036854775807,"x":3}`},
+		{"min int64", `{"id":-9223372036854775808}`, `{"id":-9223372036854775808,"x":3}`},
+		{"nested", `{"nested":{"id":9007199254740993}}`, `{"nested":{"id":9007199254740993},"x":3}`},
+		{"array", `{"ids":[9007199254740993]}`, `{"ids":[9007199254740993],"x":3}`},
+		{"high-precision float", `{"ratio":0.1234567890123456789}`, `{"ratio":0.1234567890123456789,"x":3}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applySchema(json.RawMessage(tt.data), resolved, false)
+			if err != nil {
+				t.Fatalf("applySchema(%s) failed: %v", tt.data, err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("applySchema(%s) = %s, want %s", tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestApplySchemaOutputNumberPrecision covers the output path, where an
+// object-rooted schema with a default also re-marshals the value.
+func TestApplySchemaOutputNumberPrecision(t *testing.T) {
+	schema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"id": {Type: "integer"},
+			"x":  {Type: "integer", Default: json.RawMessage("3")},
+		},
+	}
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const data = `{"id":9007199254740993}`
+	const want = `{"id":9007199254740993,"x":3}`
+	got, err := applySchema(json.RawMessage(data), resolved, true)
+	if err != nil {
+		t.Fatalf("applySchema(%s) failed: %v", data, err)
+	}
+	if string(got) != want {
+		t.Errorf("applySchema(%s) = %s, want %s", data, got, want)
+	}
+}
+
+// TestApplySchemaNumberErrors verifies that numbers which cannot be
+// represented as a float64 are still rejected, and that a value of the wrong
+// JSON type is still reported as such rather than as a string.
+func TestApplySchemaNumberErrors(t *testing.T) {
+	schema := &jsonschema.Schema{
+		Type:       "object",
+		Properties: map[string]*jsonschema.Schema{"id": {Type: "integer"}},
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{"unrepresentable", `{"id":1e9999999}`, "float64"},
+		{"wrong type", `{"id":"nope"}`, `want "integer"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := applySchema(json.RawMessage(tt.data), resolved, false)
+			if err == nil {
+				t.Fatalf("applySchema(%s) succeeded, want error", tt.data)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("applySchema(%s) error = %v, want it to contain %q", tt.data, err, tt.want)
+			}
+		})
+	}
+}

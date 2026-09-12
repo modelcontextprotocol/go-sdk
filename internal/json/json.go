@@ -37,11 +37,27 @@ func (d *Decoder) Decode(v any) error {
 	return d.dec.Decode(v)
 }
 
+// UseNumber causes the decoder to unmarshal a number into a [json.Number]
+// rather than a float64, preserving the number's original literal text.
+func (d *Decoder) UseNumber() {
+	d.dec.UseNumber()
+}
+
 func Unmarshal(data []byte, v any) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
 	}
 	return NewDecoder(bytes.NewReader(data)).Decode(v)
+}
+
+// UnmarshalUseNumber is [Unmarshal] with [Decoder.UseNumber] set.
+func UnmarshalUseNumber(data []byte, v any) error {
+	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
+		return err
+	}
+	dec := NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
 }
 
 // checkMaxDepth scans data once and reports [errMaxDepthExceeded] if the

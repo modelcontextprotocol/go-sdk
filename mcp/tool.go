@@ -91,18 +91,22 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		return data, nil
 	}
 
+	// Decode numbers as json.Number so that any re-marshalling below
+	// reproduces their original literal text. Decoding into any/map[string]any
+	// otherwise represents every JSON number as a float64, which silently
+	// rounds integers outside the IEEE-754 safe range (issue #1201).
 	var unmarshaled any
 	if !forOutput {
 		v := make(map[string]any)
 		if len(data) > 0 {
-			if err := internaljson.Unmarshal(data, &v); err != nil {
+			if err := internaljson.UnmarshalUseNumber(data, &v); err != nil {
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
 		}
 		unmarshaled = v
 	} else {
 		if len(data) > 0 {
-			if err := internaljson.Unmarshal(data, &unmarshaled); err != nil {
+			if err := internaljson.UnmarshalUseNumber(data, &unmarshaled); err != nil {
 				return nil, fmt.Errorf("unmarshaling output: %w", err)
 			}
 		}
@@ -126,7 +130,15 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		appliedDefaults = true
 	}
 
-	if err := resolved.Validate(&unmarshaled); err != nil {
+	// Validate a float64 copy: a json.Number has reflect.Kind String, so
+	// jsonschema reports it as a JSON string and rejects it against
+	// "type": "integer". Converting keeps validation on exactly the
+	// representation it has always seen.
+	forValidation, err := jsonNumbersAsFloat(unmarshaled)
+	if err != nil {
+		return nil, err
+	}
+	if err := resolved.Validate(&forValidation); err != nil {
 		return nil, err
 	}
 
@@ -139,6 +151,45 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		return nil, fmt.Errorf("marshalling with defaults: %v", err)
 	}
 	return out, nil
+}
+
+// jsonNumbersAsFloat returns a copy of v with every [json.Number] replaced by
+// the float64 it denotes, leaving all other values alone.
+//
+// It reports an error for a number that cannot be represented as a float64,
+// matching the error that decoding it without [json.Decoder.UseNumber] would
+// have produced.
+func jsonNumbersAsFloat(v any) (any, error) {
+	switch v := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(v))
+		for key, elem := range v {
+			c, err := jsonNumbersAsFloat(elem)
+			if err != nil {
+				return nil, err
+			}
+			m[key] = c
+		}
+		return m, nil
+	case []any:
+		s := make([]any, len(v))
+		for i, elem := range v {
+			c, err := jsonNumbersAsFloat(elem)
+			if err != nil {
+				return nil, err
+			}
+			s[i] = c
+		}
+		return s, nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("number %s cannot be unmarshaled into a float64", v)
+		}
+		return f, nil
+	default:
+		return v, nil
+	}
 }
 
 // isObjectJSON reports whether data is a JSON object (i.e., starts with '{'
