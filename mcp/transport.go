@@ -258,17 +258,25 @@ type canceller struct {
 // Preempt implements [jsonrpc2.Preempter].
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
-		var params CancelledParams
-		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
-			return nil, err
-		}
-		id, err := jsonrpc2.MakeID(params.RequestID)
+		id, err := decodeCancelledRequestID(req.Params)
 		if err != nil {
 			return nil, err
 		}
 		go c.conn.Cancel(id)
 	}
 	return nil, jsonrpc2.ErrNotHandled
+}
+
+func decodeCancelledRequestID(data json.RawMessage) (jsonrpc2.ID, error) {
+	var params struct {
+		Meta      `json:"_meta,omitempty"`
+		Reason    string          `json:"reason,omitempty"`
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if err := internaljson.Unmarshal(data, &params); err != nil {
+		return jsonrpc2.ID{}, err
+	}
+	return jsonrpc2.DecodeID(params.RequestID)
 }
 
 // callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
