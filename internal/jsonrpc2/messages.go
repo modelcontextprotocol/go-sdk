@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -176,7 +178,7 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 // when its value is the empty string (see go-sdk#976).
 type wireDecode struct {
 	VersionTag string          `json:"jsonrpc"`
-	ID         any             `json:"id,omitempty"`
+	ID         json.RawMessage `json:"id"`
 	Method     json.RawMessage `json:"method"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
@@ -191,7 +193,7 @@ func DecodeMessage(data []byte) (Message, error) {
 	if msg.VersionTag != wireVersion {
 		return nil, fmt.Errorf("invalid message version tag %q; expected %q", msg.VersionTag, wireVersion)
 	}
-	id, err := MakeID(msg.ID)
+	id, err := DecodeID(msg.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +222,138 @@ func DecodeMessage(data []byte) (Message, error) {
 		resp.Error = msg.Error
 	}
 	return resp, nil
+}
+
+const maxIDNumberBytes = 128
+
+// DecodeID decodes a JSON-RPC request identity without converting numeric IDs
+// through float64. It is internal to the SDK and shared with MCP cancellation
+// decoding.
+func DecodeID(raw json.RawMessage) (ID, error) {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ID{}, nil
+	}
+	if raw[0] == '"' {
+		var id string
+		if err := internaljson.Unmarshal(raw, &id); err != nil {
+			return ID{}, fmt.Errorf("%w: invalid string ID: %v", ErrParse, err)
+		}
+		return StringID(id), nil
+	}
+	if len(raw) > maxIDNumberBytes {
+		return ID{}, fmt.Errorf("%w: numeric ID exceeds %d bytes", ErrParse, maxIDNumberBytes)
+	}
+	id, err := parseIntegerID(string(raw))
+	if err != nil {
+		return ID{}, fmt.Errorf("%w: invalid numeric ID %q: %v", ErrParse, raw, err)
+	}
+	return Int64ID(id), nil
+}
+
+func parseIntegerID(raw string) (int64, error) {
+	if raw == "" {
+		return 0, errors.New("empty number")
+	}
+
+	negative := raw[0] == '-'
+	if negative {
+		raw = raw[1:]
+		if raw == "" {
+			return 0, errors.New("missing digits")
+		}
+	}
+
+	mantissa, exponentText, hasExponent := strings.Cut(raw, "e")
+	if !hasExponent {
+		mantissa, exponentText, hasExponent = strings.Cut(raw, "E")
+	}
+	exponent := 0
+	if hasExponent {
+		var err error
+		exponent, err = parseIDExponent(exponentText)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	integerPart, fractionalPart, hasFraction := strings.Cut(mantissa, ".")
+	if integerPart == "" || !allDecimalDigits(integerPart) || (hasFraction && (fractionalPart == "" || !allDecimalDigits(fractionalPart))) {
+		return 0, errors.New("invalid number syntax")
+	}
+	if len(integerPart) > 1 && integerPart[0] == '0' {
+		return 0, errors.New("invalid leading zero")
+	}
+
+	digits := strings.TrimLeft(integerPart+fractionalPart, "0")
+	if digits == "" {
+		return 0, nil
+	}
+	scale := exponent - len(fractionalPart)
+	if scale < 0 {
+		trim := -scale
+		if trim >= len(digits) || !allZeroes(digits[len(digits)-trim:]) {
+			return 0, errors.New("ID is not an integer")
+		}
+		digits = digits[:len(digits)-trim]
+		scale = 0
+	}
+	if len(digits)+scale > 19 {
+		return 0, errors.New("ID is outside the signed 64-bit range")
+	}
+	digits += strings.Repeat("0", scale)
+	if negative {
+		digits = "-" + digits
+	}
+	id, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, errors.New("ID is outside the signed 64-bit range")
+	}
+	return id, nil
+}
+
+func parseIDExponent(raw string) (int, error) {
+	if raw == "" {
+		return 0, errors.New("missing exponent")
+	}
+	negative := raw[0] == '-'
+	if negative || raw[0] == '+' {
+		raw = raw[1:]
+	}
+	if raw == "" || !allDecimalDigits(raw) {
+		return 0, errors.New("invalid exponent")
+	}
+	const limit = maxIDNumberBytes + 20
+	exponent := 0
+	for _, digit := range raw {
+		value := int(digit - '0')
+		if exponent > (limit-value)/10 {
+			exponent = limit
+			break
+		}
+		exponent = exponent*10 + value
+	}
+	if negative {
+		exponent = -exponent
+	}
+	return exponent, nil
+}
+
+func allDecimalDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func allZeroes(s string) bool {
+	for _, c := range s {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func marshalToRaw(obj any) (json.RawMessage, error) {
