@@ -437,8 +437,8 @@ server produces logs that remain server-side, for use by server maintainers.)
 **Server-side**:
 The minimum log level is part of the server state.
 For stateful sessions, there is no default log level: no log messages will be sent
-until the client calls `SetLevel` (see below).
-For stateful sessions, the level defaults to "info".
+until the client calls `SetLoggingLevel` (see below).
+For stateless sessions, the level defaults to "info".
 
 [`ServerSession.Log`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Log) is the low-level way for servers to log to clients.
 It sends a logging notification to the client if the level of the message
@@ -454,7 +454,7 @@ Servers always report the logging capability.
 **Client-side**:
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
-Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
+Call [`ClientSession.SetLoggingLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLoggingLevel) to change the log level for a session.
 
 %include ../../mcp/server_example_test.go logging -
 
