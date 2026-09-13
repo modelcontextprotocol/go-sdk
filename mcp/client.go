@@ -334,13 +334,17 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 				subscribeParams := &SubscriptionsListenParams{
 					Notifications: &NotificationSubscriptions{},
 				}
-				if c.opts.ToolListChangedHandler != nil {
+				caps := discRes.Capabilities
+				if caps == nil {
+					caps = &ServerCapabilities{}
+				}
+				if c.opts.ToolListChangedHandler != nil && caps.Tools != nil && caps.Tools.ListChanged {
 					subscribeParams.Notifications.ToolsListChanged = true
 				}
-				if c.opts.PromptListChangedHandler != nil {
+				if c.opts.PromptListChangedHandler != nil && caps.Prompts != nil && caps.Prompts.ListChanged {
 					subscribeParams.Notifications.PromptsListChanged = true
 				}
-				if c.opts.ResourceListChangedHandler != nil {
+				if c.opts.ResourceListChangedHandler != nil && caps.Resources != nil && caps.Resources.ListChanged {
 					subscribeParams.Notifications.ResourcesListChanged = true
 				}
 				if subscribeParams.Notifications.ToolsListChanged ||

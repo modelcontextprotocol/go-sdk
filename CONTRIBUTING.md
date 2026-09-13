@@ -21,6 +21,9 @@ transparently, while adhering to these goals.
 1. [Contributing code](#contributing-code)
 	1. [Adding and updating dependencies](#adding-and-updating-dependencies)
 	1. [Updating the README](#updating-the-readme)
+1. [Versioning](#versioning)
+	1. [What counts as a breaking change](#what-counts-as-a-breaking-change)
+	1. [Deprecation](#deprecation)
 1. [Timeouts](#timeouts)
 1. [Code of conduct](#code-of-conduct)
 1. [Governance](#governance)
@@ -187,6 +190,57 @@ and should not be edited directly. To update the README:
 The CI system will automatically check that the README is up-to-date by running
 `go generate ./internal/readme` and verifying no changes result. If you see a CI failure about the
 README being out of sync, follow the steps above to regenerate it.
+
+## Versioning
+
+The SDK follows [semantic versioning](https://semver.org), as the Go module
+system requires: the major version is part of the module path, so a breaking
+release would import as `github.com/modelcontextprotocol/go-sdk/v2`. A breaking
+change therefore cannot reach existing users by accident; they have to change
+their import path to receive one.
+
+This policy covers the exported API of the SDK's importable packages — `mcp`,
+`jsonrpc`, `auth`, `auth/extauth` and `oauthex`. Everything under `internal/`
+is not importable outside the module and may change in any release.
+
+Which MCP spec revisions each SDK version speaks is documented in the
+[README](README.md#version-compatibility). Support for a new revision arrives
+in a minor release; dropping a revision the SDK previously negotiated is a
+breaking change.
+
+### What counts as a breaking change
+
+- Removing or renaming an exported identifier.
+- Changing the signature of an exported function or method.
+- Removing or renaming a field of an exported struct, or changing its type.
+- Adding a method to an exported interface that users are meant to implement.
+- Changing documented behavior that callers could reasonably rely on.
+- Dropping support for an MCP spec revision.
+
+The following are not breaking, and may land in a minor or patch release:
+
+- Adding an exported identifier, or a field to an exported struct.
+- Fixing behavior that contradicted its documentation.
+- Refactoring that leaves the exported API unchanged.
+- Adding support for a new MCP spec revision.
+- Raising the minimum Go version to one still supported upstream, per the
+  [README](README.md#version-compatibility).
+
+### Deprecation
+
+An API on its way out is marked with a `// Deprecated:` comment naming its
+replacement, which `gopls` and `staticcheck` surface at call sites. It keeps
+working until the next major version, since removing it would itself be a
+breaking change.
+
+Protocol features that the *specification* deprecates are a separate matter and
+follow the spec's timeline rather than this policy. The features deprecated by
+[SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)
+— roots, sampling and logging — remain supported for at least twelve months, as
+noted in the [README](README.md#version-compatibility).
+
+Any change to the exported API, breaking or not, goes through the
+[proposal process](#proposals).
 
 ## Timeouts
 

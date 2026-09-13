@@ -2,8 +2,13 @@
 # Support for MCP server features
 
 1. [Prompts](#prompts)
+	1. [Prompt message content](#prompt-message-content)
 1. [Resources](#resources)
+	1. [Binary resources](#binary-resources)
+	1. [Resource subscriptions](#resource-subscriptions)
 1. [Tools](#tools)
+	1. [Tool result content](#tool-result-content)
+1. [List changed notifications](#list-changed-notifications)
 1. [Multi Round-Trip Requests](#multi-round-trip-requests)
 	1. [Talking to legacy clients](#talking-to-legacy-clients)
 	1. [Example](#example)
@@ -115,6 +120,91 @@ func Example_prompts() {
 }
 ```
 
+### Prompt message content
+
+A
+[`PromptMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#PromptMessage)
+has two fields: a `Role`, either `"user"` or `"assistant"`, and a single
+`Content`. That is the same interface a tool result uses (see [Tool result
+content](#tool-result-content)), so a prompt message can hold an image, audio,
+or a resource's contents as readily as text.
+
+Media on its own says nothing about what the model should do with it, so send a
+text message alongside it. Embedding a resource puts its contents directly in
+the message, sparing the client a separate `resources/read`. Note that
+`ResourceContents.URI` is not checked against the resources the server has
+registered: it records where the contents came from, so use the URI of a real
+resource when there is one, as in the example below.
+
+```go
+func Example_promptContent() {
+	ctx := context.Background()
+
+	const styleGuide = "- Prefer clarity over cleverness.\n"
+	screenshotPNG := []byte("\x89PNG\r\n\x1a\n")
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+
+	s.AddResource(&mcp.Resource{URI: "doc://style-guide", MIMEType: "text/markdown"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "doc://style-guide",
+					MIMEType: "text/markdown",
+					Text:     styleGuide,
+				}},
+			}, nil
+		})
+
+	s.AddPrompt(&mcp.Prompt{Name: "review_screenshot"},
+		func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{
+				Messages: []*mcp.PromptMessage{
+					{Role: "user", Content: &mcp.EmbeddedResource{
+						Resource: &mcp.ResourceContents{
+							URI:      "doc://style-guide",
+							MIMEType: "text/markdown",
+							Text:     styleGuide,
+						},
+					}},
+					{Role: "user", Content: &mcp.ImageContent{Data: screenshotPNG, MIMEType: "image/png"}},
+					{Role: "user", Content: &mcp.TextContent{Text: "Review the screenshot against the style guide."}},
+				},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: "review_screenshot"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		switch content := msg.Content.(type) {
+		case *mcp.TextContent:
+			fmt.Println(msg.Role, "text:", content.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("%s image: %s, %d bytes\n", msg.Role, content.MIMEType, len(content.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("%s embedded resource: %s (%s)\n", msg.Role, content.Resource.URI, content.Resource.MIMEType)
+		}
+	}
+	// Output:
+	// user embedded resource: doc://style-guide (text/markdown)
+	// user image: image/png, 8 bytes
+	// user text: Review the screenshot against the style guide.
+}
+```
+
 ## Resources
 
 In MCP terms, a _resource_ is some data referenced by a URI.
@@ -151,7 +241,7 @@ to be notified of changes to subscribed resources. On `2026-07-28` and
 later sessions the SDK delivers these notifications over a
 `subscriptions/listen` stream instead of the legacy `resources/subscribe`
 RPC; see [Subscriptions
-(`subscriptions/listen`)](protocol.md#subscriptions-subscriptionslisten)
+(`subscriptions/listen`)](protocol.md#subscriptions)
 for the wire-level details.
 
 **Server-side**:
@@ -246,6 +336,145 @@ func Example_resources() {
 }
 ```
 
+### Binary resources
+
+A
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents)
+carries its data in either `Text` or `Blob`. Binary data goes in `Blob` as
+plain bytes — the SDK base64-encodes it on the wire — and leaves `Text` empty,
+so a client tells the two apart by which field is populated.
+
+```go
+func Example_binaryResource() {
+	ctx := context.Background()
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddResource(&mcp.Resource{URI: "file:///logo.png", MIMEType: "image/png"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "file:///logo.png",
+					MIMEType: "image/png",
+					Blob:     []byte("\x89PNG\r\n\x1a\n"),
+				}},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///logo.png"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	contents := res.Contents[0]
+	fmt.Printf("%s: %d bytes of %s, text is %q\n",
+		contents.URI, len(contents.Blob), contents.MIMEType, contents.Text)
+
+	// Output:
+	// file:///logo.png: 8 bytes of image/png, text is ""
+}
+```
+
+### Resource subscriptions
+
+A client interested in changes to one resource subscribes to its URI with
+[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
+and stops with
+[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe).
+Set
+[`ServerOptions.SubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.SubscribeHandler)
+and
+[`UnsubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.UnsubscribeHandler)
+to track who is listening; setting either one gives the server the
+`resources.subscribe` capability.
+
+Publish a change with
+[`Server.ResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.ResourceUpdated),
+which notifies every session subscribed to that URI. The notification carries
+only the URI, not the new contents, so a client that wants them reads the
+resource again.
+
+```go
+func Example_resourceSubscription() {
+	ctx := context.Background()
+
+	config := "theme=light\n"
+
+	updated := make(chan string, 1)
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		// The notification carries only the URI, so read the resource again to
+		// see what it now holds.
+		ResourceUpdatedHandler: func(context.Context, *mcp.ResourceUpdatedNotificationRequest) {
+			updated <- "config://app"
+		},
+	})
+
+	subscribed := make(chan string, 2)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {
+			subscribed <- "subscribed to " + req.Params.URI
+			return nil
+		},
+		UnsubscribeHandler: func(_ context.Context, req *mcp.UnsubscribeRequest) error {
+			subscribed <- "unsubscribed from " + req.Params.URI
+			return nil
+		},
+	})
+	s.AddResource(&mcp.Resource{URI: "config://app"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{URI: "config://app", Text: config}},
+			}, nil
+		})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	if err := cs.Subscribe(ctx, &mcp.SubscribeParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(<-subscribed)
+
+	config = "theme=dark\n"
+	if err := s.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	uri := <-updated
+
+	res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Print("re-read: ", res.Contents[0].Text)
+
+	if err := cs.Unsubscribe(ctx, &mcp.UnsubscribeParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(<-subscribed)
+
+	// Output:
+	// subscribed to config://app
+	// re-read: theme=dark
+	// unsubscribed from config://app
+}
+```
+
 ## Tools
 
 MCP servers can provide
@@ -297,7 +526,7 @@ In order to implement a tool, the user must do all of the following:
 - Unmarshal the input schema into a Go value
 - Execute the tool logic.
 - Marshal the tool's structured output (if any) to JSON, and store it in the
-  result's `StructuredOutput` field as well as the unstructured `Content` field.
+  result's `StructuredContent` field as well as the unstructured `Content` field.
 - Validate that output JSON against the tool's output schema.
 - If any tool errors occurred, pack them into the unstructured content and set
   `IsError` to `true.`
@@ -332,7 +561,7 @@ This does the following automatically:
 - Tool arguments are validated against the input schema.
 - Tool arguments are marshaled into the `In` value.
 - Tool output (the `Out` value) is marshaled into the result's
-  `StructuredOutput`, as well as the unstructured `Content`.
+  `StructuredContent`, as well as the unstructured `Content`.
 - Output is validated against the tool's output schema.
 - If an ordinary error is returned, it is stored int the `CallToolResult` and
   `IsError` is set to `true`.
@@ -417,6 +646,103 @@ _See [mcp/tool_example_test.go](https://github.com/modelcontextprotocol/go-sdk/b
 example, or [examples/server/toolschemas](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/toolschemas/main.go)
 for more examples of customizing tool schemas._
 
+### Tool result content
+
+Alongside its structured output, a tool result carries a list of
+[`Content`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Content)
+blocks in `CallToolResult.Content`, and may mix as many kinds as it needs:
+
+| Type | Carries |
+| --- | --- |
+| [`TextContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#TextContent) | plain text |
+| [`ImageContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ImageContent) | image data, with a MIME type |
+| [`AudioContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#AudioContent) | audio data, with a MIME type |
+| [`EmbeddedResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#EmbeddedResource) | the contents of a resource, inline |
+| [`ResourceLink`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceLink) | a reference to a resource the client can read separately |
+
+`ImageContent.Data` and `AudioContent.Data` are plain `[]byte`; the SDK
+base64-encodes them on the wire, so handlers never encode by hand, and base64
+carried over from another MCP SDK must be decoded before it is assigned. An
+`EmbeddedResource` wraps a
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents),
+which holds either `Text` or, for binary data, `Blob`. Prefer a `ResourceLink`
+when the client may not need the contents, since an embedded resource is
+transferred whether it is used or not.
+
+When a handler bound with `AddTool` leaves `Content` unset, the SDK fills it
+with the JSON encoding of the output value; set `Content` explicitly, as below,
+to return anything else. `StructuredContent` is still populated from the output
+value either way.
+
+```go
+func ExampleAddTool_contentTypes() {
+	chartPNG := []byte("\x89PNG\r\n\x1a\n")
+	summaryWAV := []byte("RIFF....WAVE")
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "report"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "Q3 revenue by region."},
+				&mcp.ImageContent{Data: chartPNG, MIMEType: "image/png"},
+				&mcp.AudioContent{Data: summaryWAV, MIMEType: "audio/wav"},
+				// An embedded resource inlines the contents, so the client
+				// needs no follow-up resources/read. Binary contents go in
+				// ResourceContents.Blob instead of Text.
+				&mcp.EmbeddedResource{
+					Resource: &mcp.ResourceContents{
+						URI:      "file:///reports/q3.csv",
+						MIMEType: "text/csv",
+						Text:     "region,revenue\nEMEA,42\n",
+					},
+				},
+				// A resource link only points at a resource. Prefer it when the
+				// client may not need the contents, since an embedded resource
+				// is transferred either way.
+				&mcp.ResourceLink{URI: "file:///reports/q3.pdf", MIMEType: "application/pdf"},
+			},
+		}, nil, nil
+	})
+
+	ctx := context.Background()
+	session, err := connect(ctx, server)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "report"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Clients type-switch over the content they receive.
+	for _, content := range res.Content {
+		switch c := content.(type) {
+		case *mcp.TextContent:
+			fmt.Println("text:", c.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("image: %s, %d bytes\n", c.MIMEType, len(c.Data))
+		case *mcp.AudioContent:
+			fmt.Printf("audio: %s, %d bytes\n", c.MIMEType, len(c.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("embedded resource: %s (%s)\n", c.Resource.URI, c.Resource.MIMEType)
+		case *mcp.ResourceLink:
+			fmt.Printf("resource link: %s (%s)\n", c.URI, c.MIMEType)
+		}
+	}
+	// Output:
+	// text: Q3 revenue by region.
+	// image: image/png, 8 bytes
+	// audio: audio/wav, 12 bytes
+	// embedded resource: file:///reports/q3.csv (text/csv)
+	// resource link: file:///reports/q3.pdf (application/pdf)
+}
+```
+
+`ToolUseContent` and `ToolResultContent` also implement `Content`, but are only
+valid in sampling messages, not in tool results.
+
 **Stateless server deployments:** Some deployments create a new
 [`Server`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server)
 for each incoming request, re-registering tools every time. To avoid repeated
@@ -431,6 +757,86 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
     s := mcp.NewServer(impl, &mcp.ServerOptions{SchemaCache: schemaCache})
     mcp.AddTool(s, myTool, myHandler)
     // ...
+}
+```
+
+## List changed notifications
+
+Adding or removing a feature on a connected server sends the matching
+`notifications/*/list_changed` to every client, which dispatches it to
+[`ClientOptions.ToolListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ToolListChangedHandler),
+[`PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler),
+or
+[`ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler).
+A notification reports only that the list changed, so a client that needs the
+new contents lists them again.
+
+These notifications ride on capabilities, and capabilities are inferred from
+what is registered before [`Server.Connect`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.Connect)
+(see [Capabilities](#capabilities)). A server that registers its features
+afterwards, as the example below does, has to declare
+`ServerOptions.HasTools`, `HasPrompts`, or `HasResources` itself, or the
+client is never told.
+
+```go
+func Example_listChanged() {
+	ctx := context.Background()
+
+	changed := make(chan string, 3)
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			changed <- "tools"
+		},
+		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
+			changed <- "prompts"
+		},
+		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
+			changed <- "resources"
+		},
+	})
+
+	// Nothing is registered before Connect, so the capabilities that carry these
+	// notifications have to be declared explicitly.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		HasTools:     true,
+		HasPrompts:   true,
+		HasResources: true,
+	})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	mcp.AddTool(s, &mcp.Tool{Name: "greet"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	s.AddPrompt(&mcp.Prompt{Name: "review"}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{}, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	s.AddResource(&mcp.Resource{URI: "file:///a"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	// Removing a feature notifies the client just as adding one does.
+	s.RemoveTools("greet")
+	fmt.Println("changed:", <-changed)
+
+	// Output:
+	// changed: tools
+	// changed: prompts
+	// changed: resources
+	// changed: tools
 }
 ```
 
@@ -569,26 +975,32 @@ results: clients use `ttlMs` as a freshness hint to reduce polling,
 and `cacheScope` (`"public"` or `"private"`) controls whether shared
 intermediaries may cache the response.
 
-**Server-side defaults.** After paginating, the SDK sets `CacheScope = "public"`
-and leaves `TTLMs = 0` (which the client cache treats as "immediately
-stale"). A handler that wants its responses cached must set `TTLMs`
-explicitly on the returned result.
+**Server-side defaults.** The SDK fills in `CacheScope = "public"` whenever a
+result leaves it empty, since the field is required on the wire. Everything
+else is left as produced: a `ResourceHandler` that sets `TTLMs` or `CacheScope`
+on its `ReadResourceResult` keeps those values. The list results and
+`server/discover` are built by the SDK itself, so they start out with
+`TTLMs = 0`, which a client cache treats as "immediately stale".
+
+**Setting a policy.** `ServerOptions.SetCacheable` decides the fields for every
+result that carries them. It runs after the corresponding handler, receives
+what that handler produced, and may keep, adjust, or replace it. The request is
+passed in so that policy can vary by method, session, or authorization context.
 
 ```go
-mcp.AddTool(server, &mcp.Tool{Name: "expensive"}, func(...) (*mcp.CallToolResult, any, error) {
-    // ...
-})
-// Override the default for tools/list:
-server.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
-    return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-        res, err := next(ctx, method, req)
-        if lr, ok := res.(*mcp.ListToolsResult); ok {
-            lr.TTLMs = 30_000 // 30s cache freshness hint
+server := mcp.NewServer(impl, &mcp.ServerOptions{
+    SetCacheable: func(_ context.Context, req mcp.Request, c *mcp.Cacheable) {
+        // A 30s freshness hint, except where the handler chose its own.
+        if c.TTLMs == 0 {
+            c.TTLMs = 30_000
         }
-        return res, err
-    }
+    },
 })
 ```
+
+`SetCacheable` may run with the server's lock held, so it must not call back
+into the `Server`: adding or removing a feature, or ranging over
+`Server.Sessions`, deadlocks.
 
 ## Utilities
 

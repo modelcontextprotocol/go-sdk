@@ -49,6 +49,7 @@ func init() {
 	registerScenario("elicitation-sep1034-client-defaults", runElicitationDefaultsClient)
 	registerScenario("sse-retry", runSSERetryClient)
 	registerScenario("json-schema-ref-no-deref", runJSONSchemaRefNoDerefClient)
+	registerScenario("json-schema-2020-12-preservation", runJSONSchemaPreservationClient)
 	registerScenario("sep-2322-client-request-state", runMrtrClient)
 	registerScenario("http-standard-headers", runHTTPStandardHeadersClient)
 	registerScenario("http-custom-headers", runHTTPCustomHeadersClient)
@@ -340,6 +341,46 @@ func runJSONSchemaRefNoDerefClient(ctx context.Context, serverURL string, _ map[
 	defer session.Close()
 
 	_, _ = session.ListTools(ctx, nil)
+	return nil
+}
+
+// ============================================================================
+// json-schema-2020-12-preservation scenario (SEP-1613, SEP-2106)
+// ============================================================================
+
+// runJSONSchemaPreservationClient echoes the focal tool's inputSchema back to
+// the referee verbatim, through the permissive json_schema_echo tool, so that
+// it can observe which 2020-12 keywords survived the client's parse of
+// tools/list. The Go SDK surfaces a server's schema as the raw JSON object it
+// received, so nothing is stripped.
+func runJSONSchemaPreservationClient(ctx context.Context, serverURL string, _ map[string]any) error {
+	session, err := connectToServer(ctx, serverURL)
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("session.ListTools(): %v", err)
+	}
+
+	const focalTool = "json_schema_2020_12_tool"
+	idx := slices.IndexFunc(tools.Tools, func(t *mcp.Tool) bool {
+		return t.Name == focalTool
+	})
+	if idx == -1 {
+		return fmt.Errorf("tool %q not found", focalTool)
+	}
+
+	const echoTool = "json_schema_echo"
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      echoTool,
+		Arguments: map[string]any{"schema": tools.Tools[idx].InputSchema},
+	}); err != nil {
+		return fmt.Errorf("session.CallTool(%q): %v", echoTool, err)
+	}
+
 	return nil
 }
 

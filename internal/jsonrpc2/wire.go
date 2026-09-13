@@ -87,7 +87,7 @@ func (err *WireError) Error() string {
 
 func (err *WireError) Is(other error) bool {
 	w, ok := other.(*WireError)
-	if !ok {
+	if !ok || w == nil {
 		return false
 	}
 	return err.Code == w.Code

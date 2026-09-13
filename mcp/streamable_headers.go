@@ -207,7 +207,12 @@ func setStandardHeaders(ctx context.Context, header http.Header, msg jsonrpc.Mes
 	case *jsonrpc.Request:
 		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			header.Set(nameHeader, name)
+			// Names are only SHOULD-constrained to header-safe characters, so a
+			// name outside the safe set is Base64-wrapped with the =?base64?...?=
+			// sentinel, the same rule applied to Mcp-Param-* values.
+			if encoded, ok := encodeHeaderValue(name); ok {
+				header.Set(nameHeader, encoded)
+			}
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok && tool != nil {
@@ -378,13 +383,18 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func
 			if nameInHeader == "" {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
-			var ok bool
+			// A name that is not header-safe may be Base64-wrapped by the client
+			// (=?base64?...?=), so decode before comparing, as with Mcp-Param-*.
+			decodedName, ok := decodeHeaderValue(nameInHeader)
+			if !ok {
+				return errors.New("header mismatch: Mcp-Name header contains invalid Base64 encoding")
+			}
 			nameInBody, ok = extractName(msg.Method, msg.Params)
 			if !ok {
 				return fmt.Errorf("failed to extract name from parameters for method %q", msg.Method)
 			}
-			if nameInHeader != nameInBody {
-				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
+			if decodedName != nameInBody {
+				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", decodedName, nameInBody)
 			}
 		}
 

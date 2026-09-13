@@ -329,23 +329,13 @@ type CallToolResult struct {
 	err error
 }
 
-// seterroroverwrite is a compatibility parameter that restores the pre-1.6.0
-// behavior of [CallToolResult.SetError], where Content was always overwritten
-// with the error text. See the documentation for the mcpgodebug package for
-// instructions on how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var seterroroverwrite = mcpgodebug.Value("seterroroverwrite")
-
 // SetError sets the error for the tool result and sets IsError to true.
 // If Content has not already been populated, it is set to the error text.
 // If Content has already been populated, it is left unchanged, allowing callers
 // to provide a user-friendly message while still recording the underlying error
 // for inspection via [GetError] in server middleware.
-//
-// To restore the previous behavior where Content was always overwritten,
-// set MCPGODEBUG=seterroroverwrite=1.
 func (r *CallToolResult) SetError(err error) {
-	if len(r.Content) == 0 || seterroroverwrite == "1" {
+	if len(r.Content) == 0 {
 		r.Content = []Content{&TextContent{Text: err.Error()}}
 	}
 	r.IsError = true
@@ -1191,9 +1181,16 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 // GetCacheScope returns the cache scope.
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
-// setDefaultCacheableValues sets the default values for the cacheable fields.
-func (c *Cacheable) setDefaultCacheableValues() {
-	c.CacheScope = "public"
+// normalize fills in the protocol default for any cache field left
+// unset. An absent cacheScope means "public", but the field is required on the
+// wire, so the default is materialized here rather than sent empty.
+//
+// Values already present are preserved: this must not undo a decision made by
+// a resource handler or by [ServerOptions.SetCacheable].
+func (c *Cacheable) normalize() {
+	if c.CacheScope == "" {
+		c.CacheScope = "public"
+	}
 }
 
 // The server's response to a prompts/list request from the client.
@@ -2246,7 +2243,7 @@ type PromptCapabilities struct {
 
 // ResourceCapabilities describes the server's support for resources.
 type ResourceCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
 	// Subscribe reports whether this server supports subscribing to resource
@@ -2256,7 +2253,7 @@ type ResourceCapabilities struct {
 
 // ToolCapabilities describes the server's support for tools.
 type ToolCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the tool list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }

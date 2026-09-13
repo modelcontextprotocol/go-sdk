@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -194,9 +195,9 @@ func TestElicitationCompleteNotification(t *testing.T) {
 		}
 
 		// 2. Server sends elicitation complete notification (simulating out-of-band completion)
-		err = handleNotify(ctx, notificationElicitationComplete, newServerRequest(ss, &ElicitationCompleteParams{
+		err = ss.NotifyElicitationComplete(ctx, &ElicitationCompleteParams{
 			ElicitationID: elicitID,
-		}))
+		})
 		if err != nil {
 			t.Fatalf("failed to send elicitation complete notification: %v", err)
 		}
@@ -207,6 +208,41 @@ func TestElicitationCompleteNotification(t *testing.T) {
 			t.Errorf("elicitationComplete notification ID mismatch: got %q, want %q", gotParams.ElicitationID, elicitID)
 		}
 	})
+}
+
+func TestNotifyElicitationCompleteInvalidParams(t *testing.T) {
+	ctx := context.Background()
+
+	ct, st := NewInMemoryTransports()
+	s := NewServer(testImpl, nil)
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	c := NewClient(testImpl, nil)
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// An empty elicitation ID cannot be matched to a pending elicitation by the
+	// client, so it is rejected rather than sent.
+	for _, tc := range []struct {
+		name   string
+		params *ElicitationCompleteParams
+	}{
+		{"nil params", nil},
+		{"empty ID", &ElicitationCompleteParams{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ss.NotifyElicitationComplete(ctx, tc.params)
+			if !errors.Is(err, jsonrpc2.ErrInvalidParams) {
+				t.Errorf("NotifyElicitationComplete(%v) = %v, want %v", tc.params, err, jsonrpc2.ErrInvalidParams)
+			}
+		})
+	}
 }
 
 func TestElicitationNoValidationWithoutAccept(t *testing.T) {

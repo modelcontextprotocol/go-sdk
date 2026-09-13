@@ -33,6 +33,24 @@ notification.
 
 %include ../../mcp/server_example_test.go prompts -
 
+### Prompt message content
+
+A
+[`PromptMessage`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#PromptMessage)
+has two fields: a `Role`, either `"user"` or `"assistant"`, and a single
+`Content`. That is the same interface a tool result uses (see [Tool result
+content](#tool-result-content)), so a prompt message can hold an image, audio,
+or a resource's contents as readily as text.
+
+Media on its own says nothing about what the model should do with it, so send a
+text message alongside it. Embedding a resource puts its contents directly in
+the message, sparing the client a separate `resources/read`. Note that
+`ResourceContents.URI` is not checked against the resources the server has
+registered: it records where the contents came from, so use the URI of a real
+resource when there is one, as in the example below.
+
+%include ../../mcp/server_example_test.go promptcontent -
+
 ## Resources
 
 In MCP terms, a _resource_ is some data referenced by a URI.
@@ -69,7 +87,7 @@ to be notified of changes to subscribed resources. On `2026-07-28` and
 later sessions the SDK delivers these notifications over a
 `subscriptions/listen` stream instead of the legacy `resources/subscribe`
 RPC; see [Subscriptions
-(`subscriptions/listen`)](protocol.md#subscriptions-subscriptionslisten)
+(`subscriptions/listen`)](protocol.md#subscriptions)
 for the wire-level details.
 
 **Server-side**:
@@ -93,6 +111,37 @@ notification.
 
 
 %include ../../mcp/server_example_test.go resources -
+
+### Binary resources
+
+A
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents)
+carries its data in either `Text` or `Blob`. Binary data goes in `Blob` as
+plain bytes — the SDK base64-encodes it on the wire — and leaves `Text` empty,
+so a client tells the two apart by which field is populated.
+
+%include ../../mcp/server_example_test.go binaryresource -
+
+### Resource subscriptions
+
+A client interested in changes to one resource subscribes to its URI with
+[`ClientSession.Subscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Subscribe)
+and stops with
+[`ClientSession.Unsubscribe`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Unsubscribe).
+Set
+[`ServerOptions.SubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.SubscribeHandler)
+and
+[`UnsubscribeHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.UnsubscribeHandler)
+to track who is listening; setting either one gives the server the
+`resources.subscribe` capability.
+
+Publish a change with
+[`Server.ResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.ResourceUpdated),
+which notifies every session subscribed to that URI. The notification carries
+only the URI, not the new contents, so a client that wants them reads the
+resource again.
+
+%include ../../mcp/server_example_test.go subscribe -
 
 ## Tools
 
@@ -145,7 +194,7 @@ In order to implement a tool, the user must do all of the following:
 - Unmarshal the input schema into a Go value
 - Execute the tool logic.
 - Marshal the tool's structured output (if any) to JSON, and store it in the
-  result's `StructuredOutput` field as well as the unstructured `Content` field.
+  result's `StructuredContent` field as well as the unstructured `Content` field.
 - Validate that output JSON against the tool's output schema.
 - If any tool errors occurred, pack them into the unstructured content and set
   `IsError` to `true.`
@@ -180,7 +229,7 @@ This does the following automatically:
 - Tool arguments are validated against the input schema.
 - Tool arguments are marshaled into the `In` value.
 - Tool output (the `Out` value) is marshaled into the result's
-  `StructuredOutput`, as well as the unstructured `Content`.
+  `StructuredContent`, as well as the unstructured `Content`.
 - Output is validated against the tool's output schema.
 - If an ordinary error is returned, it is stored int the `CallToolResult` and
   `IsError` is set to `true`.
@@ -202,6 +251,39 @@ _See [mcp/tool_example_test.go](https://github.com/modelcontextprotocol/go-sdk/b
 example, or [examples/server/toolschemas](https://github.com/modelcontextprotocol/go-sdk/blob/main/examples/server/toolschemas/main.go)
 for more examples of customizing tool schemas._
 
+### Tool result content
+
+Alongside its structured output, a tool result carries a list of
+[`Content`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Content)
+blocks in `CallToolResult.Content`, and may mix as many kinds as it needs:
+
+| Type | Carries |
+| --- | --- |
+| [`TextContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#TextContent) | plain text |
+| [`ImageContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ImageContent) | image data, with a MIME type |
+| [`AudioContent`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#AudioContent) | audio data, with a MIME type |
+| [`EmbeddedResource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#EmbeddedResource) | the contents of a resource, inline |
+| [`ResourceLink`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceLink) | a reference to a resource the client can read separately |
+
+`ImageContent.Data` and `AudioContent.Data` are plain `[]byte`; the SDK
+base64-encodes them on the wire, so handlers never encode by hand, and base64
+carried over from another MCP SDK must be decoded before it is assigned. An
+`EmbeddedResource` wraps a
+[`ResourceContents`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ResourceContents),
+which holds either `Text` or, for binary data, `Blob`. Prefer a `ResourceLink`
+when the client may not need the contents, since an embedded resource is
+transferred whether it is used or not.
+
+When a handler bound with `AddTool` leaves `Content` unset, the SDK fills it
+with the JSON encoding of the output value; set `Content` explicitly, as below,
+to return anything else. `StructuredContent` is still populated from the output
+value either way.
+
+%include ../../mcp/tool_example_test.go contenttypes -
+
+`ToolUseContent` and `ToolResultContent` also implement `Content`, but are only
+valid in sampling messages, not in tool results.
+
 **Stateless server deployments:** Some deployments create a new
 [`Server`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server)
 for each incoming request, re-registering tools every time. To avoid repeated
@@ -218,6 +300,26 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
     // ...
 }
 ```
+
+## List changed notifications
+
+Adding or removing a feature on a connected server sends the matching
+`notifications/*/list_changed` to every client, which dispatches it to
+[`ClientOptions.ToolListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ToolListChangedHandler),
+[`PromptListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.PromptListChangedHandler),
+or
+[`ResourceListChangedHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ResourceListChangedHandler).
+A notification reports only that the list changed, so a client that needs the
+new contents lists them again.
+
+These notifications ride on capabilities, and capabilities are inferred from
+what is registered before [`Server.Connect`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#Server.Connect)
+(see [Capabilities](#capabilities)). A server that registers its features
+afterwards, as the example below does, has to declare
+`ServerOptions.HasTools`, `HasPrompts`, or `HasResources` itself, or the
+client is never told.
+
+%include ../../mcp/server_example_test.go listchanged -
 
 ## Multi Round-Trip Requests
 
@@ -272,26 +374,32 @@ results: clients use `ttlMs` as a freshness hint to reduce polling,
 and `cacheScope` (`"public"` or `"private"`) controls whether shared
 intermediaries may cache the response.
 
-**Server-side defaults.** After paginating, the SDK sets `CacheScope = "public"`
-and leaves `TTLMs = 0` (which the client cache treats as "immediately
-stale"). A handler that wants its responses cached must set `TTLMs`
-explicitly on the returned result.
+**Server-side defaults.** The SDK fills in `CacheScope = "public"` whenever a
+result leaves it empty, since the field is required on the wire. Everything
+else is left as produced: a `ResourceHandler` that sets `TTLMs` or `CacheScope`
+on its `ReadResourceResult` keeps those values. The list results and
+`server/discover` are built by the SDK itself, so they start out with
+`TTLMs = 0`, which a client cache treats as "immediately stale".
+
+**Setting a policy.** `ServerOptions.SetCacheable` decides the fields for every
+result that carries them. It runs after the corresponding handler, receives
+what that handler produced, and may keep, adjust, or replace it. The request is
+passed in so that policy can vary by method, session, or authorization context.
 
 ```go
-mcp.AddTool(server, &mcp.Tool{Name: "expensive"}, func(...) (*mcp.CallToolResult, any, error) {
-    // ...
-})
-// Override the default for tools/list:
-server.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
-    return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-        res, err := next(ctx, method, req)
-        if lr, ok := res.(*mcp.ListToolsResult); ok {
-            lr.TTLMs = 30_000 // 30s cache freshness hint
+server := mcp.NewServer(impl, &mcp.ServerOptions{
+    SetCacheable: func(_ context.Context, req mcp.Request, c *mcp.Cacheable) {
+        // A 30s freshness hint, except where the handler chose its own.
+        if c.TTLMs == 0 {
+            c.TTLMs = 30_000
         }
-        return res, err
-    }
+    },
 })
 ```
+
+`SetCacheable` may run with the server's lock held, so it must not call back
+into the `Server`: adding or removing a feature, or ranging over
+`Server.Sessions`, deadlocks.
 
 ## Utilities
 
