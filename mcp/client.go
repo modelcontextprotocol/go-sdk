@@ -519,21 +519,26 @@ func (cs *ClientSession) usesNewProtocol() bool {
 	return res != nil && res.ProtocolVersion >= protocolVersion20260728
 }
 
-// injectRequestMeta populates the SEP-2575 per-request `_meta` fields
-// (protocolVersion, optional clientInfo, clientCapabilities) on the given
-// outgoing request params. Keys already present in params.Meta are not
-// overwritten. Per PR modelcontextprotocol/modelcontextprotocol#3002
-// clientInfo is SHOULD (not MUST), and is omitted when the client has no
-// [Implementation] configured.
-func injectRequestMeta[T any, P interface {
-	*T
-	Params
-}](cs *ClientSession, params P) P {
-	res := cs.state.InitializeResult
-	if params == nil {
-		params = new(T)
+func clientMethodUsesLegacyCompatPath(method string) bool {
+	switch method {
+	case methodPing,
+		methodSetLevel,
+		notificationRootsListChanged,
+		methodSubscribe,
+		methodUnsubscribe:
+		return true
+	default:
+		return false
 	}
+}
+
+func injectRequestMetaParams(cs *ClientSession, params Params) Params {
+	if params == nil {
+		return nil
+	}
+	res := cs.state.InitializeResult
 	m := params.GetMeta()
+	m = maps.Clone(m)
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -1226,7 +1231,7 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 
 // Ping makes an MCP "ping" request to the server.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, params))
 	return err
 }
 
@@ -1239,24 +1244,24 @@ func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsPar
 		if result, ok := cachedListResult(&cs.promptsCache, params); ok {
 			return result, nil
 		}
-		params = injectRequestMeta(cs, params)
 	}
-	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, orZero[Params](params)))
+	cursor := ""
+	if params != nil {
+		cursor = params.Cursor
+	}
+	result, err := handleSend[*ListPromptsResult](ctx, methodListPrompts, newClientRequest(cs, params))
 	if err != nil {
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.promptsCache.put(params.Cursor, result)
+		cs.promptsCache.put(cursor, result)
 	}
 	return result, nil
 }
 
 // GetPrompt gets a prompt from the server.
 func (cs *ClientSession) GetPrompt(ctx context.Context, params *GetPromptParams) (*GetPromptResult, error) {
-	if cs.usesNewProtocol() {
-		params = injectRequestMeta(cs, params)
-	}
-	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*GetPromptResult](ctx, methodGetPrompt, newClientRequest(cs, params))
 }
 
 // ListTools lists tools that are currently available on the server.
@@ -1265,15 +1270,18 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 		if result, ok := cachedListResult(&cs.toolsCache, params); ok {
 			return result, nil
 		}
-		params = injectRequestMeta(cs, params)
 	}
-	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, orZero[Params](params)))
+	cursor := ""
+	if params != nil {
+		cursor = params.Cursor
+	}
+	result, err := handleSend[*ListToolsResult](ctx, methodListTools, newClientRequest(cs, params))
 	if err != nil {
 		return nil, err
 	}
 	result.Tools = filterValidTools(cs.client.opts.Logger, result.Tools)
 	if cs.usesNewProtocol() {
-		cs.toolsCache.put(params.Cursor, result)
+		cs.toolsCache.put(cursor, result)
 	}
 	return result, nil
 }
@@ -1292,10 +1300,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	if tool := cs.lookupTool(params.Name); tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
-	if cs.usesNewProtocol() {
-		params = injectRequestMeta(cs, params)
-	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, params))
 }
 
 // SetLoggingLevel sets the minimum severity level for log messages sent by
@@ -1307,7 +1312,7 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 // servers) or OpenTelemetry. See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
-	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, params))
 	return err
 }
 
@@ -1317,14 +1322,17 @@ func (cs *ClientSession) ListResources(ctx context.Context, params *ListResource
 		if result, ok := cachedListResult(&cs.resourcesCache, params); ok {
 			return result, nil
 		}
-		params = injectRequestMeta(cs, params)
 	}
-	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, orZero[Params](params)))
+	cursor := ""
+	if params != nil {
+		cursor = params.Cursor
+	}
+	result, err := handleSend[*ListResourcesResult](ctx, methodListResources, newClientRequest(cs, params))
 	if err != nil {
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourcesCache.put(params.Cursor, result)
+		cs.resourcesCache.put(cursor, result)
 	}
 	return result, nil
 }
@@ -1335,52 +1343,51 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 		if result, ok := cachedListResult(&cs.resourceTemplatesCache, params); ok {
 			return result, nil
 		}
-		params = injectRequestMeta(cs, params)
 	}
-	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, orZero[Params](params)))
+	cursor := ""
+	if params != nil {
+		cursor = params.Cursor
+	}
+	result, err := handleSend[*ListResourceTemplatesResult](ctx, methodListResourceTemplates, newClientRequest(cs, params))
 	if err != nil {
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourceTemplatesCache.put(params.Cursor, result)
+		cs.resourceTemplatesCache.put(cursor, result)
 	}
 	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
+	uri := ""
+	if params != nil {
+		uri = params.URI
+	}
 	if cs.usesNewProtocol() {
-		var uri string
-		if params != nil {
-			uri = params.URI
-		}
 		if result, ok := cs.readResourceCache.get(uri); ok {
 			return result, nil
 		}
-		params = injectRequestMeta(cs, params)
 	}
-	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
+	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, params))
 	if err != nil {
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.readResourceCache.put(params.URI, result)
+		cs.readResourceCache.put(uri, result)
 	}
 	return result, nil
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
-	if cs.usesNewProtocol() {
-		params = injectRequestMeta(cs, params)
-	}
-	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, orZero[Params](params)))
+	return handleSend[*CompleteResult](ctx, methodComplete, newClientRequest(cs, params))
 }
 
 // Subscribe sends a "resources/subscribe" request to the server, asking for
 // notifications when the specified resource changes.
 func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams) error {
 	if !cs.usesNewProtocol() {
-		_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, orZero[Params](params)))
+		_, err := handleSend[*emptyResult](ctx, methodSubscribe, newClientRequest(cs, params))
 		return err
 	}
 	if params == nil || params.URI == "" {
@@ -1420,7 +1427,7 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 // a URI that is not currently subscribed is a no-op.
 func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribeParams) error {
 	if !cs.usesNewProtocol() {
-		_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, orZero[Params](params)))
+		_, err := handleSend[*emptyResult](ctx, methodUnsubscribe, newClientRequest(cs, params))
 		return err
 	}
 	if params == nil || params.URI == "" {
@@ -1455,8 +1462,7 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 // subsequent opted-in notifications (e.g. tools/list_changed) are delivered through the
 // usual handlers registered in [ClientOptions].
 func (cs *ClientSession) subscriptionsListen(ctx context.Context, params *SubscriptionsListenParams) error {
-	params = injectRequestMeta(cs, params)
-	_, err := handleSend[*SubscriptionsListenResult](ctx, methodSubscriptionsListen, newClientRequest(cs, orZero[Params](params)))
+	_, err := handleSend[*SubscriptionsListenResult](ctx, methodSubscriptionsListen, newClientRequest(cs, params))
 	return err
 }
 
@@ -1545,7 +1551,7 @@ func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *Elicit
 // This can be used if the client is performing a long-running task that was
 // initiated by the server.
 func (cs *ClientSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
-	return handleNotify(ctx, notificationProgress, newClientRequest(cs, orZero[Params](params)))
+	return handleNotify(ctx, notificationProgress, newClientRequest(cs, params))
 }
 
 // Tools provides an iterator for all tools available on the server,
@@ -1677,9 +1683,6 @@ func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	if !ok {
 		var zero R
 		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
-	}
-	if cs.usesNewProtocol() {
-		params = injectRequestMeta(cs, params)
 	}
 	return handleSend[R](ctx, method, &ClientRequest[P]{
 		Session: cs,
