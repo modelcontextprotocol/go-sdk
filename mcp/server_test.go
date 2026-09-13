@@ -1932,3 +1932,61 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestServerUnknownProtocolVersion_NewProtocol verifies that a request whose
+// `_meta.protocolVersion` names a version the SDK does not know is rejected
+// with [CodeUnsupportedProtocolVersion], and not served as a legacy handshake
+// because its version string happens to sort below 2026-07-28.
+func TestServerUnknownProtocolVersion_NewProtocol(t *testing.T) {
+	ctx := context.Background()
+	// Each case names a version that is not in [supportedProtocolVersions] and
+	// sorts below 2026-07-28.
+	tests := []struct {
+		name      string
+		version   string
+		extraMeta string // further `_meta` entries, each with a leading comma
+	}{
+		// The versioning spec uses 1900-01-01 to illustrate this error.
+		{"documented example", "1900-01-01", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		{"unreleased revision", "2025-11-24", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		{"not a date", "1.0", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		// The rest of the `_meta` triple is defined by the revision the request
+		// names, so its absence must not mask the version itself.
+		{"no clientCapabilities", "1900-01-01", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			params := fmt.Sprintf(`{"_meta":{%q:%q%s}}`, MetaKeyProtocolVersion, tc.version, tc.extraMeta)
+			_, err = ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: methodListTools,
+				Params: json.RawMessage(params),
+			})
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
+			}
+			if jerr.Code != CodeUnsupportedProtocolVersion {
+				t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
+			}
+			var data UnsupportedProtocolVersionData
+			if err := json.Unmarshal(jerr.Data, &data); err != nil {
+				t.Fatalf("unmarshal error data: %v", err)
+			}
+			if data.Requested != tc.version {
+				t.Errorf("UnsupportedProtocolVersionData.Requested = %q, want %q", data.Requested, tc.version)
+			}
+			if diff := cmp.Diff(SupportedProtocolVersions(), data.Supported); diff != "" {
+				t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
