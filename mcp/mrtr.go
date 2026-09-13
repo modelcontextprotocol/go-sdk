@@ -55,8 +55,8 @@ func validateMultiRoundTripResult(logger *slog.Logger, res multiRoundTripRespons
 
 func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
 	protocolVersion := latestProtocolVersion
-	if iparams := ss.InitializeParams(); iparams != nil {
-		protocolVersion = iparams.ProtocolVersion
+	if version := ss.protocolVersion(); version != "" {
+		protocolVersion = version
 	}
 	return protocolVersion >= protocolVersion20260728
 }

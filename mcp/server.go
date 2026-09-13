@@ -1617,12 +1617,11 @@ func (ss *ServerSession) ID() string {
 // in an [InputRequiredResult] returned from a handler for one of the multi
 // round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
 func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
-	if iparams := ss.InitializeParams(); iparams != nil &&
-		iparams.ProtocolVersion >= protocolVersion20260728 {
+	if version := ss.protocolVersion(); version >= protocolVersion20260728 {
 		return fmt.Errorf(
 			"%q cannot be sent while serving a request on protocol version %s: "+
 				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
-			method, iparams.ProtocolVersion)
+			method, version)
 	}
 	return nil
 }
@@ -2078,6 +2077,31 @@ func (ss *ServerSession) InitializeParams() *InitializeParams {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	return ss.state.InitializeParams
+}
+
+// protocolVersion returns the protocol version the session speaks: the version
+// negotiated by 'initialize', or the version the client declared when the
+// session never ran that handshake (SEP-2575 sessions, and the synthesized
+// state of a stateless request).
+//
+// The two differ for a client that asks for protocolVersion20260728 in
+// 'initialize': that method is deprecated in protocolVersion20260728, so
+// [negotiatedVersion] answers with an older version while
+// [InitializeParams.ProtocolVersion] keeps what the client asked for. A
+// capability decision must use the negotiated version, which is the one both
+// sides agreed to speak.
+//
+// It returns "" when the session has recorded neither version.
+func (ss *ServerSession) protocolVersion() string {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if v := ss.state.NegotiatedProtocolVersion; v != "" {
+		return v
+	}
+	if ss.state.InitializeParams != nil {
+		return ss.state.InitializeParams.ProtocolVersion
+	}
+	return ""
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
