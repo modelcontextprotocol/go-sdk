@@ -273,6 +273,62 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	}
 }
 
+func TestHasParams(t *testing.T) {
+	// {"jsonrpc":"2.0","id":1,"method":"tools/list"} is a complete request:
+	// serverMethodInfos marks these methods missingParamsOK. Build what
+	// handleReceive hands the middleware chain for one.
+	for _, method := range []string{
+		methodListTools,
+		methodListPrompts,
+		methodListResources,
+		notificationInitialized,
+	} {
+		t.Run(method, func(t *testing.T) {
+			info := serverMethodInfos[method]
+			params, err := info.unmarshalParams(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := info.newRequest(&ServerSession{}, params, nil)
+			if req.GetParams() == nil {
+				t.Fatal("GetParams returned a nil interface, so this test no longer covers the typed-nil case")
+			}
+			if HasParams(req) {
+				t.Error("HasParams = true for a request whose params member was omitted")
+			}
+		})
+	}
+
+	t.Run("params present", func(t *testing.T) {
+		info := serverMethodInfos[methodListTools]
+		params, err := info.unmarshalParams(json.RawMessage(`{"cursor":"c"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := info.newRequest(&ServerSession{}, params, nil)
+		if !HasParams(req) {
+			t.Error("HasParams = false for a request carrying params")
+		}
+	})
+}
+
+func TestServerRequest_PerRequestAccessors_MissingParams(t *testing.T) {
+	// Custom methods also allow the params member to be omitted, and their
+	// params types embed ParamsBase, whose promoted isNil dereferences the
+	// typed-nil outer pointer.
+	type customParams struct{ ParamsBase }
+	req := &ServerRequest[*customParams]{}
+	if got := req.ProtocolVersion(); got != "" {
+		t.Errorf("ProtocolVersion = %q, want empty", got)
+	}
+	if got := req.ClientInfo(); got != nil {
+		t.Errorf("ClientInfo = %+v, want nil", got)
+	}
+	if got := req.ClientCapabilities(); got != nil {
+		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
 func TestImplementationDescriptionJSON(t *testing.T) {
 	impl := &Implementation{
 		Name:        "greeter",

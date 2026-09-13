@@ -665,6 +665,30 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
 
+// HasParams reports whether req carries params.
+//
+// The "params" member of a message may be omitted for several methods, among
+// them the list methods, ping and notifications/initialized. For such a request
+// [Request.GetParams] returns a non-nil [Params] holding a nil pointer, so
+// comparing its result against nil reports that params are present, while
+// calling a method on that result panics. Middleware that inspects params must
+// ask this first:
+//
+//	if mcp.HasParams(req) {
+//		log.Println(method, req.GetParams().GetMeta())
+//	}
+func HasParams(req Request) bool {
+	params := req.GetParams()
+	if params == nil {
+		return false
+	}
+	// isNil cannot answer this for every value: a params type embedding
+	// ParamsBase promotes isNil through a field selector, which dereferences
+	// the nil outer pointer before the method body runs.
+	v := reflect.ValueOf(params)
+	return v.Kind() != reflect.Pointer || !v.IsNil()
+}
+
 // ProtocolVersion returns the protocol version negotiated for this request.
 //
 // For requests following the >= 2026-07-28 protocol, the value is read from
@@ -726,8 +750,7 @@ func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
 // getRequestMeta returns the raw `_meta` map from the request's params, or
 // nil if the params are absent.
 func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
-	// In practice P is a pointer type implementing Params.
-	if any(r.Params) == nil || r.Params.isNil() {
+	if !HasParams(r) {
 		return nil
 	}
 	return r.Params.GetMeta()
