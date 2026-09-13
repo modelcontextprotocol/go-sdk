@@ -787,6 +787,14 @@ func TestCancellationReason(t *testing.T) {
 		if err := cs.conn.Notify(ctx, notificationCancelled, &CancelledParams{RequestID: call.ID().Raw(), Reason: "user asked"}); err != nil {
 			t.Fatal(err)
 		}
+		// A peer that asked for a cancellation is not waiting for a result, and
+		// the receiver now sends none. The SDK's own cancel path retires the
+		// outgoing call for exactly that reason before it notifies (cancelCall
+		// in transport.go); this test sends the notification by hand, so it
+		// retires the call by hand too. Without it the call stays pending for a
+		// response that will never come and synctest reports the bubble as
+		// deadlocked.
+		cs.conn.Retire(call, context.Canceled)
 
 		cause := <-cancelled
 		if cause == nil {
