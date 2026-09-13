@@ -3752,6 +3752,109 @@ func TestCallCancellation_FastReturn(t *testing.T) {
 	}
 }
 
+// TestStreamableCancelledCallGetsNoResponse checks that a call the client
+// cancelled with notifications/cancelled is answered with 204 and no body, in
+// SSE and in JSON mode, through raw HTTP since an SDK client abandons the POST.
+func TestStreamableCancelledCallGetsNoResponse(t *testing.T) {
+	for _, mode := range []struct {
+		name         string
+		jsonResponse bool
+	}{
+		{name: "sse", jsonResponse: false},
+		{name: "json", jsonResponse: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			started := make(chan struct{})
+			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+			server.AddTool(
+				&Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					close(started)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				})
+
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{JSONResponse: mode.jsonResponse})
+			defer handler.closeAll()
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			post := func(sessionID string, msg jsonrpc.Message) (*http.Response, error) {
+				data, err := jsonrpc2.EncodeMessage(msg)
+				if err != nil {
+					return nil, err
+				}
+				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL, bytes.NewReader(data))
+				if err != nil {
+					return nil, err
+				}
+				httpReq.Header.Set("Content-Type", "application/json")
+				httpReq.Header.Set("Accept", "application/json, text/event-stream")
+				if sessionID != "" {
+					httpReq.Header.Set(sessionIDHeader, sessionID)
+				}
+				return http.DefaultClient.Do(httpReq)
+			}
+			mustPost := func(sessionID string, msg jsonrpc.Message) *http.Response {
+				t.Helper()
+				resp, err := post(sessionID, msg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resp
+			}
+
+			initResp := mustPost("", req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618}))
+			sessionID := initResp.Header.Get(sessionIDHeader)
+			initResp.Body.Close()
+			if sessionID == "" {
+				t.Fatal("initialize response carried no session ID")
+			}
+			mustPost(sessionID, req(0, notificationInitialized, &InitializedParams{})).Body.Close()
+
+			// The POST returns only when its stream ends, so call from a goroutine.
+			type postResult struct {
+				resp *http.Response
+				err  error
+			}
+			call := make(chan postResult, 1)
+			go func() {
+				resp, err := post(sessionID, req(2, "tools/call", &CallToolParams{Name: "slow"}))
+				call <- postResult{resp, err}
+			}()
+			<-started
+
+			mustPost(sessionID, req(0, notificationCancelled, &CancelledParams{
+				RequestID: int64(2),
+				Reason:    "test cancellation",
+			})).Body.Close()
+
+			got := <-call
+			if got.err != nil {
+				t.Fatalf("the cancelled call's POST: %v", got.err)
+			}
+			defer got.resp.Body.Close()
+
+			if got.resp.StatusCode != http.StatusNoContent {
+				t.Errorf("the cancelled call's POST status = %d, want %d", got.resp.StatusCode, http.StatusNoContent)
+			}
+			if ct := got.resp.Header.Get("Content-Type"); ct != "" {
+				t.Errorf("the cancelled call's POST carried Content-Type %q, want none", ct)
+			}
+			body, err := io.ReadAll(got.resp.Body)
+			if err != nil {
+				t.Fatalf("reading the cancelled call's stream: %v", err)
+			}
+			if len(body) > 0 {
+				t.Errorf("the cancelled call's stream carried:\n%s\nwant nothing", body)
+			}
+		})
+	}
+}
+
 // TestStreamableStateless_AcceptsNewProtocol is the positive control:
 // confirms that a stateless server still accepts new-protocol requests
 // (the rejection in TestStreamableStateful_RejectsNewProtocol must not
