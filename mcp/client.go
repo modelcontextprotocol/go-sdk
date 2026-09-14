@@ -79,6 +79,7 @@ func NewClient(impl *Implementation, options *ClientOptions) *Client {
 	if opts.MultiRoundTrip == nil || !opts.MultiRoundTrip.Disabled {
 		c.AddSendingMiddleware(clientMultiRoundTripMiddleware())
 	}
+	applyExtensions(opts.Extensions, func(e Extension) func(*Client) error { return e.Client }, c)
 	return c
 }
 
@@ -204,6 +205,11 @@ type ClientOptions struct {
 	// reset" guidance, letting a transient miss pass without tearing down an
 	// otherwise live session. Has no effect unless KeepAlive is non-zero.
 	KeepAliveFailureThreshold int
+
+	// Extensions are applied in order during [NewClient], after globally
+	// registered extensions (see [RegisterExtension]). Later registrations
+	// of the same custom method replace earlier ones.
+	Extensions []Extension
 }
 
 // toolContextKeyType is the context key type for passing tool definitions
