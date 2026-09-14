@@ -36,27 +36,18 @@ type multiRoundTripResponse interface {
 	hasContent() bool
 }
 
-func handleMultiRoundTripResult(ss *ServerSession, logger *slog.Logger, res multiRoundTripResponse) error {
+// validateMultiRoundTripResult rejects a result that carries both content and
+// input requests. [annotateResultType] labels the result later, in
+// [ServerSession.handle], so this function does not set resultType.
+func validateMultiRoundTripResult(logger *slog.Logger, res multiRoundTripResponse) error {
 	if res == nil {
 		return nil
 	}
-	hasInputRequests := res.inputRequests() != nil
-
-	if hasInputRequests && res.hasContent() {
+	if res.inputRequests() != nil && res.hasContent() {
 		logger.Warn("handler returned both content and inputRequests")
 		return &jsonrpc.Error{
 			Code:    jsonrpc.CodeInternalError,
 			Message: "server bug: result has both content and inputRequests",
-		}
-	}
-
-	if clientSupportsMultiRoundTrip(ss) {
-		// For older clients the resultType is left unset. Input requests will be handled
-		// by serverMultiRoundTripMiddleware client calls and handler reinvocation.
-		if hasInputRequests {
-			res.setResultType(resultTypeInputRequired)
-		} else {
-			res.setResultType(resultTypeComplete)
 		}
 	}
 	return nil
