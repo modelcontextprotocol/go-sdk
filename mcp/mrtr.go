@@ -54,11 +54,7 @@ func validateMultiRoundTripResult(logger *slog.Logger, res multiRoundTripRespons
 }
 
 func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
-	protocolVersion := latestProtocolVersion
-	if version := ss.protocolVersion(); version != "" {
-		protocolVersion = version
-	}
-	return protocolVersion >= protocolVersion20260728
+	return !ss.speaksLegacyProtocol()
 }
 
 func clientMultiRoundTripMiddleware() Middleware {

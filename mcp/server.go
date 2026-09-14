@@ -779,7 +779,7 @@ func (s *Server) notifySessions(n string) {
 	// shared session channel without opt-in; collect them while we hold the lock.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+		if sess.speaksLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
@@ -1187,7 +1187,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	var legacySessions []*ServerSession
 	newSessions := make(map[*ServerSession]jsonrpc.ID)
 	for sess, reqID := range subscribedSessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+		if sess.speaksLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		} else {
 			newSessions[sess] = reqID
@@ -2102,6 +2102,23 @@ func (ss *ServerSession) protocolVersion() string {
 		return ss.state.InitializeParams.ProtocolVersion
 	}
 	return ""
+}
+
+// speaksLegacyProtocol reports whether the session speaks a protocol version
+// older than protocolVersion20260728, and so is served the interaction
+// patterns that version defines: server-initiated requests while a request is
+// being served, and list-changed and resource-updated notifications on the
+// shared session channel rather than through subscriptions/listen.
+//
+// A session that has recorded no version at all is not legacy. SEP-2575 is
+// where a session without an 'initialize' handshake comes from, so the absence
+// of a version is read as the current protocol rather than as the oldest one;
+// [Server.handle] records the declared version on the first call a
+// new-protocol client makes, so this only covers a session that has issued no
+// call yet.
+func (ss *ServerSession) speaksLegacyProtocol() bool {
+	version := ss.protocolVersion()
+	return version != "" && version < protocolVersion20260728
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
