@@ -1067,7 +1067,11 @@ server produces logs that remain server-side, for use by server maintainers.)
 The minimum log level is part of the server state.
 For stateful sessions, there is no default log level: no log messages will be sent
 until the client calls `SetLoggingLevel` (see below).
-For stateless sessions, the level defaults to "info".
+For legacy stateless sessions the level defaults to "info".
+For sessionless 2026-07-28 requests there is no server-side default: each request
+carries its level in `_meta` (`io.modelcontextprotocol/logLevel`), and nothing is
+logged until the client sends one.
+(Note: logging is deprecated as of 2026-07-28 / SEP-2577.)
 
 [`ServerSession.Log`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Log) is the low-level way for servers to log to clients.
 It sends a logging notification to the client if the level of the message
