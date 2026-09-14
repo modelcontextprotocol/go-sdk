@@ -103,6 +103,57 @@ func TestValidateRequestMeta(t *testing.T) {
 			wantUsesNew: false,
 		},
 		{
+			name:   "supported pre-2026-07-28 version: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20251125,
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			name:   "empty protocolVersion declares nothing: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "",
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			// An unsupported version sorting below 2026-07-28 is still a
+			// new-protocol request, so that the caller can answer it with
+			// CodeUnsupportedProtocolVersion.
+			name:   "unsupported version: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    "1900-01-01",
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
+			// The triple is defined by a revision the SDK does not know, so an
+			// unsupported version is reported without validating the rest of it.
+			name:   "unsupported version missing clientCapabilities: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "1900-01-01",
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
 			name:   "new protocol with logLevel",
 			method: methodCallTool,
 			params: map[string]any{
