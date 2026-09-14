@@ -710,13 +710,13 @@ func TestCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var (
 			start     = make(chan struct{})
-			cancelled = make(chan struct{}, 1) // don't block the request
+			cancelled = make(chan error, 1) // don't block the request
 		)
 		slowTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			start <- struct{}{}
 			select {
 			case <-ctx.Done():
-				cancelled <- struct{}{}
+				cancelled <- context.Cause(ctx)
 			case <-time.After(5 * time.Second):
 				return nil, nil, nil
 			}
@@ -732,7 +732,72 @@ func TestCancellation(t *testing.T) {
 		<-start
 		cancel()
 
-		<-cancelled
+		// The client sends its context's error as the reason of its cancelled
+		// notification, and the handler reads it back as the cause.
+		cause := <-cancelled
+		if !errors.Is(cause, context.Canceled) {
+			t.Errorf("context.Cause = %v, want it to wrap context.Canceled", cause)
+		}
+		if want := "request cancelled by the peer: " + context.Canceled.Error(); cause == nil || cause.Error() != want {
+			t.Errorf("context.Cause = %v, want %q", cause, want)
+		}
+	})
+}
+
+// TestCancellationReason verifies that the reason a peer gives in its
+// cancelled notification reaches the handler as the cause of its context,
+// which is what lets a server log it as the specification asks.
+//
+// The call and the notification are written to the connection directly, so
+// the reason is one the SDK's own client would never send; the session is
+// pinned to 2025-11-25 so that a request written that way needs no _meta.
+func TestCancellationReason(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			start     = make(chan struct{})
+			cancelled = make(chan error, 1) // don't block the request
+		)
+		slowTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+			start <- struct{}{}
+			select {
+			case <-ctx.Done():
+				cancelled <- context.Cause(ctx)
+			case <-time.After(5 * time.Second):
+				cancelled <- nil
+			}
+			return nil, nil, nil
+		}
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		s := NewServer(testImpl, nil)
+		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowTool)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+		cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+
+		call := cs.conn.Call(ctx, methodCallTool, &CallToolParams{Name: "slow"})
+		<-start
+		if err := cs.conn.Notify(ctx, notificationCancelled, &CancelledParams{RequestID: call.ID().Raw(), Reason: "user asked"}); err != nil {
+			t.Fatal(err)
+		}
+
+		cause := <-cancelled
+		if cause == nil {
+			t.Fatal("the tool ran to completion, want it cancelled")
+		}
+		if !errors.Is(cause, context.Canceled) {
+			t.Errorf("context.Cause = %v, want it to wrap context.Canceled", cause)
+		}
+		if got, want := cause.Error(), "request cancelled by the peer: user asked"; got != want {
+			t.Errorf("context.Cause = %q, want %q", got, want)
+		}
 	})
 }
 
