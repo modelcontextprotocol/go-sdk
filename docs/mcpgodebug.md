@@ -18,6 +18,16 @@
 
 ## `MCPGODEBUG` history
 
+### 1.9.0
+
+Options listed below were added and will be removed in the 1.11.0 version of the SDK.
+
+- `structuredcontentfloat64` added. If set to `1`, numbers in
+  `CallToolResult.StructuredContent` are decoded as `float64`, restoring the
+  previous behavior. The default behavior decodes numbers as `json.Number` so
+  that large integers and other exact JSON values do not silently lose
+  precision.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
