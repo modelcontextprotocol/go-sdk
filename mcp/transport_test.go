@@ -119,6 +119,15 @@ func TestIOConnRead(t *testing.T) {
 			requested:       protocolVersion20241105,
 			protocolVersion: protocolVersion20251125,
 		},
+		{
+			// A SEP-2575 session runs no initialize. The version its first call
+			// declared is recorded as negotiated once the server accepts it, and
+			// the connection follows it like any version from 2025-06-18 on.
+			name:            "batching on a new-protocol session",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2026-07-28)",
+			protocolVersion: protocolVersion20260728,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
