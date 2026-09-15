@@ -2406,8 +2406,8 @@ func TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ss := &ServerSession{state: tt.state}
-			if got := ss.speaksLegacyProtocol(); got != tt.want {
-				t.Errorf("speaksLegacyProtocol() = %t, want %t", got, tt.want)
+			if got := ss.negotiatedLegacyProtocol(); got != tt.want {
+				t.Errorf("negotiatedLegacyProtocol() = %t, want %t", got, tt.want)
 			}
 		})
 	}

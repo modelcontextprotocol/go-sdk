@@ -779,7 +779,7 @@ func (s *Server) notifySessions(n string) {
 	// shared session channel without opt-in; collect them while we hold the lock.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.speaksLegacyProtocol() {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
@@ -1187,7 +1187,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	var legacySessions []*ServerSession
 	newSessions := make(map[*ServerSession]jsonrpc.ID)
 	for sess, reqID := range subscribedSessions {
-		if sess.speaksLegacyProtocol() {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		} else {
 			newSessions[sess] = reqID
@@ -2104,8 +2104,8 @@ func (ss *ServerSession) protocolVersion() string {
 	return ""
 }
 
-// speaksLegacyProtocol reports whether the session speaks a protocol version
-// older than protocolVersion20260728, and so is served the interaction
+// negotiatedLegacyProtocol reports whether the version this session negotiated
+// is older than protocolVersion20260728, and so is served the interaction
 // patterns that version defines: server-initiated requests while a request is
 // being served, and list-changed and resource-updated notifications on the
 // shared session channel rather than through subscriptions/listen.
@@ -2116,7 +2116,7 @@ func (ss *ServerSession) protocolVersion() string {
 // [Server.handle] records the declared version on the first call a
 // new-protocol client makes, so this only covers a session that has issued no
 // call yet.
-func (ss *ServerSession) speaksLegacyProtocol() bool {
+func (ss *ServerSession) negotiatedLegacyProtocol() bool {
 	version := ss.protocolVersion()
 	return version != "" && version < protocolVersion20260728
 }
