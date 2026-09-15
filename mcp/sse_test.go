@@ -7,16 +7,20 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // TestSSEServerTransport_SupportedVersions verifies that the deprecated
@@ -187,6 +191,45 @@ func TestSSEServer(t *testing.T) {
 				cs.Wait()
 			}
 		})
+	}
+}
+
+func TestSSEServerConnCloseDrainsIncoming(t *testing.T) {
+	transport := &SSEServerTransport{Response: httptest.NewRecorder()}
+	connection, err := transport.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transport.incoming <- &jsonrpc.Request{Method: "ping"}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := connection.Read(ctx); !errors.Is(err, io.EOF) {
+		t.Fatalf("Read after Close error = %v, want io.EOF", err)
+	}
+}
+
+func TestSSEServerTransportServeHTTPAfterClose(t *testing.T) {
+	transport := &SSEServerTransport{Response: httptest.NewRecorder()}
+	connection, err := transport.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/messages", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`,
+	))
+	recorder := httptest.NewRecorder()
+	transport.ServeHTTP(recorder, req)
+	if got, want := recorder.Code, http.StatusBadRequest; got != want {
+		t.Fatalf("POST after Close status = %d, want %d", got, want)
 	}
 }
 

@@ -140,10 +140,9 @@ type SSEServerTransport struct {
 	// the transport is connected.
 	incoming chan jsonrpc.Message
 
-	// We must guard both pushes to the incoming queue and writes to the response
-	// writer, because incoming POST requests are arbitrarily concurrent and we
-	// need to ensure we don't write push to the queue, or write to the
-	// ResponseWriter, after the session GET request exits.
+	// Incoming POST requests are arbitrarily concurrent. The mutex guards writes
+	// to the ResponseWriter and the closed state, which is checked around queue
+	// pushes so messages are not accepted after the session GET request exits.
 	mu     sync.Mutex    // also guards writes to Response
 	closed bool          // set when the stream is closed
 	done   chan struct{} // closed when the connection is closed
@@ -189,8 +188,25 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 			return
 		}
 	}
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	if closed {
+		http.Error(w, "session closed", http.StatusBadRequest)
+		return
+	}
 	select {
 	case t.incoming <- msg:
+		t.mu.Lock()
+		closed = t.closed
+		if closed {
+			t.drainIncoming()
+		}
+		t.mu.Unlock()
+		if closed {
+			http.Error(w, "session closed", http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 	case <-t.done:
 		http.Error(w, "session closed", http.StatusBadRequest)
@@ -335,10 +351,22 @@ func (s *sseServerConn) SessionID() string { return "" }
 
 // Read implements jsonrpc2.Reader.
 func (s *sseServerConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	s.t.mu.Lock()
+	closed := s.t.closed
+	s.t.mu.Unlock()
+	if closed {
+		return nil, io.EOF
+	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case msg := <-s.t.incoming:
+		s.t.mu.Lock()
+		closed := s.t.closed
+		s.t.mu.Unlock()
+		if closed {
+			return nil, io.EOF
+		}
 		return msg, nil
 	case <-s.t.done:
 		return nil, io.EOF
@@ -370,6 +398,17 @@ func (s *sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	return err
 }
 
+// drainIncoming must be called with t.mu held.
+func (t *SSEServerTransport) drainIncoming() {
+	for {
+		select {
+		case <-t.incoming:
+		default:
+			return
+		}
+	}
+}
+
 // Close implements io.Closer, and closes the session.
 //
 // It must be safe to call Close more than once, as the close may
@@ -377,11 +416,12 @@ func (s *sseServerConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 // by the hanging GET exiting.
 func (s *sseServerConn) Close() error {
 	s.t.mu.Lock()
-	defer s.t.mu.Unlock()
 	if !s.t.closed {
 		s.t.closed = true
 		close(s.t.done)
+		s.t.drainIncoming()
 	}
+	s.t.mu.Unlock()
 	return nil
 }
 
