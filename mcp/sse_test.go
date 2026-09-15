@@ -13,10 +13,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // TestSSEServerTransport_SupportedVersions verifies that the deprecated
@@ -428,6 +431,52 @@ func TestSSEServerTransportMaxRequestBodyBytes(t *testing.T) {
 			tr.ServeHTTP(rec, req)
 			if rec.Code != tc.wantCode {
 				t.Errorf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSSEClientTransportBufferedEvents(t *testing.T) {
+	const endpoint = "event: endpoint\ndata: /messages\n\n"
+	const message = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"
+	for _, coalesced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("coalesced=%t", coalesced), func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			prefix := endpoint
+			if coalesced {
+				prefix += message
+			}
+			transport := &SSEClientTransport{
+				Endpoint: "http://example.com/sse",
+				HTTPClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": {"text/event-stream"}},
+						Body: struct {
+							io.Reader
+							io.Closer
+						}{io.MultiReader(strings.NewReader(prefix), reader), reader},
+					}, nil
+				})},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := transport.Connect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if !coalesced {
+				go func() { _, _ = io.WriteString(writer, message) }()
+			}
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			if req, ok := msg.(*jsonrpc.Request); !ok || req.Method != "notifications/tools/list_changed" {
+				t.Fatalf("Read = %v, want tools/list_changed notification", msg)
 			}
 		})
 	}
