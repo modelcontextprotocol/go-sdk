@@ -517,6 +517,102 @@ capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
 per-extension settings objects.
 
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package implements SEP-2640. Use `skills.AddHandlers` to provide custom
+`skills/list` and `skills/get` handlers. An optional directory handler enables
+`resources/directory/read` and advertises `directoryRead: true`.
+
+Custom providers may return `skills.DynamicResources()` for generated skills
+that cannot publish stable file digests.
+
+For skills stored on disk, `skills.AddDirectory` installs a filesystem-backed
+provider. By default it discovers skills and files on every request, so
+resources added after server startup are available without re-registering
+them. This applies to `skills/list`, `skills/get`, `resources/list`,
+`resources/read`, and `resources/directory/read`. Changes and removals are
+visible on the next request too.
+
+```go
+if err := skills.AddDirectory(server, "./skills", &skills.DirectoryOptions{
+    PageSize: 100,
+}); err != nil {
+    return err
+}
+```
+
+`resources/list` includes the skill files alongside ordinary registered
+resources. `SKILL.md` entries carry their frontmatter name and description and
+the `text/markdown` MIME type. Directory reads return only direct children,
+including subdirectories with MIME type `inode/directory`, and use the same
+file metadata. Neither listing reads supporting file contents just to enumerate
+them; `skills/list` and `skills/get` also hash files to build static manifests.
+
+The helper combines all pages of the underlying resource listing with its
+current catalog, deduplicates by URI, and paginates the result using
+`DirectoryOptions.PageSize`. Exact resource registrations take precedence over
+the template, for both listing and reading. This uses existing receiving
+middleware and resource-template routing; it does not change the core SDK APIs.
+The merge costs a traversal of the underlying resource list on each request.
+
+Live discovery does not require `skills.DynamicResources()`: that marker means
+the server cannot provide a complete manifest with stable digests, not that its
+catalog changes over time. A filesystem provider returns a complete static
+manifest for the current catalog; a later request can return a different one.
+
+Clients must re-list to see changes. The helper starts no watcher and sends no
+filesystem-change notifications; SEP-2640 defines no `skills/list_changed`
+notification. The merged `resources/list` response has a zero TTL and private
+cache scope so a TTL configured for ordinary resources cannot conceal changes.
+These cache fields are omitted on older protocol versions by the core SDK.
+
+Set `Cache` to `&skills.DirectoryCacheOptions{}` to load the catalog on the
+first request and cache it indefinitely. Set `Preload: true` to load it while
+constructing the provider, which also makes the constructor report initial scan
+and validation errors. A positive `MaxAge` expires the cache after that
+duration; the first request after expiry rebuilds it.
+
+Cached providers can also be invalidated by a clock or filesystem monitor through
+`DirectoryCacheOptions.Invalidate`. Signals are coalesced and consumed when a
+request arrives; use a buffered channel so producers do not block. Both
+`MaxAge` and `Invalidate` are lazy: they do not start a background goroutine.
+A failed rebuild retains the previous catalog but leaves it stale: requests
+retry rebuilding until successful, even if the invalidation signal has already
+been consumed. They return the scan error instead of silently serving stale
+metadata. Resource bytes are always read on demand, including in cached modes.
+
+To rebuild before the next request, construct a provider directly and call
+`Refresh` from the application's watcher goroutine. The caller owns goroutine
+lifetime, cancellation, and error handling:
+
+```go
+provider, err := skills.NewDirectoryProvider("./skills", &skills.DirectoryOptions{
+    Cache: &skills.DirectoryCacheOptions{Preload: true},
+})
+if err != nil {
+    return err
+}
+if err := provider.AddTo(server); err != nil {
+    return err
+}
+go func() {
+    for range changed {
+        if err := provider.Refresh(ctx); err != nil {
+            logger.Error("refreshing skills", "error", err)
+        }
+    }
+}()
+```
+
+Register one filesystem provider per server. Applications that need to combine
+multiple filesystems can use an overlay `fs.FS` or aggregate them behind custom
+`AddHandlers` handlers.
+
+SEP validation is enabled by default, including the 512-resource and 16 MiB
+per-skill limits. `skills.ServerOptions` supports additional validators and
+explicit unsafe overrides.
+
 ### Pagination
 
 Server-side feature lists may be
