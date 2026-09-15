@@ -173,6 +173,12 @@ type incomingRequest struct {
 	*Request // the request being processed
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
+
+	// peerCancelled records that the peer asked for this request to be
+	// cancelled, as opposed to the request context ending for some other
+	// reason. It is set by [Connection.CancelFromPeer] and read by
+	// processResult, both under the connection's stateMu.
+	peerCancelled bool
 }
 
 // Reader abstracts the transport mechanics from the JSON RPC protocol.
@@ -197,6 +203,21 @@ type Reader interface {
 type Writer interface {
 	// Write sends a message to the stream.
 	Write(context.Context, Message) error
+}
+
+// ResponseDropper is an optional interface for a [Writer] that holds state per
+// incoming call, and so has to be told when a call will never be answered.
+//
+// A Connection sends no response to a call the peer cancelled (see
+// [Connection.CancelFromPeer]). For most writers that is simply one write that
+// does not happen, but a writer that maps calls onto transport-level streams
+// has bookkeeping to release: the streamable HTTP transport keeps a POST's
+// stream open until every call it carried has been answered, and without this
+// the stream would hang until the client went away.
+type ResponseDropper interface {
+	// DropResponse reports that the incoming call with the given ID is
+	// finished and will receive no response.
+	DropResponse(id ID)
 }
 
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
@@ -452,17 +473,49 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 // Cancel will not complain if the ID is not a currently active message, and it
 // will not cause any messages that have not arrived yet with that ID to be
 // cancelled.
+//
+// The inbound call is still answered: use [Connection.CancelFromPeer] when the
+// peer itself asked for the cancellation.
 func (c *Connection) Cancel(id ID) {
-	c.CancelCause(id, nil)
+	c.cancelIncoming(id, nil, false)
 }
 
 // CancelCause is like [Connection.Cancel], but records cause as the reason
 // the Context was cancelled, so that the Handle call can read it back through
 // [context.Cause]. A nil cause reads as [context.Canceled].
 func (c *Connection) CancelCause(id ID, cause error) {
+	c.cancelIncoming(id, cause, false)
+}
+
+// CancelFromPeer is [Connection.CancelCause] for a cancellation the peer
+// requested, such as an MCP "notifications/cancelled" message.
+//
+// In addition to cancelling the handler's Context with cause, it suppresses
+// the response to the inbound call: a peer that asked for a call to be
+// cancelled is not waiting for its result, and the MCP specification says
+// receivers of a cancellation notification should not send a response for the
+// cancelled request.
+//
+// It takes a cause rather than cancelling plainly because a peer cancellation
+// is the one kind that always arrives with a stated reason, and dropping it
+// here would leave the handler unable to tell why it was stopped.
+func (c *Connection) CancelFromPeer(id ID, cause error) {
+	c.cancelIncoming(id, cause, true)
+}
+
+// cancelIncoming cancels the inbound request with the given ID, recording the
+// cause and whether the peer is the one that asked for it.
+//
+// A request that has already been responded to is no longer in incomingByID,
+// so a cancellation that loses the race with its own response is a no op, and
+// the response that was already on its way is never retracted.
+func (c *Connection) cancelIncoming(id ID, cause error, fromPeer bool) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
+		if req != nil && fromPeer {
+			req.peerCancelled = true
+		}
 	})
 	if req != nil {
 		req.cancel(cause)
@@ -717,17 +770,30 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 
 		// The caller could theoretically reuse the request's ID as soon as we've
 		// sent the response, so ensure that it is removed from the incoming map
-		// before sending.
+		// before sending. Reading peerCancelled here keeps it atomic with that
+		// removal: a cancellation either arrives before this point and is
+		// honored, or finds the request gone and does nothing.
+		var peerCancelled bool
 		c.updateInFlight(func(s *inFlightState) {
+			peerCancelled = req.peerCancelled
 			delete(s.incomingByID, req.ID)
 		})
-		if respErr == nil {
+		if respErr != nil {
+			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+		}
+		if peerCancelled {
+			// The peer cancelled this call, so it gets no response. The Writer
+			// may still be holding state for it (the streamable HTTP transport
+			// keeps a POST's stream open until every call in it has been
+			// answered), so tell it the response is not coming.
+			if d, ok := c.writer.(ResponseDropper); ok {
+				d.DropResponse(req.ID)
+			}
+		} else if respErr == nil {
 			writeErr := c.write(notDone{req.ctx}, response)
 			if err == nil {
 				err = writeErr
 			}
-		} else {
-			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
 		}
 	} else { // req is a notification
 		if result != nil {
@@ -813,10 +879,10 @@ func (c *Connection) internalErrorf(format string, args ...any) error {
 // which by default is wrapped in notDone so a transport-level cancellation
 // does not implicitly cancel every in-flight handler. Cancellation of an
 // in-flight handler is instead expected to flow only through the jsonrpc2
-// layer's explicit channels: the [Preempter] calling [Connection.Cancel] in
-// response to the peer's cancel notification, or the transport itself
-// failing (the read loop exits on EOF or a write fails) — both of which
-// cancel every in-flight incoming request in turn.
+// layer's explicit channels: the [Preempter] calling
+// [Connection.CancelFromPeer] in response to the peer's cancel notification,
+// or the transport itself failing (the read loop exits on EOF or a write
+// fails) — both of which cancel every in-flight incoming request in turn.
 type notDone struct{ ctx context.Context }
 
 func (ic notDone) Value(key any) any {

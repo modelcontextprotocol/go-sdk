@@ -250,7 +250,8 @@ type cancellationPropagator interface {
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
-// cancelled notifications.
+// cancelled notifications. The cancelled request is answered with no response
+// at all, as the spec requires.
 type canceller struct {
 	conn   *jsonrpc2.Connection
 	logger *slog.Logger
@@ -272,7 +273,7 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		// travels as the cause of the request's context rather than being
 		// dropped here.
 		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
-		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
+		go c.conn.CancelFromPeer(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
@@ -438,6 +439,20 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 		s.mu.Unlock()
 	}
 	return err
+}
+
+// DropResponse implements [jsonrpc2.ResponseDropper] by forwarding to the
+// delegate.
+//
+// Without it, wrapping a transport for logging would quietly reinstate the
+// response to a cancelled call: the connection asks its writer for the
+// interface, the wrapper does not have it, and the bookkeeping the delegate
+// was waiting for never happens. A delegate that holds no per-call state
+// implements nothing and there is nothing to forward.
+func (s *loggingConn) DropResponse(id jsonrpc.ID) {
+	if dropper, ok := s.delegate.(jsonrpc2.ResponseDropper); ok {
+		dropper.DropResponse(id)
+	}
 }
 
 func (s *loggingConn) Close() error {

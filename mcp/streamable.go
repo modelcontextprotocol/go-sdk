@@ -1068,6 +1068,9 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 // pendingJSONMessages (for JSON mode). The eventID is used for SSE event ID;
 // pass "" to omit.
 //
+// If data is nil there is nothing to write: the call is only accounting for a
+// request that will never be answered (see [streamableServerConn.DropResponse]).
+//
 // If responseTo is valid, it is removed from the requests map. When all
 // requests have been responded to, the done channel is closed and set to nil.
 //
@@ -1113,8 +1116,10 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	// there's a brief race between request cancellation and releasing the
 	// stream.
 	if s.pendingJSONMessages != nil {
-		s.pendingJSONMessages = append(s.pendingJSONMessages, data)
-		if done {
+		if data != nil {
+			s.pendingJSONMessages = append(s.pendingJSONMessages, data)
+		}
+		if done && len(s.pendingJSONMessages) > 0 {
 			// Flush all pending messages as JSON response.
 			var toWrite []byte
 			if len(s.pendingJSONMessages) == 1 && !s.isBatch {
@@ -1129,7 +1134,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 				return done, err
 			}
 		}
-	} else {
+	} else if data != nil {
 		// SSE mode: write event to response writer.
 		s.lastIdx++
 		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
@@ -1942,6 +1947,39 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return fmt.Errorf("%w: undelivered message: %v", jsonrpc2.ErrRejected, errors.Join(errs...))
 	}
 	return nil
+}
+
+// DropResponse implements [jsonrpc2.ResponseDropper].
+//
+// The client cancelled this call and gets no response for it, but the stream
+// it arrived on must still be accounted for: a POST's stream hangs until every
+// call it carried has been answered, so without this the HTTP request would
+// stay open until the client went away.
+func (c *streamableServerConn) DropResponse(id jsonrpc.ID) {
+	c.mu.Lock()
+	var s *stream
+	if streamID, ok := c.requestStreams[id]; ok {
+		s = c.streams[streamID]
+	}
+	delete(c.requestStreams, id)
+	c.mu.Unlock()
+
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	// A nil payload delivers nothing; it only retires the request. An error
+	// here means the stream is already disconnected, which is not a problem
+	// when there is nothing to send.
+	done, _ := s.deliverLocked(nil, "", id, 0)
+	s.mu.Unlock()
+
+	if done {
+		c.mu.Lock()
+		delete(c.streams, s.id)
+		c.mu.Unlock()
+	}
 }
 
 // Close implements the [Connection] interface.
