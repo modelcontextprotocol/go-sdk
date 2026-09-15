@@ -1989,15 +1989,26 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() {
-			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
-		}
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
 			})
 		}
+	}
+
+	// The lifecycle spec lets a client send nothing but pings before the
+	// server has answered 'initialize'. This check used to sit in the default
+	// branch above, so every method with a case of its own escaped it:
+	// 'resources/subscribe' on a session that never handshook registered the
+	// session as a subscriber and delivered notifications to it. A
+	// new-protocol request is exempt because a SEP-2575 session has no
+	// 'initialize' to wait for; the request itself says which protocol it
+	// speaks, and at this point the session has recorded no version that
+	// could say otherwise.
+	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
+		req.Method != methodInitialize && req.Method != methodPing {
+		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
+		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
