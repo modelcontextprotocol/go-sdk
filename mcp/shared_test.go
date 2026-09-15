@@ -103,6 +103,57 @@ func TestValidateRequestMeta(t *testing.T) {
 			wantUsesNew: false,
 		},
 		{
+			name:   "supported pre-2026-07-28 version: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20251125,
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			name:   "empty protocolVersion declares nothing: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "",
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			// An unsupported version sorting below 2026-07-28 is still a
+			// new-protocol request, so that the caller can answer it with
+			// CodeUnsupportedProtocolVersion.
+			name:   "unsupported version: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    "1900-01-01",
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
+			// The triple is defined by a revision the SDK does not know, so an
+			// unsupported version is reported without validating the rest of it.
+			name:   "unsupported version missing clientCapabilities: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "1900-01-01",
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
 			name:   "new protocol with logLevel",
 			method: methodCallTool,
 			params: map[string]any{
@@ -262,6 +313,62 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	req := &ServerRequest[*CallToolParamsRaw]{
 		Params: &CallToolParamsRaw{Name: "x"},
 	}
+	if got := req.ProtocolVersion(); got != "" {
+		t.Errorf("ProtocolVersion = %q, want empty", got)
+	}
+	if got := req.ClientInfo(); got != nil {
+		t.Errorf("ClientInfo = %+v, want nil", got)
+	}
+	if got := req.ClientCapabilities(); got != nil {
+		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
+func TestHasParams(t *testing.T) {
+	// {"jsonrpc":"2.0","id":1,"method":"tools/list"} is a complete request:
+	// serverMethodInfos marks these methods missingParamsOK. Build what
+	// handleReceive hands the middleware chain for one.
+	for _, method := range []string{
+		methodListTools,
+		methodListPrompts,
+		methodListResources,
+		notificationInitialized,
+	} {
+		t.Run(method, func(t *testing.T) {
+			info := serverMethodInfos[method]
+			params, err := info.unmarshalParams(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := info.newRequest(&ServerSession{}, params, nil)
+			if req.GetParams() == nil {
+				t.Fatal("GetParams returned a nil interface, so this test no longer covers the typed-nil case")
+			}
+			if HasParams(req) {
+				t.Error("HasParams = true for a request whose params member was omitted")
+			}
+		})
+	}
+
+	t.Run("params present", func(t *testing.T) {
+		info := serverMethodInfos[methodListTools]
+		params, err := info.unmarshalParams(json.RawMessage(`{"cursor":"c"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := info.newRequest(&ServerSession{}, params, nil)
+		if !HasParams(req) {
+			t.Error("HasParams = false for a request carrying params")
+		}
+	})
+}
+
+func TestServerRequest_PerRequestAccessors_MissingParams(t *testing.T) {
+	// Custom methods also allow the params member to be omitted, and their
+	// params types embed ParamsBase, whose promoted isNil dereferences the
+	// typed-nil outer pointer.
+	type customParams struct{ ParamsBase }
+	req := &ServerRequest[*customParams]{}
 	if got := req.ProtocolVersion(); got != "" {
 		t.Errorf("ProtocolVersion = %q, want empty", got)
 	}
