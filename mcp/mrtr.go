@@ -54,7 +54,7 @@ func validateMultiRoundTripResult(logger *slog.Logger, res multiRoundTripRespons
 }
 
 func clientSupportsMultiRoundTrip(ss *ServerSession) bool {
-	return !ss.speaksLegacyProtocol()
+	return !ss.negotiatedLegacyProtocol()
 }
 
 func clientMultiRoundTripMiddleware() Middleware {
