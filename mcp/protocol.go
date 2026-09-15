@@ -381,6 +381,12 @@ func (r *CallToolResult) hasContent() bool {
 // An empty InputRequests with NeedsInput true indicates load-shedding.
 func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
 
+// structuredcontentfloat64 is a compatibility parameter that restores the
+// previous behavior of decoding numbers in [CallToolResult.StructuredContent]
+// as float64 values. By default, numbers are decoded as [json.Number] to avoid
+// losing precision. The option will be removed in the 1.11.0 version of the SDK.
+var structuredcontentfloat64 = mcpgodebug.Value("structuredcontentfloat64")
+
 func (x *CallToolResult) MarshalJSON() ([]byte, error) {
 	type res CallToolResult // avoid recursion
 	type wire struct {
@@ -411,7 +417,11 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if len(wire.StructuredContent) > 0 {
-		if err := internaljson.UnmarshalUseNumber(wire.StructuredContent, &wire.res.StructuredContent); err != nil {
+		unmarshal := internaljson.UnmarshalUseNumber
+		if structuredcontentfloat64 == "1" {
+			unmarshal = internaljson.Unmarshal
+		}
+		if err := unmarshal(wire.StructuredContent, &wire.res.StructuredContent); err != nil {
 			return err
 		}
 	}

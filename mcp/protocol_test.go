@@ -1298,6 +1298,24 @@ func TestContentUnmarshal(t *testing.T) {
 	roundtrip(pm, &gotpm)
 }
 
+func TestCallToolResultStructuredContentFloat64Compatibility(t *testing.T) {
+	prev := structuredcontentfloat64
+	structuredcontentfloat64 = "1"
+	t.Cleanup(func() { structuredcontentfloat64 = prev })
+
+	var got CallToolResult
+	if err := json.Unmarshal([]byte(`{"content":[],"structuredContent":{"id":9007199254740993}}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := got.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", got.StructuredContent)
+	}
+	if got := structured["id"]; got != float64(9007199254740992) {
+		t.Errorf("id = %v (%T), want rounded float64 value", got, got)
+	}
+}
+
 func TestToolAnnotations_MarshalJSON(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 
