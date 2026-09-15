@@ -31,18 +31,17 @@ go work init ./project ./go-sdk
 
 ### Conformance tests
 
-The SDK includes a script to run the official MCP conformance tests against the
-SDK's conformance server:
+The SDK includes scripts to run the official MCP server and client conformance tests:
 
 ```sh
-./scripts/conformance.sh
+./scripts/server-conformance.sh
+./scripts/client-conformance.sh
 ```
 
-By default, results are cleaned up after the script runs. To save results to a
-specific directory:
+To save server results to a specific directory:
 
 ```sh
-./scripts/conformance.sh --result_dir ./conformance-results
+./scripts/server-conformance.sh --result_dir ./conformance-results
 ```
 
 To run against a local checkout of the
@@ -50,12 +49,12 @@ To run against a local checkout of the
 of the latest npm release:
 
 ```sh
-./scripts/conformance.sh --conformance_repo ~/src/conformance
+./scripts/server-conformance.sh --conformance_repo ~/src/conformance
 ```
 
 Note: you must run `npm install` in the conformance repo first.
 
-Run `./scripts/conformance.sh --help` for more options.
+Run either script with `--help` for more options.
 
 ## Filing issues
 
@@ -182,7 +181,7 @@ change therefore cannot reach existing users by accident; they have to change
 their import path to receive one.
 
 This policy covers the exported API of the SDK's importable packages — `mcp`,
-`jsonrpc`, `auth`, `auth/extauth` and `oauthex`. Everything under `internal/`
+`jsonrpc`, `auth`, `auth/extauth`, `oauthex` and `skills`. Everything under `internal/`
 is not importable outside the module and may change in any release.
 
 Which MCP spec revisions each SDK version speaks is documented in the
