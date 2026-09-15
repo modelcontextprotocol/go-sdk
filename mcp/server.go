@@ -948,6 +948,14 @@ func (s *Server) discover(ctx context.Context, req *ServerRequest[*DiscoverParam
 	if slices.ContainsFunc(versions, func(v string) bool { return v >= protocolVersion20260728 }) {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
+			// A client keeps speaking the version it asked about when the
+			// answer lists it, so that is the version this session negotiated.
+			// One whose version is not listed picks another from the list on
+			// its next call, which nothing here can predict, so only the
+			// declared version is recorded for it.
+			if slices.Contains(versions, init.ProtocolVersion) {
+				state.NegotiatedProtocolVersion = init.ProtocolVersion
+			}
 		})
 	}
 	res := &DiscoverResult{
@@ -1996,6 +2004,15 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
+				// The version passed the check against ss.server.protocolVersions
+				// above and the call is served under it, which is all the
+				// negotiation SEP-2575 has: a version the server does not speak
+				// is refused with the list it does. It is deliberately not put
+				// through negotiatedVersion, which serves the initialize
+				// handshake and caps its answer below 2026-07-28; that would
+				// downgrade every new-protocol session, with no handshake
+				// response to tell the client.
+				state.NegotiatedProtocolVersion = validatedMeta.initializeParams.ProtocolVersion
 			})
 		}
 	}

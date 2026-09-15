@@ -3422,6 +3422,16 @@ func TestEphemeralConnectOpts(t *testing.T) {
 				t.Errorf("InitializedParams non-nil = %v, want %v (value = %+v)",
 					got, tt.wantInitializedParams, info.opts.State.InitializedParams)
 			}
+			// The header names the version an earlier handshake settled on, so
+			// synthesized state records it as negotiated and not only as
+			// declared; state that synthesizes no handshake records no version.
+			var wantNegotiated string
+			if tt.wantInitializeParams {
+				wantNegotiated = pver
+			}
+			if got := info.opts.State.NegotiatedProtocolVersion; got != wantNegotiated {
+				t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, wantNegotiated)
+			}
 		})
 	}
 }

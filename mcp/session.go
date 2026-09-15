@@ -22,11 +22,19 @@ type ServerSessionState struct {
 	// InitializedParams are the parameters from 'notifications/initialized'.
 	InitializedParams *InitializedParams `json:"initializedParams"`
 
-	// NegotiatedProtocolVersion is the protocol version agreed during
-	// 'initialize', which may differ from the version the client requested if
-	// the server does not support it.
+	// NegotiatedProtocolVersion is the protocol version the session speaks.
 	//
-	// It is empty for sessions that never ran the initialize handshake.
+	// The initialize handshake sets it to the version it settled on, which
+	// differs from the one the client requested when the server does not
+	// support that one. A session that runs no handshake records the version
+	// its first new-protocol request declared, once the server has accepted
+	// it (SEP-2575); the version 'server/discover' was asked about, when the
+	// answer lists it; or the MCP-Protocol-Version header of a request served
+	// without a handshake.
+	//
+	// It is empty for a session that has recorded no version yet, and in
+	// state written before the SDK recorded it outside the handshake, where
+	// InitializeParams.ProtocolVersion is the version the session speaks.
 	NegotiatedProtocolVersion string `json:"negotiatedProtocolVersion,omitempty"`
 
 	// LogLevel is the logging level for the session.

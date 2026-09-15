@@ -2152,6 +2152,91 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 	}
 }
 
+// negotiatedProtocolVersion reads the version a session has recorded as the
+// one it speaks.
+func negotiatedProtocolVersion(ss *ServerSession) string {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.state.NegotiatedProtocolVersion
+}
+
+// TestServerHandle_RecordsNegotiatedVersionOnNewProtocolCall asserts that the
+// first new-protocol call a session serves records the version it declared as
+// the negotiated one, beside InitializeParams. Until then only the initialize
+// handshake wrote that field, so every reader of it saw a SEP-2575 session as
+// having no version: the stdio connection, which reads nothing else, took
+// such a session for 2025-03-26 and accepted the JSON-RPC batches that
+// 2025-06-18 and later forbid.
+//
+// The version is recorded as declared, once the server has accepted it. It
+// must not go through negotiatedVersion, which serves the deprecated
+// handshake and answers 2025-11-25 to a client asking for 2026-07-28.
+func TestServerHandle_RecordsNegotiatedVersionOnNewProtocolCall(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	params, err := json.Marshal(newProtocolParams(nil))
+	if err != nil {
+		t.Fatalf("marshalling params: %v", err)
+	}
+	if _, err := ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodListTools,
+		Params: params,
+	}); err != nil {
+		t.Fatalf("handle(%q) error = %v", methodListTools, err)
+	}
+	if got := negotiatedProtocolVersion(ss); got != protocolVersion20260728 {
+		t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+	if got := ss.InitializeParams(); got == nil || got.ProtocolVersion != protocolVersion20260728 {
+		t.Errorf("InitializeParams = %+v, want ProtocolVersion %q", got, protocolVersion20260728)
+	}
+}
+
+// TestServerDiscover_RecordsNegotiatedVersion asserts that server/discover
+// records the version it was asked about as the negotiated one when its answer
+// lists that version, since a client whose version is listed keeps speaking it.
+func TestServerDiscover_RecordsNegotiatedVersion(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	params, err := json.Marshal(newProtocolParams(nil))
+	if err != nil {
+		t.Fatalf("marshalling params: %v", err)
+	}
+	res, err := ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodDiscover,
+		Params: params,
+	})
+	if err != nil {
+		t.Fatalf("handle(%q) error = %v", methodDiscover, err)
+	}
+	dres, ok := res.(*DiscoverResult)
+	if !ok {
+		t.Fatalf("handle(%q) returned %T, want *DiscoverResult", methodDiscover, res)
+	}
+	if !slices.Contains(dres.SupportedVersions, protocolVersion20260728) {
+		t.Fatalf("DiscoverResult.SupportedVersions = %v, want it to list %q", dres.SupportedVersions, protocolVersion20260728)
+	}
+	if got := negotiatedProtocolVersion(ss); got != protocolVersion20260728 {
+		t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+}
+
 // TestServerUnknownProtocolVersion_NewProtocol verifies that a request whose
 // `_meta.protocolVersion` names a version the SDK does not know is rejected
 // with [CodeUnsupportedProtocolVersion], and not served as a legacy handshake
