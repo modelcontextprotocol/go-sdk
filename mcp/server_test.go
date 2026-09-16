@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2004,4 +2005,79 @@ func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
 	}
 	stalled.Close()
 	stalledConn.Close()
+}
+
+// TestNotifySubscribedSessionsDoesNotShareMeta: caller-supplied non-nil _meta,
+// four modern subscribers notified concurrently. Each peer must receive its own
+// subscription ID and the caller's params must be left untouched.
+func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	subscribers := map[*ServerSession]jsonrpc.ID{}
+	want := map[*ServerSession]string{}
+	var mu sync.Mutex
+	got := map[string]any{}
+	var readers sync.WaitGroup
+	for _, name := range []string{"A", "B", "C", "D"} {
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := ct.Connect(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := jsonrpc.MakeID("sub-" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscribers[ss] = id
+		want[ss] = "sub-" + name
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Errorf("%s read: %v", name, err)
+				return
+			}
+			var n struct {
+				Params struct {
+					Meta map[string]any `json:"_meta"`
+				} `json:"params"`
+			}
+			raw, _ := jsonrpc.EncodeMessage(msg)
+			_ = json.Unmarshal(raw, &n)
+			mu.Lock()
+			got["sub-"+name] = n.Params.Meta[MetaKeySubscriptionID]
+			mu.Unlock()
+		}()
+		t.Cleanup(func() { ss.Close(); conn.Close() })
+	}
+
+	params := &ResourceUpdatedNotificationParams{URI: "test://r", Meta: Meta{"caller": "set"}}
+	server.notifySubscribedSessions(subscribers, notificationResourceUpdated, func() Params {
+		p := *params
+		return &p
+	})
+
+	done := make(chan struct{})
+	go func() { readers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("peers did not all receive a message")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for id, seen := range got {
+		if seen != id {
+			t.Errorf("peer %s received subscription id %v", id, seen)
+		}
+	}
+	if _, polluted := params.Meta[MetaKeySubscriptionID]; polluted || len(params.Meta) != 1 {
+		t.Errorf("caller params.Meta mutated: %v", params.Meta)
+	}
 }

@@ -838,7 +838,9 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 //
 // [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
 func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
-	m := params.GetMeta()
+	// Clone: params may share its _meta map with the caller's struct and with
+	// the other sessions' copies, and this runs concurrently per session.
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
