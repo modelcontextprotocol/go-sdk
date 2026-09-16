@@ -218,17 +218,18 @@ type StreamableHTTPOptions struct {
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
 
-	// StreamKeepAlive, if non-zero, writes an SSE comment to any SSE response
-	// stream that has carried no bytes for this duration, so that idle-timeout
-	// intermediaries do not sever long-lived streams such as the response to a
-	// subscriptions/listen request. The 2026-07-28 Streamable HTTP
+	// StreamKeepAlive, if non-zero, writes an SSE comment to the response
+	// stream of a subscriptions/listen request whenever it has carried no
+	// bytes for this duration, so that idle-timeout intermediaries do not
+	// sever the long-lived stream. The 2026-07-28 Streamable HTTP
 	// specification encourages this keep-alive; SSE clients ignore comment
-	// lines, so it has no protocol-level effect.
+	// lines, so it has no protocol-level effect. Other SSE responses are not
+	// kept alive.
 	//
-	// On streams using protocol version 2026-07-28 or later, the keep-alive
-	// starts only after a first event has committed the response headers,
-	// since the HTTP status may still have to change (see #1229). A write
-	// failure ends the stream as a disconnect.
+	// The keep-alive starts only after the listen acknowledgment has
+	// committed the response headers, since until then the HTTP status may
+	// still have to change (see #1229). A write failure ends the stream as a
+	// disconnect.
 	//
 	// If StreamKeepAlive is the zero value, no keep-alive is written.
 	StreamKeepAlive time.Duration
@@ -1018,7 +1019,7 @@ type stream struct {
 	lastWrite time.Time
 
 	// committed, if non-nil, is closed by the first write to w. The keep-alive
-	// goroutine of a >= 2026-07-28 stream parks on it instead of polling.
+	// goroutine parks on it instead of polling.
 	committed chan struct{}
 
 	// protocolVersion is the protocol version for this stream.
@@ -1088,15 +1089,12 @@ func (s *stream) markWrittenLocked() {
 // startKeepAliveLocked starts the keep-alive goroutine for the HTTP request
 // currently claiming the stream. ctx is that request's context.
 //
-// s.mu must be held, and s.protocolVersion must be set.
+// s.mu must be held.
 func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duration) {
-	var committed chan struct{}
-	if s.lastWrite.IsZero() && s.protocolVersion >= protocolVersion20260728 {
-		// Headers uncommitted: a SEP-2575 status override may still be needed
-		// (see deliverLocked), so wait for the first event.
-		committed = make(chan struct{})
-		s.committed = committed
-	}
+	// Nothing has been written yet, so a SEP-2575 status override may still
+	// be needed (see deliverLocked): wait for the first event.
+	committed := make(chan struct{})
+	s.committed = committed
 	go s.keepAlive(ctx, interval, committed)
 }
 
@@ -1260,15 +1258,6 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 		s.markWrittenLocked()
 	}
 	return done, nil
-}
-
-// setSSEHeaders sets the response headers for an SSE stream. Accept was
-// checked in [StreamableHTTPHandler]. X-Accel-Buffering asks reverse proxies
-// not to buffer the response, as the spec recommends for SSE.
-func setSSEHeaders(h http.Header) {
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
 }
 
 // doneLocked reports whether the stream is logically complete.
@@ -1486,10 +1475,9 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	}
 
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	setSSEHeaders(w.Header())
+	w.Header().Set("Content-Type", "text/event-stream") // Accept checked in [StreamableHTTPHandler]
+	w.Header().Set("Connection", "keep-alive")
 
-	// written records that headers are committed, for the keep-alive.
-	written := false
 	if s.id == "" {
 		// Issue #410: the standalone SSE stream is likely not to receive messages
 		// for a long time. Ensure that headers are flushed.
@@ -1513,7 +1501,6 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		rc := http.NewResponseController(w)
 		// Ignore returned error as flushing is best-effort.
 		_ = rc.Flush()
-		written = true
 	}
 
 	for _, data := range toReplay {
@@ -1525,7 +1512,6 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 		if _, err := writeEvent(w, e); err != nil {
 			return nil, nil
 		}
-		written = true
 	}
 
 	if tempStream || s.doneLocked() {
@@ -1539,12 +1525,6 @@ func (c *streamableServerConn) acquireStream(ctx context.Context, w http.Respons
 	s.done = make(chan struct{})
 	s.lastIdx = lastIdx
 	s.protocolVersion = protocolVersion
-	if written {
-		s.markWrittenLocked()
-	}
-	if c.streamKeepAlive > 0 {
-		s.startKeepAliveLocked(ctx, c.streamKeepAlive)
-	}
 	return s, s.done
 }
 
@@ -1826,7 +1806,10 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// Set response headers. Accept was checked in [StreamableHTTPHandler].
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	if useSSE {
-		setSSEHeaders(w.Header())
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Connection", "keep-alive")
+		// The spec recommends this for SSE: ask reverse proxies not to buffer.
+		w.Header().Set("X-Accel-Buffering", "no")
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 	}
@@ -1888,11 +1871,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if _, err := writeEvent(w, e); err != nil {
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
-			stream.mu.Lock()
-			stream.markWrittenLocked()
-			stream.mu.Unlock()
 		}
-		if c.streamKeepAlive > 0 {
+		if c.streamKeepAlive > 0 && stream.isListen {
 			stream.mu.Lock()
 			stream.startKeepAliveLocked(req.Context(), c.streamKeepAlive)
 			stream.mu.Unlock()

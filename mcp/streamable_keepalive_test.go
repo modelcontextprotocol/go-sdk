@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -135,11 +134,10 @@ loop:
 	}
 }
 
-// TestStreamKeepAlive_WaitsForFirstEvent checks that on a >= 2026-07-28
-// stream no comment is written while the response headers are uncommitted, so
-// a SEP-2575 error override can still set the HTTP status. A slow tool call
-// produces an SSE stream whose only content is the final response.
-func TestStreamKeepAlive_WaitsForFirstEvent(t *testing.T) {
+// TestStreamKeepAlive_OnlyListenStreams checks that the keep-alive is
+// confined to subscriptions/listen: a slow tools/call produces an SSE stream
+// whose only content is the final response, however long it stays silent.
+func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
 	const interval = 10 * time.Millisecond
 
 	server := NewServer(testImpl, nil)
@@ -177,7 +175,7 @@ func TestStreamKeepAlive_WaitsForFirstEvent(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
 	}
 	if bytes.Contains(body, []byte(": keepalive")) {
-		t.Errorf("keep-alive written before the first event:\n%s", body)
+		t.Errorf("keep-alive written on a tools/call stream:\n%s", body)
 	}
 }
 
@@ -198,21 +196,19 @@ func (w *recordingWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-// TestStreamKeepAlive_IdleReset checks the timer semantics directly: on a
-// >= 2026-07-28 stream nothing is written before the first event, an event
-// written between ticks defers the next comment by a full interval, and a
-// failed write closes the stream.
+// TestStreamKeepAlive_IdleReset checks the timer semantics directly: nothing
+// is written before the first event, an event written between ticks defers
+// the next comment by a full interval, and a failed write closes the stream.
 func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	const interval = 60 * time.Millisecond
 
 	w := &recordingWriter{header: http.Header{}}
 	done := make(chan struct{})
 	s := &stream{
-		id:              "s",
-		logger:          ensureLogger(nil),
-		w:               w,
-		done:            done,
-		protocolVersion: protocolVersion20260728,
+		id:     "s",
+		logger: ensureLogger(nil),
+		w:      w,
+		done:   done,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -389,111 +385,6 @@ func TestStreamKeepAlive_SurvivesIdleTimeoutProxy(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// commentCounter is an http.RoundTripper that counts SSE comment lines on
-// every text/event-stream response body it sees.
-type commentCounter struct {
-	next     http.RoundTripper
-	comments atomic.Int64
-}
-
-func (c *commentCounter) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := c.next.RoundTrip(req)
-	if err != nil || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return resp, err
-	}
-	pr, pw := io.Pipe()
-	body := resp.Body
-	go func() {
-		sc := bufio.NewScanner(io.TeeReader(body, pw))
-		for sc.Scan() {
-			if strings.HasPrefix(sc.Text(), ":") {
-				c.comments.Add(1)
-			}
-		}
-		pw.CloseWithError(sc.Err())
-	}()
-	resp.Body = struct {
-		io.Reader
-		io.Closer
-	}{pr, body}
-	return resp, nil
-}
-
-// TestStreamKeepAlive_StatefulGETStream covers the acquireStream path: on a
-// stateful server the standalone GET stream is kept alive too, and the SDK
-// client keeps working through the comments.
-func TestStreamKeepAlive_StatefulGETStream(t *testing.T) {
-	const interval = 25 * time.Millisecond
-
-	server := NewServer(testImpl, nil)
-	handler := NewStreamableHTTPHandler(
-		func(*http.Request) *Server { return server },
-		&StreamableHTTPOptions{StreamKeepAlive: interval},
-	)
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	counter := &commentCounter{next: http.DefaultTransport}
-	cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{
-		Endpoint:   httpServer.URL,
-		HTTPClient: &http.Client{Transport: counter},
-	}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cs.Close()
-
-	time.Sleep(16 * interval)
-	if err := cs.Ping(ctx, nil); err != nil {
-		t.Fatalf("ping after keep-alives: %v", err)
-	}
-	// One ": ok" on connect, then keep-alives.
-	if got := counter.comments.Load(); got < 4 {
-		t.Errorf("saw %d comment lines on the GET stream in %v, want at least 4", got, 16*interval)
-	}
-}
-
-// TestStreamKeepAlive_LegacyStreamFromStart checks that a stream on a protocol
-// version before 2026-07-28 — which has no HTTP status to protect — is kept
-// alive from the start, so a long tool call with no events is covered.
-func TestStreamKeepAlive_LegacyStreamFromStart(t *testing.T) {
-	const interval = 25 * time.Millisecond
-
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "slow"},
-		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
-			time.Sleep(12 * interval)
-			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
-		})
-	handler := NewStreamableHTTPHandler(
-		func(*http.Request) *Server { return server },
-		&StreamableHTTPOptions{Stateless: true, StreamKeepAlive: interval},
-	)
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	counter := &commentCounter{next: http.DefaultTransport}
-	cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{
-		Endpoint:   httpServer.URL,
-		HTTPClient: &http.Client{Transport: counter},
-	}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cs.Close()
-
-	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "slow"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := counter.comments.Load(); got < 3 {
-		t.Errorf("saw %d comment lines during a %v tool call, want at least 3", got, 12*interval)
 	}
 }
 
