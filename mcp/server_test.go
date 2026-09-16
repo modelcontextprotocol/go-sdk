@@ -677,7 +677,7 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 			name:         "primitive number (map-based schema)",
 			outputSchema: map[string]any{"type": "number"},
 			content:      42.0,
-			want:         42.0,
+			want:         json.Number("42"),
 		},
 		{
 			name:         "primitive string (RawMessage schema)",
@@ -721,6 +721,52 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 				t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestCallToolStructuredContentPreservesLargeInteger(t *testing.T) {
+	const want int64 = 9007199254740993
+
+	server := NewServer(testImpl, nil)
+	server.AddTool(&Tool{
+		Name:        "large-integer",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{StructuredContent: map[string]any{"id": want}}, nil
+	})
+
+	clientTransport, serverTransport := NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := NewClient(testImpl, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(context.Background(), &CallToolParams{Name: "large-integer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", result.StructuredContent)
+	}
+	number, ok := structured["id"].(json.Number)
+	if !ok {
+		t.Fatalf("id type = %T, want json.Number", structured["id"])
+	}
+	got, err := number.Int64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("id = %d, want %d", got, want)
 	}
 }
 
@@ -816,7 +862,7 @@ func TestAddToolGenericNonObjectOutput(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("unexpected tool error: %v", res.Content)
 		}
-		if diff := cmp.Diff(float64(42), res.StructuredContent); diff != "" {
+		if diff := cmp.Diff(json.Number("42"), res.StructuredContent); diff != "" {
 			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 		}
 	})
