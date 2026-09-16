@@ -920,7 +920,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	}
 	res, err := prompt.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
 	}
@@ -1022,10 +1022,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	}
 	res, err := st.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.resultType != resultTypeInputRequired {
+		if res.Content == nil && res.InputRequests == nil {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1090,11 +1090,11 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if res == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
 	}
-	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+	if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.resultType == resultTypeInputRequired {
+	if res.InputRequests != nil {
 		return res, nil
 	}
 	if res.Contents == nil {
@@ -1867,6 +1867,9 @@ func (s *Server) AddSendingMiddleware(middleware ...Middleware) {
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
+//
+// A received message need not carry params: use [HasParams] before inspecting
+// [Request.GetParams].
 func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2049,8 +2052,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if err != nil {
 		return nil, err
 	}
-	if validatedMeta.usesNewProtocol {
-		setCompleteResultType(res)
+	// A middleware can return a typed nil value that satisfies the Result
+	// interface. Annotating that value panics.
+	if validatedMeta.usesNewProtocol && res != nil && !res.isNil() {
+		annotateResultType(res)
 		annotateServerInfo(res, ss.server.impl)
 	}
 	return res, nil

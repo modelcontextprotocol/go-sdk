@@ -534,24 +534,24 @@ provided to
 
 ### Server-Side Request Forgery
 
-The [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-3) are as follows:
+The OAuth discovery helpers apply these [mitigations](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-3) by default:
 
-- _Enforce HTTPS_. The OAuth helpers provided by the SDK reject the `http://` URLs
-except loopback addresses (`localhost`, `127.0.0.1`, `::1`).
+- _Enforce HTTPS_. Reject `http://` URLs (except loopback: `localhost`, `127.0.0.1`, `::1`)
+and redirects that downgrade `https` to a non-`https` scheme.
 
-- _Block Private IP Ranges_. The OAuth helpers provided by the SDK allow passing
-a custom `http.Client`. Developers are advised to customize the client it with
-appropriate network protections, including IP range blocking. The SDK does not provide
-this capability out of the box.
+- _Block Private IP Ranges_. Reject targets that resolve to a non-public address
+(private, link-local including the `169.254.169.254` metadata endpoint, CGNAT, multicast,
+unspecified). The check runs on the initial URL and at dial time, guarding against DNS rebinding.
 
-- _Validate Redirect Targets_. Similarly to previous point, customized `http.Client`
-can be used to validate network hops. The SDK does not provide this capability out
-of the box.
+- _Validate Redirect Targets_. Reject redirects to non-public addresses and cap the redirect count.
 
-- _Use Egress Proxies_. This is out of scope for the SDK and can be configured separately.
+- _Use Egress Proxies_. Out of scope for the SDK; configure separately.
 
-- _DNS Resolution Considerations_. The SDK has DNS rebinding protection on the server side which is enabled by default. For the client side, consider providing
-a custom `http.Client` that would implement DNS pinning.
+**Opting out.** Passing a custom `http.Client` can bypass these checks, making SSRF
+protection your responsibility. Specifically: a custom `Transport.DialContext`/`DialTLSContext`,
+a non-`*http.Transport`, or a configured `Proxy` disables the dial-time IP check; setting
+`CheckRedirect` replaces all redirect validation. In these cases, implement your own IP
+blocking, redirect validation, and DNS pinning.
 
 ### Session Hijacking
 

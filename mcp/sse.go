@@ -225,7 +225,7 @@ func (t *SSEServerTransport) SupportsProtocolVersion(version string) bool {
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
-	if !h.opts.DisableLocalhostProtection && disablelocalhostprotection != "1" {
+	if !h.opts.DisableLocalhostProtection {
 		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
 			if util.IsLoopback(localAddr.String()) && !util.IsLoopback(req.Host) {
 				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
@@ -235,7 +235,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate 'Content-Type' header.
-	if disablecontenttypecheck != "1" && req.Method == http.MethodPost {
+	if req.Method == http.MethodPost {
 		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 		if err != nil || mediaType != "application/json" {
 			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
@@ -437,9 +437,11 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		maxEventSize = DefaultMaxEventSize
 	}
 
+	// Reuse the scanner so events buffered after the endpoint are not lost.
+	events := scanEventsLimited(resp.Body, maxEventSize)
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
-		for evt, err = range scanEventsLimited(resp.Body, maxEventSize) {
+		for evt, err = range events {
 			break
 		}
 		if err != nil {
@@ -468,7 +470,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	go func() {
 		defer s.Close() // close the transport when the GET exits
 
-		for evt, err := range scanEventsLimited(resp.Body, maxEventSize) {
+		for evt, err := range events {
 			if err != nil {
 				return
 			}
