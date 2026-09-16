@@ -3363,6 +3363,159 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	}
 }
 
+// newSubListenSubscribeServer is newSubListenServer with a resource and the
+// handlers that make the server advertise resources.subscribe, so that a
+// listen can carry a resource subscription.
+func newSubListenSubscribeServer() *Server {
+	s := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+	})
+	AddTool(s, &Tool{Name: "t1"}, sayHi)
+	s.AddPrompt(&Prompt{Name: "p1"}, nil)
+	s.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+	return s
+}
+
+func waitSubListenEvent(t *testing.T, events chan subListenEvent, kind string) subListenEvent {
+	t.Helper()
+	select {
+	case e := <-events:
+		if e.kind != kind {
+			t.Fatalf("got event %q, want %q", e.kind, kind)
+		}
+		return e
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %q", kind)
+		return subListenEvent{}
+	}
+}
+
+// TestSubscriptionsListen_TeardownKeepsOtherListens verifies that unwinding
+// one listen leaves the other listens on the same session registered.
+// Unsubscribe tears down the listen that Subscribe opened for the resource;
+// the auto-listen opened by Connect must keep delivering list-changed
+// notifications.
+func TestSubscriptionsListen_TeardownKeepsOtherListens(t *testing.T) {
+	events := make(chan subListenEvent, 16)
+	server := newSubListenSubscribeServer()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := newSubListenClient(events).Connect(ctx, ct,
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	autoListen := waitSubListenEvent(t, events, "ack")
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	resourceListen := waitSubListenEvent(t, events, "ack")
+	if resourceListen.id == autoListen.id {
+		t.Fatalf("Subscribe reused subscription ID %s", autoListen.id)
+	}
+
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	// Wait for the server to unwind that listen, observed through a registry
+	// the auto-listen does not appear in.
+	waitUntil(t, 5*time.Second, "resource listen to unwind", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, ok := server.resourceSubscriptions["file:///r1"]
+		return !ok
+	})
+
+	AddTool(server, &Tool{Name: "t2"}, sayHi)
+	if got := waitSubListenEvent(t, events, "tool"); got.id != autoListen.id {
+		t.Errorf("tool notification id = %s, want auto-listen %s", got.id, autoListen.id)
+	}
+}
+
+// TestSubscriptionsListen_TeardownRetiresOwnRegistration verifies that a
+// listen still retires what it registered, so that per-listen tracking does
+// not turn into a leak.
+func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
+	events := make(chan subListenEvent, 8)
+	server := newSubListenServer()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// A client with no list-changed handlers does not auto-listen, so the
+	// listen opened below is the session's only one.
+	c := NewClient(testImpl, nil)
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				events <- subListenEvent{"ack", ""}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	listenCtx, cancelListen := context.WithCancel(context.Background())
+	defer cancelListen()
+	if err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{ToolsListChanged: true, PromptsListChanged: true},
+	}); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	waitSubListenEvent(t, events, "ack")
+
+	server.mu.Lock()
+	_, inTool := server.toolChangeSubscriptions[ss]
+	_, inPrompt := server.promptChangeSubscriptions[ss]
+	server.mu.Unlock()
+	if !inTool || !inPrompt {
+		t.Fatal("listen not registered")
+	}
+
+	cancelListen()
+	waitUntil(t, 5*time.Second, "registrations to be retired", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, inTool := server.toolChangeSubscriptions[ss]
+		_, inPrompt := server.promptChangeSubscriptions[ss]
+		return !inTool && !inPrompt
+	})
+}
+
+// waitUntil polls cond until it reports true, failing the test after timeout.
+func waitUntil(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestSubscriptionsListen_RespectsServerCapabilities verifies that during
 // Connect the client only opens a SEP-2575 subscriptions/listen stream for the
 // change notifications the server advertised during capability negotiation.
