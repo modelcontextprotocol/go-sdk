@@ -677,7 +677,7 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 			name:         "primitive number (map-based schema)",
 			outputSchema: map[string]any{"type": "number"},
 			content:      42.0,
-			want:         42.0,
+			want:         json.Number("42"),
 		},
 		{
 			name:         "primitive string (RawMessage schema)",
@@ -721,6 +721,52 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 				t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestCallToolStructuredContentPreservesLargeInteger(t *testing.T) {
+	const want int64 = 9007199254740993
+
+	server := NewServer(testImpl, nil)
+	server.AddTool(&Tool{
+		Name:        "large-integer",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{StructuredContent: map[string]any{"id": want}}, nil
+	})
+
+	clientTransport, serverTransport := NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := NewClient(testImpl, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(context.Background(), &CallToolParams{Name: "large-integer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", result.StructuredContent)
+	}
+	number, ok := structured["id"].(json.Number)
+	if !ok {
+		t.Fatalf("id type = %T, want json.Number", structured["id"])
+	}
+	got, err := number.Int64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("id = %d, want %d", got, want)
 	}
 }
 
@@ -816,7 +862,7 @@ func TestAddToolGenericNonObjectOutput(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("unexpected tool error: %v", res.Content)
 		}
-		if diff := cmp.Diff(float64(42), res.StructuredContent); diff != "" {
+		if diff := cmp.Diff(json.Number("42"), res.StructuredContent); diff != "" {
 			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 		}
 	})
@@ -1399,6 +1445,22 @@ func TestServerSessionHandle_RejectsInitializeOnNewProtocol(t *testing.T) {
 	})
 }
 
+// newProtocolParams merges fields into the _meta that opts a request into the
+// sessionless protocol (SEP-2575).
+func newProtocolParams(fields map[string]any) map[string]any {
+	params := map[string]any{
+		"_meta": map[string]any{
+			MetaKeyProtocolVersion:    protocolVersion20260728,
+			MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+			MetaKeyClientCapabilities: map[string]any{},
+		},
+	}
+	for k, v := range fields {
+		params[k] = v
+	}
+	return params
+}
+
 func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
 	server := NewServer(testImpl, &ServerOptions{
 		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
@@ -1424,19 +1486,19 @@ func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
 			InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
 		}, nil
 	})
-	newProtocolParams := func(fields map[string]any) map[string]any {
-		params := map[string]any{
-			"_meta": map[string]any{
-				MetaKeyProtocolVersion:    protocolVersion20260728,
-				MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
-				MetaKeyClientCapabilities: map[string]any{},
-			},
-		}
-		for k, v := range fields {
-			params[k] = v
-		}
-		return params
-	}
+	AddTool(server, &Tool{Name: "toolComplete"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+	})
+	server.AddPrompt(&Prompt{Name: "promptComplete"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{
+			Messages: []*PromptMessage{{Role: "assistant", Content: &TextContent{Text: "ok"}}},
+		}, nil
+	})
+	server.AddResource(&Resource{URI: "test://resource-complete", Name: "resourceComplete"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://resource-complete", Text: "ok"}},
+		}, nil
+	})
 
 	tests := []struct {
 		name   string
@@ -1507,38 +1569,241 @@ func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
 			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
 			want:   resultTypeInputRequired,
 		},
+		{
+			name:   "tool complete",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "toolComplete", "arguments": map[string]any{}}),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "prompt complete",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "promptComplete"}),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "resource complete",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource-complete"}),
+			want:   resultTypeComplete,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if got := resultTypeOf(t, server, nil, tc.method, tc.params); got != string(tc.want) {
+				t.Errorf("resultType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServerSessionHandle_SetsResultTypeWhenMiddlewareShortCircuits is a
+// regression test for #1225. User middleware wraps outside
+// serverMultiRoundTripMiddleware, so a middleware that returns a result
+// without calling next bypasses both that shim and the dispatcher.
+func TestServerSessionHandle_SetsResultTypeWhenMiddlewareShortCircuits(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+		result Result
+		want   resultType
+	}{
+		{
+			name:   "tools/call",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			result: &CallToolResult{Content: []Content{&TextContent{Text: "denied"}}},
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "prompts/get",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "prompt"}),
+			result: &GetPromptResult{
+				Messages: []*PromptMessage{{Role: "assistant", Content: &TextContent{Text: "denied"}}},
+			},
+			want: resultTypeComplete,
+		},
+		{
+			name:   "resources/read",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
+			result: &ReadResourceResult{
+				Contents: []*ResourceContents{{URI: "test://resource", Text: "denied"}},
+			},
+			want: resultTypeComplete,
+		},
+		{
+			// setResultType is unexported, so populating InputRequests is
+			// the only way a middleware can ask for input.
+			name:   "tools/call input required",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			result: &CallToolResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
+			},
+			want: resultTypeInputRequired,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Nothing is registered: if the middleware fell through to next,
+			// dispatch would fail rather than return a result.
+			server := NewServer(testImpl, nil)
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == tc.method {
+						return tc.result, nil
+					}
+					return next(ctx, method, req)
+				}
+			})
+			if got := resultTypeOf(t, server, nil, tc.method, tc.params); got != string(tc.want) {
+				t.Errorf("resultType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServerSessionHandle_ResultTypeGate pins when a result carries resultType.
+// annotateResultType is the only setter, and handle gates it on the request's
+// _meta rather than on the version the session negotiated. So the last case
+// below gets no resultType even though the session speaks 2026-07-28. Only a
+// client that mixes protocol versions reaches that, so it is recorded rather
+// than fixed.
+func TestServerSessionHandle_ResultTypeGate(t *testing.T) {
+	version := func(v string) func(*ServerSessionState) {
+		return func(s *ServerSessionState) {
+			s.InitializeParams = &InitializeParams{ProtocolVersion: v}
+		}
+	}
+	callParams := map[string]any{"name": "tool", "arguments": map[string]any{}}
+
+	tests := []struct {
+		name   string
+		state  func(*ServerSessionState)
+		params map[string]any
+		want   resultType // "" means the field must be absent
+	}{
+		{
+			name:   "legacy session, no _meta",
+			state:  version(protocolVersion20251125),
+			params: callParams,
+		},
+		{
+			name:   "legacy session, new-protocol _meta",
+			state:  version(protocolVersion20251125),
+			params: newProtocolParams(callParams),
+			want:   resultTypeComplete,
+		},
+		{
+			name:   "new-protocol session, no _meta",
+			state:  version(protocolVersion20260728),
+			params: callParams,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			// Short-circuit so this measures handle's gate, not the
+			// dispatcher's.
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(context.Context, string, Request) (Result, error) {
+					return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+				}
+			})
+			if got := resultTypeOf(t, server, tc.state, methodCallTool, tc.params); got != string(tc.want) {
+				t.Errorf("resultType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServerSessionHandle_NilResultFromMiddleware checks that a middleware
+// returning no result does not panic. A typed nil satisfies Result, so the
+// annotation helpers would otherwise dereference it.
+func TestServerSessionHandle_NilResultFromMiddleware(t *testing.T) {
+	tests := []struct {
+		name   string
+		result Result
+	}{
+		{"nil interface", nil},
+		{"typed nil", (*CallToolResult)(nil)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(context.Context, string, Request) (Result, error) {
+					return tc.result, nil
+				}
+			})
 			ss := &ServerSession{server: server}
 			id, err := jsonrpc.MakeID("test")
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := ss.handle(context.Background(), &jsonrpc.Request{
+			res, err := ss.handle(context.Background(), &jsonrpc.Request{
 				ID:     id,
-				Method: tc.method,
-				Params: mustMarshal(tc.params),
+				Method: methodCallTool,
+				Params: mustMarshal(newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}})),
 			})
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("handle: %v", err)
 			}
-			data, err := json.Marshal(result)
+			data, err := json.Marshal(res)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var got struct {
-				ResultType string `json:"resultType"`
-			}
-			if err := json.Unmarshal(data, &got); err != nil {
-				t.Fatal(err)
-			}
-			if got.ResultType != string(tc.want) {
-				t.Fatalf("resultType = %q, want %q; response = %s", got.ResultType, tc.want, data)
+			if got := string(data); got != "null" {
+				t.Errorf("result = %s, want null", got)
 			}
 		})
 	}
+}
+
+// resultTypeOf handles one request on a transportless session and reports the
+// resultType of the marshaled result, or "" if the field is absent.
+func resultTypeOf(t *testing.T, server *Server, state func(*ServerSessionState), method string, params map[string]any) string {
+	t.Helper()
+	ss := &ServerSession{server: server}
+	if state != nil {
+		ss.updateState(state)
+	}
+	id, err := jsonrpc.MakeID("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ss.handle(context.Background(), &jsonrpc.Request{
+		ID:     id,
+		Method: method,
+		Params: mustMarshal(params),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := fields["resultType"]
+	if !ok {
+		return ""
+	}
+	var got string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshaling resultType from %s: %v", data, err)
+	}
+	return got
 }
 
 // TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol verifies that
@@ -1930,5 +2195,219 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 	}
 	if diff := cmp.Diff([]string{protocolVersion20251125}, data.Supported); diff != "" {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestServerHandle_LegacyCallBeforeInitialize asserts that a call carrying no
+// new-protocol `_meta` is refused on a session that has not completed
+// 'initialize', whichever branch of the method switch it lands in. The
+// handshake itself is what ends that state, and the lifecycle spec exempts
+// pings, so those two are served.
+//
+// The gate used to sit in the default branch, so 'logging/setLevel',
+// 'resources/subscribe' and 'resources/unsubscribe', which share a case that
+// only refuses new-protocol requests, were served before the handshake. For
+// subscribe that registered a session that never handshook as a subscriber,
+// so the subtest also asserts that the refusal leaves no subscriber and runs
+// no handler.
+func TestServerHandle_LegacyCallBeforeInitialize(t *testing.T) {
+	ctx := context.Background()
+	const uri = "test://resource"
+
+	tests := []struct {
+		name   string
+		method string
+		params string
+		served bool
+	}{
+		{
+			name:   "initialize",
+			method: methodInitialize,
+			params: fmt.Sprintf(`{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`, protocolVersion20251125),
+			served: true,
+		},
+		{name: "ping", method: methodPing, params: `{}`, served: true},
+		{name: "tools/list", method: methodListTools, params: `{}`},
+		{name: "logging/setLevel", method: methodSetLevel, params: `{"level":"info"}`},
+		{name: "resources/subscribe", method: methodSubscribe, params: fmt.Sprintf(`{"uri":%q}`, uri)},
+		{name: "resources/unsubscribe", method: methodUnsubscribe, params: fmt.Sprintf(`{"uri":%q}`, uri)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var handlerRan bool
+			server := NewServer(testImpl, &ServerOptions{
+				SubscribeHandler: func(context.Context, *SubscribeRequest) error {
+					handlerRan = true
+					return nil
+				},
+				UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
+					handlerRan = true
+					return nil
+				},
+			})
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			res, err := ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: tc.method,
+				Params: json.RawMessage(tc.params),
+			})
+			if tc.served {
+				if err != nil {
+					t.Fatalf("handle(%q) before initialize returned %v, want it served", tc.method, err)
+				}
+				if res == nil {
+					t.Fatalf("handle(%q) before initialize returned no result", tc.method)
+				}
+				if tc.method == methodInitialize && ss.InitializeParams() == nil {
+					t.Errorf("initialize was answered without recording InitializeParams")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("handle(%q) served the call before initialize, want a refusal", tc.method)
+			}
+			if want := fmt.Sprintf("method %q is invalid during session initialization", tc.method); err.Error() != want {
+				t.Errorf("handle(%q) error = %q, want %q", tc.method, err.Error(), want)
+			}
+			if handlerRan {
+				t.Errorf("handle(%q) ran the server's handler for a call it refused", tc.method)
+			}
+			server.mu.Lock()
+			_, subscribed := server.resourceSubscriptions[uri][ss]
+			server.mu.Unlock()
+			if subscribed {
+				t.Errorf("handle(%q) left the session subscribed to %q", tc.method, uri)
+			}
+		})
+	}
+}
+
+// TestServerHandle_NewProtocolCallWithoutInitialize asserts that the gate
+// stays off the SEP-2575 path. A fresh session that never sends 'initialize'
+// is served a new-protocol 'tools/list', and the methods the gate now covers
+// are answered, when a new-protocol request names them, with the error the
+// new protocol already gave them (the method does not exist there), and not
+// with the initialization refusal.
+func TestServerHandle_NewProtocolCallWithoutInitialize(t *testing.T) {
+	ctx := context.Background()
+	const uri = "test://resource"
+
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+		served bool
+	}{
+		{name: "tools/list", method: methodListTools, params: newProtocolParams(nil), served: true},
+		{name: "logging/setLevel", method: methodSetLevel, params: newProtocolParams(map[string]any{"level": "info"})},
+		{name: "resources/subscribe", method: methodSubscribe, params: newProtocolParams(map[string]any{"uri": uri})},
+		{name: "resources/unsubscribe", method: methodUnsubscribe, params: newProtocolParams(map[string]any{"uri": uri})},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, &ServerOptions{
+				SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+				UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+			})
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			params, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatalf("marshalling params: %v", err)
+			}
+			res, err := ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: tc.method,
+				Params: params,
+			})
+			if tc.served {
+				if err != nil {
+					t.Fatalf("handle(%q) on a new-protocol session returned %v, want it served", tc.method, err)
+				}
+				if res == nil {
+					t.Fatalf("handle(%q) on a new-protocol session returned no result", tc.method)
+				}
+				return
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("handle(%q) returned %v, want a *jsonrpc.Error", tc.method, err)
+			}
+			if jerr.Code != jsonrpc.CodeMethodNotFound {
+				t.Errorf("handle(%q) error code = %d, want %d (removed in the new protocol)", tc.method, jerr.Code, jsonrpc.CodeMethodNotFound)
+			}
+			if strings.Contains(err.Error(), "invalid during session initialization") {
+				t.Errorf("handle(%q) applied the initialization gate to a new-protocol request: %v", tc.method, err)
+			}
+		})
+	}
+}
+
+// TestServerUnknownProtocolVersion_NewProtocol verifies that a request whose
+// `_meta.protocolVersion` names a version the SDK does not know is rejected
+// with [CodeUnsupportedProtocolVersion], and not served as a legacy handshake
+// because its version string happens to sort below 2026-07-28.
+func TestServerUnknownProtocolVersion_NewProtocol(t *testing.T) {
+	ctx := context.Background()
+	// Each case names a version that is not in [supportedProtocolVersions] and
+	// sorts below 2026-07-28.
+	tests := []struct {
+		name      string
+		version   string
+		extraMeta string // further `_meta` entries, each with a leading comma
+	}{
+		// The versioning spec uses 1900-01-01 to illustrate this error.
+		{"documented example", "1900-01-01", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		{"unreleased revision", "2025-11-24", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		{"not a date", "1.0", fmt.Sprintf(`,%q:{}`, MetaKeyClientCapabilities)},
+		// The rest of the `_meta` triple is defined by the revision the request
+		// names, so its absence must not mask the version itself.
+		{"no clientCapabilities", "1900-01-01", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			params := fmt.Sprintf(`{"_meta":{%q:%q%s}}`, MetaKeyProtocolVersion, tc.version, tc.extraMeta)
+			_, err = ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: methodListTools,
+				Params: json.RawMessage(params),
+			})
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
+			}
+			if jerr.Code != CodeUnsupportedProtocolVersion {
+				t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
+			}
+			var data UnsupportedProtocolVersionData
+			if err := json.Unmarshal(jerr.Data, &data); err != nil {
+				t.Fatalf("unmarshal error data: %v", err)
+			}
+			if data.Requested != tc.version {
+				t.Errorf("UnsupportedProtocolVersionData.Requested = %q, want %q", data.Requested, tc.version)
+			}
+			if diff := cmp.Diff(SupportedProtocolVersions(), data.Supported); diff != "" {
+				t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

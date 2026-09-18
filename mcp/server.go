@@ -910,7 +910,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	}
 	res, err := prompt.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
 	}
@@ -1012,10 +1012,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	}
 	res, err := st.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.resultType != resultTypeInputRequired {
+		if res.Content == nil && res.InputRequests == nil {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1080,11 +1080,11 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if res == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
 	}
-	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+	if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.resultType == resultTypeInputRequired {
+	if res.InputRequests != nil {
 		return res, nil
 	}
 	if res.Contents == nil {
@@ -1857,6 +1857,9 @@ func (s *Server) AddSendingMiddleware(middleware ...Middleware) {
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
+//
+// A received message need not carry params: use [HasParams] before inspecting
+// [Request.GetParams].
 func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1986,15 +1989,21 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() {
-			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
-		}
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
 			})
 		}
+	}
+
+	// In legacy protocol versions, a client cannot send requests other than
+	// pings before the server has responded to the initialize request. A
+	// new-protocol request is exempt: a SEP-2575 session has no 'initialize'
+	// to wait for, and the request itself says which protocol it speaks.
+	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
+		req.Method != methodInitialize && req.Method != methodPing {
+		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
+		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
@@ -2039,8 +2048,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if err != nil {
 		return nil, err
 	}
-	if validatedMeta.usesNewProtocol {
-		setCompleteResultType(res)
+	// A middleware can return a typed nil value that satisfies the Result
+	// interface. Annotating that value panics.
+	if validatedMeta.usesNewProtocol && res != nil && !res.isNil() {
+		annotateResultType(res)
 		annotateServerInfo(res, ss.server.impl)
 	}
 	return res, nil

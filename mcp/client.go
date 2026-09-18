@@ -1147,6 +1147,9 @@ func (c *Client) AddSendingMiddleware(middleware ...Middleware) {
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
+//
+// A received message need not carry params: use [HasParams] before inspecting
+// [Request.GetParams].
 func (c *Client) AddReceivingMiddleware(middleware ...Middleware) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
