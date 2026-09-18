@@ -288,8 +288,14 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 					t.Errorf("CallTool failed: %v", err)
 					return
 				}
-				if got := int(res.StructuredContent.(map[string]any)["Count"].(float64)); got != i {
-					t.Errorf("got count %d, want %d", got, i)
+				number, ok := res.StructuredContent.(map[string]any)["Count"].(json.Number)
+				if !ok {
+					t.Errorf("count type = %T, want json.Number", res.StructuredContent.(map[string]any)["Count"])
+					continue
+				}
+				got, err := number.Int64()
+				if err != nil || got != int64(i) {
+					t.Errorf("got count %d, %v; want %d", got, err, i)
 				}
 			}
 		})
