@@ -734,7 +734,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if batch {
 		var respBatch *msgBatch // track incoming requests in the batch
 		for _, msg := range msgs {
-			if req, ok := msg.(*jsonrpc.Request); ok {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				if respBatch == nil {
 					respBatch = &msgBatch{
 						unresolved: make(map[jsonrpc2.ID]int),
