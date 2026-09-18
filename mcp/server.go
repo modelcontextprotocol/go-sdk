@@ -1276,10 +1276,19 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 	s.mu.Unlock()
 	defer func() {
+		// Retire only what this listen registered above: a session can hold
+		// several listens at once, and deleting by session alone retires a
+		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		delete(s.toolChangeSubscriptions, req.Session)
-		delete(s.promptChangeSubscriptions, req.Session)
-		delete(s.resourceChangeSubscriptions, req.Session)
+		if allowed.ToolsListChanged {
+			delete(s.toolChangeSubscriptions, req.Session)
+		}
+		if allowed.PromptsListChanged {
+			delete(s.promptChangeSubscriptions, req.Session)
+		}
+		if allowed.ResourcesListChanged {
+			delete(s.resourceChangeSubscriptions, req.Session)
+		}
 		s.mu.Unlock()
 	}()
 
