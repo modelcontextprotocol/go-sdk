@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // listenRequest returns a raw 2026-07-28 subscriptions/listen POST for uri.
@@ -106,7 +109,7 @@ loop:
 				t.Fatal("stream ended early")
 			}
 			switch {
-			case line == ": keepalive":
+			case line == ":":
 				comments++
 			case strings.HasPrefix(line, "event: "):
 				events++
@@ -174,7 +177,7 @@ func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
 	}
-	if bytes.Contains(body, []byte(": keepalive")) {
+	if bytes.Contains(body, []byte(":\n\n")) {
 		t.Errorf("keep-alive written on a tools/call stream:\n%s", body)
 	}
 }
@@ -182,18 +185,152 @@ func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
 // recordingWriter is an http.ResponseWriter that records writes and can be
 // made to fail.
 type recordingWriter struct {
-	header http.Header
-	buf    bytes.Buffer
-	err    error
+	header          http.Header
+	buf             bytes.Buffer
+	err             error
+	deadlines       []time.Time
+	deadlineAtWrite []time.Time
 }
 
 func (w *recordingWriter) Header() http.Header { return w.header }
 func (w *recordingWriter) WriteHeader(int)     {}
+func (w *recordingWriter) SetWriteDeadline(d time.Time) error {
+	w.deadlines = append(w.deadlines, d)
+	return nil
+}
 func (w *recordingWriter) Write(p []byte) (int, error) {
+	if len(w.deadlines) > 0 {
+		w.deadlineAtWrite = append(w.deadlineAtWrite, w.deadlines[len(w.deadlines)-1])
+	}
 	if w.err != nil {
 		return 0, w.err
 	}
 	return w.buf.Write(p)
+}
+
+func TestStreamKeepAliveExtendsWriteDeadline(t *testing.T) {
+	const interval = 20 * time.Millisecond
+
+	w := &recordingWriter{header: http.Header{}}
+	s := &stream{
+		logger:        ensureLogger(nil),
+		w:             w,
+		done:          make(chan struct{}),
+		writeDeadline: interval,
+	}
+	before := time.Now()
+	s.mu.Lock()
+	_, err := s.deliverLocked([]byte(`{"jsonrpc":"2.0","method":"test"}`), "", jsonrpc.ID{}, 0)
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.deadlines) != 1 {
+		t.Fatalf("SetWriteDeadline calls = %d, want 1", len(w.deadlines))
+	}
+	if got := w.deadlines[0]; got.Before(before.Add(interval)) || got.After(time.Now().Add(3*interval)) {
+		t.Errorf("write deadline = %v, want approximately %v after now", got, 2*interval)
+	}
+	if len(w.deadlineAtWrite) != 1 || !w.deadlineAtWrite[0].Equal(w.deadlines[0]) {
+		t.Errorf("write used deadline %v, want %v", w.deadlineAtWrite, w.deadlines)
+	}
+}
+
+func TestStreamKeepAliveDisabledDoesNotExtendWriteDeadline(t *testing.T) {
+	w := &recordingWriter{header: http.Header{}}
+	s := &stream{
+		logger:        ensureLogger(nil),
+		w:             w,
+		done:          make(chan struct{}),
+		writeDeadline: -1,
+	}
+	s.mu.Lock()
+	_, err := s.deliverLocked([]byte(`{"jsonrpc":"2.0","method":"test"}`), "", jsonrpc.ID{}, 0)
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.deadlines) != 0 {
+		t.Errorf("SetWriteDeadline calls = %d, want 0", len(w.deadlines))
+	}
+}
+
+func TestStreamKeepAliveDefault(t *testing.T) {
+	h := NewStreamableHTTPHandler(func(*http.Request) *Server { return nil }, nil)
+	if got := h.opts.StreamKeepAlive; got != DefaultStreamKeepAlive {
+		t.Errorf("default StreamKeepAlive = %v, want %v", got, DefaultStreamKeepAlive)
+	}
+	h = NewStreamableHTTPHandler(func(*http.Request) *Server { return nil }, &StreamableHTTPOptions{StreamKeepAlive: -1})
+	if got := h.opts.StreamKeepAlive; got != -1 {
+		t.Errorf("disabled StreamKeepAlive = %v, want -1", got)
+	}
+}
+
+func TestStreamKeepAliveSurvivesWriteTimeout(t *testing.T) {
+	const writeTimeout = 50 * time.Millisecond
+
+	subCh := make(chan string, 1)
+	unsubCh := make(chan string, 1)
+	server := resourceSubServer(t, subCh, unsubCh)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := &http.Server{Handler: handler, WriteTimeout: writeTimeout}
+	go func() { _ = httpServer.Serve(listener) }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	resp, err := http.DefaultClient.Do(listenRequest(t, ctx, "http://"+listener.Addr().String(), "file:///r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		resp.Body.Close()
+		httpServer.Close()
+	})
+
+	lines := make(chan string, 16)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-subCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for subscription")
+	}
+	time.Sleep(3 * writeTimeout)
+	if err := server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatal("stream ended before resource update")
+			}
+			if strings.Contains(line, `"method":"notifications/resources/updated"`) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for resource update")
+		}
+	}
 }
 
 // TestStreamKeepAlive_IdleReset checks the timer semantics directly: nothing
@@ -205,10 +342,11 @@ func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	w := &recordingWriter{header: http.Header{}}
 	done := make(chan struct{})
 	s := &stream{
-		id:     "s",
-		logger: ensureLogger(nil),
-		w:      w,
-		done:   done,
+		id:            "s",
+		logger:        ensureLogger(nil),
+		w:             w,
+		done:          done,
+		writeDeadline: interval,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -227,7 +365,7 @@ func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	s.mu.Unlock()
 	time.Sleep(2 * interval)
 	s.mu.Lock()
-	if got := w.buf.String(); !strings.Contains(got, ": keepalive\n\n") {
+	if got := w.buf.String(); !strings.Contains(got, ":\n\n") {
 		t.Errorf("after the idle interval, wrote %q, want a comment", got)
 	}
 	// A fresh event resets the idle timer: the next comment must not arrive
@@ -251,6 +389,9 @@ func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	s.mu.Lock()
 	if s.done != nil {
 		t.Error("done not cleared after close")
+	}
+	if len(w.deadlines) < 2 {
+		t.Errorf("SetWriteDeadline calls = %d, want at least 2", len(w.deadlines))
 	}
 	s.mu.Unlock()
 }
@@ -327,7 +468,7 @@ func TestStreamKeepAlive_SurvivesIdleTimeoutProxy(t *testing.T) {
 		keepAlive time.Duration
 		survives  bool
 	}{
-		{"without keep-alive", 0, false},
+		{"without keep-alive", -1, false},
 		{"with keep-alive", idle / 6, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

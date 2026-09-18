@@ -218,7 +218,7 @@ type StreamableHTTPOptions struct {
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
 
-	// StreamKeepAlive, if non-zero, writes an SSE comment to the response
+	// StreamKeepAlive writes an SSE comment to the response
 	// stream of a subscriptions/listen request whenever it has carried no
 	// bytes for this duration, so that idle-timeout intermediaries do not
 	// sever the long-lived stream. The 2026-07-28 Streamable HTTP
@@ -231,9 +231,14 @@ type StreamableHTTPOptions struct {
 	// still have to change (see #1229). A write failure ends the stream as a
 	// disconnect.
 	//
-	// If StreamKeepAlive is the zero value, no keep-alive is written.
+	// If zero, [DefaultStreamKeepAlive] is used. A negative value disables
+	// keep-alives.
 	StreamKeepAlive time.Duration
 }
+
+// DefaultStreamKeepAlive is the default value used for
+// [StreamableHTTPOptions.StreamKeepAlive] when it is left at zero.
+const DefaultStreamKeepAlive = 30 * time.Second
 
 // DefaultMaxRequestBodyBytes is the default value used for
 // [StreamableHTTPOptions.MaxRequestBodyBytes] when it is left at zero.
@@ -257,6 +262,9 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.MaxRequestBodyBytes == 0 {
 		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
+	}
+	if h.opts.StreamKeepAlive == 0 {
+		h.opts.StreamKeepAlive = DefaultStreamKeepAlive
 	}
 
 	return h
@@ -1022,6 +1030,11 @@ type stream struct {
 	// goroutine parks on it instead of polling.
 	committed chan struct{}
 
+	// writeDeadline is the interval used to extend the HTTP write deadline
+	// before writing an SSE event or comment. It is zero when keep-alives are
+	// disabled.
+	writeDeadline time.Duration
+
 	// protocolVersion is the protocol version for this stream.
 	protocolVersion string
 
@@ -1086,6 +1099,17 @@ func (s *stream) markWrittenLocked() {
 	}
 }
 
+// extendWriteDeadlineLocked keeps the server's slow-write guard active while
+// allowing an idle SSE stream to remain open until its next keep-alive.
+//
+// s.mu must be held.
+func (s *stream) extendWriteDeadlineLocked() {
+	if s.writeDeadline <= 0 {
+		return
+	}
+	_ = http.NewResponseController(s.w).SetWriteDeadline(time.Now().Add(2 * s.writeDeadline))
+}
+
 // startKeepAliveLocked starts the keep-alive goroutine for the HTTP request
 // currently claiming the stream. ctx is that request's context.
 //
@@ -1133,7 +1157,8 @@ func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committe
 			timer.Reset(wait)
 			continue
 		}
-		_, err := fmt.Fprint(s.w, ": keepalive\n\n")
+		s.extendWriteDeadlineLocked()
+		_, err := fmt.Fprint(s.w, ":\n\n")
 		if err == nil {
 			// Ignore returned error as flushing is best-effort.
 			_ = http.NewResponseController(s.w).Flush()
@@ -1252,6 +1277,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	} else {
 		// SSE mode: write event to response writer.
 		s.lastIdx++
+		s.extendWriteDeadlineLocked()
 		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
 			return done, err
 		}
@@ -1795,6 +1821,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 	stream.isListen = isSubscriptionsListen
 	stream.isBatch = isBatch
+	if stream.isListen {
+		stream.writeDeadline = c.streamKeepAlive
+	}
 
 	// subscriptions/listen is inherently a long-lived SSE endpoint (SEP-2575):
 	// it has no synchronous result, the response stream stays open until the
