@@ -1286,10 +1286,19 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 	s.mu.Unlock()
 	defer func() {
+		// Retire only what this listen registered above: a session can hold
+		// several listens at once, and deleting by session alone retires a
+		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		delete(s.toolChangeSubscriptions, req.Session)
-		delete(s.promptChangeSubscriptions, req.Session)
-		delete(s.resourceChangeSubscriptions, req.Session)
+		if allowed.ToolsListChanged {
+			delete(s.toolChangeSubscriptions, req.Session)
+		}
+		if allowed.PromptsListChanged {
+			delete(s.promptChangeSubscriptions, req.Session)
+		}
+		if allowed.ResourcesListChanged {
+			delete(s.resourceChangeSubscriptions, req.Session)
+		}
 		s.mu.Unlock()
 	}()
 
@@ -1999,15 +2008,21 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() {
-			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
-		}
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
 			})
 		}
+	}
+
+	// In legacy protocol versions, a client cannot send requests other than
+	// pings before the server has responded to the initialize request. A
+	// new-protocol request is exempt: a SEP-2575 session has no 'initialize'
+	// to wait for, and the request itself says which protocol it speaks.
+	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
+		req.Method != methodInitialize && req.Method != methodPing {
+		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
+		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
