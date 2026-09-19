@@ -218,26 +218,29 @@ type StreamableHTTPOptions struct {
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
 
-	// StreamKeepAlive, if non-zero, writes an SSE comment to the response
-	// stream of a subscriptions/listen request whenever it has carried no
-	// bytes for this duration, so that idle-timeout intermediaries do not
-	// sever the long-lived stream. The 2026-07-28 Streamable HTTP
-	// specification encourages this keep-alive; SSE clients ignore comment
-	// lines, so it has no protocol-level effect. Other SSE responses are not
-	// kept alive.
+	// StreamKeepAlive is how long the response stream of a subscriptions/listen
+	// request may carry no bytes before an SSE comment line is written, so
+	// that idle-timeout intermediaries do not sever the long-lived stream, as
+	// the 2026-07-28 Streamable HTTP specification encourages. SSE clients
+	// ignore comment lines. Other SSE responses are not kept alive.
 	//
 	// The keep-alive starts only after the listen acknowledgment has
 	// committed the response headers, since until then the HTTP status may
 	// still have to change (see #1229). A write failure ends the stream as a
 	// disconnect.
 	//
-	// If StreamKeepAlive is the zero value, no keep-alive is written.
+	// If zero, [DefaultStreamKeepAlive] is used. A negative value disables
+	// the keep-alive.
 	StreamKeepAlive time.Duration
 }
 
 // DefaultMaxRequestBodyBytes is the default value used for
 // [StreamableHTTPOptions.MaxRequestBodyBytes] when it is left at zero.
 const DefaultMaxRequestBodyBytes = 4 << 20 // 4 MiB
+
+// DefaultStreamKeepAlive is the default value used for
+// [StreamableHTTPOptions.StreamKeepAlive] when it is left at zero.
+const DefaultStreamKeepAlive = 30 * time.Second
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
 //
@@ -257,6 +260,9 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.MaxRequestBodyBytes == 0 {
 		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
+	}
+	if h.opts.StreamKeepAlive == 0 {
+		h.opts.StreamKeepAlive = DefaultStreamKeepAlive
 	}
 
 	return h
@@ -907,8 +913,8 @@ type streamableServerConn struct {
 	jsonResponse bool
 	eventStore   EventStore
 
-	// streamKeepAlive is the idle interval for SSE keep-alive comments; zero
-	// disables them. See [StreamableHTTPOptions.StreamKeepAlive].
+	// streamKeepAlive is the idle interval for SSE keep-alive comments, or
+	// non-positive to disable them; see [StreamableHTTPOptions.StreamKeepAlive].
 	streamKeepAlive time.Duration
 
 	// shouldPropagateCancellation is true when the underlying HTTP request's
@@ -1133,7 +1139,7 @@ func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committe
 			timer.Reset(wait)
 			continue
 		}
-		_, err := fmt.Fprint(s.w, ": keepalive\n\n")
+		_, err := fmt.Fprint(s.w, ":\n\n")
 		if err == nil {
 			// Ignore returned error as flushing is best-effort.
 			_ = http.NewResponseController(s.w).Flush()

@@ -106,7 +106,7 @@ loop:
 				t.Fatal("stream ended early")
 			}
 			switch {
-			case line == ": keepalive":
+			case line == ":":
 				comments++
 			case strings.HasPrefix(line, "event: "):
 				events++
@@ -174,9 +174,19 @@ func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
 	}
-	if bytes.Contains(body, []byte(": keepalive")) {
+	if hasSSEComment(body) {
 		t.Errorf("keep-alive written on a tools/call stream:\n%s", body)
 	}
+}
+
+// hasSSEComment reports whether body contains an SSE comment line.
+func hasSSEComment(body []byte) bool {
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte(":")) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordingWriter is an http.ResponseWriter that records writes and can be
@@ -227,7 +237,7 @@ func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	s.mu.Unlock()
 	time.Sleep(2 * interval)
 	s.mu.Lock()
-	if got := w.buf.String(); !strings.Contains(got, ": keepalive\n\n") {
+	if got := w.buf.String(); !strings.Contains(got, ":\n\n") {
 		t.Errorf("after the idle interval, wrote %q, want a comment", got)
 	}
 	// A fresh event resets the idle timer: the next comment must not arrive
@@ -327,7 +337,7 @@ func TestStreamKeepAlive_SurvivesIdleTimeoutProxy(t *testing.T) {
 		keepAlive time.Duration
 		survives  bool
 	}{
-		{"without keep-alive", 0, false},
+		{"keep-alive disabled", -1, false},
 		{"with keep-alive", idle / 6, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -427,5 +437,26 @@ func TestStreamKeepAlive_NoGoroutineLeak(t *testing.T) {
 			t.Fatalf("keep-alive goroutines still running after their streams ended:\n%s", buf[:n])
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestStreamKeepAlive_Default checks how the option resolves: zero selects
+// [DefaultStreamKeepAlive], a negative value disables the keep-alive.
+func TestStreamKeepAlive_Default(t *testing.T) {
+	for _, tc := range []struct {
+		in, want time.Duration
+	}{
+		{0, DefaultStreamKeepAlive},
+		{-1, -1},
+		{time.Second, time.Second},
+	} {
+		h := NewStreamableHTTPHandler(func(*http.Request) *Server { return nil }, &StreamableHTTPOptions{StreamKeepAlive: tc.in})
+		if got := h.opts.StreamKeepAlive; got != tc.want {
+			t.Errorf("StreamKeepAlive %v resolved to %v, want %v", tc.in, got, tc.want)
+		}
+	}
+	h := NewStreamableHTTPHandler(func(*http.Request) *Server { return nil }, nil)
+	if got := h.opts.StreamKeepAlive; got != DefaultStreamKeepAlive {
+		t.Errorf("nil options: StreamKeepAlive = %v, want %v", got, DefaultStreamKeepAlive)
 	}
 }
