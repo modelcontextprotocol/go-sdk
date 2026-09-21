@@ -424,6 +424,10 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		if err := unmarshal(wire.StructuredContent, &wire.res.StructuredContent); err != nil {
 			return err
 		}
+		// A present JSON null is distinct from an omitted structured result.
+		if wire.res.StructuredContent == nil {
+			wire.res.StructuredContent = json.RawMessage("null")
+		}
 	}
 	var err error
 	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
