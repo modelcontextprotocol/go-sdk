@@ -974,7 +974,7 @@ func startKeepalive(session keepaliveSession, interval time.Duration, failureThr
 				}
 				// Threshold reached; log before closing the session so the
 				// failure is observable to operators. See #218.
-				logger.Error("keepalive ping failed; closing session",
+				logger.Warn("keepalive ping failed; closing session",
 					"error", err,
 					"consecutiveFailures", consecutiveFailures,
 					"failureThreshold", failureThreshold)

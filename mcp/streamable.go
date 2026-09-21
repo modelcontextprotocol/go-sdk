@@ -531,6 +531,10 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: protocolVersion,
 		}
+		// The header carries the version an earlier handshake settled on, or the
+		// 2025-03-26 the transports spec has a server assume without one; either
+		// way it is the version this request is served under, not only declared.
+		state.NegotiatedProtocolVersion = protocolVersion
 	}
 	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
