@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2195,6 +2196,154 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 	}
 	if diff := cmp.Diff([]string{protocolVersion20251125}, data.Supported); diff != "" {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestNotifySessionsIsolatesStalledPeer verifies that a session whose write
+// stalls — here a peer that never reads its end of the pipe — does not delay
+// or fail delivery to the other sessions in the same broadcast.
+func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	// The stalled session: nothing reads the client end until the end of the
+	// test, so the server's first write blocks (net.Pipe is synchronous).
+	stalledCT, stalledST := NewInMemoryTransports()
+	stalled, err := server.Connect(ctx, stalledST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The healthy session: a real client that records the notification.
+	got := make(chan string, 1)
+	healthyCT, healthyST := NewInMemoryTransports()
+	healthy, err := server.Connect(ctx, healthyST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			select {
+			case got <- req.Params.URI:
+			default:
+			}
+		},
+	})
+	cs, err := client.Connect(ctx, healthyCT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Stalled first: a serial implementation would sit on it and never reach
+	// the healthy session.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		notifySessions([]*ServerSession{stalled, healthy}, notificationResourceUpdated,
+			&ResourceUpdatedNotificationParams{URI: "test://stalled-peer"}, slog.Default())
+	}()
+
+	select {
+	case uri := <-got:
+		if uri != "test://stalled-peer" {
+			t.Fatalf("got notification for %q", uri)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy session was not notified while another session's write was stalled")
+	}
+
+	// Draining the stalled peer releases its write and lets the broadcast
+	// complete. (Session.Close cannot do this: it waits for in-flight writes
+	// before closing the underlying connection.)
+	stalledConn, err := stalledCT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stalledConn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("notifySessions did not return after the stalled peer read its message")
+	}
+	stalled.Close()
+	stalledConn.Close()
+}
+
+// TestNotifySubscribedSessionsDoesNotShareMeta: caller-supplied non-nil _meta,
+// four modern subscribers notified concurrently. Each peer must receive its own
+// subscription ID and the caller's params must be left untouched.
+func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	subscribers := map[*ServerSession]jsonrpc.ID{}
+	want := map[*ServerSession]string{}
+	var mu sync.Mutex
+	got := map[string]any{}
+	var readers sync.WaitGroup
+	for _, name := range []string{"A", "B", "C", "D"} {
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := ct.Connect(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := jsonrpc.MakeID("sub-" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscribers[ss] = id
+		want[ss] = "sub-" + name
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Errorf("%s read: %v", name, err)
+				return
+			}
+			var n struct {
+				Params struct {
+					Meta map[string]any `json:"_meta"`
+				} `json:"params"`
+			}
+			raw, _ := jsonrpc.EncodeMessage(msg)
+			_ = json.Unmarshal(raw, &n)
+			mu.Lock()
+			got["sub-"+name] = n.Params.Meta[MetaKeySubscriptionID]
+			mu.Unlock()
+		}()
+		t.Cleanup(func() { ss.Close(); conn.Close() })
+	}
+
+	params := &ResourceUpdatedNotificationParams{URI: "test://r", Meta: Meta{"caller": "set"}}
+	server.notifySubscribedSessions(subscribers, notificationResourceUpdated, func() Params {
+		p := *params
+		return &p
+	})
+
+	done := make(chan struct{})
+	go func() { readers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("peers did not all receive a message")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for id, seen := range got {
+		if seen != id {
+			t.Errorf("peer %s received subscription id %v", id, seen)
+		}
+	}
+	if _, polluted := params.Meta[MetaKeySubscriptionID]; polluted || len(params.Meta) != 1 {
+		t.Errorf("caller params.Meta mutated: %v", params.Meta)
 	}
 }
 
