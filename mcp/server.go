@@ -811,16 +811,24 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 	if len(subscribers) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// One goroutine per session, each with its own deadline, so a session
+	// whose write stalls neither delays nor fails the others (as in the
+	// notifySessions function in shared.go).
+	var wg sync.WaitGroup
 	for sess, reqID := range subscribers {
-		params := makeParams()
-		injectMetaSubscriptionID(params, reqID)
-		req := newRequest(sess, params)
-		if err := handleNotify(ctx, method, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			params := makeParams()
+			injectMetaSubscriptionID(params, reqID)
+			if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
+				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // injectMetaSubscriptionID stamps the listen request's JSON-RPC ID into the
@@ -830,7 +838,9 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 //
 // [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
 func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
-	m := params.GetMeta()
+	// Clone: params may share its _meta map with the caller's struct and with
+	// the other sessions' copies, and this runs concurrently per session.
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
