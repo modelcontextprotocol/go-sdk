@@ -4302,6 +4302,60 @@ func TestSummarizeStreamableHTTPRequest(t *testing.T) {
 	}
 }
 
+func TestSummarizeStreamableHTTPRequestBatch(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             string
+		wantMethods      []string
+		wantCount        int
+		wantNotification bool
+	}{
+		{
+			name:        "mixed calls and notifications",
+			body:        `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","id":3,"method":"tools/list"}]`,
+			wantMethods: []string{"notifications/initialized", "ping", "tools/list"},
+			wantCount:   4,
+		},
+		{
+			name:             "notification-only batch",
+			body:             `[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","method":"notifications/initialized"}]`,
+			wantMethods:      []string{"notifications/initialized"},
+			wantCount:        2,
+			wantNotification: true,
+		},
+		{
+			name:        "single-item batch",
+			body:        `[{"jsonrpc":"2.0","id":"one","method":"ping"}]`,
+			wantMethods: []string{"ping"},
+			wantCount:   1,
+		},
+		{
+			name:        "response prevents notification-only classification",
+			body:        `[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":1,"result":{}}]`,
+			wantMethods: []string{"notifications/initialized"},
+			wantCount:   2,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messages, isBatch, err := readBatch([]byte(test.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isBatch {
+				t.Fatal("input was not decoded as a batch")
+			}
+			got := summarizeStreamableHTTPRequestBatch(messages)
+			if got.Method != "" || got.RequestID.IsValid() || got.IsResponse {
+				t.Errorf("single-message fields populated for batch: %+v", got)
+			}
+			if got.BatchCount != test.wantCount || got.IsNotification != test.wantNotification || !slices.Equal(got.Methods, test.wantMethods) {
+				t.Errorf("summary = %+v, want count %d, methods %q, notification %t", got, test.wantCount, test.wantMethods, test.wantNotification)
+			}
+		})
+	}
+}
+
 func TestStreamableHTTPRequestSummaryContext(t *testing.T) {
 	type contextKey struct{}
 	const contextValue = "middleware-value"
@@ -4388,12 +4442,12 @@ func TestStreamableHTTPRequestSummaryRejections(t *testing.T) {
 		}
 	})
 
-	t.Run("batch is not observed", func(t *testing.T) {
-		var calls atomic.Int64
+	t.Run("decoded batch rejected before dispatch is observed", func(t *testing.T) {
+		observed := make(chan StreamableHTTPRequestSummary, 1)
 		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
 			Stateless: true,
-			OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
-				calls.Add(1)
+			OnRequestSummary: func(_ context.Context, summary StreamableHTTPRequestSummary) {
+				observed <- summary
 			},
 		})
 		req := newRequest(`[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","method":"notifications/initialized"}]`)
@@ -4403,8 +4457,33 @@ func TestStreamableHTTPRequestSummaryRejections(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 		}
-		if got := calls.Load(); got != 0 {
-			t.Errorf("callback calls = %d, want 0", got)
+		select {
+		case got := <-observed:
+			if got.BatchCount != 2 || !got.IsNotification || !slices.Equal(got.Methods, []string{"notifications/initialized"}) {
+				t.Errorf("summary = %+v, want two notifications", got)
+			}
+		default:
+			t.Error("OnRequestSummary was not called for decoded batch")
+		}
+	})
+
+	t.Run("legacy decoded batch accepted and observed once", func(t *testing.T) {
+		var summaries []StreamableHTTPRequestSummary
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+			Stateless: true,
+			OnRequestSummary: func(_ context.Context, summary StreamableHTTPRequestSummary) {
+				summaries = append(summaries, summary)
+			},
+		})
+		req := newRequest(`[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","method":"notifications/initialized"}]`)
+		req.Header.Set(protocolVersionHeader, protocolVersion20250326)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("status = %d, want %d (body=%q)", rec.Code, http.StatusAccepted, rec.Body.String())
+		}
+		if len(summaries) != 1 || summaries[0].BatchCount != 2 || !summaries[0].IsNotification {
+			t.Errorf("summaries = %+v, want one notification-only batch", summaries)
 		}
 	})
 

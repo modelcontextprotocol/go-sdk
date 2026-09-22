@@ -69,22 +69,33 @@ type sessionInfo struct {
 	timer   *time.Timer
 }
 
-// StreamableHTTPRequestSummary contains redacted metadata about a single
-// JSON-RPC message decoded from a streamable HTTP POST body.
+// StreamableHTTPRequestSummary contains redacted metadata about JSON-RPC
+// messages decoded from a streamable HTTP POST body.
 type StreamableHTTPRequestSummary struct {
 	// Method is the method of a decoded JSON-RPC request. It is empty for a
-	// response. The method has not yet been validated and may contain an
-	// arbitrary attacker-controlled string.
+	// response or batch. The method has not yet been validated and may contain
+	// an arbitrary attacker-controlled string.
 	Method string
 
-	// RequestID is valid only for a JSON-RPC call. IDs use the same coercion
-	// rules as [jsonrpc.DecodeMessage].
+	// RequestID is valid only for a single JSON-RPC call. IDs use the same
+	// coercion rules as [jsonrpc.DecodeMessage].
 	RequestID jsonrpc.ID
 
-	// IsNotification reports whether the message is a JSON-RPC notification.
+	// BatchCount is the number of messages in a JSON-RPC batch. It is zero for
+	// a single message, including a single-message POST that is not an array.
+	BatchCount int
+
+	// Methods contains the lexicographically sorted unique request methods in a
+	// batch. Responses have no method and are excluded. Methods are unvalidated
+	// attacker-controlled strings. It is nil for a single message.
+	Methods []string
+
+	// IsNotification reports whether a single message is a JSON-RPC notification
+	// or every message in a batch is a notification.
 	IsNotification bool
 
-	// IsResponse reports whether the message is a JSON-RPC response.
+	// IsResponse reports whether a single message is a JSON-RPC response. It is
+	// false for a batch, including one containing only responses.
 	IsResponse bool
 }
 
@@ -237,10 +248,10 @@ type StreamableHTTPOptions struct {
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
 
-	// OnRequestSummary, when non-nil, observes redacted metadata for a single
-	// JSON-RPC message decoded from a streamable HTTP POST body. It is not called
-	// for JSON-RPC batches. The callback receives the HTTP request's context and
-	// runs synchronously before validation and dispatch of the decoded message.
+	// OnRequestSummary, when non-nil, observes redacted metadata for a JSON-RPC
+	// message or batch decoded from a streamable HTTP POST body. The callback
+	// receives the HTTP request's context and runs synchronously before protocol
+	// version validation and dispatch of the decoded messages.
 	// It may be called concurrently for different requests and should return
 	// promptly; in particular, it must not wait for processing of the same
 	// request. Panics are not recovered. Only the summary is redacted; the context
@@ -1612,8 +1623,12 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
-	if c.onRequestSummary != nil && !isBatch && len(incoming) == 1 {
-		c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming[0]))
+	if c.onRequestSummary != nil {
+		if isBatch {
+			c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequestBatch(incoming))
+		} else if len(incoming) == 1 {
+			c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming[0]))
+		}
 	}
 
 	protocolVersion := protocolVersionFromContext(req.Context())
@@ -1964,6 +1979,27 @@ func summarizeStreamableHTTPRequest(msg jsonrpc.Message) StreamableHTTPRequestSu
 	case *jsonrpc.Response:
 		summary.IsResponse = true
 	}
+	return summary
+}
+
+func summarizeStreamableHTTPRequestBatch(messages []jsonrpc.Message) StreamableHTTPRequestSummary {
+	summary := StreamableHTTPRequestSummary{BatchCount: len(messages), IsNotification: true}
+	seen := make(map[string]bool)
+	for _, message := range messages {
+		request, ok := message.(*jsonrpc.Request)
+		if !ok {
+			summary.IsNotification = false
+			continue
+		}
+		if request.IsCall() {
+			summary.IsNotification = false
+		}
+		if !seen[request.Method] {
+			seen[request.Method] = true
+			summary.Methods = append(summary.Methods, request.Method)
+		}
+	}
+	slices.Sort(summary.Methods)
 	return summary
 }
 
