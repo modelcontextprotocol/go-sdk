@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -702,7 +703,7 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 			name:         "primitive number (map-based schema)",
 			outputSchema: map[string]any{"type": "number"},
 			content:      42.0,
-			want:         42.0,
+			want:         json.Number("42"),
 		},
 		{
 			name:         "primitive string (RawMessage schema)",
@@ -746,6 +747,52 @@ func TestAddToolNonObjectOutputSchema(t *testing.T) {
 				t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestCallToolStructuredContentPreservesLargeInteger(t *testing.T) {
+	const want int64 = 9007199254740993
+
+	server := NewServer(testImpl, nil)
+	server.AddTool(&Tool{
+		Name:        "large-integer",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{StructuredContent: map[string]any{"id": want}}, nil
+	})
+
+	clientTransport, serverTransport := NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	client := NewClient(testImpl, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(context.Background(), &CallToolParams{Name: "large-integer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", result.StructuredContent)
+	}
+	number, ok := structured["id"].(json.Number)
+	if !ok {
+		t.Fatalf("id type = %T, want json.Number", structured["id"])
+	}
+	got, err := number.Int64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("id = %d, want %d", got, want)
 	}
 }
 
@@ -841,7 +888,7 @@ func TestAddToolGenericNonObjectOutput(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("unexpected tool error: %v", res.Content)
 		}
-		if diff := cmp.Diff(float64(42), res.StructuredContent); diff != "" {
+		if diff := cmp.Diff(json.Number("42"), res.StructuredContent); diff != "" {
 			t.Errorf("structured content mismatch (-want +got):\n%s", diff)
 		}
 	})
@@ -2174,6 +2221,442 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 	}
 	if diff := cmp.Diff([]string{protocolVersion20251125}, data.Supported); diff != "" {
 		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestNotifySessionsIsolatesStalledPeer verifies that a session whose write
+// stalls — here a peer that never reads its end of the pipe — does not delay
+// or fail delivery to the other sessions in the same broadcast.
+func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	// The stalled session: nothing reads the client end until the end of the
+	// test, so the server's first write blocks (net.Pipe is synchronous).
+	stalledCT, stalledST := NewInMemoryTransports()
+	stalled, err := server.Connect(ctx, stalledST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The healthy session: a real client that records the notification.
+	got := make(chan string, 1)
+	healthyCT, healthyST := NewInMemoryTransports()
+	healthy, err := server.Connect(ctx, healthyST, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			select {
+			case got <- req.Params.URI:
+			default:
+			}
+		},
+	})
+	cs, err := client.Connect(ctx, healthyCT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Stalled first: a serial implementation would sit on it and never reach
+	// the healthy session.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		notifySessions([]*ServerSession{stalled, healthy}, notificationResourceUpdated,
+			&ResourceUpdatedNotificationParams{URI: "test://stalled-peer"}, slog.Default())
+	}()
+
+	select {
+	case uri := <-got:
+		if uri != "test://stalled-peer" {
+			t.Fatalf("got notification for %q", uri)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy session was not notified while another session's write was stalled")
+	}
+
+	// Draining the stalled peer releases its write and lets the broadcast
+	// complete. (Session.Close cannot do this: it waits for in-flight writes
+	// before closing the underlying connection.)
+	stalledConn, err := stalledCT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stalledConn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("notifySessions did not return after the stalled peer read its message")
+	}
+	stalled.Close()
+	stalledConn.Close()
+}
+
+// TestNotifySubscribedSessionsDoesNotShareMeta: caller-supplied non-nil _meta,
+// four modern subscribers notified concurrently. Each peer must receive its own
+// subscription ID and the caller's params must be left untouched.
+func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+
+	subscribers := map[*ServerSession]jsonrpc.ID{}
+	want := map[*ServerSession]string{}
+	var mu sync.Mutex
+	got := map[string]any{}
+	var readers sync.WaitGroup
+	for _, name := range []string{"A", "B", "C", "D"} {
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := ct.Connect(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := jsonrpc.MakeID("sub-" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscribers[ss] = id
+		want[ss] = "sub-" + name
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Errorf("%s read: %v", name, err)
+				return
+			}
+			var n struct {
+				Params struct {
+					Meta map[string]any `json:"_meta"`
+				} `json:"params"`
+			}
+			raw, _ := jsonrpc.EncodeMessage(msg)
+			_ = json.Unmarshal(raw, &n)
+			mu.Lock()
+			got["sub-"+name] = n.Params.Meta[MetaKeySubscriptionID]
+			mu.Unlock()
+		}()
+		t.Cleanup(func() { ss.Close(); conn.Close() })
+	}
+
+	params := &ResourceUpdatedNotificationParams{URI: "test://r", Meta: Meta{"caller": "set"}}
+	server.notifySubscribedSessions(subscribers, notificationResourceUpdated, func() Params {
+		p := *params
+		return &p
+	})
+
+	done := make(chan struct{})
+	go func() { readers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("peers did not all receive a message")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for id, seen := range got {
+		if seen != id {
+			t.Errorf("peer %s received subscription id %v", id, seen)
+		}
+	}
+	if _, polluted := params.Meta[MetaKeySubscriptionID]; polluted || len(params.Meta) != 1 {
+		t.Errorf("caller params.Meta mutated: %v", params.Meta)
+	}
+}
+
+// TestServerHandle_LegacyCallBeforeInitialize asserts that a call carrying no
+// new-protocol `_meta` is refused on a session that has not completed
+// 'initialize', whichever branch of the method switch it lands in. The
+// handshake itself is what ends that state, and the lifecycle spec exempts
+// pings, so those two are served.
+//
+// The gate used to sit in the default branch, so 'logging/setLevel',
+// 'resources/subscribe' and 'resources/unsubscribe', which share a case that
+// only refuses new-protocol requests, were served before the handshake. For
+// subscribe that registered a session that never handshook as a subscriber,
+// so the subtest also asserts that the refusal leaves no subscriber and runs
+// no handler.
+func TestServerHandle_LegacyCallBeforeInitialize(t *testing.T) {
+	ctx := context.Background()
+	const uri = "test://resource"
+
+	tests := []struct {
+		name   string
+		method string
+		params string
+		served bool
+	}{
+		{
+			name:   "initialize",
+			method: methodInitialize,
+			params: fmt.Sprintf(`{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`, protocolVersion20251125),
+			served: true,
+		},
+		{name: "ping", method: methodPing, params: `{}`, served: true},
+		{name: "tools/list", method: methodListTools, params: `{}`},
+		{name: "logging/setLevel", method: methodSetLevel, params: `{"level":"info"}`},
+		{name: "resources/subscribe", method: methodSubscribe, params: fmt.Sprintf(`{"uri":%q}`, uri)},
+		{name: "resources/unsubscribe", method: methodUnsubscribe, params: fmt.Sprintf(`{"uri":%q}`, uri)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var handlerRan bool
+			server := NewServer(testImpl, &ServerOptions{
+				SubscribeHandler: func(context.Context, *SubscribeRequest) error {
+					handlerRan = true
+					return nil
+				},
+				UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
+					handlerRan = true
+					return nil
+				},
+			})
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			res, err := ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: tc.method,
+				Params: json.RawMessage(tc.params),
+			})
+			if tc.served {
+				if err != nil {
+					t.Fatalf("handle(%q) before initialize returned %v, want it served", tc.method, err)
+				}
+				if res == nil {
+					t.Fatalf("handle(%q) before initialize returned no result", tc.method)
+				}
+				if tc.method == methodInitialize && ss.InitializeParams() == nil {
+					t.Errorf("initialize was answered without recording InitializeParams")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("handle(%q) served the call before initialize, want a refusal", tc.method)
+			}
+			if want := fmt.Sprintf("method %q is invalid during session initialization", tc.method); err.Error() != want {
+				t.Errorf("handle(%q) error = %q, want %q", tc.method, err.Error(), want)
+			}
+			if handlerRan {
+				t.Errorf("handle(%q) ran the server's handler for a call it refused", tc.method)
+			}
+			server.mu.Lock()
+			_, subscribed := server.resourceSubscriptions[uri][ss]
+			server.mu.Unlock()
+			if subscribed {
+				t.Errorf("handle(%q) left the session subscribed to %q", tc.method, uri)
+			}
+		})
+	}
+}
+
+// TestServerHandle_NewProtocolCallWithoutInitialize asserts that the gate
+// stays off the SEP-2575 path. A fresh session that never sends 'initialize'
+// is served a new-protocol 'tools/list', and the methods the gate now covers
+// are answered, when a new-protocol request names them, with the error the
+// new protocol already gave them (the method does not exist there), and not
+// with the initialization refusal.
+func TestServerHandle_NewProtocolCallWithoutInitialize(t *testing.T) {
+	ctx := context.Background()
+	const uri = "test://resource"
+
+	tests := []struct {
+		name   string
+		method string
+		params map[string]any
+		served bool
+	}{
+		{name: "tools/list", method: methodListTools, params: newProtocolParams(nil), served: true},
+		{name: "logging/setLevel", method: methodSetLevel, params: newProtocolParams(map[string]any{"level": "info"})},
+		{name: "resources/subscribe", method: methodSubscribe, params: newProtocolParams(map[string]any{"uri": uri})},
+		{name: "resources/unsubscribe", method: methodUnsubscribe, params: newProtocolParams(map[string]any{"uri": uri})},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, &ServerOptions{
+				SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+				UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+			})
+			_, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer ss.Close()
+
+			params, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatalf("marshalling params: %v", err)
+			}
+			res, err := ss.handle(ctx, &jsonrpc.Request{
+				ID:     jsonrpc2.Int64ID(1),
+				Method: tc.method,
+				Params: params,
+			})
+			if tc.served {
+				if err != nil {
+					t.Fatalf("handle(%q) on a new-protocol session returned %v, want it served", tc.method, err)
+				}
+				if res == nil {
+					t.Fatalf("handle(%q) on a new-protocol session returned no result", tc.method)
+				}
+				return
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("handle(%q) returned %v, want a *jsonrpc.Error", tc.method, err)
+			}
+			if jerr.Code != jsonrpc.CodeMethodNotFound {
+				t.Errorf("handle(%q) error code = %d, want %d (removed in the new protocol)", tc.method, jerr.Code, jsonrpc.CodeMethodNotFound)
+			}
+			if strings.Contains(err.Error(), "invalid during session initialization") {
+				t.Errorf("handle(%q) applied the initialization gate to a new-protocol request: %v", tc.method, err)
+			}
+		})
+	}
+}
+
+// negotiatedProtocolVersion reads the version a session has recorded as the
+// one it speaks.
+func negotiatedProtocolVersion(ss *ServerSession) string {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.state.NegotiatedProtocolVersion
+}
+
+// TestServerHandle_RecordsNegotiatedVersionOnNewProtocolCall asserts that the
+// first new-protocol call a session serves records the declared version as the
+// negotiated one, as declared and not through the handshake's negotiation.
+func TestServerHandle_RecordsNegotiatedVersionOnNewProtocolCall(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	params, err := json.Marshal(newProtocolParams(nil))
+	if err != nil {
+		t.Fatalf("marshalling params: %v", err)
+	}
+	if _, err := ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodListTools,
+		Params: params,
+	}); err != nil {
+		t.Fatalf("handle(%q) error = %v", methodListTools, err)
+	}
+	if got := negotiatedProtocolVersion(ss); got != protocolVersion20260728 {
+		t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+	if got := ss.InitializeParams(); got == nil || got.ProtocolVersion != protocolVersion20260728 {
+		t.Errorf("InitializeParams = %+v, want ProtocolVersion %q", got, protocolVersion20260728)
+	}
+}
+
+// TestServerDiscover_RecordsNegotiatedVersion asserts that server/discover
+// records the version it was asked about as the negotiated one when its answer
+// lists that version, since a client whose version is listed keeps speaking it.
+func TestServerDiscover_RecordsNegotiatedVersion(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	params, err := json.Marshal(newProtocolParams(nil))
+	if err != nil {
+		t.Fatalf("marshalling params: %v", err)
+	}
+	res, err := ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodDiscover,
+		Params: params,
+	})
+	if err != nil {
+		t.Fatalf("handle(%q) error = %v", methodDiscover, err)
+	}
+	dres, ok := res.(*DiscoverResult)
+	if !ok {
+		t.Fatalf("handle(%q) returned %T, want *DiscoverResult", methodDiscover, res)
+	}
+	if !slices.Contains(dres.SupportedVersions, protocolVersion20260728) {
+		t.Fatalf("DiscoverResult.SupportedVersions = %v, want it to list %q", dres.SupportedVersions, protocolVersion20260728)
+	}
+	if got := negotiatedProtocolVersion(ss); got != protocolVersion20260728 {
+		t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, protocolVersion20260728)
+	}
+}
+
+// versionFilteringTransport narrows the versions a transport serves, the way
+// a stateful StreamableHTTPHandler declines every version from 2026-07-28 on.
+type versionFilteringTransport struct {
+	Transport
+	serves func(version string) bool
+}
+
+func (t *versionFilteringTransport) SupportsProtocolVersion(version string) bool {
+	return t.serves(version)
+}
+
+// TestServerDiscover_UnservedVersionRecordsNothing asserts that a discover
+// request declaring a version this transport does not serve records neither
+// InitializeParams nor a negotiated version, so the safety net can close it.
+func TestServerDiscover_UnservedVersionRecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	_, st := NewInMemoryTransports()
+	legacyOnly := &versionFilteringTransport{
+		Transport: st,
+		serves:    func(version string) bool { return version < protocolVersion20260728 },
+	}
+	ss, err := server.Connect(ctx, legacyOnly, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	params, err := json.Marshal(newProtocolParams(nil))
+	if err != nil {
+		t.Fatalf("marshalling params: %v", err)
+	}
+	res, err := ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodDiscover,
+		Params: params,
+	})
+	if err != nil {
+		t.Fatalf("handle(%q) error = %v", methodDiscover, err)
+	}
+	dres, ok := res.(*DiscoverResult)
+	if !ok {
+		t.Fatalf("handle(%q) returned %T, want *DiscoverResult", methodDiscover, res)
+	}
+	if slices.Contains(dres.SupportedVersions, protocolVersion20260728) {
+		t.Fatalf("DiscoverResult.SupportedVersions = %v, want the transport's filter applied", dres.SupportedVersions)
+	}
+	if got := ss.InitializeParams(); got != nil {
+		t.Errorf("InitializeParams = %+v, want nil for a version this transport does not serve", got)
+	}
+	if got := negotiatedProtocolVersion(ss); got != "" {
+		t.Errorf("NegotiatedProtocolVersion = %q, want none recorded", got)
 	}
 }
 

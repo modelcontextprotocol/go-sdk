@@ -437,9 +437,11 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		maxEventSize = DefaultMaxEventSize
 	}
 
+	// Reuse the scanner so events buffered after the endpoint are not lost.
+	events := scanEventsLimited(resp.Body, maxEventSize)
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
-		for evt, err = range scanEventsLimited(resp.Body, maxEventSize) {
+		for evt, err = range events {
 			break
 		}
 		if err != nil {
@@ -468,7 +470,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	go func() {
 		defer s.Close() // close the transport when the GET exits
 
-		for evt, err := range scanEventsLimited(resp.Body, maxEventSize) {
+		for evt, err := range events {
 			if err != nil {
 				return
 			}

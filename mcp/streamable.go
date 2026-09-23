@@ -69,6 +69,25 @@ type sessionInfo struct {
 	timer   *time.Timer
 }
 
+// StreamableHTTPRequestSummary contains redacted metadata about a single
+// JSON-RPC message decoded from a streamable HTTP POST body.
+type StreamableHTTPRequestSummary struct {
+	// Method is the method of a decoded JSON-RPC request. It is empty for a
+	// response. The method has not yet been validated and may contain an
+	// arbitrary attacker-controlled string.
+	Method string
+
+	// RequestID is valid only for a JSON-RPC call. IDs use the same coercion
+	// rules as [jsonrpc.DecodeMessage].
+	RequestID jsonrpc.ID
+
+	// IsNotification reports whether the message is a JSON-RPC notification.
+	IsNotification bool
+
+	// IsResponse reports whether the message is a JSON-RPC response.
+	IsResponse bool
+}
+
 // startPOST signals that a POST request for this session is starting (which
 // carries a client->server message), pausing the session timeout if it was
 // running.
@@ -217,11 +236,47 @@ type StreamableHTTPOptions struct {
 	// Requests using older protocol versions (including those routed through
 	// the allowsessionsinstateless compatibility path) are unaffected.
 	PropagateRequestCancellation bool
+
+	// OnRequestSummary, when non-nil, observes redacted metadata for a single
+	// JSON-RPC message decoded from a streamable HTTP POST body. It is not called
+	// for JSON-RPC batches. The callback receives the HTTP request's context and
+	// runs synchronously before validation and dispatch of the decoded message.
+	// It may be called concurrently for different requests and should return
+	// promptly; in particular, it must not wait for processing of the same
+	// request. Panics are not recovered. Only the summary is redacted; the context
+	// may contain values added by authentication or other middleware.
+	//
+	// The callback is not invoked for requests rejected before this point,
+	// including HTTP, authorization, session-routing, and connection failures,
+	// even if connection setup previously inspected the body. Use HTTP middleware
+	// to observe those failures. Use [Server.AddReceivingMiddleware] to observe
+	// dispatched messages; this callback additionally observes decoded messages
+	// that are rejected before dispatch without exposing their parameters.
+	OnRequestSummary func(context.Context, StreamableHTTPRequestSummary)
+
+	// StreamKeepAlive is how long the response stream of a subscriptions/listen
+	// request may carry no bytes before an SSE comment line is written, so
+	// that idle-timeout intermediaries do not sever the long-lived stream, as
+	// the 2026-07-28 Streamable HTTP specification encourages. SSE clients
+	// ignore comment lines. Other SSE responses are not kept alive.
+	//
+	// The keep-alive starts only after the listen acknowledgment has
+	// committed the response headers, since until then the HTTP status may
+	// still have to change (see #1229). A write failure ends the stream as a
+	// disconnect.
+	//
+	// If zero, [DefaultStreamKeepAlive] is used. A negative value disables
+	// the keep-alive.
+	StreamKeepAlive time.Duration
 }
 
 // DefaultMaxRequestBodyBytes is the default value used for
 // [StreamableHTTPOptions.MaxRequestBodyBytes] when it is left at zero.
 const DefaultMaxRequestBodyBytes = 4 << 20 // 4 MiB
+
+// DefaultStreamKeepAlive is the default value used for
+// [StreamableHTTPOptions.StreamKeepAlive] when it is left at zero.
+const DefaultStreamKeepAlive = 30 * time.Second
 
 // NewStreamableHTTPHandler returns a new [StreamableHTTPHandler].
 //
@@ -241,6 +296,9 @@ func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *Strea
 
 	if h.opts.MaxRequestBodyBytes == 0 {
 		h.opts.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
+	}
+	if h.opts.StreamKeepAlive == 0 {
+		h.opts.StreamKeepAlive = DefaultStreamKeepAlive
 	}
 
 	return h
@@ -422,14 +480,8 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		}
 	}
 
-	transport := &StreamableServerTransport{
-		SessionID:                   sessionID,
-		Stateless:                   true,
-		EventStore:                  h.opts.EventStore,
-		jsonResponse:                h.opts.JSONResponse,
-		logger:                      h.opts.Logger,
-		shouldPropagateCancellation: info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation),
-	}
+	transport := h.newStreamableServerTransport(sessionID, true)
+	transport.shouldPropagateCancellation = info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation)
 
 	session, err := connectStreamable(req.Context(), server, transport, info.opts)
 	if err != nil {
@@ -508,6 +560,10 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 		state.InitializeParams = &InitializeParams{
 			ProtocolVersion: protocolVersion,
 		}
+		// The header carries the version an earlier handshake settled on, or the
+		// 2025-03-26 the transports spec has a server assume without one; either
+		// way it is the version this request is served under, not only declared.
+		state.NegotiatedProtocolVersion = protocolVersion
 	}
 	if !hasInitialized && !usesNewProtocol {
 		state.InitializedParams = new(InitializedParams)
@@ -532,6 +588,18 @@ func connectStreamable(ctx context.Context, server *Server, transport *Streamabl
 	transport.connection.server = server
 	transport.connection.toolLookup = server.getServerTool
 	return s, nil
+}
+
+func (h *StreamableHTTPHandler) newStreamableServerTransport(sessionID string, stateless bool) *StreamableServerTransport {
+	return &StreamableServerTransport{
+		SessionID:        sessionID,
+		Stateless:        stateless,
+		EventStore:       h.opts.EventStore,
+		jsonResponse:     h.opts.JSONResponse,
+		streamKeepAlive:  h.opts.StreamKeepAlive,
+		logger:           h.opts.Logger,
+		onRequestSummary: h.opts.OnRequestSummary,
+	}
 }
 
 // serveStateful handles requests for stateful servers.
@@ -652,13 +720,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	}
 	sessionID = server.opts.GetSessionID()
 
-	transport := &StreamableServerTransport{
-		SessionID:    sessionID,
-		Stateless:    false,
-		EventStore:   h.opts.EventStore,
-		jsonResponse: h.opts.JSONResponse,
-		logger:       h.opts.Logger,
-	}
+	transport := h.newStreamableServerTransport(sessionID, false)
 
 	// Sessions without a session ID (GetSessionID returned "") are ephemeral:
 	// there's no way to address them, so they are closed after the request.
@@ -822,6 +884,13 @@ type StreamableServerTransport struct {
 	// to write their own streamable HTTP handler.
 	jsonResponse bool
 
+	// streamKeepAlive is the idle interval after which an SSE comment is
+	// written to a stream; see [StreamableHTTPOptions.StreamKeepAlive].
+	//
+	// TODO: streamKeepAlive should be exported, like jsonResponse and logger,
+	// once users can write their own streamable HTTP handler.
+	streamKeepAlive time.Duration
+
 	// optional logger provided through the [StreamableHTTPOptions.Logger].
 	//
 	// TODO(rfindley): logger should be exported, since we want to allow users
@@ -831,6 +900,10 @@ type StreamableServerTransport struct {
 	// shouldPropagateCancellation is forwarded to the underlying
 	// [streamableServerConn]. See its docstring.
 	shouldPropagateCancellation bool
+
+	// onRequestSummary is forwarded from StreamableHTTPOptions for transports
+	// created by StreamableHTTPHandler.
+	onRequestSummary func(context.Context, StreamableHTTPRequestSummary)
 
 	// connection is non-nil if and only if the transport has been connected.
 	connection *streamableServerConn
@@ -846,8 +919,10 @@ func (t *StreamableServerTransport) Connect(ctx context.Context) (Connection, er
 		stateless:                   t.Stateless,
 		eventStore:                  t.EventStore,
 		jsonResponse:                t.jsonResponse,
+		streamKeepAlive:             t.streamKeepAlive,
 		logger:                      ensureLogger(t.logger), // see #556: must be non-nil
 		shouldPropagateCancellation: t.shouldPropagateCancellation,
+		onRequestSummary:            t.onRequestSummary,
 		incoming:                    make(chan jsonrpc.Message, 10),
 		done:                        make(chan struct{}),
 		streams:                     make(map[string]*stream),
@@ -876,10 +951,15 @@ func (t *StreamableServerTransport) SupportsProtocolVersion(version string) bool
 }
 
 type streamableServerConn struct {
-	sessionID    string
-	stateless    bool
-	jsonResponse bool
-	eventStore   EventStore
+	sessionID        string
+	stateless        bool
+	jsonResponse     bool
+	eventStore       EventStore
+	onRequestSummary func(context.Context, StreamableHTTPRequestSummary)
+
+	// streamKeepAlive is the idle interval for SSE keep-alive comments, or
+	// non-positive to disable them; see [StreamableHTTPOptions.StreamKeepAlive].
+	streamKeepAlive time.Duration
 
 	// shouldPropagateCancellation is true when the underlying HTTP request's
 	// lifetime IS the connection's cancellation signal (e.g., a stateless
@@ -983,6 +1063,15 @@ type stream struct {
 	// It starts at -1 since indices start at 0.
 	lastIdx int
 
+	// lastWrite is when bytes were last written to w. The zero value means
+	// nothing has been written to the current w, so its headers are still
+	// uncommitted and the HTTP status can still be changed. Reset by release.
+	lastWrite time.Time
+
+	// committed, if non-nil, is closed by the first write to w. The keep-alive
+	// goroutine parks on it instead of polling.
+	committed chan struct{}
+
 	// protocolVersion is the protocol version for this stream.
 	protocolVersion string
 
@@ -1032,6 +1121,86 @@ func (s *stream) release() {
 	defer s.mu.Unlock()
 	s.w = nil
 	s.done = nil // may already be nil, if the stream is done or closed
+	s.lastWrite = time.Time{}
+	s.committed = nil
+}
+
+// markWrittenLocked records a write to s.w, for the keep-alive.
+//
+// s.mu must be held.
+func (s *stream) markWrittenLocked() {
+	s.lastWrite = time.Now()
+	if s.committed != nil {
+		close(s.committed)
+		s.committed = nil
+	}
+}
+
+// startKeepAliveLocked starts the keep-alive goroutine for the HTTP request
+// currently claiming the stream. ctx is that request's context.
+//
+// s.mu must be held.
+func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duration) {
+	// Nothing has been written yet, so a SEP-2575 status override may still
+	// be needed (see deliverLocked): wait for the first event.
+	committed := make(chan struct{})
+	s.committed = committed
+	go s.keepAlive(ctx, interval, committed)
+}
+
+// keepAlive writes an SSE comment to the stream whenever it has been idle for
+// interval, until ctx is done or the stream is released or closed. A failed
+// write closes the stream, releasing the hanging request so that a dead peer
+// is noticed within one interval.
+func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committed chan struct{}) {
+	if committed != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-committed:
+		}
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			// The request ended; don't touch a stream that a later request may
+			// have re-acquired.
+			return
+		}
+		s.mu.Lock()
+		if s.done == nil {
+			s.mu.Unlock()
+			return
+		}
+		if wait := interval - time.Since(s.lastWrite); !s.lastWrite.IsZero() && wait > 0 {
+			s.mu.Unlock()
+			timer.Reset(wait)
+			continue
+		}
+		_, err := fmt.Fprint(s.w, ":\n\n")
+		if err == nil {
+			// Ignore returned error as flushing is best-effort.
+			_ = http.NewResponseController(s.w).Flush()
+			s.markWrittenLocked()
+		} else {
+			close(s.done)
+			s.done = nil
+		}
+		s.mu.Unlock()
+		if err != nil {
+			// A client that closes its connection cancels ctx before any write
+			// fails, so reaching this means the peer vanished without closing.
+			s.logger.Warn(fmt.Sprintf("Writing keep-alive: %v", err))
+			return
+		}
+		timer.Reset(interval)
+	}
 }
 
 // extractErrorStatus reports the HTTP status to send when the given
@@ -1100,6 +1269,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	// SSE framing.
 	if overrideStatus != 0 {
 		s.w.Header().Set("Content-Type", "application/json")
+		s.w.Header().Del("X-Accel-Buffering")
 		s.w.WriteHeader(overrideStatus)
 		if _, err := s.w.Write(data); err != nil {
 			return done, err
@@ -1135,6 +1305,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
 			return done, err
 		}
+		s.markWrittenLocked()
 	}
 	return done, nil
 }
@@ -1441,6 +1612,9 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}
+	if c.onRequestSummary != nil && !isBatch && len(incoming) == 1 {
+		c.onRequestSummary(req.Context(), summarizeStreamableHTTPRequest(incoming[0]))
+	}
 
 	protocolVersion := protocolVersionFromContext(req.Context())
 	if protocolVersion == "" {
@@ -1687,6 +1861,8 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	if useSSE {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Connection", "keep-alive")
+		// The spec recommends this for SSE: ask reverse proxies not to buffer.
+		w.Header().Set("X-Accel-Buffering", "no")
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 	}
@@ -1749,6 +1925,11 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
 		}
+		if c.streamKeepAlive > 0 && stream.isListen {
+			stream.mu.Lock()
+			stream.startKeepAliveLocked(req.Context(), c.streamKeepAlive)
+			stream.mu.Unlock()
+		}
 	}
 
 	// Publish incoming messages.
@@ -1768,6 +1949,22 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	}
 
 	c.hangResponse(req.Context(), done)
+}
+
+func summarizeStreamableHTTPRequest(msg jsonrpc.Message) StreamableHTTPRequestSummary {
+	var summary StreamableHTTPRequestSummary
+	switch msg := msg.(type) {
+	case *jsonrpc.Request:
+		summary.Method = msg.Method
+		if msg.IsCall() {
+			summary.RequestID = msg.ID
+		} else {
+			summary.IsNotification = true
+		}
+	case *jsonrpc.Response:
+		summary.IsResponse = true
+	}
+	return summary
 }
 
 // Event IDs: encode both the logical connection ID and the index, as
