@@ -22,11 +22,9 @@ type ServerSessionState struct {
 	// InitializedParams are the parameters from 'notifications/initialized'.
 	InitializedParams *InitializedParams `json:"initializedParams"`
 
-	// NegotiatedProtocolVersion is the protocol version agreed during
-	// 'initialize', which may differ from the version the client requested if
-	// the server does not support it.
-	//
-	// It is empty for sessions that never ran the initialize handshake.
+	// NegotiatedProtocolVersion is the protocol version the session speaks: the
+	// one 'initialize' settled on, or the one recorded from a new-protocol
+	// request, a 'server/discover' answer listing it, or the version header.
 	NegotiatedProtocolVersion string `json:"negotiatedProtocolVersion,omitempty"`
 
 	// LogLevel is the logging level for the session.

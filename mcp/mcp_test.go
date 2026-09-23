@@ -1971,7 +1971,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		var buf bytes.Buffer
 		clientOpts := &ClientOptions{
 			KeepAlive: 50 * time.Millisecond,
-			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		}
 		c := NewClient(testImpl, clientOpts)
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
@@ -1992,8 +1992,8 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		synctest.Wait()
 
 		got := buf.String() // slog serializes Write calls internally
-		if !strings.Contains(got, "keepalive ping failed") {
-			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		if !strings.Contains(got, `level=WARN msg="keepalive ping failed; closing session"`) {
+			t.Errorf("expected keepalive failure to be logged at Warn, got log output:\n%s", got)
 		}
 	})
 }
