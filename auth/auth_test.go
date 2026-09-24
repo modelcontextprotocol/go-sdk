@@ -148,8 +148,8 @@ func TestProtectedResourceMetadataHandler(t *testing.T) {
 				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
 			}
 
-			if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, OPTIONS" {
-				t.Errorf("Access-Control-Allow-Methods = %q, want %q", got, "GET, OPTIONS")
+			if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET" {
+				t.Errorf("Access-Control-Allow-Methods = %q, want %q", got, "GET")
 			}
 
 			// Validate error response body for disallowed methods
