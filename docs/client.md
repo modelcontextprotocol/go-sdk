@@ -544,5 +544,116 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
 adds an `extensions` map to `ClientCapabilities` and `ServerCapabilities` so
 that optional capabilities outside the core protocol can be declared on the
 wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
-are per-extension settings objects.
+are per-extension settings objects. Extensions require explicit opt-in.
 
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package provides typed calls for the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Register methods before connecting, then bind the skills client to the connected
+session. This example connects to the server from the
+[server example](server.md#skills-extension) over an in-memory transport:
+
+```go
+ctx := context.Background()
+client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
+if err := skills.AddMethods(client); err != nil {
+	log.Fatal(err)
+}
+
+serverTransport, clientTransport := mcp.NewInMemoryTransports()
+serverSession, err := server.Connect(ctx, serverTransport, nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer serverSession.Close()
+session, err := client.Connect(ctx, clientTransport, nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer session.Close()
+
+skillClient := &skills.Client{Session: session}
+for skill, err := range skillClient.All(ctx, nil) {
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(skill.URI, skill.Frontmatter["description"])
+}
+```
+
+`List`, `Get`, and `All` share `skillClient.Limits`:
+
+| Configuration | Manifest limits |
+| --- | --- |
+| Omitted or `Limits: skills.Limits{}` | No count or size caps |
+| `Limits: skills.BaselineLimits()` | 512 resources and 16 MiB per skill |
+| Positive fields in a supplied `Limits` | Exact caps for those dimensions |
+| Zero fields in a supplied `Limits` | Those dimensions are unlimited |
+| Negative fields | Configuration error |
+
+Structural validation always runs. The spec's limits are an interoperability
+baseline: hosts must support at least that much and may support more. They are
+not mandatory rejection thresholds. To opt into caps based on that baseline:
+
+```go
+limits := skills.BaselineLimits()
+limits.MaxTotalSize = 32 << 20
+skillClient = &skills.Client{Session: session, Limits: limits}
+```
+
+A literal containing only `MaxTotalSize` leaves resource count unlimited.
+`BaselineLimits()` follows the spec supported by the installed SDK version.
+Supply explicit numeric values to pin application policy across upgrades.
+Caps below the baseline reduce what the host can accept.
+
+Servers and clients configure these limits independently. Each call captures the
+configured limits before sending its request, and `All` captures them when the
+iterator is created. Do not mutate the client during use.
+
+These caps apply to static manifests. For dynamic skills, applications manage
+their own download, storage, and context budgets; the SDK does not retrieve files
+or maintain cumulative size or file counts.
+
+`ReadDirectory` and `DirectoryEntries` expose optional
+directory browsing when the server advertises `directoryRead: true`. Calls fail
+if the required server capabilities are absent. Iterators follow cursors without
+modifying request parameters and stop after the first error.
+
+Listing does not fetch content. Read files on demand with `session.ReadResource`
+and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use.
+A listed entry is complete; `Get` also retrieves a skill directly by URI even
+when it was not listed. For example, when the user chooses to load a known skill:
+
+```go
+result, err := skillClient.Get(ctx, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
+if err != nil {
+	log.Fatal(err)
+}
+resource, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: result.Skill.URI})
+if err != nil {
+	log.Fatal(err)
+}
+if len(resource.Contents) != 1 || resource.Contents[0] == nil || resource.Contents[0].URI != result.Skill.URI || resource.Contents[0].Blob != nil {
+	log.Fatal("expected one text resource for SKILL.md")
+}
+if err := skills.VerifySkillMD(result.Skill, []byte(resource.Contents[0].Text)); err != nil {
+	log.Fatal(err)
+}
+fmt.Println("verified", result.Skill.URI)
+```
+
+Keep skill entries scoped to their originating session: equal URIs from different
+servers are different skills. Use a host-assigned server identity when persisting
+entries or approvals. Directory results are live observations; they do not expand
+the files authorized by a held manifest.
+
+`VerifyResource` checks manifest membership, byte length, and SHA-256 digest.
+`VerifySkillMD` also compares every frontmatter field. JSON frontmatter numbers
+are decoded as `json.Number` to preserve integer precision. For dynamic manifests,
+`VerifySkillMD` still checks frontmatter and returns `skills.ErrDynamicResources`
+only when it matches; malformed or mismatched frontmatter returns a different error.
+Applications decide whether to accept content without integrity verification and
+own skill approval and execution policy. A digest match alone does not make remote
+instructions trustworthy.

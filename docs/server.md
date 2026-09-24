@@ -1201,7 +1201,95 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 adds an `extensions` map to `ServerCapabilities` so that optional
 capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
-per-extension settings objects.
+per-extension settings objects. Extensions require explicit opt-in.
+
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package implements the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Use `skills.AddHandlers` for request-time
+`skills/list` and `skills/get` handlers. An optional directory handler enables
+`resources/directory/read` and advertises `directoryRead: true`.
+
+Register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate`; these also advertise the required `resources`
+capability. An entry's manifest includes every file, including `SKILL.md` and
+nested skills. Use `skills.DynamicResources()` when stable digests cannot be
+published, not simply because the catalog changes over time.
+
+This example serves a complete static manifest and its content. The
+[client example](client.md#skills-extension) connects to this server and verifies
+the resource bytes:
+
+```go
+server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, nil)
+const uri = "skill://greeting/SKILL.md"
+const content = "---\nname: greeting\ndescription: Greet the user.\n---\n# Greeting\nSay hello to the user.\n"
+entry := &skills.Skill{
+	URI: uri,
+	Frontmatter: skills.Frontmatter{
+		"name": "greeting", "description": "Greet the user.",
+	},
+	Resources: skills.StaticResources(&skills.Resource{
+		URI: uri, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))), Size: int64(len(content)),
+	}),
+}
+
+server.AddResource(&mcp.Resource{
+	URI: uri, Name: "greeting", Description: "Greet the user.", MIMEType: "text/markdown",
+}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+		URI: uri, MIMEType: "text/markdown", Text: content,
+	}}}, nil
+})
+err := skills.AddHandlers(server, &skills.Handlers{
+	List: func(_ context.Context, _ *mcp.ServerSession, params *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
+		page, next, err := skills.PaginateSkills([]*skills.Skill{entry}, params.Cursor, 0)
+		return &skills.ListSkillsResult{Skills: page, NextCursor: next}, err
+	},
+	Get: func(_ context.Context, _ *mcp.ServerSession, params *skills.GetSkillParams) (*skills.GetSkillResult, error) {
+		if params.URI != entry.URI {
+			return nil, nil
+		}
+		return &skills.GetSkillResult{Skill: entry}, nil
+	},
+}, nil)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
+returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
+with an empty resource list. Explicit JSON-RPC errors retain their code and data;
+other handler errors and invalid results become Internal Error (`-32603`).
+
+Handlers own pagination. `skills.PaginateSkills` and
+`skills.PaginateDirectoryResources` sort by URI and return one page without
+modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
+`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+entry contains its complete manifest, which is never split across pages.
+
+`skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
+manifest caps. Positive fields set exact caps, zero fields are unlimited, and
+negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
+the spec's interoperability baseline of 512 resources and 16 MiB per skill.
+Servers should stay within this baseline for broad compatibility; serving larger
+skills is allowed but some clients may decline them. The
+[client documentation](client.md#skills-extension) explains how to customize caps
+and pin application policy across SDK upgrades.
+
+Structural validation always runs; put additional application policy in the
+handlers themselves. Dynamic content budgets belong to the application; the SDK
+does not accumulate sizes across resource reads. It copies options at registration and
+prepares outgoing results without mutating handler-owned data.
+
+On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
+`cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+through the result's `mcp.Cacheable` field. The SDK also supports the extension on
+earlier protocols as a compatibility backport, omitting cache fields and
+`resultType`. The extension does not prefetch files or start background work.
 
 ### Pagination
 
@@ -1216,7 +1304,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.
@@ -1226,7 +1314,7 @@ indicates whether page retrieval failed.
 The `ClientSession` also exposes `ListXXX` methods for fine-grained control
 over pagination.
 
-**Server-side**: pagination is on by default, so in general nothing is required
-server-side. However, you may use
+**Server-side**: pagination is on by default for core feature lists, so in general
+nothing is required server-side. However, you may use
 [`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
 to customize the page size.
