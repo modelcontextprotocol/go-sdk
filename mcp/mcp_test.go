@@ -710,13 +710,13 @@ func TestCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var (
 			start     = make(chan struct{})
-			cancelled = make(chan struct{}, 1) // don't block the request
+			cancelled = make(chan error, 1) // don't block the request
 		)
 		slowTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
 			start <- struct{}{}
 			select {
 			case <-ctx.Done():
-				cancelled <- struct{}{}
+				cancelled <- context.Cause(ctx)
 			case <-time.After(5 * time.Second):
 				return nil, nil, nil
 			}
@@ -732,7 +732,72 @@ func TestCancellation(t *testing.T) {
 		<-start
 		cancel()
 
-		<-cancelled
+		// The client sends its context's error as the reason of its cancelled
+		// notification, and the handler reads it back as the cause.
+		cause := <-cancelled
+		if !errors.Is(cause, context.Canceled) {
+			t.Errorf("context.Cause = %v, want it to wrap context.Canceled", cause)
+		}
+		if want := "request cancelled by the peer: " + context.Canceled.Error(); cause == nil || cause.Error() != want {
+			t.Errorf("context.Cause = %v, want %q", cause, want)
+		}
+	})
+}
+
+// TestCancellationReason verifies that the reason a peer gives in its
+// cancelled notification reaches the handler as the cause of its context,
+// which is what lets a server log it as the specification asks.
+//
+// The call and the notification are written to the connection directly, so
+// the reason is one the SDK's own client would never send; the session is
+// pinned to 2025-11-25 so that a request written that way needs no _meta.
+func TestCancellationReason(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			start     = make(chan struct{})
+			cancelled = make(chan error, 1) // don't block the request
+		)
+		slowTool := func(ctx context.Context, req *CallToolRequest, args any) (*CallToolResult, any, error) {
+			start <- struct{}{}
+			select {
+			case <-ctx.Done():
+				cancelled <- context.Cause(ctx)
+			case <-time.After(5 * time.Second):
+				cancelled <- nil
+			}
+			return nil, nil, nil
+		}
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		s := NewServer(testImpl, nil)
+		AddTool(s, &Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}}, slowTool)
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ss.Close() })
+		cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+
+		call := cs.conn.Call(ctx, methodCallTool, &CallToolParams{Name: "slow"})
+		<-start
+		if err := cs.conn.Notify(ctx, notificationCancelled, &CancelledParams{RequestID: call.ID().Raw(), Reason: "user asked"}); err != nil {
+			t.Fatal(err)
+		}
+
+		cause := <-cancelled
+		if cause == nil {
+			t.Fatal("the tool ran to completion, want it cancelled")
+		}
+		if !errors.Is(cause, context.Canceled) {
+			t.Errorf("context.Cause = %v, want it to wrap context.Canceled", cause)
+		}
+		if got, want := cause.Error(), "request cancelled by the peer: user asked"; got != want {
+			t.Errorf("context.Cause = %q, want %q", got, want)
+		}
 	})
 }
 
@@ -847,7 +912,16 @@ func TestNoJSONNull(t *testing.T) {
 	var logbuf safeBuffer
 	ct = &LoggingTransport{Transport: ct, Writer: &logbuf}
 
-	s := NewServer(testImpl, nil)
+	// Handlers with nothing to suggest or show still answer with empty
+	// arrays: completion values and prompt messages are required.
+	s := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{}, nil
+		},
+	})
+	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -871,6 +945,15 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ss.ListRoots(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "empty"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1906,7 +1989,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		var buf bytes.Buffer
 		clientOpts := &ClientOptions{
 			KeepAlive: 50 * time.Millisecond,
-			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		}
 		c := NewClient(testImpl, clientOpts)
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
@@ -1927,8 +2010,8 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		synctest.Wait()
 
 		got := buf.String() // slog serializes Write calls internally
-		if !strings.Contains(got, "keepalive ping failed") {
-			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		if !strings.Contains(got, `level=WARN msg="keepalive ping failed; closing session"`) {
+			t.Errorf("expected keepalive failure to be logged at Warn, got log output:\n%s", got)
 		}
 	})
 }
@@ -3293,6 +3376,159 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("subscription maps not scrubbed after Close: tool=%v prompt=%v resource=%v",
 				inTool, inPrompt, inResource)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// newSubListenSubscribeServer is newSubListenServer with a resource and the
+// handlers that make the server advertise resources.subscribe, so that a
+// listen can carry a resource subscription.
+func newSubListenSubscribeServer() *Server {
+	s := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+	})
+	AddTool(s, &Tool{Name: "t1"}, sayHi)
+	s.AddPrompt(&Prompt{Name: "p1"}, nil)
+	s.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+	return s
+}
+
+func waitSubListenEvent(t *testing.T, events chan subListenEvent, kind string) subListenEvent {
+	t.Helper()
+	select {
+	case e := <-events:
+		if e.kind != kind {
+			t.Fatalf("got event %q, want %q", e.kind, kind)
+		}
+		return e
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %q", kind)
+		return subListenEvent{}
+	}
+}
+
+// TestSubscriptionsListen_TeardownKeepsOtherListens verifies that unwinding
+// one listen leaves the other listens on the same session registered.
+// Unsubscribe tears down the listen that Subscribe opened for the resource;
+// the auto-listen opened by Connect must keep delivering list-changed
+// notifications.
+func TestSubscriptionsListen_TeardownKeepsOtherListens(t *testing.T) {
+	events := make(chan subListenEvent, 16)
+	server := newSubListenSubscribeServer()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := newSubListenClient(events).Connect(ctx, ct,
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	autoListen := waitSubListenEvent(t, events, "ack")
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	resourceListen := waitSubListenEvent(t, events, "ack")
+	if resourceListen.id == autoListen.id {
+		t.Fatalf("Subscribe reused subscription ID %s", autoListen.id)
+	}
+
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	// Wait for the server to unwind that listen, observed through a registry
+	// the auto-listen does not appear in.
+	waitUntil(t, 5*time.Second, "resource listen to unwind", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, ok := server.resourceSubscriptions["file:///r1"]
+		return !ok
+	})
+
+	AddTool(server, &Tool{Name: "t2"}, sayHi)
+	if got := waitSubListenEvent(t, events, "tool"); got.id != autoListen.id {
+		t.Errorf("tool notification id = %s, want auto-listen %s", got.id, autoListen.id)
+	}
+}
+
+// TestSubscriptionsListen_TeardownRetiresOwnRegistration verifies that a
+// listen still retires what it registered, so that per-listen tracking does
+// not turn into a leak.
+func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
+	events := make(chan subListenEvent, 8)
+	server := newSubListenServer()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// A client with no list-changed handlers does not auto-listen, so the
+	// listen opened below is the session's only one.
+	c := NewClient(testImpl, nil)
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				events <- subListenEvent{"ack", ""}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	listenCtx, cancelListen := context.WithCancel(context.Background())
+	defer cancelListen()
+	if err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{ToolsListChanged: true, PromptsListChanged: true},
+	}); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	waitSubListenEvent(t, events, "ack")
+
+	server.mu.Lock()
+	_, inTool := server.toolChangeSubscriptions[ss]
+	_, inPrompt := server.promptChangeSubscriptions[ss]
+	server.mu.Unlock()
+	if !inTool || !inPrompt {
+		t.Fatal("listen not registered")
+	}
+
+	cancelListen()
+	waitUntil(t, 5*time.Second, "registrations to be retired", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, inTool := server.toolChangeSubscriptions[ss]
+		_, inPrompt := server.promptChangeSubscriptions[ss]
+		return !inTool && !inPrompt
+	})
+}
+
+// waitUntil polls cond until it reports true, failing the test after timeout.
+func waitUntil(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

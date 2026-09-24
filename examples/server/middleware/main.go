@@ -38,7 +38,7 @@ func main() {
 			logger.Info("MCP method started",
 				"method", method,
 				"session_id", req.GetSession().ID(),
-				"has_params", req.GetParams() != nil,
+				"has_params", mcp.HasParams(req),
 			)
 			// Log more for tool calls.
 			if ctr, ok := req.(*mcp.CallToolRequest); ok {

@@ -724,7 +724,13 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
-	return s.opts.CompletionHandler(ctx, req)
+	res, err := s.opts.CompletionHandler(ctx, req)
+	if err == nil && res != nil && res.Completion.Values == nil {
+		res2 := *res
+		res2.Completion.Values = []string{} // avoid "null"
+		res = &res2
+	}
+	return res, err
 }
 
 // Map from notification name to a function creating its corresponding Params.
@@ -811,16 +817,24 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 	if len(subscribers) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// One goroutine per session, each with its own deadline, so a session
+	// whose write stalls neither delays nor fails the others (as in the
+	// notifySessions function in shared.go).
+	var wg sync.WaitGroup
 	for sess, reqID := range subscribers {
-		params := makeParams()
-		injectMetaSubscriptionID(params, reqID)
-		req := newRequest(sess, params)
-		if err := handleNotify(ctx, method, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			params := makeParams()
+			injectMetaSubscriptionID(params, reqID)
+			if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
+				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // injectMetaSubscriptionID stamps the listen request's JSON-RPC ID into the
@@ -830,7 +844,9 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 //
 // [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
 func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
-	m := params.GetMeta()
+	// Clone: params may share its _meta map with the caller's struct and with
+	// the other sessions' copies, and this runs concurrently per session.
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -910,8 +926,13 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	}
 	res, err := prompt.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
+		}
+		if res.Messages == nil && res.InputRequests == nil {
+			res2 := *res
+			res2.Messages = []*PromptMessage{} // avoid "null"
+			res = &res2
 		}
 	}
 	return res, err
@@ -939,15 +960,13 @@ func (s *Server) discover(ctx context.Context, req *ServerRequest[*DiscoverParam
 		Capabilities:    req.ClientCapabilities(),
 		ClientInfo:      req.ClientInfo(),
 	}
-	// Only persist InitializeParams when the transport can actually serve
-	// the new protocol. On transports that cannot (notably stateful
-	// StreamableHTTPHandler), a discover request creates a session that
-	// is never surfaced to the client via Mcp-Session-Id; leaving
-	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
-	// close it instead of leaking.
-	if slices.ContainsFunc(versions, func(v string) bool { return v >= protocolVersion20260728 }) {
+	// Record the session only when this transport serves the version the
+	// client declared: one whose version is not listed picks another on its
+	// next call, and a nil InitializeParams lets serveStatefulPOST close it.
+	if slices.Contains(versions, init.ProtocolVersion) {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
+			state.NegotiatedProtocolVersion = init.ProtocolVersion
 		})
 	}
 	res := &DiscoverResult{
@@ -1012,10 +1031,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 	}
 	res, err := st.handler(ctx, req)
 	if err == nil && res != nil {
-		if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.resultType != resultTypeInputRequired {
+		if res.Content == nil && res.InputRequests == nil {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1080,11 +1099,11 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 	if res == nil {
 		return nil, fmt.Errorf("reading resource %s: read handler returned nil information", uri)
 	}
-	if err := handleMultiRoundTripResult(req.Session, s.opts.Logger, res); err != nil {
+	if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.resultType == resultTypeInputRequired {
+	if res.InputRequests != nil {
 		return res, nil
 	}
 	if res.Contents == nil {
@@ -1276,10 +1295,19 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}
 	s.mu.Unlock()
 	defer func() {
+		// Retire only what this listen registered above: a session can hold
+		// several listens at once, and deleting by session alone retires a
+		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		delete(s.toolChangeSubscriptions, req.Session)
-		delete(s.promptChangeSubscriptions, req.Session)
-		delete(s.resourceChangeSubscriptions, req.Session)
+		if allowed.ToolsListChanged {
+			delete(s.toolChangeSubscriptions, req.Session)
+		}
+		if allowed.PromptsListChanged {
+			delete(s.promptChangeSubscriptions, req.Session)
+		}
+		if allowed.ResourcesListChanged {
+			delete(s.resourceChangeSubscriptions, req.Session)
+		}
 		s.mu.Unlock()
 	}()
 
@@ -1857,6 +1885,9 @@ func (s *Server) AddSendingMiddleware(middleware ...Middleware) {
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
+//
+// A received message need not carry params: use [HasParams] before inspecting
+// [Request.GetParams].
 func (s *Server) AddReceivingMiddleware(middleware ...Middleware) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1986,15 +2017,25 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	default:
-		if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() {
-			ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-			return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
-		}
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
+				// Accepted above and served as declared, which is all the negotiation
+				// SEP-2575 has. Not through negotiatedVersion: that caps its answer
+				// below 2026-07-28 and would downgrade the session unannounced.
+				state.NegotiatedProtocolVersion = validatedMeta.initializeParams.ProtocolVersion
 			})
 		}
+	}
+
+	// In legacy protocol versions, a client cannot send requests other than
+	// pings before the server has responded to the initialize request. A
+	// new-protocol request is exempt: a SEP-2575 session has no 'initialize'
+	// to wait for, and the request itself says which protocol it speaks.
+	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
+		req.Method != methodInitialize && req.Method != methodPing {
+		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
+		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
@@ -2039,8 +2080,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if err != nil {
 		return nil, err
 	}
-	if validatedMeta.usesNewProtocol {
-		setCompleteResultType(res)
+	// A middleware can return a typed nil value that satisfies the Result
+	// interface. Annotating that value panics.
+	if validatedMeta.usesNewProtocol && res != nil && !res.isNil() {
+		annotateResultType(res)
 		annotateServerInfo(res, ss.server.impl)
 	}
 	return res, nil

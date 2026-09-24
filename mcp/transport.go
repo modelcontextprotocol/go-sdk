@@ -207,7 +207,7 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 	reader, writer := jsonrpc2.Reader(mcpConn), jsonrpc2.Writer(mcpConn)
 	var (
 		h         H
-		preempter canceller
+		preempter = canceller{logger: logger}
 	)
 	bind := func(conn *jsonrpc2.Connection) jsonrpc2.Handler {
 		h = b.bind(mcpConn, conn, s, onClose)
@@ -252,7 +252,8 @@ type cancellationPropagator interface {
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
 // cancelled notifications.
 type canceller struct {
-	conn *jsonrpc2.Connection
+	conn   *jsonrpc2.Connection
+	logger *slog.Logger
 }
 
 // Preempt implements [jsonrpc2.Preempter].
@@ -266,10 +267,32 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		if err != nil {
 			return nil, err
 		}
-		go c.conn.Cancel(id)
+		// The spec says implementations should log cancellation reasons, and
+		// the handler is the one place that can act on one, so the reason
+		// travels as the cause of the request's context rather than being
+		// dropped here.
+		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
+		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
+
+// A peerCancelledError is the cause a request's context carries once the peer
+// has sent a cancelled notification for it: [context.Cause] returns it to the
+// handler with the reason the peer gave, and it unwraps to [context.Canceled]
+// so that [errors.Is] keeps classifying the cancellation as one.
+type peerCancelledError struct {
+	reason string
+}
+
+func (e *peerCancelledError) Error() string {
+	if e.reason == "" {
+		return "request cancelled by the peer"
+	}
+	return "request cancelled by the peer: " + e.reason
+}
+
+func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
 // callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
 // without awaiting its JSON-RPC response. The call's logical lifetime is the
@@ -711,7 +734,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if batch {
 		var respBatch *msgBatch // track incoming requests in the batch
 		for _, msg := range msgs {
-			if req, ok := msg.(*jsonrpc.Request); ok {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				if respBatch == nil {
 					respBatch = &msgBatch{
 						unresolved: make(map[jsonrpc2.ID]int),
