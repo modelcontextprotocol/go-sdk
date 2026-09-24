@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 func TestMultiRoundTrip_ManualRetry(t *testing.T) {
@@ -861,6 +864,170 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 			t.Fatalf("setMultiRoundTripRetryParams() error = %v, want unsupported params type error", err)
 		}
 	})
+}
+
+func TestClientSupportsMultiRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		state ServerSessionState
+		want  bool
+	}{
+		{
+			// A session that ran no handshake speaks the new protocol: every
+			// request carries its own version in _meta (SEP-2575).
+			name: "no handshake",
+			want: true,
+		},
+		{
+			name: "discover, new protocol",
+			state: ServerSessionState{
+				InitializeParams: &InitializeParams{ProtocolVersion: protocolVersion20260728},
+			},
+			want: true,
+		},
+		{
+			name: "initialize, legacy version",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20251125},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: false,
+		},
+		{
+			// initialize is deprecated in protocolVersion20260728, so a client
+			// asking for it there is negotiated down and must be served the
+			// legacy interaction whatever it declared.
+			name: "initialize, negotiated down",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20260728},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: false,
+		},
+		{
+			name: "stateless request, legacy version",
+			state: ServerSessionState{
+				InitializeParams: &InitializeParams{ProtocolVersion: protocolVersion20250618},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ss := &ServerSession{state: tt.state}
+			if got := clientSupportsMultiRoundTrip(ss); got != tt.want {
+				t.Errorf("clientSupportsMultiRoundTrip() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMultiRoundTrip_NegotiatedDownFromNewProtocol drives a client that asks
+// for protocolVersion20260728 in the deprecated initialize handshake and is
+// answered with protocolVersion20251125. The session speaks the negotiated
+// version, so the server must fulfill the handler's input request itself with
+// elicitation/create, rather than returning an input-required result that the
+// negotiated version does not define.
+func TestMultiRoundTrip_NegotiatedDownFromNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			if len(req.Params.InputResponses) == 0 {
+				return &CallToolResult{
+					InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "OK?"}},
+					RequestState:  "state-1",
+				}, nil
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "confirmed"}}}, nil
+		},
+	)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect() error = %v", err)
+	}
+	defer ss.Close()
+
+	conn, err := ct.Connect(ctx)
+	if err != nil {
+		t.Fatalf("transport.Connect() error = %v", err)
+	}
+	defer conn.Close()
+
+	write := func(msg jsonrpc.Message, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("building message: %v", err)
+		}
+		if err := conn.Write(ctx, msg); err != nil {
+			t.Fatalf("conn.Write() error = %v", err)
+		}
+	}
+	read := func() jsonrpc.Message {
+		t.Helper()
+		msg, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("conn.Read() error = %v", err)
+		}
+		return msg
+	}
+
+	write(jsonrpc2.NewCall(jsonrpc2.Int64ID(1), methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20260728,
+		ClientInfo:      testImpl,
+		Capabilities:    &ClientCapabilities{Elicitation: &ElicitationCapabilities{}},
+	}))
+	initResp, ok := read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("initialize: got %T, want *jsonrpc2.Response", initResp)
+	}
+	if initResp.Error != nil {
+		t.Fatalf("initialize failed: %v", initResp.Error)
+	}
+	var initRes InitializeResult
+	if err := json.Unmarshal(initResp.Result, &initRes); err != nil {
+		t.Fatalf("unmarshalling initialize result: %v", err)
+	}
+	if initRes.ProtocolVersion != protocolVersion20251125 {
+		t.Fatalf("negotiated protocol version = %q, want %q", initRes.ProtocolVersion, protocolVersion20251125)
+	}
+	write(jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{}))
+
+	write(jsonrpc2.NewCall(jsonrpc2.Int64ID(2), methodCallTool, &CallToolParams{Name: "act"}))
+	msg := read()
+	elicitReq, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		resp := msg.(*jsonrpc2.Response)
+		t.Fatalf("tools/call was answered without an %q request: result = %s, error = %v",
+			methodElicit, resp.Result, resp.Error)
+	}
+	if elicitReq.Method != methodElicit {
+		t.Fatalf("server request method = %q, want %q", elicitReq.Method, methodElicit)
+	}
+	write(jsonrpc2.NewResponse(elicitReq.ID, &ElicitResult{Action: "accept"}, nil))
+
+	callResp, ok := read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("tools/call: got %T, want *jsonrpc2.Response", callResp)
+	}
+	if callResp.Error != nil {
+		t.Fatalf("tools/call failed: %v", callResp.Error)
+	}
+	var callRes CallToolResult
+	if err := json.Unmarshal(callResp.Result, &callRes); err != nil {
+		t.Fatalf("unmarshalling tools/call result: %v", err)
+	}
+	if len(callRes.Content) != 1 {
+		t.Fatalf("len(result.Content) = %d, want 1", len(callRes.Content))
+	}
+	if got := callRes.Content[0].(*TextContent).Text; got != "confirmed" {
+		t.Errorf("result text = %q, want %q", got, "confirmed")
+	}
 }
 
 func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
