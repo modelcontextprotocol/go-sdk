@@ -481,3 +481,54 @@ func TestSSEClientTransportBufferedEvents(t *testing.T) {
 		})
 	}
 }
+
+// TestSSECustomMethod verifies that a custom method registered with
+// [AddReceivingCustomMethod] is accepted over the SSE transport. The POST
+// handler pre-validates the method name against the server's method set, and
+// used to consult only the standard methods, so a custom call was rejected with
+// HTTP 400, which the client then reported as a failed write on the session.
+func TestSSECustomMethod(t *testing.T) {
+	type echoParams struct {
+		ParamsBase
+		Text string `json:"text"`
+	}
+	type echoResult struct {
+		ResultBase
+		Text string `json:"text"`
+	}
+
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(server, "acme/echo", func(_ context.Context, _ *ServerSession, params *echoParams) (*echoResult, error) {
+		return &echoResult{Text: params.Text}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(sseHandler)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*echoParams, *echoResult](client, "acme/echo"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := client.Connect(ctx, &SSEClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	got, err := CallCustomMethod[*echoParams, *echoResult](ctx, cs, "acme/echo", &echoParams{Text: "hello"})
+	if err != nil {
+		t.Fatalf("CallCustomMethod: %v", err)
+	}
+	if got.Text != "hello" {
+		t.Errorf("CallCustomMethod: got %q, want %q", got.Text, "hello")
+	}
+
+	// The session must still be usable after the custom call.
+	if err := cs.Ping(ctx, nil); err != nil {
+		t.Errorf("Ping after custom method: %v", err)
+	}
+}
