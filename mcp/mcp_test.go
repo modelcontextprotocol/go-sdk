@@ -912,7 +912,16 @@ func TestNoJSONNull(t *testing.T) {
 	var logbuf safeBuffer
 	ct = &LoggingTransport{Transport: ct, Writer: &logbuf}
 
-	s := NewServer(testImpl, nil)
+	// Handlers with nothing to suggest or show still answer with empty
+	// arrays: completion values and prompt messages are required.
+	s := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+			return &CompleteResult{}, nil
+		},
+	})
+	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -936,6 +945,15 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ss.ListRoots(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "empty"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1971,7 +1989,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		var buf bytes.Buffer
 		clientOpts := &ClientOptions{
 			KeepAlive: 50 * time.Millisecond,
-			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		}
 		c := NewClient(testImpl, clientOpts)
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
@@ -1992,8 +2010,8 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		synctest.Wait()
 
 		got := buf.String() // slog serializes Write calls internally
-		if !strings.Contains(got, "keepalive ping failed") {
-			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		if !strings.Contains(got, `level=WARN msg="keepalive ping failed; closing session"`) {
+			t.Errorf("expected keepalive failure to be logged at Warn, got log output:\n%s", got)
 		}
 	})
 }

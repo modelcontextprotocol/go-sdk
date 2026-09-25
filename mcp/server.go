@@ -724,7 +724,13 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
-	return s.opts.CompletionHandler(ctx, req)
+	res, err := s.opts.CompletionHandler(ctx, req)
+	if err == nil && res != nil && res.Completion.Values == nil {
+		res2 := *res
+		res2.Completion.Values = []string{} // avoid "null"
+		res = &res2
+	}
+	return res, err
 }
 
 // Map from notification name to a function creating its corresponding Params.
@@ -811,16 +817,24 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 	if len(subscribers) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// One goroutine per session, each with its own deadline, so a session
+	// whose write stalls neither delays nor fails the others (as in the
+	// notifySessions function in shared.go).
+	var wg sync.WaitGroup
 	for sess, reqID := range subscribers {
-		params := makeParams()
-		injectMetaSubscriptionID(params, reqID)
-		req := newRequest(sess, params)
-		if err := handleNotify(ctx, method, req); err != nil {
-			s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			params := makeParams()
+			injectMetaSubscriptionID(params, reqID)
+			if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
+				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // injectMetaSubscriptionID stamps the listen request's JSON-RPC ID into the
@@ -830,7 +844,9 @@ func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc
 //
 // [subscriptions/listen]: https://modelcontextprotocol.io/seps/2575-stateless-mcp#multiple-concurrent-subscriptions
 func injectMetaSubscriptionID(params Params, reqID jsonrpc.ID) {
-	m := params.GetMeta()
+	// Clone: params may share its _meta map with the caller's struct and with
+	// the other sessions' copies, and this runs concurrently per session.
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -913,6 +929,11 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
+		if res.Messages == nil && res.InputRequests == nil {
+			res2 := *res
+			res2.Messages = []*PromptMessage{} // avoid "null"
+			res = &res2
+		}
 	}
 	return res, err
 }
@@ -939,15 +960,13 @@ func (s *Server) discover(ctx context.Context, req *ServerRequest[*DiscoverParam
 		Capabilities:    req.ClientCapabilities(),
 		ClientInfo:      req.ClientInfo(),
 	}
-	// Only persist InitializeParams when the transport can actually serve
-	// the new protocol. On transports that cannot (notably stateful
-	// StreamableHTTPHandler), a discover request creates a session that
-	// is never surfaced to the client via Mcp-Session-Id; leaving
-	// InitializeParams nil lets serveStatefulPOST's safety-net cleanup
-	// close it instead of leaking.
-	if slices.ContainsFunc(versions, func(v string) bool { return v >= protocolVersion20260728 }) {
+	// Record the session only when this transport serves the version the
+	// client declared: one whose version is not listed picks another on its
+	// next call, and a nil InitializeParams lets serveStatefulPOST close it.
+	if slices.Contains(versions, init.ProtocolVersion) {
 		req.Session.updateState(func(state *ServerSessionState) {
 			state.InitializeParams = init
+			state.NegotiatedProtocolVersion = init.ProtocolVersion
 		})
 	}
 	res := &DiscoverResult{
@@ -2001,6 +2020,10 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		if !initialized && validatedMeta.usesNewProtocol && validatedMeta.initializeParams != nil {
 			ss.updateState(func(state *ServerSessionState) {
 				state.InitializeParams = validatedMeta.initializeParams
+				// Accepted above and served as declared, which is all the negotiation
+				// SEP-2575 has. Not through negotiatedVersion: that caps its answer
+				// below 2026-07-28 and would downgrade the session unannounced.
+				state.NegotiatedProtocolVersion = validatedMeta.initializeParams.ProtocolVersion
 			})
 		}
 	}
