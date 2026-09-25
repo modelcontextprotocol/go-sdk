@@ -147,7 +147,7 @@ func TestClientPaginateBasic(t *testing.T) {
 
 			var gotItems []*Item
 			var iterationErr error
-			seq := paginate(ctx, params, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+			seq := paginate(ctx, params, 0, listFunc, func(r *ListTestResult) []*Item { return r.Items })
 			for item, err := range seq {
 				if err != nil {
 					iterationErr = err
@@ -200,7 +200,7 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 				return res, nil
 			}
 			var gotItems []*Item
-			seq := paginate(ctx, &ListTestParams{}, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+			seq := paginate(ctx, &ListTestParams{}, 0, listFunc, func(r *ListTestResult) []*Item { return r.Items })
 			for item, err := range seq {
 				if err != nil {
 					t.Fatalf("paginate() unexpected error during iteration: %v", err)
@@ -211,6 +211,188 @@ func TestClientPaginateVariousPageSizes(t *testing.T) {
 				t.Fatalf("paginate() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestPaginateMaxPages(t *testing.T) {
+	ctx := context.Background()
+	// Create 10 pages of results (1 item each, all with next cursor).
+	all := allItems[:10]
+	results := generatePaginatedResults(all, 1)
+
+	listFunc := func(ctx context.Context, params *ListTestParams) (*ListTestResult, error) {
+		if len(results) == 0 {
+			t.Fatal("listFunc called more times than expected")
+		}
+		res := results[0]
+		results = results[1:]
+		return res, nil
+	}
+
+	t.Run("DefaultLimit64", func(t *testing.T) {
+		// With maxPages=0 (default 64), 10 pages should succeed.
+		results = generatePaginatedResults(all, 1)
+		var got []*Item
+		var iterErr error
+		seq := paginate(ctx, &ListTestParams{}, 0, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+		for item, err := range seq {
+			if err != nil {
+				iterErr = err
+				break
+			}
+			got = append(got, item)
+		}
+		if iterErr != nil {
+			t.Fatalf("unexpected error: %v", iterErr)
+		}
+		if len(got) != len(all) {
+			t.Fatalf("got %d items, want %d", len(got), len(all))
+		}
+	})
+
+	t.Run("MaxPagesExceeded", func(t *testing.T) {
+		results = generatePaginatedResults(all, 1)
+		var got []*Item
+		var iterErr error
+		// maxPages=3: should stop after 3 pages with an error.
+		seq := paginate(ctx, &ListTestParams{}, 3, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+		for item, err := range seq {
+			if err != nil {
+				iterErr = err
+				break
+			}
+			got = append(got, item)
+		}
+		if iterErr == nil {
+			t.Fatal("expected pagination error, got nil")
+		}
+		if len(got) != 3 {
+			t.Fatalf("got %d items, want 3", len(got))
+		}
+	})
+
+	t.Run("UnlimitedWithNegative", func(t *testing.T) {
+		results = generatePaginatedResults(all, 1)
+		var got []*Item
+		var iterErr error
+		// maxPages=-1: unlimited, should get all items.
+		seq := paginate(ctx, &ListTestParams{}, -1, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+		for item, err := range seq {
+			if err != nil {
+				iterErr = err
+				break
+			}
+			got = append(got, item)
+		}
+		if iterErr != nil {
+			t.Fatalf("unexpected error: %v", iterErr)
+		}
+		if len(got) != len(all) {
+			t.Fatalf("got %d items, want %d", len(got), len(all))
+		}
+	})
+
+	t.Run("DefaultCapAt64", func(t *testing.T) {
+		// maxPages=0 defaults to DefaultListMaxPages (64). Create 100 pages; should stop at 64.
+		bigAll := make([]*Item, 100)
+		for i := range bigAll {
+			bigAll[i] = &Item{Name: fmt.Sprintf("item-%d", i)}
+		}
+		results := generatePaginatedResults(bigAll, 1)
+		listFunc := func(ctx context.Context, params *ListTestParams) (*ListTestResult, error) {
+			if len(results) == 0 {
+				t.Fatal("listFunc called more times than expected")
+			}
+			res := results[0]
+			results = results[1:]
+			return res, nil
+		}
+		var got []*Item
+		var iterErr error
+		seq := paginate(ctx, &ListTestParams{}, 0, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+		for item, err := range seq {
+			if err != nil {
+				iterErr = err
+				break
+			}
+			got = append(got, item)
+		}
+		if iterErr == nil {
+			t.Fatal("expected pagination error at default cap, got nil")
+		}
+		if len(got) != DefaultListMaxPages {
+			t.Fatalf("got %d items, want %d (DefaultListMaxPages)", len(got), DefaultListMaxPages)
+		}
+	})
+}
+
+func TestPaginateCursorCycle(t *testing.T) {
+	ctx := context.Background()
+	callCount := 0
+	// Server returns a cursor cycle: page1 → cursorA, page2 → cursorB, page3 → cursorA again.
+	listFunc := func(ctx context.Context, params *ListTestParams) (*ListTestResult, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			return &ListTestResult{Items: []*Item{{Name: "a"}}, NextCursor: "cursorA"}, nil
+		case 2:
+			return &ListTestResult{Items: []*Item{{Name: "b"}}, NextCursor: "cursorB"}, nil
+		case 3:
+			// Cycle: cursorA was already seen.
+			return &ListTestResult{Items: []*Item{{Name: "c"}}, NextCursor: "cursorA"}, nil
+		default:
+			t.Fatal("listFunc called after cycle should have been detected")
+			return nil, fmt.Errorf("unreachable")
+		}
+	}
+
+	var got []*Item
+	var iterErr error
+	seq := paginate(ctx, &ListTestParams{}, -1, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+	for item, err := range seq {
+		if err != nil {
+			iterErr = err
+			break
+		}
+		got = append(got, item)
+	}
+	if iterErr == nil {
+		t.Fatal("expected cursor cycle error, got nil")
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3 (items on cycling page are yielded before detection)", len(got))
+	}
+}
+
+func TestPaginateNoMutation(t *testing.T) {
+	ctx := context.Background()
+	params := &ListTestParams{Cursor: "initial"}
+	results := generatePaginatedResults(allItems[:3], 1)
+
+	listFunc := func(ctx context.Context, p *ListTestParams) (*ListTestResult, error) {
+		if len(results) == 0 {
+			return &ListTestResult{Items: nil, NextCursor: ""}, nil
+		}
+		res := results[0]
+		results = results[1:]
+		return res, nil
+	}
+
+	var got []*Item
+	seq := paginate(ctx, params, -1, listFunc, func(r *ListTestResult) []*Item { return r.Items })
+	for item, err := range seq {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got = append(got, item)
+	}
+
+	// The original params should not have been mutated.
+	if params.Cursor != "initial" {
+		t.Errorf("params.Cursor was mutated to %q, want %q", params.Cursor, "initial")
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3", len(got))
 	}
 }
 
