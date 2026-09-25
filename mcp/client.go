@@ -495,14 +495,28 @@ type ClientSession struct {
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// resourceSubsMu guards resourceSubs.
+	// resourceSubsMu guards resourceSubs and nextResourceSubGen.
 	resourceSubsMu sync.Mutex
-	// resourceSubs maps a subscribed resource URI to the cancel func of the
+	// resourceSubs maps a subscribed resource URI to the state of the
 	// goroutine running its dedicated subscriptions/listen stream. Populated
 	// only under SEP-2575; the legacy protocol routes Subscribe and
 	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
 	// RPCs and leaves this map untouched.
-	resourceSubs map[string]context.CancelFunc
+	resourceSubs map[string]*resourceSub
+	// nextResourceSubGen assigns a monotonically increasing generation to each
+	// resourceSubs entry, so a listen goroutine only clears the entry it
+	// created and not one installed by a later Subscribe for the same URI.
+	nextResourceSubGen uint64
+}
+
+// resourceSub is the per-URI state of a SEP-2575 resource subscription: the
+// cancel func for its subscriptions/listen stream, and the generation that
+// lets a completing listen goroutine tell its own entry from one a racing
+// Unsubscribe→Subscribe (or a re-subscribe inside the callback) has since
+// installed for the same URI.
+type resourceSub struct {
+	cancel context.CancelFunc
+	gen    uint64
 }
 
 type clientSessionState struct {
@@ -1391,27 +1405,66 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	}
 	uri := params.URI
 
-	var listenCtx context.Context
 	cs.resourceSubsMu.Lock()
-	if _, exists := cs.resourceSubs[uri]; !exists {
-		var cancel context.CancelFunc
-		listenCtx, cancel = context.WithCancel(context.Background())
-		if cs.resourceSubs == nil {
-			cs.resourceSubs = make(map[string]context.CancelFunc)
-		}
-		cs.resourceSubs[uri] = cancel
-	}
-	cs.resourceSubsMu.Unlock()
-	if listenCtx == nil {
-		// Already subscribed to this URI
+	if _, exists := cs.resourceSubs[uri]; exists {
+		// Already subscribed to this URI.
+		cs.resourceSubsMu.Unlock()
 		return nil
 	}
+	if cs.resourceSubs == nil {
+		cs.resourceSubs = make(map[string]*resourceSub)
+	}
+	listenCtx, cancel := context.WithCancel(context.Background())
+	cs.nextResourceSubGen++
+	gen := cs.nextResourceSubGen
+	cs.resourceSubs[uri] = &resourceSub{cancel: cancel, gen: gen}
+	cs.resourceSubsMu.Unlock()
 
-	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	// Subscribe stays non-blocking: the listen stream is awaited on its own
+	// goroutine so that its completion clears the subscription.
+	go cs.awaitResourceListen(listenCtx, uri, gen)
+	return nil
+}
+
+// awaitResourceListen runs a single resource URI's subscriptions/listen stream
+// to completion. It is started as a goroutine by Subscribe so Subscribe itself
+// does not block.
+//
+// When the stream ends for a reason other than a client-initiated Unsubscribe
+// or session Close — a graceful listen result, a synthetic transport
+// "terminated" error, or any jsonrpc error, all while listenCtx is not
+// cancelled — the resourceSubs entry for uri is cleared so that a later bare
+// Subscribe re-opens the stream instead of no-oping. The entry is only removed
+// if it still carries this goroutine's generation, which guards an
+// Unsubscribe→Subscribe race and a re-subscribe from inside a callback. The
+// SDK does not auto-resubscribe: a revoked URI would hot-loop, so reopening is
+// left to the application calling Subscribe again.
+func (cs *ClientSession) awaitResourceListen(listenCtx context.Context, uri string, gen uint64) {
+	params := injectRequestMeta(cs, &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
 	})
+	_ = call(listenCtx, cs.getConn(), methodSubscriptionsListen, params, &SubscriptionsListenResult{})
+	if listenCtx.Err() != nil {
+		// Client-initiated teardown: Unsubscribe already removed the entry (and
+		// cancelAllResourceSubscriptions nils the whole map on Close), so there
+		// is nothing to clear.
+		return
+	}
+	cs.clearResourceSubIfGen(uri, gen)
+}
+
+// clearResourceSubIfGen deletes the resourceSubs entry for uri only if it is
+// still present and carries the given generation, reporting whether it did.
+func (cs *ClientSession) clearResourceSubIfGen(uri string, gen uint64) bool {
+	cs.resourceSubsMu.Lock()
+	defer cs.resourceSubsMu.Unlock()
+	if sub, ok := cs.resourceSubs[uri]; ok && sub.gen == gen {
+		delete(cs.resourceSubs, uri)
+		return true
+	}
+	return false
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
@@ -1430,11 +1483,11 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 		return fmt.Errorf("Unsubscribe: missing URI")
 	}
 	cs.resourceSubsMu.Lock()
-	cancel, ok := cs.resourceSubs[params.URI]
+	sub, ok := cs.resourceSubs[params.URI]
 	delete(cs.resourceSubs, params.URI)
 	cs.resourceSubsMu.Unlock()
 	if ok {
-		cancel()
+		sub.cancel()
 	}
 	return nil
 }
@@ -1447,8 +1500,8 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 	subs := cs.resourceSubs
 	cs.resourceSubs = nil
 	cs.resourceSubsMu.Unlock()
-	for _, cancel := range subs {
-		cancel()
+	for _, sub := range subs {
+		sub.cancel()
 	}
 }
 
