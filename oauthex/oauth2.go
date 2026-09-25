@@ -26,15 +26,25 @@ import (
 
 const maxDiscoveryRedirects = 10
 
-// Build this on first use, not when the package loads. Building it checks the
-// proxy via http.ProxyFromEnvironment, and net/http only reads the proxy
-// environment once and then remembers it for the whole run. If that happened
-// at import time, it would lock in the proxy setting before the app had a
-// chance to set HTTPS_PROXY. sync.OnceValue waits until first use and still
-// builds the transport just once. See #1276.
-var defaultDiscoveryTransport = sync.OnceValue(func() http.RoundTripper {
-	return newDiscoveryTransport(http.DefaultTransport)
-})
+var (
+	defaultDiscoveryTransportOnce  sync.Once
+	defaultDiscoveryTransportValue http.RoundTripper
+)
+
+// defaultDiscoveryTransport is built on first use, not at package init:
+// building it consults http.ProxyFromEnvironment, which net/http caches for
+// the whole run, so doing it at import time would freeze the proxy settings
+// before main could set HTTPS_PROXY (#1276). It is a function rather than a
+// package-level sync.OnceValue because a package initializer is a linker
+// root: a OnceValue var kept http.Transport.Clone, and through it the HTTP/2
+// client and crypto/tls, in every program importing mcp, including stdio-only
+// servers that never make an HTTP request.
+func defaultDiscoveryTransport() http.RoundTripper {
+	defaultDiscoveryTransportOnce.Do(func() {
+		defaultDiscoveryTransportValue = newDiscoveryTransport(http.DefaultTransport)
+	})
+	return defaultDiscoveryTransportValue
+}
 
 type httpStatusError struct {
 	StatusCode int
