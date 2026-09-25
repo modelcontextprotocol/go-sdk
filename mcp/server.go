@@ -198,10 +198,15 @@ type ServerOptions struct {
 	// the newest handshake-era version, so that the client disconnects rather
 	// than reading the answer as a negotiation into the new protocol.
 	SupportedProtocolVersions []string
+
+	// Extensions are applied in order during [NewServer], after globally
+	// registered extensions (see [RegisterExtension]). Later registrations
+	// of the same custom method replace earlier ones.
+	Extensions []Extension
 }
 
-// NewServer creates a new MCP server. The resulting server has no features:
-// add features using the various Server.AddXXX methods, and the [AddTool] function.
+// NewServer creates a new MCP server and applies registered extensions.
+// Add features using the various Server.AddXXX methods and the [AddTool] function.
 //
 // The server can be connected to one or more MCP clients using [Server.Run].
 //
@@ -271,6 +276,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		receiveMethods:              receiveMethods,
 	}
 	s.AddReceivingMiddleware(serverMultiRoundTripMiddleware())
+	applyExtensions(opts.Extensions, func(e Extension) func(*Server) error { return e.Server }, s)
 	return s
 }
 
