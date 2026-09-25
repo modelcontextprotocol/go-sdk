@@ -48,7 +48,7 @@ func Unmarshal(data []byte, v any) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
 	}
-	return jsonv2.Unmarshal(data, v, caseSensitiveV1)
+	return NewDecoder(bytes.NewReader(data)).Decode(v)
 }
 
 func UnmarshalUseNumber(data []byte, v any) error {
