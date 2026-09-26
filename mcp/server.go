@@ -925,7 +925,10 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		}
 	}
 	res, err := prompt.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(GetPromptResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
@@ -1030,7 +1033,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(CallToolResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}

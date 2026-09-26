@@ -922,6 +922,11 @@ func TestNoJSONNull(t *testing.T) {
 	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
 		return &GetPromptResult{}, nil
 	})
+	// Handlers that return no result at all still answer with an object.
+	s.AddPrompt(&Prompt{Name: "nil"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return nil, nil
+	})
+	s.AddTool(&Tool{Name: "nil", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -954,6 +959,12 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "nil"}); err != nil {
 		t.Fatal(err)
 	}
 
