@@ -2991,6 +2991,12 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 
 func Test_ExportErrSessionMissing(t *testing.T) {
 	ctx := context.Background()
+	// By default the client replaces the missing session (see
+	// TestStreamableClientReinitializesAfterNotFound), so opt out to observe
+	// the error.
+	prev := nosessionreinit
+	nosessionreinit = "1"
+	t.Cleanup(func() { nosessionreinit = prev })
 
 	// 1. Setup server
 	impl := &Implementation{Name: "test", Version: "1.0.0"}

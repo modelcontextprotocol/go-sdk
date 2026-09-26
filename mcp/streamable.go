@@ -347,6 +347,16 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // permanently fails the connection.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
+// nosessionreinit is a compatibility parameter that restores the previous
+// behavior of the streamable client when the server answers a request for a
+// live session with 404 Not Found. When unset (the default), the client starts
+// a new session as the 2025-11-25 specification requires and resends the
+// request; see [streamableClientConn.reinitialize]. When set to "1", the 404
+// permanently fails the connection with an error wrapping [ErrSessionMissing].
+// See the documentation for the mcpgodebug package for instructions how to
+// enable it.
+var nosessionreinit = mcpgodebug.Value("nosessionreinit")
+
 // plaintextstatefulrejection is a compatibility parameter that restores the
 // previous behavior of a stateful [StreamableHTTPHandler] when it receives a
 // request carrying SEP-2575 per-request metadata (i.e. an
@@ -2328,6 +2338,18 @@ type streamableClientConn struct {
 	mu                sync.Mutex
 	initializedResult *InitializeResult
 	sessionID         string
+	// initRequest is the initialize request that started the session, kept so
+	// that [streamableClientConn.reinitialize] can start a new one.
+	initRequest *jsonrpc.Request
+	// holdsServerState reports whether the session carries state on the
+	// server that a new session would silently drop.
+	holdsServerState bool
+	// cancelStandalone stops the current standalone SSE stream.
+	cancelStandalone context.CancelFunc
+
+	// reinitMu serializes calls to reinitialize; reinits counts them.
+	reinitMu sync.Mutex
+	reinits  int
 }
 
 var _ clientConnection = (*streamableClientConn)(nil)
@@ -2363,11 +2385,21 @@ func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
 }
 
 func (c *streamableClientConn) connectStandaloneSSE() {
-	resp, err := c.connectSSE(c.ctx, "", 0, true)
+	// Each session gets its own stream: starting a stream stops the one that
+	// belonged to the previous session, if any.
+	ctx, cancel := context.WithCancel(c.ctx)
+	c.mu.Lock()
+	if c.cancelStandalone != nil {
+		c.cancelStandalone()
+	}
+	c.cancelStandalone = cancel
+	c.mu.Unlock()
+
+	resp, err := c.connectSSE(ctx, "", "", 0, true)
 	if err != nil {
 		// If the client didn't cancel the request, and failure breaks the logical
 		// session.
-		if c.ctx.Err() == nil {
+		if ctx.Err() == nil {
 			c.fail(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
 		}
 		return
@@ -2403,11 +2435,11 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		return
 	}
 	summary := "standalone SSE stream"
-	if err := c.checkResponse(c.ctx, summary, resp); err != nil {
+	if err := c.checkResponse(ctx, summary, resp); err != nil {
 		c.fail(err)
 		return
 	}
-	go c.handleSSE(c.ctx, summary, resp, nil)
+	go c.handleSSE(ctx, summary, resp, nil)
 }
 
 // fail handles an asynchronous error while reading.
@@ -2486,23 +2518,27 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return fmt.Errorf("%s: %v", requestSummary, err)
 	}
 
-	doRequest := func() (*http.Request, *http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
-		if err != nil {
-			return nil, nil, err
+	if req, ok := msg.(*jsonrpc.Request); ok {
+		switch req.Method {
+		case methodInitialize:
+			c.mu.Lock()
+			c.initRequest = req
+			c.mu.Unlock()
+		case methodSubscribe, methodSetLevel:
+			c.mu.Lock()
+			c.holdsServerState = true
+			c.mu.Unlock()
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
+	}
 
-		if err := c.setMCPHeaders(req, msg); err != nil {
+	doRequest := func() (*http.Request, *http.Response, error) {
+		req, err := c.newPostRequest(ctx, msg, data)
+		if err != nil {
 			// Failure to set headers means that the request was not sent.
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			return nil, nil, fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
 		}
-		// Keep this after the setMCPHeaders call to ensure that the
-		// protocol version header is set.
-		setStandardHeaders(ctx, req.Header, msg)
 		resp, err := c.client.Do(req)
 		if err != nil {
 			// Any error from client.Do means the request didn't reach the server.
@@ -2548,7 +2584,26 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		}
 	}
 
-	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
+	err = c.checkResponse(ctx, requestSummary, resp)
+	if errors.Is(err, ErrSessionMissing) {
+		if rerr := c.reinitialize(ctx, req.Header.Get(sessionIDHeader)); rerr == nil {
+			if _, ok := msg.(*jsonrpc.Response); ok {
+				// The server request this answers belonged to the old session.
+				return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+			}
+			// §2.5.3: the server answers 404 without processing the request, so
+			// it is safe to send it again on the new session.
+			if _, resp, err = doRequest(); err != nil {
+				return err
+			}
+			err = c.checkResponse(ctx, requestSummary, resp)
+		} else if ctx.Err() != nil {
+			// The caller gave up while the session was being re-established.
+			// Leave the connection intact so that a later call can retry.
+			return fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
+		}
+	}
+	if err != nil {
 		if (requestMethod == methodDiscover || requestMethod == methodSubscriptionsListen) && !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Wrap the discover or subscriptions/listen failure with ErrRejected so
 			// the jsonrpc2 layer doesn't set writeErr, which would break the connection
@@ -2715,6 +2770,8 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 	// connections without making progress (#679).
 	var prevLastEventID string
 	retriesWithoutProgress := 0
+	// The session this stream belongs to. See [streamableClientConn.reinitialize].
+	sessionID := resp.Request.Header.Get(sessionIDHeader)
 
 	for {
 		lastEventID, reconnectDelay, clientClosed := c.processStream(ctx, requestSummary, resp, forCall)
@@ -2747,8 +2804,14 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 			}
 		}
 
+		if sessionID != "" && c.SessionID() != sessionID {
+			// The session was replaced, so the stream cannot be resumed.
+			c.abandonCall(forCall, fmt.Errorf("%s: session %v was terminated: %w", requestSummary, sessionID, ErrSessionMissing))
+			return
+		}
+
 		// The stream was interrupted or ended by the server. Attempt to reconnect.
-		newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
+		newResp, err := c.connectSSE(ctx, sessionID, lastEventID, reconnectDelay, false)
 		if err != nil {
 			// If the client didn't cancel this request, any failure to execute it
 			// breaks the logical MCP session.
@@ -2761,10 +2824,205 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 
 		resp = newResp
 		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
+			if errors.Is(err, ErrSessionMissing) && c.reinitialize(c.ctx, sessionID) == nil {
+				// The new session has its own standalone stream. A call whose
+				// stream was lost with the old session cannot be resumed, and
+				// resending it could repeat its effects, so report the loss.
+				c.abandonCall(forCall, err)
+				return
+			}
 			c.fail(err)
 			return
 		}
 	}
+}
+
+// abandonCall reports err as the result of forCall, if it is non-nil, when
+// its response can no longer arrive.
+func (c *streamableClientConn) abandonCall(forCall *jsonrpc.Request, err error) {
+	if forCall == nil {
+		return
+	}
+	select {
+	case c.incoming <- &jsonrpc.Response{ID: forCall.ID, Error: err}:
+	case <-c.done:
+	}
+}
+
+// newPostRequest returns a POST request carrying data, the encoding of msg.
+func (c *streamableClientConn) newPostRequest(ctx context.Context, msg jsonrpc.Message, data []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if err := c.setMCPHeaders(req, msg); err != nil {
+		return nil, err
+	}
+	// Keep this after the setMCPHeaders call to ensure that the
+	// protocol version header is set.
+	setStandardHeaders(ctx, req.Header, msg)
+	return req, nil
+}
+
+// reinitialize replaces a session that the server no longer knows, after a
+// request carrying staleID got 404 Not Found.
+//
+// [§2.5.3] of the 2025-11-25 transport: "When a client receives HTTP 404 in
+// response to a request containing an MCP-Session-Id, it MUST start a new
+// session by sending a new InitializeRequest without a session ID attached."
+//
+// The new session is started with the same InitializeRequest as the old one,
+// and replaces it only if the server negotiates the same protocol version, so
+// that the [ClientSession] above this connection stays valid. A nil result
+// means that the connection has a live session and the failed request can be
+// sent again, either because this call started one or because a concurrent
+// call already had.
+//
+// A session that carries state on the server (resource subscriptions or a
+// logging level) is not replaced, since the new session would silently lose
+// it; in that case, as in the case of any failure, the caller should treat the
+// 404 as terminal.
+//
+// [§2.5.3]: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management
+func (c *streamableClientConn) reinitialize(ctx context.Context, staleID string) error {
+	if nosessionreinit == "1" {
+		return errors.New("session re-initialization is disabled")
+	}
+	c.reinitMu.Lock()
+	defer c.reinitMu.Unlock()
+
+	c.mu.Lock()
+	sessionID, initReq, initRes, holdsState := c.sessionID, c.initRequest, c.initializedResult, c.holdsServerState
+	c.mu.Unlock()
+	switch {
+	case sessionID != staleID:
+		return nil // a concurrent call has already replaced the session
+	case initReq == nil || initRes == nil || initRes.ProtocolVersion >= protocolVersion20260728:
+		return errors.New("no initialized session to replace")
+	case holdsState:
+		return errors.New("the session holds server state that a new session would lose")
+	}
+
+	// Use an ID that cannot collide with the IDs of the jsonrpc2 connection,
+	// which only sends integer IDs.
+	c.reinits++
+	id := jsonrpc2.StringID(fmt.Sprintf("reinitialize-%d", c.reinits))
+	res, newID, err := c.sendInitialize(ctx, &jsonrpc.Request{ID: id, Method: methodInitialize, Params: initReq.Params})
+	if err != nil {
+		return fmt.Errorf("starting a new session: %w", err)
+	}
+	if res.ProtocolVersion != initRes.ProtocolVersion {
+		return fmt.Errorf("new session uses protocol version %q, not %q", res.ProtocolVersion, initRes.ProtocolVersion)
+	}
+	c.mu.Lock()
+	c.sessionID = newID
+	c.mu.Unlock()
+
+	initialized, err := jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{})
+	if err != nil {
+		return err
+	}
+	data, err := jsonrpc.EncodeMessage(initialized)
+	if err != nil {
+		return err
+	}
+	req, err := c.newPostRequest(ctx, initialized, data)
+	if err != nil {
+		return err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	if err := c.checkResponse(ctx, "sending \"notifications/initialized\"", resp); err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	if !c.disableStandaloneSSE {
+		go c.connectStandaloneSSE()
+	}
+	return nil
+}
+
+// sendInitialize sends req, an initialize request, with no session ID, and
+// returns the result and the session ID that the server assigned.
+func (c *streamableClientConn) sendInitialize(ctx context.Context, req *jsonrpc.Request) (*InitializeResult, string, error) {
+	data, err := jsonrpc.EncodeMessage(req)
+	if err != nil {
+		return nil, "", err
+	}
+	httpReq, err := c.newPostRequest(ctx, req, data)
+	if err != nil {
+		return nil, "", err
+	}
+	// Match the first initialize request, which was sent before the session
+	// and its protocol version existed.
+	httpReq.Header.Del(sessionIDHeader)
+	httpReq.Header.Del(protocolVersionHeader)
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.checkResponse(ctx, `sending "initialize"`, resp); err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	var response *jsonrpc.Response
+	switch contentType := baseMediaType(resp.Header.Get("Content-Type")); contentType {
+	case "application/json":
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, "", err
+		}
+		msg, err := jsonrpc.DecodeMessage(body)
+		if err != nil {
+			return nil, "", err
+		}
+		response, _ = msg.(*jsonrpc.Response)
+	case "text/event-stream":
+		for evt, err := range scanEventsLimited(resp.Body, c.maxEventSize) {
+			if err != nil {
+				return nil, "", err
+			}
+			if len(evt.Data) == 0 || (evt.Name != "" && evt.Name != "message") {
+				continue
+			}
+			msg, err := jsonrpc.DecodeMessage(evt.Data)
+			if err != nil {
+				return nil, "", err
+			}
+			if r, ok := msg.(*jsonrpc.Response); ok && r.ID == req.ID {
+				response = r
+				break
+			}
+			// Deliver anything else the server sends first, such as a log
+			// message.
+			select {
+			case c.incoming <- msg:
+			case <-c.done:
+				return nil, "", ErrConnectionClosed
+			case <-ctx.Done():
+				return nil, "", ctx.Err()
+			}
+		}
+	default:
+		return nil, "", fmt.Errorf("unsupported content type %q", contentType)
+	}
+	if response == nil || response.ID != req.ID {
+		return nil, "", errors.New("no response to initialize")
+	}
+	if response.Error != nil {
+		return nil, "", response.Error
+	}
+	var res InitializeResult
+	if err := json.Unmarshal(response.Result, &res); err != nil {
+		return nil, "", err
+	}
+	return &res, resp.Header.Get(sessionIDHeader), nil
 }
 
 // checkResponse checks the status code of the provided response, and
@@ -2901,6 +3159,9 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 
 // connectSSE handles the logic of connecting a text/event-stream connection.
 //
+// If sessionID is set, it is the session of the stream being resumed, which
+// may differ from the current session. See [streamableClientConn.reinitialize].
+//
 // If lastEventID is set, it is the last-event ID of a stream being resumed.
 //
 // If connection fails, connectSSE retries with an exponential backoff
@@ -2913,7 +3174,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 // If initial is set, this is the initial attempt.
 //
 // If connectSSE exits due to context cancellation, the result is (nil, ctx.Err()).
-func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID string, reconnectDelay time.Duration, initial bool) (*http.Response, error) {
+func (c *streamableClientConn) connectSSE(ctx context.Context, sessionID, lastEventID string, reconnectDelay time.Duration, initial bool) (*http.Response, error) {
 	var finalErr error
 	attempt := 0
 	if !initial {
@@ -2946,6 +3207,9 @@ func (c *streamableClientConn) connectSSE(ctx context.Context, lastEventID strin
 			}
 			if err := c.setMCPHeaders(req, nil); err != nil {
 				return nil, err
+			}
+			if sessionID != "" {
+				req.Header.Set(sessionIDHeader, sessionID)
 			}
 			if lastEventID != "" {
 				req.Header.Set(lastEventIDHeader, lastEventID)

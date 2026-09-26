@@ -51,6 +51,17 @@ When a session is present:
   - Client includes the session ID in all subsequent requests
   - Session ends when the client calls Close() (sends DELETE) or server returns 404
 
+When the server answers 404 Not Found to a request carrying the session ID, the
+2025-11-25 spec requires the client to start a new session.
+[streamableClientConn.reinitialize] re-sends the original initialize request
+without a session ID, adopts the new session ID, sends notifications/initialized,
+and restarts the standalone SSE stream. The failed POST is then sent again (the
+server did not process it); a call whose response stream was lost with the old
+session fails with [ErrSessionMissing] instead, as resending it could repeat its
+effects. The 404 stays terminal if the session holds server state that a new
+session would lose (resources/subscribe, logging/setLevel), if the server
+negotiates a different protocol version, or if MCPGODEBUG=nosessionreinit=1.
+
 [streamableClientConn] stores the session state:
   - [streamableClientConn.sessionID]: Server-assigned session identifier
   - [streamableClientConn.initializedResult]: Protocol version and server capabilities
@@ -178,7 +189,8 @@ Errors are categorized and handled differently:
    - Triggers reconnection in [streamableClientConn.handleSSE]
 
 2. Terminal (breaks the connection):
-   - 404 Not Found: Session terminated by server ([ErrSessionMissing])
+   - 404 Not Found: Session terminated by server ([ErrSessionMissing]), when
+     the session cannot be replaced (see Sessions)
    - Message decode errors: Protocol violation
    - Context cancellation: Client closed connection
    - Mismatched session IDs: Protocol error (only relevant for servers that use sessions)
