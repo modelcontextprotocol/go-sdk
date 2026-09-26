@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2027,5 +2028,327 @@ func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
 	}
 	if !listenServed.Load() {
 		t.Fatal("subscriptions/listen was not called")
+	}
+}
+
+// dropServerSessions forgets every session the handler knows about, as a
+// server does when it terminates a session. Later requests carrying one of
+// the dropped session IDs get 404 Not Found.
+func dropServerSessions(t *testing.T, handler *StreamableHTTPHandler) {
+	t.Helper()
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if len(handler.sessions) != 1 {
+		t.Fatalf("server has %d sessions, want 1", len(handler.sessions))
+	}
+	clear(handler.sessions)
+}
+
+// TestStreamableClientReinitializesAfterNotFound checks the 2025-11-25
+// transport's session management rule: "When a client receives HTTP 404 in
+// response to a request containing an MCP-Session-Id, it MUST start a new
+// session by sending a new InitializeRequest without a session ID attached."
+// See issue #1299.
+func TestStreamableClientReinitializesAfterNotFound(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name           string
+		before         func(*ClientSession) error // runs before the server drops the session
+		noReinit       bool                       // sets MCPGODEBUG=nosessionreinit=1
+		wantNewSession bool
+	}{
+		{
+			name:           "new session",
+			wantNewSession: true,
+		},
+		{
+			// A new session would silently drop the logging level the old one
+			// carried, so the 404 stays terminal.
+			name: "session holds a logging level",
+			before: func(cs *ClientSession) error {
+				return cs.SetLoggingLevel(ctx, &SetLoggingLevelParams{Level: "debug"})
+			},
+		},
+		{
+			name:     "nosessionreinit=1",
+			noReinit: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.noReinit {
+				prev := nosessionreinit
+				nosessionreinit = "1"
+				t.Cleanup(func() { nosessionreinit = prev })
+			}
+			var initializes atomic.Int32
+			server := NewServer(testImpl, nil)
+			AddTool(server, greetTool(), sayHi)
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					body, _ := io.ReadAll(r.Body)
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					if msg, err := jsonrpc.DecodeMessage(body); err == nil {
+						if req, ok := msg.(*jsonrpc.Request); ok && req.Method == methodInitialize {
+							if got := r.Header.Get(sessionIDHeader); got != "" {
+								t.Errorf("initialize sent with %s %q, want none", sessionIDHeader, got)
+							}
+							initializes.Add(1)
+						}
+					}
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if test.before != nil {
+				if err := test.before(session); err != nil {
+					t.Fatal(err)
+				}
+			}
+			oldID := session.ID()
+			dropServerSessions(t, handler)
+
+			_, err = session.CallTool(ctx, &CallToolParams{Name: "greet", Arguments: map[string]any{"Name": "user"}})
+			if !test.wantNewSession {
+				if !errors.Is(err, ErrSessionMissing) {
+					t.Fatalf("CallTool after the server dropped the session: got %v, want ErrSessionMissing", err)
+				}
+				if got := initializes.Load(); got != 1 {
+					t.Errorf("server saw %d initialize requests, want 1", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CallTool after the server dropped the session: %v", err)
+			}
+			if got := initializes.Load(); got != 2 {
+				t.Errorf("server saw %d initialize requests, want 2", got)
+			}
+			newID := session.ID()
+			if newID == "" || newID == oldID {
+				t.Errorf("session ID after re-initialization = %q, want a new ID (old %q)", newID, oldID)
+			}
+			// The new session keeps working.
+			if _, err := session.ListTools(ctx, nil); err != nil {
+				t.Errorf("ListTools on the new session: %v", err)
+			}
+		})
+	}
+}
+
+// TestStreamableClientReinitializesAfterServerRestart checks that the client
+// recovers when the standalone SSE stream is the first request to see the
+// 404, as happens when a stateful server restarts and forgets its sessions.
+func TestStreamableClientReinitializesAfterServerRestart(t *testing.T) {
+	ctx := context.Background()
+	const tick = 10 * time.Millisecond
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(tick))
+
+	newHandler := func() (*Server, *StreamableHTTPHandler) {
+		server := NewServer(testImpl, nil)
+		return server, NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	}
+	_, handler1 := newHandler()
+	var current atomic.Pointer[StreamableHTTPHandler]
+	current.Store(handler1)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	toolsChanged := make(chan struct{}, 1)
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(context.Context, *ToolListChangedRequest) {
+			select {
+			case toolsChanged <- struct{}{}:
+			default:
+			}
+		},
+	})
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	oldID := session.ID()
+
+	// Restart: a new handler with no sessions takes over, and every open
+	// connection, including the standalone SSE stream, is dropped.
+	server2, handler2 := newHandler()
+	current.Store(handler2)
+	httpServer.CloseClientConnections()
+
+	// Without any call from the application, the standalone stream's
+	// reconnect sees the 404 and starts a new session.
+	deadline := time.Now().Add(5 * time.Second)
+	for session.ID() == oldID {
+		if time.Now().After(deadline) {
+			t.Fatalf("client did not start a new session after the restart")
+		}
+		time.Sleep(tick)
+	}
+	handler2.mu.Lock()
+	_, ok := handler2.sessions[session.ID()]
+	handler2.mu.Unlock()
+	if !ok {
+		t.Fatalf("client session ID %q is unknown to the restarted server", session.ID())
+	}
+
+	// Server-initiated messages reach the client on the new session's
+	// standalone stream. The stream may not be registered yet, so keep
+	// changing the tool list until a notification arrives.
+	for i := 0; ; i++ {
+		AddTool(server2, &Tool{Name: fmt.Sprintf("tool%d", i)}, sayHi)
+		select {
+		case <-toolsChanged:
+		case <-time.After(10 * tick):
+			if time.Now().After(deadline) {
+				t.Fatal("no tools/list_changed notification on the new session")
+			}
+			continue
+		}
+		break
+	}
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools after the restart: %v", err)
+	}
+}
+
+// TestStreamableClientReinitializeVersionMismatch checks that the client
+// keeps the 404 terminal when the new session would use a different protocol
+// version than the one the ClientSession negotiated.
+func TestStreamableClientReinitializeVersionMismatch(t *testing.T) {
+	ctx := context.Background()
+	var initializes atomic.Int32
+	var sawNewSession atomic.Bool
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		msg, err := jsonrpc.DecodeMessage(body)
+		if err != nil {
+			t.Errorf("decoding request: %v", err)
+			return
+		}
+		req, _ := msg.(*jsonrpc.Request)
+		switch sid := r.Header.Get(sessionIDHeader); {
+		case req != nil && req.Method == methodInitialize:
+			res := *initResult
+			sid := "old"
+			if initializes.Add(1) > 1 {
+				res.ProtocolVersion = protocolVersion20250618
+				sid = "new"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(sessionIDHeader, sid)
+			data, _ := jsonrpc2.EncodeMessage(&jsonrpc.Response{ID: req.ID, Result: mustMarshal(&res)})
+			w.Write(data)
+		case sid == "old" && req != nil && req.Method == notificationInitialized:
+			w.WriteHeader(http.StatusAccepted)
+		case sid == "old":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			sawNewSession.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); !errors.Is(err, ErrSessionMissing) {
+		t.Fatalf("ListTools: got %v, want ErrSessionMissing", err)
+	}
+	if got := initializes.Load(); got != 2 {
+		t.Errorf("server saw %d initialize requests, want 2", got)
+	}
+	if sawNewSession.Load() {
+		t.Error("client used a session whose protocol version differs from the negotiated one")
+	}
+}
+
+// TestStreamableClientReinitializeDuringCall checks that a call whose response
+// stream is lost with its session fails with ErrSessionMissing instead of
+// being resumed or resent, and that the client still starts a new session.
+func TestStreamableClientReinitializeDuringCall(t *testing.T) {
+	ctx := context.Background()
+	const tick = 10 * time.Millisecond
+	defer func(delay int64) {
+		reconnectInitialDelay.Store(delay)
+	}(reconnectInitialDelay.Load())
+	reconnectInitialDelay.Store(int64(tick))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	var calls atomic.Int32
+	newHandler := func() *StreamableHTTPHandler {
+		server := NewServer(testImpl, nil)
+		AddTool(server, &Tool{Name: "block"}, func(ctx context.Context, req *CallToolRequest, _ any) (*CallToolResult, any, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return &CallToolResult{}, nil, nil
+		})
+		// An event store makes the call's response stream resumable.
+		return NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{EventStore: NewMemoryEventStore(nil)})
+	}
+	var current atomic.Pointer[StreamableHTTPHandler]
+	current.Store(newHandler())
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := session.CallTool(ctx, &CallToolParams{Name: "block"})
+		errc <- err
+	}()
+	<-started
+	current.Store(newHandler())
+	httpServer.CloseClientConnections()
+
+	select {
+	case err := <-errc:
+		if !errors.Is(err, ErrSessionMissing) {
+			t.Errorf("CallTool across a restart: got %v, want ErrSessionMissing", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CallTool did not return after the server restarted")
+	}
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools after the restart: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("tool ran %d times, want 1", got)
 	}
 }

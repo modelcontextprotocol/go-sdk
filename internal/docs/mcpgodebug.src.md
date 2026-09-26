@@ -27,6 +27,17 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   that large integers and other exact JSON values do not silently lose
   precision.
 
+- `nosessionreinit` added. If set to `1`, the streamable HTTP client treats a
+  `404 Not Found` response to a request carrying an `Mcp-Session-Id` as
+  terminal, failing the connection with an error wrapping `ErrSessionMissing`,
+  restoring the previous behavior. The default behavior was changed to follow
+  the 2025-11-25 specification, which requires the client to start a new
+  session: the client re-sends its `initialize` request without a session ID,
+  adopts the new session ID and sends the failed request again. The 404 stays
+  terminal when the session holds server-side state that a new session would
+  lose (a `resources/subscribe` subscription or a `logging/setLevel` level) or
+  when the server negotiates a different protocol version. See issue #1299.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
