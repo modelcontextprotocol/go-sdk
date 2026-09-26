@@ -44,6 +44,18 @@ func Unmarshal(data []byte, v any) error {
 	return NewDecoder(bytes.NewReader(data)).Decode(v)
 }
 
+// UnmarshalUseNumber is Unmarshal with UseNumber set, so that JSON numbers
+// decoded into an `any` become json.Number rather than float64.
+//
+// Decoding into float64 is lossy above 2^53: 9007199254740993 comes back as
+// 9007199254740992, and a caller that re-marshals the decoded value writes
+// the wrong number out with nothing reporting a problem. A caller decoding
+// into a typed struct is unaffected either way, since UseNumber does not
+// change how a number is decoded into a concrete numeric field.
+//
+// json.Number is a string type, so a decoded value is NOT yet suitable for
+// jsonschema validation, which reports it as a string where an integer or a
+// number is wanted. See mcp.narrowNumbers.
 func UnmarshalUseNumber(data []byte, v any) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
