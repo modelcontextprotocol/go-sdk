@@ -2117,19 +2117,9 @@ func (ss *ServerSession) InitializeParams() *InitializeParams {
 	return ss.state.InitializeParams
 }
 
-// protocolVersion returns the protocol version the session speaks: the version
-// negotiated by 'initialize', or the version the client declared when the
-// session never ran that handshake (SEP-2575 sessions, and the synthesized
-// state of a stateless request).
-//
-// The two differ for a client that asks for protocolVersion20260728 in
-// 'initialize': that method is deprecated in protocolVersion20260728, so
-// [negotiatedVersion] answers with an older version while
-// [InitializeParams.ProtocolVersion] keeps what the client asked for. A
-// capability decision must use the negotiated version, which is the one both
-// sides agreed to speak.
-//
-// It returns "" when the session has recorded neither version.
+// protocolVersion returns the version the session speaks: the negotiated one,
+// or the declared one when the state recorded none (a caller-supplied State, or
+// state saved by an older release). It returns "" when neither is known.
 func (ss *ServerSession) protocolVersion() string {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -2142,18 +2132,9 @@ func (ss *ServerSession) protocolVersion() string {
 	return ""
 }
 
-// negotiatedLegacyProtocol reports whether the version this session negotiated
-// is older than protocolVersion20260728, and so is served the interaction
-// patterns that version defines: server-initiated requests while a request is
-// being served, and list-changed and resource-updated notifications on the
-// shared session channel rather than through subscriptions/listen.
-//
-// A session that has recorded no version at all is not legacy. SEP-2575 is
-// where a session without an 'initialize' handshake comes from, so the absence
-// of a version is read as the current protocol rather than as the oldest one;
-// [Server.handle] records the declared version on the first call a
-// new-protocol client makes, so this only covers a session that has issued no
-// call yet.
+// negotiatedLegacyProtocol reports whether the session speaks a version older
+// than protocolVersion20260728. A session with no recorded version is not
+// legacy: without an 'initialize' handshake it is a SEP-2575 session.
 func (ss *ServerSession) negotiatedLegacyProtocol() bool {
 	version := ss.protocolVersion()
 	return version != "" && version < protocolVersion20260728

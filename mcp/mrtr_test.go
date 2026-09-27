@@ -923,12 +923,9 @@ func TestClientSupportsMultiRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMultiRoundTrip_NegotiatedDownFromNewProtocol drives a client that asks
-// for protocolVersion20260728 in the deprecated initialize handshake and is
-// answered with protocolVersion20251125. The session speaks the negotiated
-// version, so the server must fulfill the handler's input request itself with
-// elicitation/create, rather than returning an input-required result that the
-// negotiated version does not define.
+// TestMultiRoundTrip_NegotiatedDownFromNewProtocol asserts that a session
+// negotiated down to protocolVersion20251125 gets elicitation/create, not an
+// input-required result that its version does not define.
 func TestMultiRoundTrip_NegotiatedDownFromNewProtocol(t *testing.T) {
 	ctx := context.Background()
 

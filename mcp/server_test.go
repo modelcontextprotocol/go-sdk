@@ -2700,13 +2700,9 @@ type rawSession struct {
 	read  func() jsonrpc.Message
 }
 
-// connectNegotiatedDown runs the deprecated initialize handshake declaring
-// protocolVersion20260728 and asserts the server answers protocolVersion20251125.
-//
-// The session it leaves behind is the one the notification paths used to
-// misclassify: InitializeParams carries the version the client asked for,
-// which is the new protocol, while the session speaks the older version the
-// handshake settled on.
+// connectNegotiatedDown runs initialize declaring protocolVersion20260728 and
+// asserts it settles on protocolVersion20251125, so InitializeParams and the
+// negotiated version disagree.
 func connectNegotiatedDown(t *testing.T, ctx context.Context, srv *Server) *rawSession {
 	t.Helper()
 
@@ -2767,13 +2763,8 @@ func connectNegotiatedDown(t *testing.T, ctx context.Context, srv *Server) *rawS
 }
 
 // TestNotifySessions_NegotiatedDownFromNewProtocol asserts that a session
-// negotiated down from protocolVersion20260728 is counted a legacy subscriber
-// and receives a list-changed notification on the shared session channel.
-//
-// Reading the declared version instead left it in neither group: it was not
-// notified on the session channel, and it could not have opened the
-// subscriptions/listen stream the other branch delivers on, because that
-// method does not exist in the version it negotiated.
+// negotiated down from protocolVersion20260728 receives a list-changed
+// notification on the shared session channel.
 func TestNotifySessions_NegotiatedDownFromNewProtocol(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2793,11 +2784,9 @@ func TestNotifySessions_NegotiatedDownFromNewProtocol(t *testing.T) {
 	}
 }
 
-// TestResourceUpdated_NegotiatedDownFromNewProtocol asserts the same
-// classification for resource subscriptions, where getting it wrong has a
-// second consequence: a session sorted into the new-protocol group is sent the
-// notification with its per-session subscription id in _meta, which the
-// version it negotiated does not define.
+// TestResourceUpdated_NegotiatedDownFromNewProtocol asserts the same for a
+// resource update, which must also carry no subscription id in _meta, since
+// the negotiated version does not define one.
 func TestResourceUpdated_NegotiatedDownFromNewProtocol(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2848,12 +2837,9 @@ func TestResourceUpdated_NegotiatedDownFromNewProtocol(t *testing.T) {
 	}
 }
 
-// TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy pins the one session the
-// classification change moves: one that has recorded no protocol version at
-// all. SEP-2575 is where a session without an initialize handshake comes from,
-// so the absence of a version reads as the current protocol; Server.handle
-// records the declared version on the first call such a client makes, which
-// leaves only a session that has issued no call yet.
+// TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy pins that a session with no
+// recorded protocol version reads as the current protocol, since a session
+// without an initialize handshake is a SEP-2575 session.
 func TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy(t *testing.T) {
 	tests := []struct {
 		name  string
