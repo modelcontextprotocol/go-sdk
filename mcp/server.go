@@ -725,7 +725,10 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 	res, err := s.opts.CompletionHandler(ctx, req)
-	if err == nil && res != nil && res.Completion.Values == nil {
+	if err == nil && res == nil {
+		res = new(CompleteResult) // avoid a "null" result
+	}
+	if err == nil && res.Completion.Values == nil {
 		res2 := *res
 		res2.Completion.Values = []string{} // avoid "null"
 		res = &res2
