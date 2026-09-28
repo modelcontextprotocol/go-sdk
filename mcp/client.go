@@ -1070,24 +1070,26 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 	switch items.Type {
 	case "string":
 		// Untitled enums.
-		if items.Enum == nil {
+		if items.Enum != nil {
+			return nil
+		}
+		// Titled enums may also declare "type": "string" alongside anyOf.
+		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify enum for untitled enums", propName)
 		}
-		return nil
 	case "":
-		// Titled enums.
 		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify anyOf for titled enums", propName)
 		}
-		for _, entry := range items.AnyOf {
-			if err := validateTitledEnumEntry(entry); err != nil {
-				return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
-			}
-		}
-		return nil
 	default:
 		return fmt.Errorf("elicit schema property %q items have unsupported type %q", propName, items.Type)
 	}
+	for _, entry := range items.AnyOf {
+		if err := validateTitledEnumEntry(entry); err != nil {
+			return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
+		}
+	}
+	return nil
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {

@@ -1331,6 +1331,30 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "multi select titled enum with string items type",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type: "string",
+							AnyOf: []*jsonschema.Schema{
+								{
+									Const: anyPtr("high"),
+									Title: "High Priority",
+								},
+								{
+									Const: anyPtr("low"),
+									Title: "Low Priority",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range validSchemas {
@@ -1412,6 +1436,22 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 			expectedError: "elicit schema property \"items\" items must specify enum for untitled enums",
+		},
+		{
+			name: "array of strings with titled entry missing title",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type:  "string",
+							AnyOf: []*jsonschema.Schema{{Const: anyPtr("high")}},
+						},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priority\" items has invalid entry: title is required for titled enum entries",
 		},
 		{
 			name: "unsupported string format",
