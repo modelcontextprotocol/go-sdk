@@ -2352,3 +2352,77 @@ func TestStreamableClientReinitializeDuringCall(t *testing.T) {
 		t.Errorf("tool ran %d times, want 1", got)
 	}
 }
+
+// TestStreamableClientReinitializesAfterNotFoundWithErrorBody checks that a
+// 404 on a request carrying the session ID starts a new session whatever
+// JSON-RPC error the body carries, including one naming the request's ID.
+func TestStreamableClientReinitializesAfterNotFoundWithErrorBody(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		body func(id jsonrpc.ID) string
+	}{
+		{
+			name: "id null",
+			body: func(jsonrpc.ID) string {
+				return `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`
+			},
+		},
+		{
+			name: "id of the request",
+			body: func(id jsonrpc.ID) string {
+				data, err := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: id, Error: &jsonrpc.Error{Code: -32001, Message: "Session not found"}})
+				if err != nil {
+					t.Errorf("encoding the error body: %v", err)
+				}
+				return string(data)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var (
+				initializes atomic.Int32
+				dropped     atomic.Value // the session ID the server no longer knows
+			)
+			server := NewServer(testImpl, nil)
+			AddTool(server, greetTool(), sayHi)
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				msg, _ := jsonrpc.DecodeMessage(body)
+				if req, ok := msg.(*jsonrpc.Request); ok && req.Method == methodInitialize {
+					initializes.Add(1)
+				}
+				if id, _ := dropped.Load().(string); id != "" && r.Header.Get(sessionIDHeader) == id {
+					var reqID jsonrpc.ID
+					if req, ok := msg.(*jsonrpc.Request); ok {
+						reqID = req.ID
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusNotFound)
+					io.WriteString(w, test.body(reqID))
+					return
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL, DisableStandaloneSSE: true}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			dropped.Store(session.ID())
+
+			if _, err := session.CallTool(ctx, &CallToolParams{Name: "greet", Arguments: map[string]any{"Name": "user"}}); err != nil {
+				t.Fatalf("CallTool after the server dropped the session: %v", err)
+			}
+			if got := initializes.Load(); got != 2 {
+				t.Errorf("server saw %d initialize requests, want 2", got)
+			}
+		})
+	}
+}

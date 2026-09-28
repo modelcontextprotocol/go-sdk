@@ -3047,6 +3047,11 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 		body, _ := io.ReadAll(resp.Body)
 		msg, _ := jsonrpc.DecodeMessage(body)
 		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {
+			// A 404 on a request carrying the session ID means the session is
+			// gone, whatever JSON-RPC error the body carries (§2.5.3).
+			if sessionID := c.SessionID(); resp.StatusCode == http.StatusNotFound && sessionID != "" {
+				return fmt.Errorf("%s: %w: %w", requestSummary, response.Error, ErrSessionMissing)
+			}
 			return fmt.Errorf("%s: %w: %w: %v", requestSummary, response.Error, jsonrpc2.ErrRejected, http.StatusText(resp.StatusCode))
 		}
 	}
