@@ -268,6 +268,8 @@ type CallToolParamsRaw struct {
 }
 
 // A CallToolResult is the server's response to a tool call.
+// Numbers in metadata (including content metadata) received from JSON are
+// represented as [json.Number] to preserve their exact values.
 //
 // The [ToolHandler] and [ToolHandlerFor] handler functions return this result,
 // though [ToolHandlerFor] populates much of it automatically as documented at
@@ -413,7 +415,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		StructuredContent json.RawMessage `json:"structuredContent"`
 		ResultType        resultType      `json:"resultType"`
 	}
-	if err := internaljson.Unmarshal(data, &wire); err != nil {
+	if err := internaljson.UnmarshalUseNumber(data, &wire); err != nil {
 		return err
 	}
 	if len(wire.StructuredContent) > 0 {
@@ -1934,6 +1936,7 @@ func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToke
 func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
 // Definition for a tool the client can call.
+// Numbers in schemas and metadata received from JSON are represented as [json.Number].
 type Tool struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
 	// usage.
@@ -1959,7 +1962,8 @@ type Tool struct {
 	// [Server.AddTool].
 	//
 	// From the client, this field will hold the default JSON marshaling of the
-	// server's input schema (a map[string]any).
+	// server's input schema (a map[string]any). Numbers are represented as
+	// [json.Number] to preserve their exact values.
 	InputSchema any `json:"inputSchema"`
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
@@ -1977,7 +1981,8 @@ type Tool struct {
 	// [Server.AddTool].
 	//
 	// From the client, this field will hold the default JSON marshaling of the
-	// server's output schema (a map[string]any).
+	// server's output schema (a map[string]any). Numbers are represented as
+	// [json.Number] to preserve their exact values.
 	OutputSchema any `json:"outputSchema,omitempty"`
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
@@ -1986,6 +1991,12 @@ type Tool struct {
 	Title string `json:"title,omitempty"`
 	// Icons for the tool, if any.
 	Icons []Icon `json:"icons,omitempty"`
+}
+
+// UnmarshalJSON preserves numbers in tool schemas and metadata.
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type tool Tool
+	return internaljson.UnmarshalUseNumber(data, (*tool)(t))
 }
 
 // hintomitempty is a compatibility parameter that restores the pre-1.7.0
