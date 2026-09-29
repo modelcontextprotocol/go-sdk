@@ -275,6 +275,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 }
 
 // AddPrompt adds a [Prompt] to the server, or replaces one with the same name.
+//
+// A prompts/get request that omits an argument marked [PromptArgument.Required]
+// is rejected with an invalid-params error before h is called.
 func (s *Server) AddPrompt(p *Prompt, h PromptHandler) {
 	// Assume there was a change, since add replaces existing items.
 	// (It's possible an item was replaced with an identical one, but not worth checking.)
@@ -725,7 +728,10 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 	res, err := s.opts.CompletionHandler(ctx, req)
-	if err == nil && res != nil && res.Completion.Values == nil {
+	if err == nil && res == nil {
+		res = new(CompleteResult) // avoid a "null" result
+	}
+	if err == nil && res.Completion.Values == nil {
 		res2 := *res
 		res2.Completion.Values = []string{} // avoid "null"
 		res = &res2
@@ -913,6 +919,13 @@ func (s *Server) listPrompts(ctx context.Context, req *ListPromptsRequest) (*Lis
 	return res, nil
 }
 
+// disablepromptargsvalidation is a compatibility parameter that restores the
+// previous behavior of [Server.getPrompt], where the prompt handler was called
+// even when a required argument of the prompt was missing. See the
+// documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var disablepromptargsvalidation = mcpgodebug.Value("disablepromptargsvalidation")
+
 func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
 	s.mu.Lock()
 	prompt, ok := s.prompts.get(req.Params.Name)
@@ -924,8 +937,23 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 			Message: fmt.Sprintf("unknown prompt %q", req.Params.Name),
 		}
 	}
+	if disablepromptargsvalidation != "1" {
+		// The spec asks for -32602 when a required argument is missing.
+		for _, arg := range prompt.prompt.Arguments {
+			if arg == nil || !arg.Required {
+				continue
+			}
+			if _, ok := req.Params.Arguments[arg.Name]; !ok {
+				return nil, fmt.Errorf("%w: missing required argument %q for prompt %q",
+					jsonrpc2.ErrInvalidParams, arg.Name, req.Params.Name)
+			}
+		}
+	}
 	res, err := prompt.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(GetPromptResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
@@ -1030,7 +1058,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(CallToolResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
