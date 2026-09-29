@@ -135,6 +135,12 @@ type SSEServerTransport struct {
 	// a negative value disables the limit. See [SSEOptions.MaxRequestBodyBytes].
 	MaxRequestBodyBytes int64
 
+	// server is the server this transport is connected to, if known. It is
+	// set by [SSEHandler] so that [SSEServerTransport.ServeHTTP] can
+	// recognize custom methods registered via [AddReceivingCustomMethod]
+	// in addition to the standard methods.
+	server *Server
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -184,7 +190,15 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	if req, ok := msg.(*jsonrpc.Request); ok {
-		if _, err := checkRequest(req, serverMethodInfos); err != nil {
+		// Use the server's receiving method infos (which include any custom
+		// methods registered via AddReceivingCustomMethod) when available;
+		// fall back to the standard methods otherwise, e.g. for an
+		// SSEServerTransport that was constructed directly.
+		methodInfos := serverMethodInfos
+		if t.server != nil {
+			methodInfos = t.server.receivingMethodInfos()
+		}
+		if _, err := checkRequest(req, methodInfos); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -286,10 +300,18 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewSSEHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
+	}
+
 	transport := &SSEServerTransport{
 		Endpoint:            endpoint.RequestURI(),
 		Response:            w,
 		MaxRequestBodyBytes: h.opts.MaxRequestBodyBytes,
+		server:              server,
 	}
 
 	// The session is terminated when the request exits.
@@ -302,12 +324,6 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.mu.Unlock()
 	}()
 
-	server := h.getServer(req)
-	if server == nil {
-		// The getServer argument to NewSSEHandler returned nil.
-		http.Error(w, "no server available", http.StatusBadRequest)
-		return
-	}
 	ss, err := server.Connect(req.Context(), transport, nil)
 	if err != nil {
 		http.Error(w, "connection failed", http.StatusInternalServerError)
