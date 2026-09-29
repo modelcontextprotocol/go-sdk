@@ -915,13 +915,21 @@ func TestNoJSONNull(t *testing.T) {
 	// Handlers with nothing to suggest or show still answer with empty
 	// arrays: completion values and prompt messages are required.
 	s := NewServer(testImpl, &ServerOptions{
-		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+		CompletionHandler: func(_ context.Context, req *CompleteRequest) (*CompleteResult, error) {
+			if req.Params.Ref.Name == "nil" {
+				return nil, nil
+			}
 			return &CompleteResult{}, nil
 		},
 	})
 	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
 		return &GetPromptResult{}, nil
 	})
+	// Handlers that return no result at all still answer with an object.
+	s.AddPrompt(&Prompt{Name: "nil"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return nil, nil
+	})
+	s.AddTool(&Tool{Name: "nil", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -954,6 +962,18 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "nil"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
