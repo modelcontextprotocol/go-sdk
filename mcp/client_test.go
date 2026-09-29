@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -1090,5 +1091,66 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	}
 	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+}
+
+// TestClientRejectsMissingRequiredParams checks that server-to-client messages
+// whose params are required by the schema are rejected when params is omitted
+// or null, instead of reaching handlers that dereference them.
+func TestClientRejectsMissingRequiredParams(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls atomic.Int32
+	c := NewClient(testImpl, &ClientOptions{
+		Capabilities: &ClientCapabilities{
+			Elicitation: &ElicitationCapabilities{
+				Form: &FormElicitationCapabilities{},
+				URL:  &URLElicitationCapabilities{},
+			},
+		},
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			handlerCalls.Add(1)
+			return &ElicitResult{Action: "decline"}, nil
+		},
+		ElicitationCompleteHandler: func(context.Context, *ElicitationCompleteNotificationRequest) {
+			handlerCalls.Add(1)
+		},
+		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {
+			handlerCalls.Add(1)
+		},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	for _, tc := range []struct {
+		method string
+		call   bool
+	}{
+		{methodElicit, true},
+		{notificationElicitationComplete, false},
+		{notificationResourceUpdated, false},
+	} {
+		for _, params := range []json.RawMessage{nil, json.RawMessage("null")} {
+			t.Run(fmt.Sprintf("%s/params=%s", tc.method, params), func(t *testing.T) {
+				req := &jsonrpc.Request{Method: tc.method, Params: params}
+				if tc.call {
+					req.ID = jsonrpc2.Int64ID(1)
+				}
+				if _, err := cs.handle(ctx, req); err == nil {
+					t.Errorf("handle(%q) with params %q: got nil error, want an invalid request error", tc.method, params)
+				}
+			})
+		}
+	}
+	if n := handlerCalls.Load(); n != 0 {
+		t.Errorf("handlers were called %d times, want 0", n)
 	}
 }
