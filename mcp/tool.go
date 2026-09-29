@@ -62,6 +62,44 @@ type serverTool struct {
 	handler ToolHandler
 }
 
+// maxJSONDepth is the maximum nesting depth accepted for tool arguments and
+// output. Deeply nested JSON is rejected up front to avoid pathological
+// validation costs on adversarial input.
+const maxJSONDepth = 1000
+
+// checkJSONDepth scans data and reports an error if its nesting depth exceeds
+// maxJSONDepth. It is linear in the length of data and ignores the contents of
+// string literals.
+func checkJSONDepth(data json.RawMessage) error {
+	depth := 0
+	inString := false
+	escaped := false
+	for _, b := range data {
+		if inString {
+			if escaped {
+				escaped = false
+			} else if b == '\\' {
+				escaped = true
+			} else if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maxJSONDepth {
+				return fmt.Errorf("JSON nesting exceeds maximum allowed depth of %d", maxJSONDepth)
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
+}
+
 // applySchema validates whether data is valid JSON according to the provided
 // schema, after applying schema defaults.
 //
@@ -75,6 +113,13 @@ type serverTool struct {
 func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput bool) (json.RawMessage, error) {
 	// TODO: use reflection to create the struct type to unmarshal into.
 	// Separate validation from assignment.
+
+	// Reject deeply nested input before unmarshaling or validating. Deep
+	// nesting can make schema validation quadratic in the input depth, and the
+	// JSON decoder used here does not impose a nesting limit of its own.
+	if err := checkJSONDepth(data); err != nil {
+		return nil, err
+	}
 
 	// Use default JSON marshalling for validation.
 	//
