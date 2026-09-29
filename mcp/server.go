@@ -728,7 +728,10 @@ func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteR
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 	res, err := s.opts.CompletionHandler(ctx, req)
-	if err == nil && res != nil && res.Completion.Values == nil {
+	if err == nil && res == nil {
+		res = new(CompleteResult) // avoid a "null" result
+	}
+	if err == nil && res.Completion.Values == nil {
 		res2 := *res
 		res2.Completion.Values = []string{} // avoid "null"
 		res = &res2
@@ -947,7 +950,10 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		}
 	}
 	res, err := prompt.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(GetPromptResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
@@ -1052,7 +1058,10 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		}
 	}
 	res, err := st.handler(ctx, req)
-	if err == nil && res != nil {
+	if err == nil {
+		if res == nil {
+			res = new(CallToolResult) // avoid a "null" result
+		}
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
