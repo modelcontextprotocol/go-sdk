@@ -3065,6 +3065,13 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 			wantStatus:        http.StatusOK,
 		},
 		{
+			name:              "127.0.0.1 accepts localhost in any case",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "LocalHost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
 			name:              "127.0.0.1 rejects evil.com",
 			listenAddr:        "127.0.0.1:0",
 			hostHeader:        "evil.com",
