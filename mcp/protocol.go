@@ -223,7 +223,65 @@ type Annotations struct {
 	// A value of 1 means "most important," and indicates that the data is
 	// effectively required, while 0 means "least important," and indicates that the
 	// data is entirely optional.
+	//
+	// A zero Priority assigned directly is treated as unset and omitted when
+	// marshaling. To send an explicit priority of 0, use [Annotations.SetPriority].
+	// A priority received on the wire, including 0, is preserved when the
+	// annotations are marshaled again.
 	Priority float64 `json:"priority,omitempty"`
+
+	hasPriority bool // set by UnmarshalJSON or SetPriority
+}
+
+// SetPriority sets the priority and marks it as explicitly present, so that a
+// priority of 0 (least important) is not omitted when marshaling.
+func (a *Annotations) SetPriority(p float64) {
+	a.Priority = p
+	a.hasPriority = true
+}
+
+// HasPriority reports whether a priority was explicitly set with
+// [Annotations.SetPriority], received on the wire, or assigned a non-zero value.
+func (a *Annotations) HasPriority() bool {
+	return a.hasPriority || a.Priority != 0
+}
+
+// UnmarshalJSON implements [json.Unmarshaler] for Annotations. It records
+// whether priority was present, so that an explicit 0 survives a round trip.
+func (a *Annotations) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	var w wire
+	if err := internaljson.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*a = Annotations{Audience: w.Audience, LastModified: w.LastModified}
+	if w.Priority != nil {
+		a.SetPriority(*w.Priority)
+	}
+	return nil
+}
+
+// MarshalJSON implements [json.Marshaler] for Annotations. It emits priority
+// whenever [Annotations.HasPriority] reports true, including a priority of 0.
+func (a Annotations) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	w := wire{
+		Audience:     a.Audience,
+		LastModified: a.LastModified,
+	}
+	if a.HasPriority() {
+		p := a.Priority
+		w.Priority = &p
+	}
+	return json.Marshal(w)
 }
 
 // CallToolParams is used by clients to call a tool.
