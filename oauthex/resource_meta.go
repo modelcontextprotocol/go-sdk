@@ -198,7 +198,8 @@ func splitChallenges(header string) ([]string, error) {
 			isParam := false
 			if eqPos > 0 {
 				// Check if the part before '=' is a single token (no spaces).
-				token := lookahead[:eqPos]
+				// Whitespace between the token and '=' is allowed (BWS, RFC 9110 section 11.2).
+				token := strings.TrimRight(lookahead[:eqPos], " \t")
 				if strings.IndexFunc(token, unicode.IsSpace) == -1 {
 					isParam = true
 				}
