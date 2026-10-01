@@ -49,6 +49,11 @@ func TestSplitChallenges(t *testing.T) {
 			want:  []string{`Bearer realm="example \"quoted\""`},
 		},
 		{
+			name:  "quoted value ending in escaped backslash",
+			input: `Basic realm="C:\\", Bearer error="insufficient_scope"`,
+			want:  []string{`Basic realm="C:\\"`, ` Bearer error="insufficient_scope"`},
+		},
+		{
 			name:  "empty input",
 			input: "",
 			want:  []string{""},
@@ -65,6 +70,28 @@ func TestSplitChallenges(t *testing.T) {
 				t.Errorf("splitChallenges() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A quoted string may end in an escaped backslash. The quote after it closes
+// the string, so the comma that follows still separates two challenges and
+// the Bearer challenge the auth handlers look for is not lost.
+func TestParseWWWAuthenticateEscapedBackslash(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Basic realm="C:\\", Bearer error="insufficient_scope", scope="files:write"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "basic", Params: map[string]string{"realm": `C:\`}},
+		{Scheme: "bearer", Params: map[string]string{
+			"error": "insufficient_scope",
+			"scope": "files:write",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
 	}
 }
 
