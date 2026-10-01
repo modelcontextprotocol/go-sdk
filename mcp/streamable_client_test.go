@@ -1504,7 +1504,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 // streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
 // header value.
 //
-// Ordinarily initializedResult is populated by sessionUpdated, called
+// Ordinarily initializedResult is populated by clientSessionUpdated, called
 // through a type assertion to the unexported clientConnection interface
 // (see Client.Connect). That assertion silently fails, leaving
 // initializedResult nil for the life of the session, whenever the
@@ -2246,6 +2246,83 @@ func TestStreamableClientConnect_ColonlessSSELine(t *testing.T) {
 			}
 			if missing := fake.missingRequests(); len(missing) > 0 {
 				t.Errorf("missing requests: %v", missing)
+			}
+		})
+	}
+}
+
+// TestStreamableClientLoggingTransport verifies that wrapping a
+// StreamableClientTransport in a LoggingTransport (documented as a decorator
+// for any Transport) does not change the session's behavior:
+// once initialize completes, the client must still send the negotiated
+// Mcp-Protocol-Version header on every subsequent request (2025-06-18 §
+// Protocol Version Header: "the client MUST include the MCP-Protocol-Version
+// header on all subsequent requests") and still open the standalone SSE GET
+// stream, exactly as it does when the transport is not wrapped.
+func TestStreamableClientLoggingTransport(t *testing.T) {
+	ctx := context.Background()
+
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			getKey := streamableRequestKey{"GET", "123", "", ""}
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"POST", "123", methodPing, ""}: {
+						header:              header{"Content-Type": "application/json"},
+						body:                jsonBody(t, resp(2, &emptyResult{}, nil)),
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					getKey: {
+						header:              header{"Content-Type": "text/event-stream"},
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			var transport Transport = &StreamableClientTransport{Endpoint: httpServer.URL}
+			if wrap {
+				transport = &LoggingTransport{Transport: transport, Writer: io.Discard}
+			}
+			client := NewClient(testImpl, nil)
+			// Pin to 2025-11-25: the canned initialize response has id=1, and
+			// the standalone GET stream only exists before 2026-07-28.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			if err := session.Ping(ctx, nil); err != nil {
+				t.Fatalf("Ping() failed: %v", err)
+			}
+
+			// Give the standalone SSE GET a moment to be issued.
+			time.Sleep(100 * time.Millisecond)
+
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests: %v", missing)
 			}
 		})
 	}
