@@ -283,3 +283,59 @@ func (h *fakeResourceHandler) installHandlers(serverURL string) {
 		}
 	}))
 }
+
+// RFC 9110 section 11.2 allows optional whitespace (BWS) around the "=" of an
+// auth-param, so "scope = ..." after a comma is a parameter, not a new
+// challenge.
+func TestParseWWWAuthenticateWhitespaceAroundEquals(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   []Challenge
+	}{
+		{
+			name:   "space before and after",
+			header: `Bearer realm="mcp", scope = "files:read"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"realm": "mcp", "scope": "files:read"}},
+			},
+		},
+		{
+			name:   "space on one side only",
+			header: `Bearer error="insufficient_scope", scope ="files:write", resource_metadata= "https://example.com/rm"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{
+					"error":             "insufficient_scope",
+					"scope":             "files:write",
+					"resource_metadata": "https://example.com/rm",
+				}},
+			},
+		},
+		{
+			name:   "tab before",
+			header: "Bearer realm=\"mcp\", scope\t= \"files:read\"",
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"realm": "mcp", "scope": "files:read"}},
+			},
+		},
+		{
+			name:   "next challenge still splits",
+			header: `Bearer scope = "files:read", Basic realm = "mcp"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"scope": "files:read"}},
+				{Scheme: "basic", Params: map[string]string{"realm": "mcp"}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseWWWAuthenticate([]string{tt.header})
+			if err != nil {
+				t.Fatalf("ParseWWWAuthenticate(%q) error = %v", tt.header, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseWWWAuthenticate(%q) = %+v, want %+v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
