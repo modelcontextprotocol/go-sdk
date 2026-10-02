@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -2027,5 +2028,54 @@ func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
 	}
 	if !listenServed.Load() {
 		t.Fatal("subscriptions/listen was not called")
+	}
+}
+
+// TestStreamableClientConnect_RespectsDeadline checks that Connect returns
+// close to its own deadline against an unresponsive peer (one that accepts the
+// TCP connection but never replies), rather than blocking on best-effort
+// cleanup. Regression test for #1189.
+func TestStreamableClientConnect_RespectsDeadline(t *testing.T) {
+	// Black hole: accept connections but never read or respond.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		var held []net.Conn
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				for _, h := range held {
+					h.Close()
+				}
+				return
+			}
+			held = append(held, c) // hold open, never respond
+		}
+	}()
+
+	const deadline = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	client := NewClient(testImpl, nil)
+	start := time.Now()
+	_, err = client.Connect(ctx, &StreamableClientTransport{
+		Endpoint:   "http://" + ln.Addr().String(),
+		MaxRetries: 0,
+	}, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Connect unexpectedly succeeded against a black-hole server")
+	}
+	// The deadline bounds the initialize request; cleanup after it fails must
+	// not add another full notifyCancellationTimeout. Allow generous slack for
+	// slow CI while still catching the ~notifyCancellationTimeout overshoot.
+	if max := deadline + notifyCancellationTimeout - time.Second; elapsed > max {
+		t.Errorf("Connect returned after %v, want <= %v (deadline %v)",
+			elapsed.Round(10*time.Millisecond), max, deadline)
 	}
 }
