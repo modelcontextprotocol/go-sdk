@@ -210,7 +210,7 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 	// Handle CORS preflight requests
