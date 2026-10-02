@@ -787,6 +787,10 @@ func TestCancellationReason(t *testing.T) {
 		if err := cs.conn.Notify(ctx, notificationCancelled, &CancelledParams{RequestID: call.ID().Raw(), Reason: "user asked"}); err != nil {
 			t.Fatal(err)
 		}
+		// The receiver sends no response to a cancelled call, so the SDK's own
+		// cancel path (cancelCall) retires the outgoing call before notifying;
+		// this test notifies by hand and retires by hand, or synctest deadlocks.
+		cs.conn.Retire(call, context.Canceled)
 
 		cause := <-cancelled
 		if cause == nil {

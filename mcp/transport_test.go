@@ -364,3 +364,50 @@ func TestIOConnFrameCap(t *testing.T) {
 		})
 	}
 }
+
+// droppingConn is a Connection that records the ids it was told will receive
+// no response. It implements [jsonrpc2.ResponseDropper]; plainConn, below,
+// deliberately does not.
+type droppingConn struct {
+	dropped []jsonrpc.ID
+}
+
+func (c *droppingConn) SessionID() string                             { return "" }
+func (c *droppingConn) Read(context.Context) (jsonrpc.Message, error) { return nil, io.EOF }
+func (c *droppingConn) Write(context.Context, jsonrpc.Message) error  { return nil }
+func (c *droppingConn) Close() error                                  { return nil }
+func (c *droppingConn) DropResponse(id jsonrpc.ID)                    { c.dropped = append(c.dropped, id) }
+
+// plainConn is a Connection that holds no per-call state, so it implements no
+// ResponseDropper.
+type plainConn struct{}
+
+func (plainConn) SessionID() string                             { return "" }
+func (plainConn) Read(context.Context) (jsonrpc.Message, error) { return nil, io.EOF }
+func (plainConn) Write(context.Context, jsonrpc.Message) error  { return nil }
+func (plainConn) Close() error                                  { return nil }
+
+// TestLoggingConnDropResponse checks that wrapping a transport for logging
+// does not lose the "this call gets no response" signal: loggingConn is the
+// one Connection wrapper here, and it used to leave the POST stream open.
+func TestLoggingConnDropResponse(t *testing.T) {
+	t.Run("forwards to a delegate that holds per-call state", func(t *testing.T) {
+		delegate := &droppingConn{}
+		conn := &loggingConn{delegate: delegate, w: io.Discard}
+
+		dropper, ok := any(conn).(jsonrpc2.ResponseDropper)
+		if !ok {
+			t.Fatal("loggingConn does not implement jsonrpc2.ResponseDropper, so a cancelled call's stream is never released")
+		}
+		dropper.DropResponse(jsonrpc.ID{})
+
+		if len(delegate.dropped) != 1 {
+			t.Errorf("the delegate was told about %d dropped responses, want 1", len(delegate.dropped))
+		}
+	})
+
+	t.Run("does nothing for a delegate that holds none", func(t *testing.T) {
+		conn := &loggingConn{delegate: plainConn{}, w: io.Discard}
+		conn.DropResponse(jsonrpc.ID{})
+	})
+}

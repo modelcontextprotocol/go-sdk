@@ -607,6 +607,11 @@ When an RPC exits due to a cancellation error, there's a guarantee that the
 cancellation notification has been sent, but there's no guarantee that the
 server has observed it (see [concurrency](#concurrency)).
 
+A receiver of a cancellation notification sends no response for the cancelled
+request, as the spec requires. On the streamable HTTP transport the stream that
+carried the request is still completed, so the POST it arrived on ends rather
+than hanging, with 204 No Content when nothing else was written on it.
+
 %include ../../mcp/mcp_example_test.go cancellation -
 
 ### Ping
