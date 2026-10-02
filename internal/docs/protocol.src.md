@@ -70,7 +70,9 @@ request. Servers implementing `2026-07-28` MUST implement it.
 - **Client**: `Client.Connect` calls `server/discover` first and
   uses the result to negotiate a mutually supported version. If discovery
   fails or the server does not support the latest version, the client falls back to the
-  legacy `initialize` handshake.
+  legacy `initialize` handshake. On stdio transports, where an older server may
+  silently ignore requests before `initialize`, the client also falls back if
+  discovery goes unanswered for a few seconds.
 
 A server advertises and negotiates every protocol version the SDK supports;
 set [`ServerOptions.SupportedProtocolVersions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions)

@@ -7,12 +7,15 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -1091,6 +1094,146 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	}
 	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+}
+
+func setStreamDiscoverTimeout(t *testing.T, d time.Duration) {
+	initial := streamDiscoverTimeout
+	streamDiscoverTimeout = d
+	t.Cleanup(func() { streamDiscoverTimeout = initial })
+}
+
+// serveSilentStdio emulates a handshake-era stdio server that answers only
+// initialize and tools/list, silently dropping every other message.
+func serveSilentStdio(r io.Reader, w io.Writer) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		var msg struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &msg) != nil {
+			continue
+		}
+		var result any
+		switch msg.Method {
+		case methodInitialize:
+			result = map[string]any{
+				"protocolVersion": protocolVersion20251125,
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "silent", "version": "v1"},
+			}
+		case methodListTools:
+			result = map[string]any{"tools": []any{}}
+		default:
+			continue
+		}
+		data, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": result})
+		if _, err := w.Write(append(data, '\n')); err != nil {
+			return
+		}
+	}
+}
+
+// delegatingTransport is a user-defined Transport wrapping another one, as an
+// instrumentation or filtering decorator would.
+type delegatingTransport struct {
+	Transport
+}
+
+func connectToSilentStdioServer(t *testing.T, ctx context.Context, wrap func(Transport) Transport) {
+	t.Helper()
+	cr, sw := io.Pipe()
+	sr, cw := io.Pipe()
+	go serveSilentStdio(sr, sw)
+
+	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
+	cs, err := client.Connect(ctx, wrap(&IOTransport{Reader: cr, Writer: cw}), nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if got, want := cs.InitializeResult().ProtocolVersion, protocolVersion20251125; got != want {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools after fallback initialize: %v", err)
+	}
+}
+
+// TestClientConnectDiscover_SilentStdioServer verifies that Connect falls back
+// to initialize when a stdio server never answers server/discover (#1332).
+func TestClientConnectDiscover_SilentStdioServer(t *testing.T) {
+	setStreamDiscoverTimeout(t, 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connectToSilentStdioServer(t, ctx, func(t Transport) Transport { return t })
+}
+
+// TestClientConnectDiscover_SilentStdioServerWrapped verifies the fallback when
+// the stdio transport is wrapped, either by LoggingTransport or by a
+// user-defined Transport.
+func TestClientConnectDiscover_SilentStdioServerWrapped(t *testing.T) {
+	setStreamDiscoverTimeout(t, 50*time.Millisecond)
+	wrappers := map[string]func(Transport) Transport{
+		"logging": func(t Transport) Transport { return &LoggingTransport{Transport: t, Writer: io.Discard} },
+		"custom":  func(t Transport) Transport { return delegatingTransport{t} },
+	}
+	for name, wrap := range wrappers {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			connectToSilentStdioServer(t, ctx, wrap)
+		})
+	}
+}
+
+// TestClientConnectDiscover_SilentStdioServerShortDeadline verifies that the
+// discover probe leaves part of a short caller deadline for initialize.
+func TestClientConnectDiscover_SilentStdioServerShortDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connectToSilentStdioServer(t, ctx, func(t Transport) Transport { return t })
+}
+
+// TestClientConnectDiscover_SlowStdioServer verifies that a modern stdio
+// server answering server/discover after the probe timeout still connects
+// through the initialize fallback, and its late reply is ignored.
+func TestClientConnectDiscover_SlowStdioServer(t *testing.T) {
+	setStreamDiscoverTimeout(t, 50*time.Millisecond)
+	ctx := context.Background()
+
+	server := NewServer(&Implementation{Name: "slow-server", Version: "v1"}, nil)
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodDiscover {
+				time.Sleep(200 * time.Millisecond)
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	cr, sw := io.Pipe()
+	sr, cw := io.Pipe()
+	ss, err := server.Connect(ctx, &IOTransport{Reader: sr, Writer: sw}, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
+	cs, err := client.Connect(ctx, &IOTransport{Reader: cr, Writer: cw}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if got, want := cs.InitializeResult().ProtocolVersion, protocolVersion20251125; got != want {
+		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools after fallback initialize: %v", err)
 	}
 }
 

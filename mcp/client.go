@@ -326,7 +326,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// requested version but specifies which versions it supports, we negotiate
 		// a mutually supported version and try again.
 		for range 2 {
-			discRes, err := c.discover(discoverCtx, cs)
+			probeCtx, cancelProbe := discoverProbeContext(discoverCtx, cs.mcpConn)
+			discRes, err := c.discover(probeCtx, cs)
+			cancelProbe()
 			if err == nil {
 				cs.state.InitializeResult = discRes
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
@@ -412,6 +414,34 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	return cs, nil
+}
+
+var streamDiscoverTimeout = 3 * time.Second // mutable for testing
+
+// discoverProbeContext bounds the server/discover probe on newline-delimited
+// stream connections (stdio, IO and in-memory transports, including custom
+// transports that return their connection), where a handshake-era server may
+// silently ignore requests it doesn't recognize before initialize. Half of any
+// remaining deadline is kept for the initialize fallback.
+func discoverProbeContext(ctx context.Context, conn Connection) (context.Context, context.CancelFunc) {
+	if !isStreamConn(conn) {
+		return ctx, func() {}
+	}
+	timeout := streamDiscoverTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline)/2)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func isStreamConn(conn Connection) bool {
+	switch conn := conn.(type) {
+	case *ioConn:
+		return true
+	case *loggingConn:
+		return isStreamConn(conn.delegate)
+	}
+	return false
 }
 
 // discover sends a SEP-2575 server/discover request to probe the server for
