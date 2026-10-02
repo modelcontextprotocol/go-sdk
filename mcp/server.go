@@ -200,6 +200,22 @@ type ServerOptions struct {
 	SupportedProtocolVersions []string
 }
 
+// AddExtension adds an extension capability to the server.
+//
+// Extensions should normally be added before the server accepts connections,
+// so that clients observe them during capability negotiation. If settings is
+// nil, an empty object is advertised.
+func (s *Server) AddExtension(name string, settings map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.opts.Capabilities == nil {
+		s.opts.Capabilities = &ServerCapabilities{Logging: &LoggingCapabilities{}}
+	} else {
+		s.opts.Capabilities = s.opts.Capabilities.clone()
+	}
+	s.opts.Capabilities.AddExtension(name, maps.Clone(settings))
+}
+
 // NewServer creates a new MCP server. The resulting server has no features:
 // add features using the various Server.AddXXX methods, and the [AddTool] function.
 //
