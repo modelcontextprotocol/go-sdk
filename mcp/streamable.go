@@ -1072,6 +1072,11 @@ type stream struct {
 	// goroutine parks on it instead of polling.
 	committed chan struct{}
 
+	// keepAliveInterval is the interval the keep-alive writes at, and zero when
+	// none is running for the current w. Writes push the write deadline out by
+	// twice it; see markWrittenLocked. Reset by release.
+	keepAliveInterval time.Duration
+
 	// protocolVersion is the protocol version for this stream.
 	protocolVersion string
 
@@ -1123,13 +1128,20 @@ func (s *stream) release() {
 	s.done = nil // may already be nil, if the stream is done or closed
 	s.lastWrite = time.Time{}
 	s.committed = nil
+	s.keepAliveInterval = 0
 }
 
-// markWrittenLocked records a write to s.w, for the keep-alive.
+// markWrittenLocked records a write to s.w, for the keep-alive, and moves its
+// write deadline past the next keep-alive.
 //
 // s.mu must be held.
 func (s *stream) markWrittenLocked() {
 	s.lastWrite = time.Now()
+	if s.keepAliveInterval > 0 && s.w != nil {
+		// Best-effort: a writer managing its own deadlines reports
+		// ErrNotSupported, and a server with no WriteTimeout has none to move.
+		_ = http.NewResponseController(s.w).SetWriteDeadline(time.Now().Add(2 * s.keepAliveInterval))
+	}
 	if s.committed != nil {
 		close(s.committed)
 		s.committed = nil
@@ -1145,6 +1157,8 @@ func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duratio
 	// be needed (see deliverLocked): wait for the first event.
 	committed := make(chan struct{})
 	s.committed = committed
+	// Before the first write: markWrittenLocked reads it to move the deadline.
+	s.keepAliveInterval = interval
 	go s.keepAlive(ctx, interval, committed)
 }
 
