@@ -911,3 +911,75 @@ func mustConnectOldProtocol(t *testing.T, s *Server, clientOpts *ClientOptions) 
 	})
 	return cs
 }
+
+// TestMultiRoundTrip_NilHandlerResult verifies that a sampling or elicitation handler
+// returning (nil, nil) fails the request that needed it, rather than
+// panicking in the client or sending a null result to the server.
+func TestMultiRoundTrip_NilHandlerResult(t *testing.T) {
+	sampling := &CreateMessageParams{
+		Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}},
+		MaxTokens: 10,
+	}
+	nilElicit := func(context.Context, *ElicitRequest) (*ElicitResult, error) { return nil, nil }
+	tests := []struct {
+		name  string
+		input InputRequest
+		opts  *ClientOptions
+	}{
+		{
+			name:  "CreateMessageHandler",
+			input: sampling,
+			opts: &ClientOptions{CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+				return nil, nil
+			}},
+		},
+		{
+			name:  "CreateMessageWithToolsHandler",
+			input: sampling,
+			opts: &ClientOptions{CreateMessageWithToolsHandler: func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+				return nil, nil
+			}},
+		},
+		{
+			name:  "ElicitationHandler form",
+			input: &ElicitParams{Message: "OK?"},
+			opts:  &ClientOptions{ElicitationHandler: nilElicit},
+		},
+		{
+			name:  "ElicitationHandler url",
+			input: &ElicitParams{Mode: "url", Message: "Sign in", URL: "https://example.com/login", ElicitationID: "e1"},
+			opts: &ClientOptions{
+				ElicitationHandler: nilElicit,
+				Capabilities:       &ClientCapabilities{Elicitation: &ElicitationCapabilities{URL: &URLElicitationCapabilities{}}},
+			},
+		},
+	}
+	connections := []struct {
+		version string
+		connect func(*testing.T, *Server, *ClientOptions) *ClientSession
+	}{
+		{protocolVersion20260728, mustConnect},
+		{protocolVersion20251125, mustConnectOldProtocol},
+	}
+	for _, tt := range tests {
+		for _, conn := range connections {
+			t.Run(tt.name+" "+conn.version, func(t *testing.T) {
+				srv := NewServer(testImpl, nil)
+				AddTool(srv, &Tool{Name: "ask"}, func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+					if len(req.Params.InputResponses) == 0 {
+						return &CallToolResult{InputRequests: InputRequestMap{"q": tt.input}}, nil, nil
+					}
+					return &CallToolResult{Content: []Content{&TextContent{Text: fmt.Sprintf("got %v", req.Params.InputResponses)}}}, nil, nil
+				})
+				cs := conn.connect(t, srv, tt.opts)
+				res, err := cs.CallTool(t.Context(), &CallToolParams{Name: "ask"})
+				if err == nil {
+					t.Fatalf("CallTool succeeded with %+v, want an error", res)
+				}
+				if want := "returned a nil result"; !strings.Contains(err.Error(), want) {
+					t.Errorf("CallTool error = %v, want it to mention %q", err, want)
+				}
+			})
+		}
+	}
+}

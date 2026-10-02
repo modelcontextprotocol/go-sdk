@@ -741,7 +741,11 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
 	if c.opts.CreateMessageWithToolsHandler != nil {
-		return c.opts.CreateMessageWithToolsHandler(ctx, req)
+		res, err := c.opts.CreateMessageWithToolsHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, errors.New("CreateMessageWithToolsHandler returned a nil result")
+		}
+		return res, err
 	}
 	if c.opts.CreateMessageHandler != nil {
 		// Downconvert the request for the basic handler.
@@ -756,6 +760,9 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
 		if err != nil {
 			return nil, err
+		}
+		if res == nil {
+			return nil, errors.New("CreateMessageHandler returned a nil result")
 		}
 		return res.toWithTools(), nil
 	}
@@ -890,6 +897,9 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if err != nil {
 			return nil, err
 		}
+		if res == nil {
+			return nil, errors.New("ElicitationHandler returned a nil result")
+		}
 		// Validate elicitation result content against requested schema.
 		if res.Action == "accept" && schema != nil && res.Content != nil {
 			resolved, err := schema.Resolve(nil)
@@ -912,8 +922,12 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if req.Params.URL == "" {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must be set for URL elicitation"}
 		}
-		// No schema validation for URL mode, just pass through to handler.
-		return c.opts.ElicitationHandler(ctx, req)
+		// No schema validation for URL mode.
+		res, err := c.opts.ElicitationHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, errors.New("ElicitationHandler returned a nil result")
+		}
+		return res, err
 	default:
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unsupported elicitation mode: %q", mode)}
 	}
