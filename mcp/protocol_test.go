@@ -5,8 +5,10 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -1370,5 +1372,75 @@ func TestToolAnnotations_MarshalJSON(t *testing.T) {
 				t.Errorf("json.Marshal() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestToolExecution_RoundTrip(t *testing.T) {
+	const withExec = `{"execution":{"taskSupport":"required"},"inputSchema":{"type":"object"},"name":"t"}`
+	var tool Tool
+	if err := json.Unmarshal([]byte(withExec), &tool); err != nil {
+		t.Fatal(err)
+	}
+	if tool.Execution == nil || tool.Execution.TaskSupport != TaskSupportRequired {
+		t.Fatalf("Execution = %+v, want taskSupport %q", tool.Execution, TaskSupportRequired)
+	}
+	got, err := json.Marshal(&tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(withExec, string(got)); diff != "" {
+		t.Errorf("round trip mismatch (-want +got):\n%s", diff)
+	}
+
+	var plain Tool
+	if err := json.Unmarshal([]byte(`{"name":"t","inputSchema":{"type":"object"}}`), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.Execution != nil {
+		t.Errorf("Execution = %+v, want nil", plain.Execution)
+	}
+	got, err = json.Marshal(&plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "execution") {
+		t.Errorf("marshaled tool %s contains execution", got)
+	}
+}
+
+func TestToolExecution_ClientReceives(t *testing.T) {
+	ctx := context.Background()
+	ct, st := NewInMemoryTransports()
+	s := NewServer(testImpl, nil)
+	s.AddTool(&Tool{
+		Name:        "slow",
+		Execution:   &ToolExecution{TaskSupport: TaskSupportOptional},
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) { return &CallToolResult{}, nil })
+	s.AddTool(&Tool{
+		Name:        "fast",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) { return &CallToolResult{}, nil })
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	got := map[string]*ToolExecution{}
+	for tool, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[tool.Name] = tool.Execution
+	}
+	want := map[string]*ToolExecution{"slow": {TaskSupport: TaskSupportOptional}, "fast": nil}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("tools mismatch (-want +got):\n%s", diff)
 	}
 }
