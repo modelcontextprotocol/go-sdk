@@ -1991,6 +1991,26 @@ func (x *SetLoggingLevelParams) isNil() bool            { return x == nil }
 func (x *SetLoggingLevelParams) GetProgressToken() any  { return getProgressToken(x) }
 func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t) }
 
+// ToolExecution holds execution-related properties of a [Tool].
+type ToolExecution struct {
+	// TaskSupport indicates whether the tool supports task-augmented
+	// execution. An empty value means [TaskSupportForbidden].
+	TaskSupport TaskSupport `json:"taskSupport,omitempty"`
+}
+
+// TaskSupport is the value of [ToolExecution.TaskSupport].
+type TaskSupport string
+
+const (
+	// TaskSupportForbidden means the tool does not support task-augmented
+	// execution. It is the default when the field is absent.
+	TaskSupportForbidden TaskSupport = "forbidden"
+	// TaskSupportOptional means the tool may support task-augmented execution.
+	TaskSupportOptional TaskSupport = "optional"
+	// TaskSupportRequired means the tool requires task-augmented execution.
+	TaskSupportRequired TaskSupport = "required"
+)
+
 // Definition for a tool the client can call.
 type Tool struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
@@ -2005,6 +2025,15 @@ type Tool struct {
 	// This can be used by clients to improve the LLM's understanding of available
 	// tools. It can be thought of like a "hint" to the model.
 	Description string `json:"description,omitempty"`
+	// Execution holds execution-related properties for the tool.
+	//
+	// Defined by the 2025-11-25 spec. The 2026-07-28 tasks extension has no
+	// per-tool declaration: the server alone decides whether a call becomes a
+	// task. tools/list includes this field only when the protocol version in
+	// effect is at least 2025-11-25 and older than 2026-07-28. Marshaling a
+	// Tool value still preserves it, so a proxy can round-trip a tool it
+	// decoded. Setting it does not make the SDK run the tool as a task.
+	Execution *ToolExecution `json:"execution,omitempty"`
 	// InputSchema holds a JSON Schema object defining the expected parameters
 	// for the tool.
 	//

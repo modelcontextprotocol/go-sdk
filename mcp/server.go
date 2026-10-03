@@ -1024,6 +1024,8 @@ func filterSupportedVersions(t Transport, versions []string) []string {
 }
 
 func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToolsResult, error) {
+	// InitializeParams locks the session, so read the version before s.mu.
+	version := protocolVersionForList(req)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Params == nil {
@@ -1032,7 +1034,7 @@ func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToo
 	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
 		res.Tools = []*Tool{} // avoid JSON null
 		for _, t := range tools {
-			res.Tools = append(res.Tools, t.tool)
+			res.Tools = append(res.Tools, toolForList(t.tool, version))
 		}
 	})
 	if err != nil {
@@ -1040,6 +1042,41 @@ func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToo
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
+}
+
+// protocolVersionForList reports the protocol version tools/list should use
+// for fields that exist in only one spec revision. A per-request _meta
+// version wins over the session's negotiated version.
+func protocolVersionForList(req *ListToolsRequest) string {
+	if req.Params != nil {
+		if v, ok := req.Params.GetMeta()[MetaKeyProtocolVersion].(string); ok && v != "" {
+			return v
+		}
+	}
+	if req.Session != nil {
+		if ip := req.Session.InitializeParams(); ip != nil {
+			return ip.ProtocolVersion
+		}
+	}
+	return ""
+}
+
+// toolForList returns the tool to put on the wire. [Tool.Execution] is a
+// 2025-11-25 field, so other versions get a copy with it cleared. The
+// registered tool is left alone: another session may still speak 2025-11-25.
+func toolForList(tool *Tool, version string) *Tool {
+	if tool == nil || tool.Execution == nil || toolExecutionOnWire(version) {
+		return tool
+	}
+	copied := *tool
+	copied.Execution = nil
+	return &copied
+}
+
+// toolExecutionOnWire reports whether the version's Tool schema defines
+// execution. An empty version has not been negotiated, so the field is omitted.
+func toolExecutionOnWire(version string) bool {
+	return version >= protocolVersion20251125 && version < protocolVersion20260728
 }
 
 // getServerTool looks up a server tool by name.
