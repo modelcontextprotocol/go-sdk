@@ -1408,6 +1408,23 @@ func TestToolExecution_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestToolExecution_OmittedWhenVersionUnset(t *testing.T) {
+	tool := &Tool{
+		Name:      "slow",
+		Execution: &ToolExecution{TaskSupport: TaskSupportOptional},
+	}
+	got := toolForList(tool, "")
+	if got == tool {
+		t.Fatal("toolForList returned the registered tool")
+	}
+	if got.Execution != nil {
+		t.Fatalf("Execution = %+v, want nil", got.Execution)
+	}
+	if tool.Execution == nil || tool.Execution.TaskSupport != TaskSupportOptional {
+		t.Fatalf("registered Execution = %+v, want it kept", tool.Execution)
+	}
+}
+
 func TestToolExecution_ListedByProtocolVersion(t *testing.T) {
 	ctx := context.Background()
 	s := NewServer(testImpl, nil)

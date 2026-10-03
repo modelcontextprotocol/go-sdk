@@ -1074,11 +1074,8 @@ func toolForList(tool *Tool, version string) *Tool {
 }
 
 // toolExecutionOnWire reports whether the version's Tool schema defines
-// execution. An empty version has not been negotiated, so the field is kept.
+// execution. An empty version has not been negotiated, so the field is omitted.
 func toolExecutionOnWire(version string) bool {
-	if version == "" {
-		return true
-	}
 	return version >= protocolVersion20251125 && version < protocolVersion20260728
 }
 
