@@ -26,6 +26,11 @@ const (
 	// input before it can complete the request. The client should fulfill the
 	// InputRequests and retry the call with the responses.
 	resultTypeInputRequired resultType = "input_required"
+
+	// resultTypeTask is reserved by the io.modelcontextprotocol/tasks
+	// extension to discriminate a CreateTaskResult from a standard result.
+	// See [ExtensionTasks].
+	resultTypeTask resultType = "task"
 )
 
 type completeResultWithType struct {
@@ -470,9 +475,13 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		Content           []*wireContent  `json:"content"`
 		StructuredContent json.RawMessage `json:"structuredContent"`
 		ResultType        resultType      `json:"resultType"`
+		TaskID            string          `json:"taskId"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
+	}
+	if wire.ResultType == resultTypeTask {
+		return &UnsupportedTaskResultError{TaskID: wire.TaskID}
 	}
 	if len(wire.StructuredContent) > 0 {
 		unmarshal := internaljson.UnmarshalUseNumber
@@ -596,6 +605,16 @@ func (c *ClientCapabilities) AddExtension(name string, settings map[string]any) 
 		settings = map[string]any{}
 	}
 	c.Extensions[name] = settings
+}
+
+// HasExtension reports whether c declares the extension with the given name.
+// It is safe to call on a nil *ClientCapabilities.
+func (c *ClientCapabilities) HasExtension(name string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.Extensions[name]
+	return ok
 }
 
 // clone returns a copy of the ClientCapabilities.
@@ -1116,9 +1135,13 @@ func (x *GetPromptResult) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		res
 		ResultType resultType `json:"resultType"`
+		TaskID     string     `json:"taskId"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
+	}
+	if wire.ResultType == resultTypeTask {
+		return &UnsupportedTaskResultError{TaskID: wire.TaskID}
 	}
 	wire.res.resultType = wire.ResultType
 	*x = GetPromptResult(wire.res)
@@ -1747,9 +1770,13 @@ func (x *ReadResourceResult) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		res
 		ResultType resultType `json:"resultType"`
+		TaskID     string     `json:"taskId"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
+	}
+	if wire.ResultType == resultTypeTask {
+		return &UnsupportedTaskResultError{TaskID: wire.TaskID}
 	}
 	wire.res.resultType = wire.ResultType
 	*x = ReadResourceResult(wire.res)
@@ -2404,6 +2431,16 @@ func (c *ServerCapabilities) AddExtension(name string, settings map[string]any) 
 		settings = map[string]any{}
 	}
 	c.Extensions[name] = settings
+}
+
+// HasExtension reports whether c declares the extension with the given name.
+// It is safe to call on a nil *ServerCapabilities.
+func (c *ServerCapabilities) HasExtension(name string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.Extensions[name]
+	return ok
 }
 
 // clone returns a copy of the ServerCapabilities.
