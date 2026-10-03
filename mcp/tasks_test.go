@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -269,5 +270,118 @@ func TestCallToolTaskResultEndToEnd(t *testing.T) {
 	}
 	if got, want := terr.TaskID, "786512e2"; got != want {
 		t.Errorf("TaskID = %q, want %q", got, want)
+	}
+}
+
+func TestTaskJSON(t *testing.T) {
+	ttl := int64(60000)
+	poll := int64(5000)
+
+	tests := []struct {
+		name string
+		in   Task
+		want string
+	}{
+		{
+			name: "every field",
+			in: Task{
+				TaskID:         "786512e2-9e0d-44bd-8f29-789f320fe840",
+				Status:         TaskStatusWorking,
+				StatusMessage:  "The operation is now in progress.",
+				CreatedAt:      "2025-11-25T10:30:00Z",
+				LastUpdatedAt:  "2025-11-25T10:40:00Z",
+				TTLMs:          &ttl,
+				PollIntervalMs: &poll,
+			},
+			want: `{"taskId":"786512e2-9e0d-44bd-8f29-789f320fe840","status":"working","statusMessage":"The operation is now in progress.","createdAt":"2025-11-25T10:30:00Z","lastUpdatedAt":"2025-11-25T10:40:00Z","ttlMs":60000,"pollIntervalMs":5000}`,
+		},
+		{
+			name: "ttlMs null",
+			in: Task{
+				TaskID:        "id",
+				Status:        TaskStatusCompleted,
+				CreatedAt:     "2025-11-25T10:30:00Z",
+				LastUpdatedAt: "2025-11-25T10:40:00Z",
+			},
+			want: `{"taskId":"id","status":"completed","createdAt":"2025-11-25T10:30:00Z","lastUpdatedAt":"2025-11-25T10:40:00Z","ttlMs":null}`,
+		},
+		{
+			name: "pollIntervalMs omitted",
+			in: Task{
+				TaskID:        "id",
+				Status:        TaskStatusFailed,
+				CreatedAt:     "2025-11-25T10:30:00Z",
+				LastUpdatedAt: "2025-11-25T10:40:00Z",
+				TTLMs:         &ttl,
+			},
+			want: `{"taskId":"id","status":"failed","createdAt":"2025-11-25T10:30:00Z","lastUpdatedAt":"2025-11-25T10:40:00Z","ttlMs":60000}`,
+		},
+		{
+			name: "unknown status preserved",
+			in: Task{
+				TaskID:        "id",
+				Status:        "queued",
+				CreatedAt:     "2025-11-25T10:30:00Z",
+				LastUpdatedAt: "2025-11-25T10:40:00Z",
+			},
+			want: `{"taskId":"id","status":"queued","createdAt":"2025-11-25T10:30:00Z","lastUpdatedAt":"2025-11-25T10:40:00Z","ttlMs":null}`,
+		},
+	}
+
+	for _, status := range []TaskStatus{
+		TaskStatusWorking,
+		TaskStatusInputRequired,
+		TaskStatusCompleted,
+		TaskStatusCancelled,
+		TaskStatusFailed,
+	} {
+		tests = append(tests, struct {
+			name string
+			in   Task
+			want string
+		}{
+			name: "status " + string(status),
+			in: Task{
+				TaskID:        "id",
+				Status:        status,
+				CreatedAt:     "2025-11-25T10:30:00Z",
+				LastUpdatedAt: "2025-11-25T10:40:00Z",
+				TTLMs:         &ttl,
+			},
+			want: `{"taskId":"id","status":"` + string(status) + `","createdAt":"2025-11-25T10:30:00Z","lastUpdatedAt":"2025-11-25T10:40:00Z","ttlMs":60000}`,
+		})
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.in)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, string(got)); diff != "" {
+				t.Errorf("Marshal mismatch (-want +got):\n%s", diff)
+			}
+			var out Task
+			if err := json.Unmarshal(got, &out); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if diff := cmp.Diff(tc.in, out); diff != "" {
+				t.Errorf("round trip mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestNewTaskID(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 32; i++ {
+		id := newTaskID()
+		if id == "" {
+			t.Fatal("newTaskID returned an empty ID")
+		}
+		if seen[id] {
+			t.Fatalf("newTaskID returned duplicate %q", id)
+		}
+		seen[id] = true
 	}
 }
