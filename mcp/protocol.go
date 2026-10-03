@@ -2027,10 +2027,12 @@ type Tool struct {
 	Description string `json:"description,omitempty"`
 	// Execution holds execution-related properties for the tool.
 	//
-	// This field comes from the 2025-11-25 spec. The 2026-07-28 tasks extension
-	// has no per-tool declaration: the server alone decides whether a call
-	// becomes a task. The SDK only preserves this field; setting it does not
-	// make the SDK run the tool as a task.
+	// Defined by the 2025-11-25 spec. The 2026-07-28 tasks extension has no
+	// per-tool declaration: the server alone decides whether a call becomes a
+	// task. tools/list includes this field only when the protocol version in
+	// effect is at least 2025-11-25 and older than 2026-07-28. Marshaling a
+	// Tool value still preserves it, so a proxy can round-trip a tool it
+	// decoded. Setting it does not make the SDK run the tool as a task.
 	Execution *ToolExecution `json:"execution,omitempty"`
 	// InputSchema holds a JSON Schema object defining the expected parameters
 	// for the tool.

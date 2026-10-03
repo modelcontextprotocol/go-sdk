@@ -1408,9 +1408,8 @@ func TestToolExecution_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestToolExecution_ClientReceives(t *testing.T) {
+func TestToolExecution_ListedByProtocolVersion(t *testing.T) {
 	ctx := context.Background()
-	ct, st := NewInMemoryTransports()
 	s := NewServer(testImpl, nil)
 	s.AddTool(&Tool{
 		Name:        "slow",
@@ -1421,26 +1420,53 @@ func TestToolExecution_ClientReceives(t *testing.T) {
 		Name:        "fast",
 		InputSchema: map[string]any{"type": "object"},
 	}, func(context.Context, *CallToolRequest) (*CallToolResult, error) { return &CallToolResult{}, nil })
-	ss, err := s.Connect(ctx, st, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ss.Close()
-	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cs.Close()
 
-	got := map[string]*ToolExecution{}
-	for tool, err := range cs.Tools(ctx, nil) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		got[tool.Name] = tool.Execution
+	// 2026-07-28 runs first. The 2025-11-25 case then checks that omitting the
+	// field on a newer session did not clear it on the registered tool.
+	tests := []struct {
+		version string
+		want    map[string]*ToolExecution
+	}{
+		{
+			version: protocolVersion20260728,
+			want:    map[string]*ToolExecution{"slow": nil, "fast": nil},
+		},
+		{
+			version: protocolVersion20250618,
+			want:    map[string]*ToolExecution{"slow": nil, "fast": nil},
+		},
+		{
+			version: protocolVersion20251125,
+			want: map[string]*ToolExecution{
+				"slow": {TaskSupport: TaskSupportOptional},
+				"fast": nil,
+			},
+		},
 	}
-	want := map[string]*ToolExecution{"slow": {TaskSupport: TaskSupportOptional}, "fast": nil}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("tools mismatch (-want +got):\n%s", diff)
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: tt.version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			got := map[string]*ToolExecution{}
+			for tool, err := range cs.Tools(ctx, nil) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				got[tool.Name] = tool.Execution
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("tools mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
