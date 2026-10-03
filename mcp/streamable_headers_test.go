@@ -897,6 +897,164 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "primitive types",
 		},
+		{
+			name: "x-mcp-header under items is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"tags": map[string]any{
+							"type":  "array",
+							"items": map[string]any{"type": "string", "x-mcp-header": "Tag"},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header under oneOf is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"oneOf": []any{
+								map[string]any{"type": "string", "x-mcp-header": "Region"},
+								map[string]any{"type": "integer"},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header under anyOf is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"anyOf": []any{
+						map[string]any{
+							"properties": map[string]any{
+								"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header under allOf is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"allOf": []any{
+								map[string]any{"type": "string", "x-mcp-header": "Region"},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header under not is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type": "string",
+							"not":  map[string]any{"type": "string", "x-mcp-header": "Region"},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header under if/then/else is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"if": map[string]any{
+						"properties": map[string]any{"kind": map[string]any{"const": "a"}},
+					},
+					"then": map[string]any{
+						"properties": map[string]any{
+							"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						},
+					},
+					"else": map[string]any{
+						"properties": map[string]any{
+							"zone": map[string]any{"type": "string", "x-mcp-header": "Zone"},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header in $defs reached through $ref is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"$defs": map[string]any{
+						"Region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					},
+					"properties": map[string]any{
+						"region": map[string]any{"$ref": "#/$defs/Region"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not reachable",
+		},
+		{
+			name: "x-mcp-header on nested properties next to unannotated subschemas is valid",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"config": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+							},
+						},
+						"tags": map[string]any{
+							"type":  "array",
+							"items": map[string]any{"type": "string"},
+						},
+						"mode": map[string]any{
+							"oneOf": []any{
+								map[string]any{"const": "fast"},
+								map[string]any{"const": "slow"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

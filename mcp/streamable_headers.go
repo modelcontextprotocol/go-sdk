@@ -286,6 +286,12 @@ func filterValidTools(logger *slog.Logger, tools []*Tool) []*Tool {
 // are valid. Annotations may appear on properties at any nesting
 // depth within the inputSchema and must be unique across all of them.
 func validateParamHeaderAnnotations(tool *Tool) error {
+	var schema any
+	if err := remarshal(tool.InputSchema, &schema); err == nil {
+		if err := checkUnreachableParamHeaders(schema, "", true); err != nil {
+			return err
+		}
+	}
 	props := unmarshalSchemaProperties(tool.InputSchema)
 	if len(props) == 0 {
 		return nil
@@ -320,6 +326,61 @@ func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string
 		if len(prop.Properties) > 0 {
 			if err := validateParamHeadersIn(prop.Properties, path, seen); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Keywords whose values are subschemas. The spec only allows x-mcp-header on
+// a property reached from the root through "properties" alone, so an
+// annotation anywhere under one of these makes the tool invalid.
+var (
+	subschemaKeywords = []string{
+		"items", "prefixItems", "additionalItems", "contains",
+		"additionalProperties", "unevaluatedItems", "unevaluatedProperties", "propertyNames",
+		"allOf", "anyOf", "oneOf", "not", "if", "then", "else",
+	}
+	subschemaMapKeywords = []string{"patternProperties", "dependentSchemas", "$defs", "definitions"}
+)
+
+// checkUnreachableParamHeaders reports an x-mcp-header annotation that is not
+// statically reachable from the schema root through "properties" keys.
+func checkUnreachableParamHeaders(schema any, path string, reachable bool) error {
+	m, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := m["x-mcp-header"]; ok && !reachable {
+		return fmt.Errorf("x-mcp-header at %q is not reachable from the schema root through properties", path)
+	}
+	if props, ok := m["properties"].(map[string]any); ok {
+		for name, prop := range props {
+			if err := checkUnreachableParamHeaders(prop, path+"/properties/"+name, reachable); err != nil {
+				return err
+			}
+		}
+	}
+	for _, kw := range subschemaKeywords {
+		switch v := m[kw].(type) {
+		case map[string]any:
+			if err := checkUnreachableParamHeaders(v, path+"/"+kw, false); err != nil {
+				return err
+			}
+		case []any:
+			for i, s := range v {
+				if err := checkUnreachableParamHeaders(s, fmt.Sprintf("%s/%s/%d", path, kw, i), false); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, kw := range subschemaMapKeywords {
+		if defs, ok := m[kw].(map[string]any); ok {
+			for name, s := range defs {
+				if err := checkUnreachableParamHeaders(s, path+"/"+kw+"/"+name, false); err != nil {
+					return err
+				}
 			}
 		}
 	}
