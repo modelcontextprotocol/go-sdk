@@ -2808,9 +2808,9 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 }
 
 // processStream reads from a single response body, sending events to the
-// incoming channel. It returns the ID of the last processed event and a flag
-// indicating if the connection was closed by the client. If resp is nil, it
-// returns "", false.
+// incoming channel. It returns the ID of the last processed event, the
+// reconnect delay requested by the server (if any), and a flag indicating
+// whether the connection was closed by the client. resp must be non-nil.
 func (c *streamableClientConn) processStream(ctx context.Context, requestSummary string, resp *http.Response, forCall *jsonrpc.Request) (lastEventID string, reconnectDelay time.Duration, clientClosed bool) {
 	defer func() {
 		// Drain any remaining unprocessed body. This allows the connection to be re-used after closing.
