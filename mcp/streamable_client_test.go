@@ -1406,6 +1406,65 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 	}
 }
 
+// TestStreamableClientConnect_ModernIgnoresSessionID verifies that on a
+// 2026-07-28 session the client ignores an Mcp-Session-Id from a non-compliant
+// server: protocol-level sessions were removed (SEP-2567), so later requests
+// must carry no session ID and Close must not send a session-terminating
+// DELETE.
+func TestStreamableClientConnect_ModernIgnoresSessionID(t *testing.T) {
+	ctx := context.Background()
+
+	echoResult := func(result any) func(*jsonrpc.Request) (string, int) {
+		return func(r *jsonrpc.Request) (string, int) {
+			return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(result)}), http.StatusOK
+		}
+	}
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			// The discover response wrongly carries a session ID.
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "sess-1",
+				},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc:        echoResult(discoverResult),
+			},
+			// The follow-up tools/list must arrive with no session ID. Had the
+			// client echoed "sess-1", this key would not match and the server
+			// would fail with "missing response". A DELETE carrying the session
+			// ID is likewise never registered, so Close sending one would fail.
+			{"POST", "", methodListTools, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc:        echoResult(&ListToolsResult{}),
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if missing := fake.missingRequests(); len(missing) > 0 {
+		t.Errorf("missing expected requests: %v", missing)
+	}
+}
+
 // TestStreamableClientConnSetMCPHeaders_ProtocolVersion covers
 // streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
 // header value.
