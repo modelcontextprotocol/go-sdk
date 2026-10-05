@@ -307,6 +307,39 @@ type ResourceContents struct {
 	Meta     Meta   `json:"_meta,omitempty"`
 }
 
+func (r *ResourceContents) MarshalJSON() ([]byte, error) {
+	// Custom wire format to ensure the required "text" or "blob" field is
+	// always included, even when empty, so a text resource with empty
+	// content still matches the TextResourceContents branch of the spec's
+	// anyOf union instead of matching neither branch.
+	if r.Blob != nil {
+		wire := struct {
+			URI      string `json:"uri"`
+			MIMEType string `json:"mimeType,omitempty"`
+			Blob     []byte `json:"blob"`
+			Meta     Meta   `json:"_meta,omitempty"`
+		}{
+			URI:      r.URI,
+			MIMEType: r.MIMEType,
+			Blob:     r.Blob,
+			Meta:     r.Meta,
+		}
+		return json.Marshal(wire)
+	}
+	wire := struct {
+		URI      string `json:"uri"`
+		MIMEType string `json:"mimeType,omitempty"`
+		Text     string `json:"text"`
+		Meta     Meta   `json:"_meta,omitempty"`
+	}{
+		URI:      r.URI,
+		MIMEType: r.MIMEType,
+		Text:     r.Text,
+		Meta:     r.Meta,
+	}
+	return json.Marshal(wire)
+}
+
 // wireContent is the wire format for content.
 // It represents the protocol types TextContent, ImageContent, AudioContent,
 // ResourceLink, EmbeddedResource, ToolUseContent, and ToolResultContent.

@@ -912,7 +912,24 @@ func TestNoJSONNull(t *testing.T) {
 	var logbuf safeBuffer
 	ct = &LoggingTransport{Transport: ct, Writer: &logbuf}
 
-	s := NewServer(testImpl, nil)
+	// Handlers with nothing to suggest or show still answer with empty
+	// arrays: completion values and prompt messages are required.
+	s := NewServer(testImpl, &ServerOptions{
+		CompletionHandler: func(_ context.Context, req *CompleteRequest) (*CompleteResult, error) {
+			if req.Params.Ref.Name == "nil" {
+				return nil, nil
+			}
+			return &CompleteResult{}, nil
+		},
+	})
+	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
+	// Handlers that return no result at all still answer with an object.
+	s.AddPrompt(&Prompt{Name: "nil"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return nil, nil
+	})
+	s.AddTool(&Tool{Name: "nil", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -936,6 +953,27 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ss.ListRoots(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "empty"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "nil"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1313,6 +1351,30 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "multi select titled enum with string items type",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type: "string",
+							AnyOf: []*jsonschema.Schema{
+								{
+									Const: anyPtr("high"),
+									Title: "High Priority",
+								},
+								{
+									Const: anyPtr("low"),
+									Title: "Low Priority",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range validSchemas {
@@ -1394,6 +1456,22 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 			expectedError: "elicit schema property \"items\" items must specify enum for untitled enums",
+		},
+		{
+			name: "array of strings with titled entry missing title",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type:  "string",
+							AnyOf: []*jsonschema.Schema{{Const: anyPtr("high")}},
+						},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priority\" items has invalid entry: title is required for titled enum entries",
 		},
 		{
 			name: "unsupported string format",
@@ -1971,7 +2049,7 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		var buf bytes.Buffer
 		clientOpts := &ClientOptions{
 			KeepAlive: 50 * time.Millisecond,
-			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+			Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		}
 		c := NewClient(testImpl, clientOpts)
 		// Pin to 2025-11-25: KeepAlive uses the ping RPC, which is removed
@@ -1992,8 +2070,8 @@ func TestKeepAliveFailure_Logged(t *testing.T) {
 		synctest.Wait()
 
 		got := buf.String() // slog serializes Write calls internally
-		if !strings.Contains(got, "keepalive ping failed") {
-			t.Errorf("expected keepalive failure to be logged, got log output:\n%s", got)
+		if !strings.Contains(got, `level=WARN msg="keepalive ping failed; closing session"`) {
+			t.Errorf("expected keepalive failure to be logged at Warn, got log output:\n%s", got)
 		}
 	})
 }
@@ -2371,6 +2449,51 @@ func TestComplete(t *testing.T) {
 
 	if diff := cmp.Diff(completionValues, result.Completion.Values); diff != "" {
 		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestGetPromptRequiresDeclaredArguments verifies that prompts/get answers
+// -32602 when an argument the prompt declares as required is missing, as the
+// spec asks, and still calls the handler when only optional ones are missing.
+func TestGetPromptRequiresDeclaredArguments(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	server.AddPrompt(&Prompt{Name: "review", Arguments: []*PromptArgument{
+		{Name: "code", Required: true},
+		{Name: "style"},
+		nil, // tolerated, as before
+	}}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{Messages: []*PromptMessage{
+			{Role: "user", Content: &TextContent{Text: req.Params.Arguments["code"]}},
+		}}, nil
+	})
+	cs, _, cleanup := basicClientServerConnection(t, nil, server, nil)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review", Arguments: map[string]string{"style": "terse"}})
+	var werr *jsonrpc.Error
+	if !errors.As(err, &werr) || werr.Code != jsonrpc.CodeInvalidParams {
+		t.Fatalf("GetPrompt without a required argument = %v, want a %d error", err, jsonrpc.CodeInvalidParams)
+	}
+	if !strings.Contains(werr.Message, `"code"`) {
+		t.Errorf("error %q does not name the missing argument", werr.Message)
+	}
+
+	for _, args := range []map[string]string{
+		{"code": "x"},
+		{"code": ""}, // present, if empty
+		{"code": "x", "style": "terse"},
+	} {
+		if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review", Arguments: args}); err != nil {
+			t.Errorf("GetPrompt(%v) = %v, want success", args, err)
+		}
+	}
+
+	// MCPGODEBUG=disablepromptargsvalidation=1 restores the old behavior.
+	defer func(old string) { disablepromptargsvalidation = old }(disablepromptargsvalidation)
+	disablepromptargsvalidation = "1"
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review"}); err != nil {
+		t.Errorf("GetPrompt without a required argument, validation disabled = %v, want success", err)
 	}
 }
 

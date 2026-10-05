@@ -23,6 +23,10 @@ type CommandTransport struct {
 	// for the process to exit before sending SIGTERM.
 	// If zero or negative, the default of 5s is used.
 	TerminateDuration time.Duration
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
 }
 
 // Connect starts the command, and connects to it over stdin/stdout.
@@ -43,7 +47,7 @@ func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	if td <= 0 {
 		td = defaultTerminateDuration
 	}
-	return newIOConn(&pipeRWC{t.Command, stdout, stdin, td}), nil
+	return newIOConnLimited(&pipeRWC{t.Command, stdout, stdin, td}, t.MaxLineLength), nil
 }
 
 // A pipeRWC is an io.ReadWriteCloser that communicates with a subprocess over

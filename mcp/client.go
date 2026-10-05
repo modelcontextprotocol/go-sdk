@@ -21,6 +21,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -1084,24 +1085,26 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 	switch items.Type {
 	case "string":
 		// Untitled enums.
-		if items.Enum == nil {
+		if items.Enum != nil {
+			return nil
+		}
+		// Titled enums may also declare "type": "string" alongside anyOf.
+		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify enum for untitled enums", propName)
 		}
-		return nil
 	case "":
-		// Titled enums.
 		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify anyOf for titled enums", propName)
 		}
-		for _, entry := range items.AnyOf {
-			if err := validateTitledEnumEntry(entry); err != nil {
-				return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
-			}
-		}
-		return nil
 	default:
 		return fmt.Errorf("elicit schema property %q items have unsupported type %q", propName, items.Type)
 	}
+	for _, entry := range items.AnyOf {
+		if err := validateTitledEnumEntry(entry); err != nil {
+			return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
+		}
+	}
+	return nil
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
@@ -1170,6 +1173,13 @@ func (c *Client) AddReceivingMiddleware(middleware ...Middleware) {
 	addMiddleware(&c.receivingMethodHandler_, middleware)
 }
 
+// allowmissingclientparams, when set to "1" via MCPGODEBUG, restores the previous
+// behavior of accepting elicitation/create, notifications/elicitation/complete
+// and notifications/resources/updated messages whose "params" member is missing
+// or null, even though the specification requires it. The handler then observes
+// nil Params. See the documentation for the mcpgodebug package.
+var allowmissingclientparams = mcpgodebug.Value("allowmissingclientparams")
+
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 //
 // The 'allowMissingParams' values are extracted from the protocol schema.
@@ -1180,17 +1190,27 @@ var clientMethodInfos = map[string]methodInfo{
 	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
 	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
 	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
-	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK),
+	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), 0),
 	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
 	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
 	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
 	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
-	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
+	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification),
 	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
-	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
+	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification),
 	notificationSubscriptionsAck:    newClientMethodInfo(clientMethod((*Client).callSubscriptionsAckHandler), notification|missingParamsOK),
 }
+
+// clientMethodInfosLegacyParams is clientMethodInfos with the pre-1.9 params
+// flags, selected by MCPGODEBUG=allowmissingclientparams=1.
+var clientMethodInfosLegacyParams = func() map[string]methodInfo {
+	m := maps.Clone(clientMethodInfos)
+	m[methodElicit] = newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK)
+	m[notificationResourceUpdated] = newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK)
+	m[notificationElicitationComplete] = newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK)
+	return m
+}()
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 	cs.client.mu.Lock()
@@ -1199,6 +1219,9 @@ func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
+	if allowmissingclientparams == "1" {
+		return clientMethodInfosLegacyParams
+	}
 	return clientMethodInfos
 }
 

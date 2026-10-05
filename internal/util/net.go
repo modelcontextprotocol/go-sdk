@@ -15,7 +15,7 @@ func IsLoopback(addr string) bool {
 		// If SplitHostPort fails, it might be just a host without a port.
 		host = strings.Trim(addr, "[]")
 	}
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip, err := netip.ParseAddr(host)
