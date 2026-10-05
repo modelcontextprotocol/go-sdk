@@ -147,28 +147,29 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		return nil, "token validation failed", http.StatusInternalServerError
 	}
 
-	// Check scopes. All must be present.
-	if opts != nil {
-		// Note: quadratic, but N is small.
-		for _, s := range opts.Scopes {
-			if !slices.Contains(tokenInfo.Scopes, s) {
-				return nil, "insufficient scope", http.StatusForbidden
-			}
-		}
-	}
-
 	if opts == nil {
 		opts = &RequireBearerTokenOptions{}
 	}
 	// Check expiration, with optional clock-skew tolerance. Skew only applies
 	// when an expiration is present; a missing expiration is governed solely by
 	// AllowMissingExpiration.
+	// This runs before the scope check so that an expired token is rejected
+	// as invalid (401), prompting the client to get a new token, rather than
+	// as lacking scope (403), prompting it to ask for more scopes.
 	if tokenInfo.Expiration.IsZero() {
 		if !opts.AllowMissingExpiration {
 			return nil, "token missing expiration", http.StatusUnauthorized
 		}
 	} else if tokenInfo.Expiration.Add(opts.ClockSkew).Before(time.Now()) {
 		return nil, "token expired", http.StatusUnauthorized
+	}
+
+	// Check scopes. All must be present.
+	// Note: quadratic, but N is small.
+	for _, s := range opts.Scopes {
+		if !slices.Contains(tokenInfo.Scopes, s) {
+			return nil, "insufficient scope", http.StatusForbidden
+		}
 	}
 	return tokenInfo, "", 0
 }
