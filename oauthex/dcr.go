@@ -175,6 +175,10 @@ func (e *ClientRegistrationError) Error() string {
 	return fmt.Sprintf("registration failed: %s (%s)", e.ErrorCode, e.ErrorDescription)
 }
 
+// maxRegistrationResponseBytes bounds the dynamic client registration response
+// body read from the authorization server.
+const maxRegistrationResponseBytes = 1 << 20 // 1 MiB
+
 // RegisterClient performs Dynamic Client Registration according to RFC 7591.
 func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta *ClientRegistrationMetadata, c *http.Client) (*ClientRegistrationResponse, error) {
 	if registrationEndpoint == "" {
@@ -204,7 +208,7 @@ func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRegistrationResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read registration response body: %w", err)
 	}

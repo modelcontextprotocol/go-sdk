@@ -21,6 +21,9 @@ transparently, while adhering to these goals.
 1. [Contributing code](#contributing-code)
 	1. [Adding and updating dependencies](#adding-and-updating-dependencies)
 	1. [Updating the README](#updating-the-readme)
+1. [Versioning](#versioning)
+	1. [What counts as a breaking change](#what-counts-as-a-breaking-change)
+	1. [Deprecation](#deprecation)
 1. [Timeouts](#timeouts)
 1. [Code of conduct](#code-of-conduct)
 1. [Governance](#governance)
@@ -46,18 +49,20 @@ go work init ./project ./go-sdk
 
 ### Conformance tests
 
-The SDK includes a script to run the official MCP conformance tests against the
-SDK's conformance server:
+The SDK includes scripts to run the official MCP conformance tests against the
+SDK's conformance server and client:
 
 ```sh
-./scripts/conformance.sh
+./scripts/server-conformance.sh
+./scripts/client-conformance.sh
 ```
 
 By default, results are cleaned up after the script runs. To save results to a
 specific directory:
 
 ```sh
-./scripts/conformance.sh --result_dir ./conformance-results
+./scripts/server-conformance.sh --result_dir ./conformance-results
+./scripts/client-conformance.sh --result_dir ./conformance-results
 ```
 
 To run against a local checkout of the
@@ -65,12 +70,13 @@ To run against a local checkout of the
 of the latest npm release:
 
 ```sh
-./scripts/conformance.sh --conformance_repo ~/src/conformance
+./scripts/server-conformance.sh --conformance_repo ~/src/conformance
+./scripts/client-conformance.sh --conformance_repo ~/src/conformance
 ```
 
 Note: you must run `npm install` in the conformance repo first.
 
-Run `./scripts/conformance.sh --help` for more options.
+Run either script with `--help` for more options.
 
 ## Filing issues
 
@@ -78,8 +84,8 @@ This project uses the [GitHub issue
 tracker](https://github.com/modelcontextprotocol/go-sdk/issues) for issues. The
 process for filing bugs and proposals is described below.
 
-TODO(rfindley): describe a process for asking general questions in the public
-MCP discord server.
+For general questions, see the [Discord](#discord) section below. Prefer GitHub
+issues or discussions for anything that should stay durable and searchable.
 
 ### Bugs
 
@@ -128,7 +134,7 @@ When discussions reach a consensus, they should be promoted into proposals.
 The project uses GitHub pull requests (PRs) to review changes.
 
 Any significant change should be associated with a GitHub issue. Issues that
-are deemed to be good opportunities for contribution are be labeled ['Help
+are deemed to be good opportunities for contribution are labeled ['Help
 Wanted'](https://github.com/modelcontextprotocol/go-sdk/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22).
 If you want to work on such an issue, please first comment on the issue to say
 that you're interested in contributing. For issues _not_ labeled 'Help Wanted',
@@ -187,6 +193,57 @@ and should not be edited directly. To update the README:
 The CI system will automatically check that the README is up-to-date by running
 `go generate ./internal/readme` and verifying no changes result. If you see a CI failure about the
 README being out of sync, follow the steps above to regenerate it.
+
+## Versioning
+
+The SDK follows [semantic versioning](https://semver.org), as the Go module
+system requires: the major version is part of the module path, so a breaking
+release would import as `github.com/modelcontextprotocol/go-sdk/v2`. A breaking
+change therefore cannot reach existing users by accident; they have to change
+their import path to receive one.
+
+This policy covers the exported API of the SDK's importable packages — `mcp`,
+`jsonrpc`, `auth`, `auth/extauth` and `oauthex`. Everything under `internal/`
+is not importable outside the module and may change in any release.
+
+Which MCP spec revisions each SDK version speaks is documented in the
+[README](README.md#version-compatibility). Support for a new revision arrives
+in a minor release; dropping a revision the SDK previously negotiated is a
+breaking change.
+
+### What counts as a breaking change
+
+- Removing or renaming an exported identifier.
+- Changing the signature of an exported function or method.
+- Removing or renaming a field of an exported struct, or changing its type.
+- Adding a method to an exported interface that users are meant to implement.
+- Changing documented behavior that callers could reasonably rely on.
+- Dropping support for an MCP spec revision.
+
+The following are not breaking, and may land in a minor or patch release:
+
+- Adding an exported identifier, or a field to an exported struct.
+- Fixing behavior that contradicted its documentation.
+- Refactoring that leaves the exported API unchanged.
+- Adding support for a new MCP spec revision.
+- Raising the minimum Go version to one still supported upstream, per the
+  [README](README.md#version-compatibility).
+
+### Deprecation
+
+An API on its way out is marked with a `// Deprecated:` comment naming its
+replacement, which `gopls` and `staticcheck` surface at call sites. It keeps
+working until the next major version, since removing it would itself be a
+breaking change.
+
+Protocol features that the *specification* deprecates are a separate matter and
+follow the spec's timeline rather than this policy. The features deprecated by
+[SEP-2577](https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging)
+— roots, sampling and logging — remain supported for at least twelve months, as
+noted in the [README](README.md#version-compatibility).
+
+Any change to the exported API, breaking or not, goes through the
+[proposal process](#proposals).
 
 ## Timeouts
 

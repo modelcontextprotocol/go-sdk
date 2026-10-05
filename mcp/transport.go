@@ -114,16 +114,27 @@ type clientConnection interface {
 // TODO: should this interface be exported?
 type serverConnection interface {
 	Connection
+
+	// sessionUpdated is called whenever the server session state changes.
 	sessionUpdated(ServerSessionState)
 }
 
+// DefaultMaxLineLength is the default maximum number of bytes buffered while
+// decoding a single inbound JSON-RPC frame.
+const DefaultMaxLineLength = 16 * 1024 * 1024
+
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConnLimited(rwc{os.Stdin, nopCloserWriter{os.Stdout}}, t.MaxLineLength), nil
 }
 
 // nopCloserWriter is an io.WriteCloser with a trivial Close method.
@@ -138,11 +149,15 @@ func (nopCloserWriter) Close() error { return nil }
 type IOTransport struct {
 	Reader io.ReadCloser
 	Writer io.WriteCloser
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.Reader, t.Writer}), nil
+	return newIOConnLimited(rwc{t.Reader, t.Writer}, t.MaxLineLength), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
@@ -192,7 +207,7 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 	reader, writer := jsonrpc2.Reader(mcpConn), jsonrpc2.Writer(mcpConn)
 	var (
 		h         H
-		preempter canceller
+		preempter = canceller{logger: logger}
 	)
 	bind := func(conn *jsonrpc2.Connection) jsonrpc2.Handler {
 		h = b.bind(mcpConn, conn, s, onClose)
@@ -237,7 +252,8 @@ type cancellationPropagator interface {
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
 // cancelled notifications.
 type canceller struct {
-	conn *jsonrpc2.Connection
+	conn   *jsonrpc2.Connection
+	logger *slog.Logger
 }
 
 // Preempt implements [jsonrpc2.Preempter].
@@ -251,10 +267,32 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		if err != nil {
 			return nil, err
 		}
-		go c.conn.Cancel(id)
+		// The spec says implementations should log cancellation reasons, and
+		// the handler is the one place that can act on one, so the reason
+		// travels as the cause of the request's context rather than being
+		// dropped here.
+		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
+		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
+
+// A peerCancelledError is the cause a request's context carries once the peer
+// has sent a cancelled notification for it: [context.Cause] returns it to the
+// handler with the reason the peer gave, and it unwraps to [context.Canceled]
+// so that [errors.Is] keeps classifying the cancellation as one.
+type peerCancelledError struct {
+	reason string
+}
+
+func (e *peerCancelledError) Error() string {
+	if e.reason == "" {
+		return "request cancelled by the peer"
+	}
+	return "request cancelled by the peer: " + e.reason
+}
+
+func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
 // callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
 // without awaiting its JSON-RPC response. The call's logical lifetime is the
@@ -488,6 +526,17 @@ type msgOrErr struct {
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	return newIOConnLimited(rwc, DefaultMaxLineLength)
+}
+
+// newIOConnLimited builds an [ioConn] over rwc that bounds the number of bytes
+// buffered while decoding a single inbound JSON-RPC frame to maxLineLength.
+// maxLineLength == 0 selects [DefaultMaxLineLength], a negative value means no cap.
+func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
+	limit := maxLineLength
+	if limit == 0 {
+		limit = DefaultMaxLineLength
+	}
 	var (
 		incoming = make(chan msgOrErr)
 		closed   = make(chan struct{})
@@ -499,7 +548,15 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
-		dec := json.NewDecoder(rwc)
+		var (
+			reader  io.Reader = rwc
+			limiter *frameLimitReader
+		)
+		if limit > 0 {
+			limiter = &frameLimitReader{r: rwc, limit: limit}
+			reader = limiter
+		}
+		dec := json.NewDecoder(reader)
 		for {
 			var raw json.RawMessage
 			err := dec.Decode(&raw)
@@ -525,6 +582,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 			if err != nil {
 				return
 			}
+			if limiter != nil {
+				limiter.resetFrame()
+			}
 		}
 	}()
 	return &ioConn{
@@ -534,20 +594,42 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	}
 }
 
+// errFrameTooLarge means that a single inbound JSON-RPC frame exceeded the configured byte
+// limit before the value was completely received.
+var errFrameTooLarge = errors.New("inbound JSON-RPC frame exceeded the configured maximum line length")
+
+// frameLimitReader bounds the number of bytes [json.Decoder] may buffer while
+// decoding a single JSON value. Read returns [errFrameTooLarge] once the budget is exhausted.
+type frameLimitReader struct {
+	r     io.Reader
+	limit int
+	count int
+}
+
+func (r *frameLimitReader) Read(p []byte) (int, error) {
+	if r.count >= r.limit {
+		return 0, errFrameTooLarge
+	}
+	if len(p) > r.limit-r.count {
+		p = p[:r.limit-r.count]
+	}
+	n, err := r.r.Read(p)
+	r.count += n
+	return n, err
+}
+
+func (r *frameLimitReader) resetFrame() { r.count = 0 }
+
 func (c *ioConn) SessionID() string { return "" }
 
 func (c *ioConn) sessionUpdated(state ServerSessionState) {
-	protocolVersion := ""
-	if state.InitializeParams != nil {
-		protocolVersion = state.InitializeParams.ProtocolVersion
-	}
+	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
 		// where specifying the protocol version in the HTTP header
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	protocolVersion = negotiatedVersion(protocolVersion)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()
@@ -664,7 +746,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if batch {
 		var respBatch *msgBatch // track incoming requests in the batch
 		for _, msg := range msgs {
-			if req, ok := msg.(*jsonrpc.Request); ok {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				if respBatch == nil {
 					respBatch = &msgBatch{
 						unresolved: make(map[jsonrpc2.ID]int),

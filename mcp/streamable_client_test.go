@@ -1965,3 +1965,67 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamableClient_StatelessSubscriptionsListen404 verifies that in stateless mode
+// (protocol 2026-07-28), when a server rejects subscriptions/listen with 404 (e.g. Copilot MCP server),
+// the client connection survives and subsequent RPCs (such as tools/list) succeed.
+func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
+	ctx := t.Context()
+
+	var listenServed atomic.Bool
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type": "application/json",
+				},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, resp(r.ID.Raw().(int64), discoverResult, nil)), http.StatusOK
+				},
+			},
+			{"POST", "", methodSubscriptionsListen, ""}: {
+				header: header{"Content-Type": "text/plain"},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					listenServed.Store(true)
+					return "404 Not Found", http.StatusNotFound
+				},
+				optional: true,
+			},
+			{"POST", "", methodListTools, ""}: {
+				header: header{"Content-Type": "application/json"},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, resp(r.ID.Raw().(int64), &ListToolsResult{Tools: []*Tool{}}, nil)), http.StatusOK
+				},
+				optional: true,
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {},
+	})
+
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// tools/list must succeed even though subscriptions/listen returned 404.
+	res, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+	if res == nil {
+		t.Fatal("ListTools result is nil")
+	}
+	if !listenServed.Load() {
+		t.Fatal("subscriptions/listen was not called")
+	}
+}

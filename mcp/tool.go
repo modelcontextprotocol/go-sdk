@@ -43,7 +43,7 @@ type ToolHandler func(context.Context, *CallToolRequest) (*CallToolResult, error
 //   - If the Out type is not the empty interface [any], it provides the
 //     default output schema for the tool (which again may be overridden in
 //     [AddTool]).
-//   - The Out value is used to populate result.StructuredOutput.
+//   - The Out value is used to populate result.StructuredContent.
 //   - If [CallToolResult.Content] is unset, it is populated with the JSON
 //     content of the output.
 //   - An error result is treated as a tool error, rather than a protocol
@@ -98,6 +98,11 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 			if err := internaljson.Unmarshal(data, &v); err != nil {
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
+		}
+		// Unmarshalling JSON null leaves v as a nil map. Treat null arguments
+		// like missing ones, so that the defaults are still applied.
+		if v == nil {
+			v = make(map[string]any)
 		}
 		unmarshaled = v
 	} else {

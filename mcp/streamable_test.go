@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -288,8 +289,14 @@ func TestStreamableConcurrentHandling(t *testing.T) {
 					t.Errorf("CallTool failed: %v", err)
 					return
 				}
-				if got := int(res.StructuredContent.(map[string]any)["Count"].(float64)); got != i {
-					t.Errorf("got count %d, want %d", got, i)
+				number, ok := res.StructuredContent.(map[string]any)["Count"].(json.Number)
+				if !ok {
+					t.Errorf("count type = %T, want json.Number", res.StructuredContent.(map[string]any)["Count"])
+					continue
+				}
+				got, err := number.Int64()
+				if err != nil || got != int64(i) {
+					t.Errorf("got count %d, %v; want %d", got, err, i)
 				}
 			}
 		})
@@ -1544,7 +1551,7 @@ func (s streamableRequest) do(ctx context.Context, serverURL, sessionID string, 
 	var respBody []byte
 	if contentType == "text/event-stream" {
 		r := readerInto{resp.Body, new(bytes.Buffer)}
-		for evt, err := range scanEvents(r) {
+		for evt, err := range scanEventsLimited(r, DefaultMaxEventSize) {
 			if err != nil {
 				return newSessionID, resp.StatusCode, nil, fmt.Errorf("reading events: %v", err)
 			}
@@ -2856,6 +2863,69 @@ data: {"jsonrpc":"2.0","id":1,"result":{}}
 	}
 }
 
+// TestProcessStreamMaxEventSize verifies that a streamableClientConn honors its
+// configured maxEventSize.
+func TestProcessStreamMaxEventSize(t *testing.T) {
+	jsonrpcEventOfSize := func(padSize int) string {
+		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"pad":%q}}`, strings.Repeat("A", padSize))
+		return "data: " + msg + "\n\n"
+	}
+
+	tests := []struct {
+		name         string
+		maxEventSize int
+		event        string
+		wantFail     bool
+	}{
+		{
+			name:         "event over cap is rejected",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: 1024,
+			wantFail:     true,
+		},
+		{
+			name:         "event under cap is accepted",
+			event:        jsonrpcEventOfSize(1024),
+			maxEventSize: 4096,
+			wantFail:     false,
+		},
+		{
+			name:         "negative cap disables the limit",
+			event:        jsonrpcEventOfSize(4096),
+			maxEventSize: -1,
+			wantFail:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(tt.event)),
+			}
+			conn := &streamableClientConn{
+				ctx:          ctx,
+				done:         make(chan struct{}),
+				incoming:     make(chan jsonrpc.Message, 10),
+				failed:       make(chan struct{}),
+				logger:       ensureLogger(nil),
+				maxEventSize: tt.maxEventSize,
+			}
+			conn.processStream(ctx, "test", resp, nil)
+
+			err := conn.failure()
+			if tt.wantFail && err == nil {
+				t.Fatal("failure() = nil, want a non-nil error for an oversized event")
+			}
+			if !tt.wantFail && err != nil {
+				t.Fatalf("failure() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
@@ -2878,7 +2948,7 @@ data: {"jsonrpc":"2.0","method":"test2","params":{}}
 	var events []Event
 
 	// Scan all events
-	for evt, err := range scanEvents(reader) {
+	for evt, err := range scanEventsLimited(reader, DefaultMaxEventSize) {
 		if err != nil {
 			if err != io.EOF {
 				t.Fatalf("scanEvents error: %v", err)
@@ -2991,6 +3061,13 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 			name:              "127.0.0.1 accepts localhost",
 			listenAddr:        "127.0.0.1:0",
 			hostHeader:        "localhost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 accepts localhost in any case",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "LocalHost:1234",
 			disableProtection: false,
 			wantStatus:        http.StatusOK,
 		},
@@ -3359,6 +3436,16 @@ func TestEphemeralConnectOpts(t *testing.T) {
 				t.Errorf("InitializedParams non-nil = %v, want %v (value = %+v)",
 					got, tt.wantInitializedParams, info.opts.State.InitializedParams)
 			}
+			// The header names the version an earlier handshake settled on, so
+			// synthesized state records it as negotiated and not only as
+			// declared; state that synthesizes no handshake records no version.
+			var wantNegotiated string
+			if tt.wantInitializeParams {
+				wantNegotiated = pver
+			}
+			if got := info.opts.State.NegotiatedProtocolVersion; got != wantNegotiated {
+				t.Errorf("NegotiatedProtocolVersion = %q, want %q", got, wantNegotiated)
+			}
 		})
 	}
 }
@@ -3712,6 +3799,126 @@ func TestStreamableStateless_AcceptsNewProtocol(t *testing.T) {
 	}
 }
 
+// TestStreamableStateless_NotificationMetaValidation checks that the SEP-2575
+// per-request `_meta` triple is required of calls only. NotificationParams
+// declares `_meta` optional with no protocolVersion, so a notification that
+// omits it is well-formed and must be accepted with 202.
+func TestStreamableStateless_NotificationMetaValidation(t *testing.T) {
+	newProtocolMeta := map[string]any{
+		MetaKeyProtocolVersion:    protocolVersion20260728,
+		MetaKeyClientInfo:         map[string]any{"name": "new-proto-client", "version": "9.9"},
+		MetaKeyClientCapabilities: map[string]any{},
+	}
+
+	tests := []struct {
+		name       string
+		message    map[string]any
+		wantStatus int
+	}{
+		{
+			name: "cancelled without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params":  map[string]any{"requestID": 1, "reason": "context canceled"},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "progress without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationProgress,
+				"params":  map[string]any{"progressToken": "t", "progress": 1},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "notification with matching meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta":     newProtocolMeta,
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			// A notification that volunteers a version is still held to the
+			// header-match rule, so relaxing the requirement does not open a
+			// hole for inconsistent messages.
+			name: "notification with mismatched meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"method":  notificationCancelled,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion:    "2025-06-18",
+						MetaKeyClientCapabilities: map[string]any{},
+					},
+					"requestID": 1,
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Calls remain subject to the requirement.
+			name: "call without meta",
+			message: map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"method":  "tools/list",
+				"params":  map[string]any{},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set(protocolVersionHeader, protocolVersion20260728)
+			req.Header.Set(methodHeader, test.message["method"].(string))
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, respBody)
+			}
+			if test.wantStatus == http.StatusAccepted && len(respBody) > 0 {
+				t.Errorf("accepted notification returned body %q, want empty", respBody)
+			}
+		})
+	}
+}
+
 // TestStreamableClientUnsupportedVersionFallback exercises the full
 // SEP-2575 fallback. The client requests protocolVersion20260728, which the
 // server is configured to NOT advertise in supportedProtocolVersions for the
@@ -4040,6 +4247,468 @@ func TestStreamableServerRejectsDuplicateInFlightRequestID(t *testing.T) {
 	}
 }
 
+func TestSummarizeStreamableHTTPRequest(t *testing.T) {
+	tests := []struct {
+		name               string
+		body               string
+		wantMethod         string
+		wantRequestID      any
+		wantIsNotification bool
+		wantIsResponse     bool
+	}{
+		{
+			name:          "single integer ID call",
+			body:          `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+			wantMethod:    "tools/list",
+			wantRequestID: int64(1),
+		},
+		{
+			name:          "single string ID call",
+			body:          `{"jsonrpc":"2.0","id":"request-1","method":"ping"}`,
+			wantMethod:    "ping",
+			wantRequestID: "request-1",
+		},
+		{
+			name:               "null ID is a notification",
+			body:               `{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}`,
+			wantMethod:         "notifications/initialized",
+			wantIsNotification: true,
+		},
+		{
+			name:           "response",
+			body:           `{"jsonrpc":"2.0","id":3,"result":{}}`,
+			wantIsResponse: true,
+		},
+		{
+			name:               "empty notification method is retained",
+			body:               `{"jsonrpc":"2.0","method":""}`,
+			wantIsNotification: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			msg, err := jsonrpc2.DecodeMessage([]byte(test.body))
+			if err != nil {
+				t.Fatalf("DecodeMessage: %v", err)
+			}
+			got := summarizeStreamableHTTPRequest(msg)
+			if got.Method != test.wantMethod {
+				t.Errorf("Method = %q, want %q", got.Method, test.wantMethod)
+			}
+			if gotID := got.RequestID.Raw(); gotID != test.wantRequestID {
+				t.Errorf("RequestID.Raw() = %#v, want %#v", gotID, test.wantRequestID)
+			}
+			if got.IsNotification != test.wantIsNotification {
+				t.Errorf("IsNotification = %t, want %t", got.IsNotification, test.wantIsNotification)
+			}
+			if got.IsResponse != test.wantIsResponse {
+				t.Errorf("IsResponse = %t, want %t", got.IsResponse, test.wantIsResponse)
+			}
+		})
+	}
+}
+
+func TestStreamableHTTPRequestSummaryContext(t *testing.T) {
+	type contextKey struct{}
+	const contextValue = "middleware-value"
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+
+	for _, stateless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateless=%t", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			observed := make(chan StreamableHTTPRequestSummary, 1)
+			var summarySeen atomic.Bool
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if !summarySeen.Load() {
+						t.Error("receiving middleware ran before OnRequestSummary")
+					}
+					if method != methodInitialize {
+						t.Errorf("receiving middleware method = %q, want %q", method, methodInitialize)
+					}
+					return next(ctx, method, req)
+				}
+			})
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+				Stateless:    stateless,
+				JSONResponse: true,
+				OnRequestSummary: func(ctx context.Context, summary StreamableHTTPRequestSummary) {
+					if got := ctx.Value(contextKey{}); got != contextValue {
+						t.Errorf("callback context value = %v, want %q", got, contextValue)
+					}
+					if summary.Method != methodInitialize {
+						t.Errorf("callback Method = %q, want %q", summary.Method, methodInitialize)
+					}
+					summarySeen.Store(true)
+					observed <- summary
+				},
+			})
+			defer handler.closeAll()
+
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(initBody))
+			req = req.WithContext(context.WithValue(req.Context(), contextKey{}, contextValue))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			summary := <-observed
+			if summary.Method != methodInitialize {
+				t.Errorf("Method = %q, want %q", summary.Method, methodInitialize)
+			}
+			if got := summary.RequestID.Raw(); got != int64(1) {
+				t.Errorf("RequestID.Raw() = %#v, want 1", got)
+			}
+			if summary.IsNotification || summary.IsResponse {
+				t.Errorf("message kind = (notification=%t, response=%t), want call", summary.IsNotification, summary.IsResponse)
+			}
+		})
+	}
+}
+
+func TestStreamableHTTPRequestSummaryRejections(t *testing.T) {
+	newRequest := func(body string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		return req
+	}
+
+	t.Run("decoded request rejected before dispatch is observed", func(t *testing.T) {
+		var calls atomic.Int64
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+			Stateless: true,
+			OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+				calls.Add(1)
+			},
+		})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, newRequest(`{"jsonrpc":"2.0","id":1,"method":"unknown/method"}`))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Errorf("callback calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("batch is not observed", func(t *testing.T) {
+		var calls atomic.Int64
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+			Stateless: true,
+			OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+				calls.Add(1)
+			},
+		})
+		req := newRequest(`[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","method":"notifications/initialized"}]`)
+		req.Header.Set(protocolVersionHeader, protocolVersion20250618)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+		if got := calls.Load(); got != 0 {
+			t.Errorf("callback calls = %d, want 0", got)
+		}
+	})
+
+	t.Run("bodies not decoded are not observed", func(t *testing.T) {
+		tests := []struct {
+			name string
+			body io.ReadCloser
+			max  int64
+		}{
+			{name: "empty", body: io.NopCloser(strings.NewReader(""))},
+			{name: "malformed", body: io.NopCloser(strings.NewReader("{"))},
+			{name: "unreadable", body: io.NopCloser(iotest.ErrReader(errors.New("read failed")))},
+			{name: "over limit", body: io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)), max: 8},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				var calls atomic.Int64
+				handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+					Stateless:           true,
+					MaxRequestBodyBytes: test.max,
+					OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+						calls.Add(1)
+					},
+				})
+				req := newRequest("unused")
+				req.Body = test.body
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if got := calls.Load(); got != 0 {
+					t.Errorf("callback calls = %d, want 0 (status=%d)", got, rec.Code)
+				}
+			})
+		}
+	})
+
+	t.Run("early session rejection is not observed", func(t *testing.T) {
+		var calls atomic.Int64
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+			OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+				calls.Add(1)
+			},
+		})
+		req := newRequest(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+		req.Header.Set(sessionIDHeader, "missing-session")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+		}
+		if got := calls.Load(); got != 0 {
+			t.Errorf("callback calls = %d, want 0", got)
+		}
+	})
+}
+
+func TestStreamableHTTPRequestSummaryConcurrent(t *testing.T) {
+	const requestCount = 8
+	allEntered := make(chan struct{})
+	release := make(chan struct{})
+	var entered atomic.Int64
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+		Stateless: true,
+		OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+			if entered.Add(1) == requestCount {
+				close(allEntered)
+			}
+			<-release
+		},
+	})
+
+	statuses := make(chan int, requestCount)
+	for range requestCount {
+		go func() {
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"unknown/method"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			statuses <- rec.Code
+		}()
+	}
+
+	concurrent := false
+	select {
+	case <-allEntered:
+		concurrent = true
+	case <-time.After(5 * time.Second):
+	}
+	close(release)
+	for range requestCount {
+		if status := <-statuses; status != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", status, http.StatusBadRequest)
+		}
+	}
+	if !concurrent {
+		t.Fatalf("only %d of %d callbacks ran concurrently", entered.Load(), requestCount)
+	}
+}
+
+func TestStreamableHTTPRequestSummaryPanic(t *testing.T) {
+	panicValue := errors.New("observer panic")
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return NewServer(testImpl, nil) }, &StreamableHTTPOptions{
+		Stateless: true,
+		OnRequestSummary: func(context.Context, StreamableHTTPRequestSummary) {
+			panic(panicValue)
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"unknown/method"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	defer func() {
+		if got := recover(); got != panicValue {
+			t.Errorf("recovered panic = %v, want %v", got, panicValue)
+		}
+	}()
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+type countingReader struct {
+	r     io.Reader
+	reads int
+	bytes int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.reads++
+	n, err := r.r.Read(p)
+	r.bytes += n
+	return n, err
+}
+
+func TestStreamableHTTPRequestSummaryDoesNotChangeBodyHandling(t *testing.T) {
+	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	type result struct {
+		reads        int
+		bytes        int
+		bodyReplaced bool
+		status       int
+	}
+	run := func(observe bool) result {
+		server := NewServer(testImpl, nil)
+		var routedReq *http.Request
+		opts := &StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: -1}
+		if observe {
+			opts.OnRequestSummary = func(context.Context, StreamableHTTPRequestSummary) {}
+		}
+		handler := NewStreamableHTTPHandler(func(req *http.Request) *Server {
+			routedReq = req
+			return server
+		}, opts)
+		reader := &countingReader{r: strings.NewReader(body)}
+		originalBody := io.NopCloser(reader)
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		req.Body = originalBody
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return result{
+			reads:        reader.reads,
+			bytes:        reader.bytes,
+			bodyReplaced: routedReq.Body != originalBody,
+			status:       rec.Code,
+		}
+	}
+
+	withoutObserver := run(false)
+	withObserver := run(true)
+	if diff := cmp.Diff(withoutObserver, withObserver, cmp.AllowUnexported(result{})); diff != "" {
+		t.Fatalf("enabling OnRequestSummary changed body handling (-without +with):\n%s", diff)
+	}
+	if withObserver.status != http.StatusOK {
+		t.Errorf("status = %d, want %d", withObserver.status, http.StatusOK)
+	}
+	if !withObserver.bodyReplaced {
+		t.Error("stateless pre-read baseline did not replace the routed request body")
+	}
+}
+
+func TestStreamableHTTPRequestSummaryExistingSessionBodyHandling(t *testing.T) {
+	const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	const pingBody = `{"jsonrpc":"2.0","id":2,"method":"ping"}`
+	type result struct {
+		reads        int
+		bytes        int
+		bodyReplaced bool
+		status       int
+	}
+	run := func(observe bool) (result, int64) {
+		server := NewServer(testImpl, nil)
+		var observations atomic.Int64
+		opts := &StreamableHTTPOptions{JSONResponse: true, MaxRequestBodyBytes: -1}
+		if observe {
+			opts.OnRequestSummary = func(context.Context, StreamableHTTPRequestSummary) {
+				observations.Add(1)
+			}
+		}
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, opts)
+		defer handler.closeAll()
+
+		initReq := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(initBody))
+		initReq.Header.Set("Content-Type", "application/json")
+		initReq.Header.Set("Accept", "application/json, text/event-stream")
+		initRec := httptest.NewRecorder()
+		handler.ServeHTTP(initRec, initReq)
+		if initRec.Code != http.StatusOK {
+			t.Fatalf("initialize status = %d, want %d (body=%q)", initRec.Code, http.StatusOK, initRec.Body.String())
+		}
+		sessionID := initRec.Header().Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatal("initialize response has no session ID")
+		}
+
+		reader := &countingReader{r: strings.NewReader(pingBody)}
+		originalBody := io.NopCloser(reader)
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		req.Body = originalBody
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(sessionIDHeader, sessionID)
+		req.Header.Set(protocolVersionHeader, protocolVersion20250618)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return result{
+			reads:        reader.reads,
+			bytes:        reader.bytes,
+			bodyReplaced: req.Body != originalBody,
+			status:       rec.Code,
+		}, observations.Load()
+	}
+
+	withoutObserver, withoutObservations := run(false)
+	withObserver, withObservations := run(true)
+	if diff := cmp.Diff(withoutObserver, withObserver, cmp.AllowUnexported(result{})); diff != "" {
+		t.Fatalf("enabling OnRequestSummary changed existing-session body handling (-without +with):\n%s", diff)
+	}
+	if withoutObservations != 0 {
+		t.Errorf("disabled observer calls = %d, want 0", withoutObservations)
+	}
+	if withObservations != 2 {
+		t.Errorf("enabled observer calls = %d, want 2", withObservations)
+	}
+	if withObserver.status != http.StatusOK {
+		t.Errorf("ping status = %d, want %d", withObserver.status, http.StatusOK)
+	}
+	if withObserver.bodyReplaced {
+		t.Error("existing-session request body was replaced")
+	}
+}
+
+// TestStreamableServerPreservesSingleRequestBatchResponse verifies that a
+// single-request JSON-RPC batch is returned as a one-element JSON array.
+func TestStreamableServerPreservesSingleRequestBatchResponse(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{JSONResponse: true},
+	)
+	defer handler.closeAll()
+
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	body := []byte(`[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}]`)
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusOK, data)
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(data, &messages); err != nil {
+		t.Fatalf("response is not a JSON array: %v; body = %s", err, data)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("response contains %d messages, want 1; body = %s", len(messages), data)
+	}
+	if _, err := jsonrpc2.DecodeMessage(messages[0]); err != nil {
+		t.Fatalf("response item is not a JSON-RPC message: %v", err)
+	}
+}
+
 // TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
 // enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
 // bodies. The limit must apply uniformly regardless of transfer encoding:
@@ -4140,4 +4809,81 @@ func TestStreamableMaxRequestBodyBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStreamableSupportedProtocolVersions_Header verifies that the
+// MCP-Protocol-Version header is validated against
+// [ServerOptions.SupportedProtocolVersions], and not merely against the
+// versions the SDK knows about.
+func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
+	const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+
+	newServer := func(t *testing.T, stateless bool) *httptest.Server {
+		server := NewServer(testImpl, &ServerOptions{
+			SupportedProtocolVersions: []string{protocolVersion20251125},
+		})
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+			&StreamableHTTPOptions{Stateless: stateless})
+		httpServer := httptest.NewServer(handler)
+		t.Cleanup(httpServer.Close)
+		return httpServer
+	}
+	post := func(t *testing.T, url, version, sessionID string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(initBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(protocolVersionHeader, version)
+		if sessionID != "" {
+			req.Header.Set(sessionIDHeader, sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	for _, stateless := range []bool{false, true} {
+		for _, test := range []struct {
+			version    string
+			wantStatus int
+		}{
+			{protocolVersion20251125, http.StatusOK},
+			// Supported by the SDK, but excluded by the server.
+			{protocolVersion20250618, http.StatusBadRequest},
+			// Unknown to the SDK: rejected before any server is consulted.
+			{"1999-01-01", http.StatusBadRequest},
+		} {
+			t.Run(fmt.Sprintf("stateless=%v/%s", stateless, test.version), func(t *testing.T) {
+				resp := post(t, newServer(t, stateless).URL, test.version, "")
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != test.wantStatus {
+					t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, body)
+				}
+			})
+		}
+	}
+
+	t.Run("existing session", func(t *testing.T) {
+		httpServer := newServer(t, false)
+		resp := post(t, httpServer.URL, protocolVersion20251125, "")
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		sessionID := resp.Header.Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatalf("initialize response missing %s header", sessionIDHeader)
+		}
+
+		resp = post(t, httpServer.URL, protocolVersion20250618, sessionID)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusBadRequest, body)
+		}
+	})
 }

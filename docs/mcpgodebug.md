@@ -18,6 +18,30 @@
 
 ## `MCPGODEBUG` history
 
+### 1.9.0
+
+Options listed below were added and will be removed in the 1.11.0 version of the SDK.
+
+- `structuredcontentfloat64` added. If set to `1`, numbers in
+  `CallToolResult.StructuredContent` are decoded as `float64`, restoring the
+  previous behavior. The default behavior decodes numbers as `json.Number` so
+  that large integers and other exact JSON values do not silently lose
+  precision.
+
+- `disablepromptargsvalidation` added. If set to `1`, `Server.getPrompt` will
+  call the prompt handler even when a required argument of the prompt is
+  missing from the request, restoring the previous behavior. The default
+  behavior was changed to reject such requests with `-32602` (Invalid Params),
+  as the specification asks.
+
+- `allowmissingclientparams` added. If set to `1`, a `Client` accepts
+  `elicitation/create`, `notifications/elicitation/complete` and
+  `notifications/resources/updated` messages whose `params` member is missing
+  or `null`, restoring the previous behavior (the handler then observes nil
+  params, which crashed the built-in elicitation handlers). The default
+  behavior was changed to reject such messages as invalid requests, as the
+  specification lists `params` as required for all three.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
@@ -43,6 +67,23 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   sent asynchronously off the caller's return path: the caller returns as
   soon as its context is cancelled and cannot be delayed by a slow or
   unresponsive peer. See issue #1150.
+
+Options below were removed, according to plan:
+
+- `seterroroverwrite`. `SetError` now always preserves existing `Content`.
+
+- `enableoriginverification`. A nil
+  `StreamableHTTPOptions.CrossOriginProtection` now always means no
+  cross-origin protection. Wrap the handler with cross-origin protection
+  middleware instead.
+
+- `disablecontenttypecheck`. Content-Type validation on HTTP POST requests can
+  no longer be disabled.
+
+- `disablelocalhostprotection`, whose removal had been postponed to this
+  release. Set the `DisableLocalhostProtection` field in
+  `StreamableHTTPOptions` or `SSEOptions` to opt out of DNS rebinding
+  protection.
 
 ### 1.7.0
 

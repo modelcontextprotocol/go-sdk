@@ -7,9 +7,11 @@ package json
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -137,6 +139,51 @@ func TestUnmarshalNullCharacter(t *testing.T) {
 				t.Errorf("Field was set: %s", tt.json)
 			}
 		})
+	}
+}
+
+func TestUnmarshalChecksNestingDepth(t *testing.T) {
+	createNesting := func(depth int) []byte {
+		return []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
+	}
+
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr bool
+	}{
+		{"flat object", []byte(`{"a":1}`), false},
+		{"at limit", createNesting(defaultMaxDepth), false},
+		{"one over limit", createNesting(defaultMaxDepth + 1), true},
+		{"brackets in strings do not count", []byte(`{"a":"[[[[[[[[[["}`), false},
+		{"escaped quote in string", []byte(`{"a":"\"[[[[[["}`), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v any
+			err := Unmarshal(tt.data, &v)
+			gotDepthErr := errors.Is(err, errMaxDepthExceeded)
+			if gotDepthErr != tt.wantErr {
+				t.Fatalf("Unmarshal() error = %v (err=%v), want depth error = %v", gotDepthErr, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestUnmarshalMaxDepthExitsFast(t *testing.T) {
+	data := []byte(strings.Repeat("[", 500_000) + strings.Repeat("]", 500_000))
+	done := make(chan error, 1)
+	go func() {
+		var v any
+		done <- Unmarshal(data, &v)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errMaxDepthExceeded) {
+			t.Fatalf("Unmarshal error = %v, want %v", err, errMaxDepthExceeded)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Unmarshal did not reject deeply nested payload promptly")
 	}
 }
 

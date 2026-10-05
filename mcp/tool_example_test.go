@@ -253,6 +253,74 @@ func ExampleAddTool_complexSchema() {
 	// weather types: [sun partly_cloudy clouds rain snow]
 }
 
+// !+contenttypes
+
+func ExampleAddTool_contentTypes() {
+	chartPNG := []byte("\x89PNG\r\n\x1a\n")
+	summaryWAV := []byte("RIFF....WAVE")
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "report"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "Q3 revenue by region."},
+				&mcp.ImageContent{Data: chartPNG, MIMEType: "image/png"},
+				&mcp.AudioContent{Data: summaryWAV, MIMEType: "audio/wav"},
+				// An embedded resource inlines the contents, so the client
+				// needs no follow-up resources/read. Binary contents go in
+				// ResourceContents.Blob instead of Text.
+				&mcp.EmbeddedResource{
+					Resource: &mcp.ResourceContents{
+						URI:      "file:///reports/q3.csv",
+						MIMEType: "text/csv",
+						Text:     "region,revenue\nEMEA,42\n",
+					},
+				},
+				// A resource link only points at a resource. Prefer it when the
+				// client may not need the contents, since an embedded resource
+				// is transferred either way.
+				&mcp.ResourceLink{URI: "file:///reports/q3.pdf", MIMEType: "application/pdf"},
+			},
+		}, nil, nil
+	})
+
+	ctx := context.Background()
+	session, err := connect(ctx, server)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "report"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Clients type-switch over the content they receive.
+	for _, content := range res.Content {
+		switch c := content.(type) {
+		case *mcp.TextContent:
+			fmt.Println("text:", c.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("image: %s, %d bytes\n", c.MIMEType, len(c.Data))
+		case *mcp.AudioContent:
+			fmt.Printf("audio: %s, %d bytes\n", c.MIMEType, len(c.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("embedded resource: %s (%s)\n", c.Resource.URI, c.Resource.MIMEType)
+		case *mcp.ResourceLink:
+			fmt.Printf("resource link: %s (%s)\n", c.URI, c.MIMEType)
+		}
+	}
+	// Output:
+	// text: Q3 revenue by region.
+	// image: image/png, 8 bytes
+	// audio: audio/wav, 12 bytes
+	// embedded resource: file:///reports/q3.csv (text/csv)
+	// resource link: file:///reports/q3.pdf (application/pdf)
+}
+
+// !-contenttypes
+
 func connect(ctx context.Context, server *mcp.Server) (*mcp.ClientSession, error) {
 	t1, t2 := mcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, t1, nil); err != nil {

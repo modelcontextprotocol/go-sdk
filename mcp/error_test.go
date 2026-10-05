@@ -300,10 +300,9 @@ func TestURLElicitationRequired(t *testing.T) {
 				// In a real scenario, this would happen out-of-band after the user
 				// completes the form submission.
 				go func() {
-					err := handleNotify(ctx, notificationElicitationComplete,
-						newServerRequest(ss, &ElicitationCompleteParams{
-							ElicitationID: elicitID,
-						}))
+					err := ss.NotifyElicitationComplete(ctx, &ElicitationCompleteParams{
+						ElicitationID: elicitID,
+					})
 					if err != nil {
 						t.Errorf("failed to send elicitation complete notification: %v", err)
 					}

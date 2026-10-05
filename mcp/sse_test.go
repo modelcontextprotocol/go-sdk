@@ -13,10 +13,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // TestSSEServerTransport_SupportedVersions verifies that the deprecated
@@ -24,7 +27,7 @@ import (
 // stdio and Streamable HTTP (see #1112).
 func TestSSEServerTransport_SupportedVersions(t *testing.T) {
 	var tr SSEServerTransport
-	versions := filterSupportedVersions(&tr)
+	versions := filterSupportedVersions(&tr, supportedProtocolVersions)
 	if slices.Contains(versions, protocolVersion20260728) {
 		t.Errorf("filterSupportedVersions(SSEServerTransport) = %v, must not include %q",
 			versions, protocolVersion20260728)
@@ -381,5 +384,151 @@ func TestSSELocalhostProtection(t *testing.T) {
 				t.Errorf("Status code: got %d, want %d", got, tt.wantStatus)
 			}
 		})
+	}
+}
+
+// TestSSEServerTransportMaxRequestBodyBytes exercises the limit on the exported
+// [SSEServerTransport] directly, since it is documented as usable on its own.
+func TestSSEServerTransportMaxRequestBodyBytes(t *testing.T) {
+	requestOfSize := func(n int) []byte {
+		b := bytes.Repeat([]byte(" "), n)
+		b[0], b[n-1] = '{', '}'
+		return b
+	}
+	testCases := []struct {
+		name     string
+		limit    int64
+		request  []byte
+		wantCode int
+	}{
+		{
+			name:     "over limit returns",
+			limit:    1024,
+			request:  requestOfSize(2048),
+			wantCode: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:     "under limit accepted",
+			limit:    1024,
+			request:  []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`),
+			wantCode: http.StatusAccepted,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &SSEServerTransport{
+				Endpoint:            "/msg",
+				Response:            httptest.NewRecorder(),
+				MaxRequestBodyBytes: tc.limit,
+			}
+			if _, err := tr.Connect(context.Background()); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/msg", bytes.NewReader(tc.request))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			tr.ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestSSEClientTransportBufferedEvents(t *testing.T) {
+	const endpoint = "event: endpoint\ndata: /messages\n\n"
+	const message = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"
+	for _, coalesced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("coalesced=%t", coalesced), func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			prefix := endpoint
+			if coalesced {
+				prefix += message
+			}
+			transport := &SSEClientTransport{
+				Endpoint: "http://example.com/sse",
+				HTTPClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": {"text/event-stream"}},
+						Body: struct {
+							io.Reader
+							io.Closer
+						}{io.MultiReader(strings.NewReader(prefix), reader), reader},
+					}, nil
+				})},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := transport.Connect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if !coalesced {
+				go func() { _, _ = io.WriteString(writer, message) }()
+			}
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			if req, ok := msg.(*jsonrpc.Request); !ok || req.Method != "notifications/tools/list_changed" {
+				t.Fatalf("Read = %v, want tools/list_changed notification", msg)
+			}
+		})
+	}
+}
+
+// TestSSECustomMethod verifies that a custom method registered with
+// [AddReceivingCustomMethod] is accepted over the SSE transport. The POST
+// handler pre-validates the method name against the server's method set, and
+// used to consult only the standard methods, so a custom call was rejected with
+// HTTP 400, which the client then reported as a failed write on the session.
+func TestSSECustomMethod(t *testing.T) {
+	type echoParams struct {
+		ParamsBase
+		Text string `json:"text"`
+	}
+	type echoResult struct {
+		ResultBase
+		Text string `json:"text"`
+	}
+
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(server, "acme/echo", func(_ context.Context, _ *ServerSession, params *echoParams) (*echoResult, error) {
+		return &echoResult{Text: params.Text}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(sseHandler)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	if err := AddSendingCustomMethod[*echoParams, *echoResult](client, "acme/echo"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := client.Connect(ctx, &SSEClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	got, err := CallCustomMethod[*echoParams, *echoResult](ctx, cs, "acme/echo", &echoParams{Text: "hello"})
+	if err != nil {
+		t.Fatalf("CallCustomMethod: %v", err)
+	}
+	if got.Text != "hello" {
+		t.Errorf("CallCustomMethod: got %q, want %q", got.Text, "hello")
+	}
+
+	// The session must still be usable after the custom call.
+	if err := cs.Ping(ctx, nil); err != nil {
+		t.Errorf("Ping after custom method: %v", err)
 	}
 }

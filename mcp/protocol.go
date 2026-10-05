@@ -19,7 +19,7 @@ type resultType string
 
 const (
 	// resultTypeComplete indicates the result is final.
-	// This is the default when ResultType is empty.
+	// This is the default when resultType is empty.
 	resultTypeComplete resultType = "complete"
 
 	// resultTypeInputRequired indicates the server needs additional client
@@ -40,15 +40,26 @@ type completeResultResponse interface {
 	isCompleteResult()
 }
 
-func setCompleteResultType(res Result) {
-	if r, ok := res.(completeResultResponse); ok {
+// annotateResultType sets the resultType that protocol 2026-07-28 requires on
+// every result.
+func annotateResultType(res Result) {
+	switch r := res.(type) {
+	case completeResultResponse:
 		r.setResultType(resultTypeComplete)
+	case multiRoundTripResponse:
+		// These results are complete or input_required, so label them by
+		// whether the handler asked for more client input.
+		if r.inputRequests() != nil {
+			r.setResultType(resultTypeInputRequired)
+		} else {
+			r.setResultType(resultTypeComplete)
+		}
 	}
 }
 
 // InputRequest is a type for parameters that a server can include in the response
 // to request input from client (SEP-2322). Implementations are [*ElicitParams],
-// [*CreateMessageParams], and [*ListRootsParams].
+// [*CreateMessageParams], [*CreateMessageWithToolsParams], and [*ListRootsParams].
 type InputRequest interface{ isInputRequest() }
 
 // InputRequestMap maps server-assigned request IDs to [InputRequest] values.
@@ -132,7 +143,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 
 // InputResponse is a type for results that a client sends back when fulfilling
 // a server input request (SEP-2322). Implementations are [*ElicitResult],
-// [*CreateMessageResult], and [*ListRootsResult].
+// [*CreateMessageResult], [*CreateMessageWithToolsResult], and [*ListRootsResult].
 type InputResponse interface{ isInputResponse() }
 
 // InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
@@ -212,7 +223,65 @@ type Annotations struct {
 	// A value of 1 means "most important," and indicates that the data is
 	// effectively required, while 0 means "least important," and indicates that the
 	// data is entirely optional.
+	//
+	// A zero Priority assigned directly is treated as unset and omitted when
+	// marshaling. To send an explicit priority of 0, use [Annotations.SetPriority].
+	// A priority received on the wire, including 0, is preserved when the
+	// annotations are marshaled again.
 	Priority float64 `json:"priority,omitempty"`
+
+	hasPriority bool // set by UnmarshalJSON or SetPriority
+}
+
+// SetPriority sets the priority and marks it as explicitly present, so that a
+// priority of 0 (least important) is not omitted when marshaling.
+func (a *Annotations) SetPriority(p float64) {
+	a.Priority = p
+	a.hasPriority = true
+}
+
+// HasPriority reports whether a priority was explicitly set with
+// [Annotations.SetPriority], received on the wire, or assigned a non-zero value.
+func (a *Annotations) HasPriority() bool {
+	return a.hasPriority || a.Priority != 0
+}
+
+// UnmarshalJSON implements [json.Unmarshaler] for Annotations. It records
+// whether priority was present, so that an explicit 0 survives a round trip.
+func (a *Annotations) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	var w wire
+	if err := internaljson.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*a = Annotations{Audience: w.Audience, LastModified: w.LastModified}
+	if w.Priority != nil {
+		a.SetPriority(*w.Priority)
+	}
+	return nil
+}
+
+// MarshalJSON implements [json.Marshaler] for Annotations. It emits priority
+// whenever [Annotations.HasPriority] reports true, including a priority of 0.
+func (a Annotations) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	w := wire{
+		Audience:     a.Audience,
+		LastModified: a.LastModified,
+	}
+	if a.HasPriority() {
+		p := a.Priority
+		w.Priority = &p
+	}
+	return json.Marshal(w)
 }
 
 // CallToolParams is used by clients to call a tool.
@@ -226,9 +295,8 @@ type CallToolParams struct {
 	// marshaled to JSON.
 	Arguments any `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -249,9 +317,8 @@ type CallToolParamsRaw struct {
 	// Arguments (see [AddTool]).
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	// The client must echo this back when retrying.
@@ -280,6 +347,8 @@ type CallToolResult struct {
 	// result of the tool call. Per SEP-2106, it may marshal to any valid JSON
 	// value (object, array, or primitive) conforming to the tool's
 	// [Tool.OutputSchema].
+	// Numbers received from the wire are represented as [json.Number] to preserve
+	// their exact values.
 	//
 	// When using a [ToolHandlerFor] with structured output, you should not
 	// populate this field. It will be automatically populated with the typed Out
@@ -305,9 +374,9 @@ type CallToolResult struct {
 	IsError bool `json:"isError,omitempty"`
 
 	// InputRequests is a map of server-assigned IDs to input requests.
-	// Populated only when ResultType is ResultTypeInputRequired.
+	// It is set only when the result needs more client input.
 	// The client must fulfill these and echo the IDs back in InputResponses
-	// when retrying the call.
+	// when it retries the call.
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 
 	// RequestState is an opaque string the client must echo back when
@@ -317,10 +386,10 @@ type CallToolResult struct {
 	// Unauthenticated servers must encrypt, sign and verify this value.
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. Empty or ResultTypeComplete means the call succeeded
-	// normally. ResultTypeInputRequired means the client should fulfill the
-	// InputRequests and retry the call.
+	// resultType records whether the call finished or needs more client input.
+	// Empty or resultTypeComplete means it finished. resultTypeInputRequired
+	// means the client must fulfill InputRequests and retry.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 	// The error passed to setError, if any.
 	// It is not marshaled, and therefore it is only visible on the server.
@@ -329,23 +398,13 @@ type CallToolResult struct {
 	err error
 }
 
-// seterroroverwrite is a compatibility parameter that restores the pre-1.6.0
-// behavior of [CallToolResult.SetError], where Content was always overwritten
-// with the error text. See the documentation for the mcpgodebug package for
-// instructions on how to enable it.
-// The option will be removed in the 1.8.0 version of the SDK.
-var seterroroverwrite = mcpgodebug.Value("seterroroverwrite")
-
 // SetError sets the error for the tool result and sets IsError to true.
 // If Content has not already been populated, it is set to the error text.
 // If Content has already been populated, it is left unchanged, allowing callers
 // to provide a user-friendly message while still recording the underlying error
 // for inspection via [GetError] in server middleware.
-//
-// To restore the previous behavior where Content was always overwritten,
-// set MCPGODEBUG=seterroroverwrite=1.
 func (r *CallToolResult) SetError(err error) {
-	if len(r.Content) == 0 || seterroroverwrite == "1" {
+	if len(r.Content) == 0 {
 		r.Content = []Content{&TextContent{Text: err.Error()}}
 	}
 	r.IsError = true
@@ -358,7 +417,8 @@ func (r *CallToolResult) GetError() error {
 	return r.err
 }
 
-func (*CallToolResult) isResult() {}
+func (*CallToolResult) isResult()     {}
+func (x *CallToolResult) isNil() bool { return x == nil }
 
 func (r *CallToolResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *CallToolResult) requestState() string        { return r.RequestState }
@@ -373,11 +433,17 @@ func (r *CallToolResult) hasContent() bool {
 }
 
 // NeedsInput reports whether this result requires further client input.
-// This is true when the server returned ResultType "input_required".
+// This is true when the server returned a resultType of "input_required".
 // When NeedsInput returns true, check InputRequests for the set of
 // requests the server needs fulfilled before retrying the call.
 // An empty InputRequests with NeedsInput true indicates load-shedding.
 func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeInputRequired }
+
+// structuredcontentfloat64 is a compatibility parameter that restores the
+// previous behavior of decoding numbers in [CallToolResult.StructuredContent]
+// as float64 values. By default, numbers are decoded as [json.Number] to avoid
+// losing precision. The option will be removed in the 1.11.0 version of the SDK.
+var structuredcontentfloat64 = mcpgodebug.Value("structuredcontentfloat64")
 
 func (x *CallToolResult) MarshalJSON() ([]byte, error) {
 	type res CallToolResult // avoid recursion
@@ -401,11 +467,25 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 	type res CallToolResult // avoid recursion
 	var wire struct {
 		res
-		Content    []*wireContent `json:"content"`
-		ResultType resultType     `json:"resultType"`
+		Content           []*wireContent  `json:"content"`
+		StructuredContent json.RawMessage `json:"structuredContent"`
+		ResultType        resultType      `json:"resultType"`
 	}
 	if err := internaljson.Unmarshal(data, &wire); err != nil {
 		return err
+	}
+	if len(wire.StructuredContent) > 0 {
+		unmarshal := internaljson.UnmarshalUseNumber
+		if structuredcontentfloat64 == "1" {
+			unmarshal = internaljson.Unmarshal
+		}
+		if err := unmarshal(wire.StructuredContent, &wire.res.StructuredContent); err != nil {
+			return err
+		}
+		// A present JSON null is distinct from an omitted structured result.
+		if wire.res.StructuredContent == nil {
+			wire.res.StructuredContent = json.RawMessage("null")
+		}
 	}
 	var err error
 	if wire.res.Content, err = contentsFromWire(wire.Content, nil); err != nil {
@@ -665,7 +745,8 @@ type CompleteResult struct {
 	Completion CompletionResultDetails `json:"completion"`
 }
 
-func (*CompleteResult) isResult() {}
+func (*CompleteResult) isResult()     {}
+func (x *CompleteResult) isNil() bool { return x == nil }
 
 // CreateMessageParams holds parameters for a sampling/createMessage request.
 //
@@ -849,6 +930,7 @@ type CreateMessageResult struct {
 }
 
 func (*CreateMessageResult) isResult()        {}
+func (x *CreateMessageResult) isNil() bool    { return x == nil }
 func (*CreateMessageResult) isInputResponse() {}
 func (r *CreateMessageResult) UnmarshalJSON(data []byte) error {
 	type result CreateMessageResult // avoid recursion
@@ -900,6 +982,7 @@ var createMessageWithToolsResultAllow = map[string]bool{
 }
 
 func (*CreateMessageWithToolsResult) isResult()        {}
+func (x *CreateMessageWithToolsResult) isNil() bool    { return x == nil }
 func (*CreateMessageWithToolsResult) isInputResponse() {}
 
 // MarshalJSON marshals the result. When Content has a single element, it is
@@ -960,9 +1043,8 @@ type GetPromptParams struct {
 	// The name of the prompt or prompt template.
 	Name string `json:"name"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`
@@ -982,19 +1064,20 @@ type GetPromptResult struct {
 	Description string           `json:"description,omitempty"`
 	Messages    []*PromptMessage `json:"messages"`
 
-	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// InputRequests is set when the result needs more client input.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. See [CallToolResult.ResultType] for details.
+	// resultType records whether the call finished or needs more client input.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 }
 
-func (*GetPromptResult) isResult() {}
+func (*GetPromptResult) isResult()     {}
+func (x *GetPromptResult) isNil() bool { return x == nil }
 
 func (r *GetPromptResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *GetPromptResult) requestState() string        { return r.RequestState }
@@ -1104,7 +1187,8 @@ type InitializeResult struct {
 	ServerInfo      *Implementation `json:"serverInfo"`
 }
 
-func (*InitializeResult) isResult() {}
+func (*InitializeResult) isResult()     {}
+func (x *InitializeResult) isNil() bool { return x == nil }
 
 type InitializedParams struct {
 	// Meta is reserved by the protocol to allow clients and servers to attach
@@ -1147,7 +1231,8 @@ type DiscoverResult struct {
 	Instructions string `json:"instructions,omitempty"`
 }
 
-func (*DiscoverResult) isResult() {}
+func (*DiscoverResult) isResult()     {}
+func (x *DiscoverResult) isNil() bool { return x == nil }
 
 func (x *ListPromptsParams) isParams()              {}
 func (x *ListPromptsParams) isNil() bool            { return x == nil }
@@ -1191,9 +1276,16 @@ func (c Cacheable) GetTTLMs() int { return c.TTLMs }
 // GetCacheScope returns the cache scope.
 func (c Cacheable) GetCacheScope() string { return c.CacheScope }
 
-// setDefaultCacheableValues sets the default values for the cacheable fields.
-func (c *Cacheable) setDefaultCacheableValues() {
-	c.CacheScope = "public"
+// normalize fills in the protocol default for any cache field left
+// unset. An absent cacheScope means "public", but the field is required on the
+// wire, so the default is materialized here rather than sent empty.
+//
+// Values already present are preserved: this must not undo a decision made by
+// a resource handler or by [ServerOptions.SetCacheable].
+func (c *Cacheable) normalize() {
+	if c.CacheScope == "" {
+		c.CacheScope = "public"
+	}
 }
 
 // The server's response to a prompts/list request from the client.
@@ -1210,6 +1302,7 @@ type ListPromptsResult struct {
 }
 
 func (x *ListPromptsResult) isResult()              {}
+func (x *ListPromptsResult) isNil() bool            { return x == nil }
 func (x *ListPromptsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourceTemplatesParams struct {
@@ -1241,6 +1334,7 @@ type ListResourceTemplatesResult struct {
 }
 
 func (x *ListResourceTemplatesResult) isResult()              {}
+func (x *ListResourceTemplatesResult) isNil() bool            { return x == nil }
 func (x *ListResourceTemplatesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 type ListResourcesParams struct {
@@ -1272,6 +1366,7 @@ type ListResourcesResult struct {
 }
 
 func (x *ListResourcesResult) isResult()              {}
+func (x *ListResourcesResult) isNil() bool            { return x == nil }
 func (x *ListResourcesResult) nextCursorPtr() *string { return &x.NextCursor }
 
 // ListRootsParams holds parameters for a roots/list request.
@@ -1308,6 +1403,7 @@ type ListRootsResult struct {
 }
 
 func (*ListRootsResult) isResult()        {}
+func (x *ListRootsResult) isNil() bool    { return x == nil }
 func (*ListRootsResult) isInputResponse() {}
 
 type ListToolsParams struct {
@@ -1339,6 +1435,7 @@ type ListToolsResult struct {
 }
 
 func (x *ListToolsResult) isResult()              {}
+func (x *ListToolsResult) isNil() bool            { return x == nil }
 func (x *ListToolsResult) nextCursorPtr() *string { return &x.NextCursor }
 
 // The severity of a log message.
@@ -1578,9 +1675,8 @@ type ReadResourceParams struct {
 	// the server how to interpret it.
 	URI string `json:"uri"`
 
-	// InputResponses maps input request IDs to responses, provided when
-	// retrying a call after receiving a result with ResultType
-	// ResultTypeInputRequired.
+	// InputResponses maps input request IDs to responses. Set it when the
+	// client retries a call that asked for input. See [CallToolResult.NeedsInput].
 	InputResponses InputResponseMap `json:"inputResponses,omitempty"`
 	// RequestState is the opaque state from the previous input-required result.
 	RequestState string `json:"requestState,omitempty"`
@@ -1599,19 +1695,20 @@ type ReadResourceResult struct {
 	Cacheable
 	Contents []*ResourceContents `json:"contents"`
 
-	// InputRequests is populated when ResultType is ResultTypeInputRequired.
+	// InputRequests is set when the result needs more client input.
 	// See [CallToolResult.InputRequests].
 	InputRequests InputRequestMap `json:"inputRequests,omitempty"`
 	// RequestState is the opaque state for multi-round-trip retries.
 	// See [CallToolResult.RequestState].
 	RequestState string `json:"requestState,omitempty"`
 
-	// ResultType indicates whether this result is complete or requires further
-	// client input. See [CallToolResult.ResultType] for details.
+	// resultType records whether the call finished or needs more client input.
+	// See [CallToolResult.NeedsInput].
 	resultType resultType
 }
 
-func (*ReadResourceResult) isResult() {}
+func (*ReadResourceResult) isResult()     {}
+func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
@@ -2117,7 +2214,8 @@ type SubscriptionsListenResult struct {
 	Meta `json:"_meta"`
 }
 
-func (*SubscriptionsListenResult) isResult() {}
+func (*SubscriptionsListenResult) isResult()     {}
+func (x *SubscriptionsListenResult) isNil() bool { return x == nil }
 
 // TODO(jba): add CompleteRequest and related types.
 
@@ -2194,6 +2292,7 @@ type ElicitResult struct {
 }
 
 func (*ElicitResult) isResult()        {}
+func (x *ElicitResult) isNil() bool    { return x == nil }
 func (*ElicitResult) isInputResponse() {}
 
 // ElicitationCompleteParams is sent from the server to the client, informing it that an out-of-band elicitation interaction has completed.
@@ -2246,7 +2345,7 @@ type PromptCapabilities struct {
 
 // ResourceCapabilities describes the server's support for resources.
 type ResourceCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the resource list.
 	ListChanged bool `json:"listChanged,omitempty"`
 	// Subscribe reports whether this server supports subscribing to resource
@@ -2256,7 +2355,7 @@ type ResourceCapabilities struct {
 
 // ToolCapabilities describes the server's support for tools.
 type ToolCapabilities struct {
-	// ListChanged reports whether the client supports notifications for
+	// ListChanged reports whether this server supports notifications for
 	// changes to the tool list.
 	ListChanged bool `json:"listChanged,omitempty"`
 }

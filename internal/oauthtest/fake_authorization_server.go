@@ -97,6 +97,11 @@ type Config struct {
 	// IssueRefreshToken, if true, includes a refresh_token in token responses and
 	// enables grant_type=refresh_token at the /token endpoint.
 	IssueRefreshToken bool
+	// UnadvertiseIssParameter, if true, omits
+	// authorization_response_iss_parameter_supported from metadata while the
+	// authorize endpoint still includes iss. Used to test local policy for
+	// unadvertised RFC 9207 iss.
+	UnadvertiseIssParameter bool
 }
 
 // testRefreshToken is the refresh token issued and accepted by the fake server
@@ -199,8 +204,9 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "client_secret_basic"},
-		// Advertise RFC 9207 support: the authorize endpoint includes "iss" in responses.
-		AuthorizationResponseIssParameterSupported: true,
+		// Advertise RFC 9207 support unless UnadvertiseIssParameter is set:
+		// the authorize endpoint still includes "iss" in responses either way.
+		AuthorizationResponseIssParameterSupported: !s.config.UnadvertiseIssParameter,
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")

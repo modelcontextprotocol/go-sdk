@@ -44,7 +44,12 @@ func authorizationServerMetadataURLs(issuerURL string) []string {
 		return nil
 	}
 
-	if baseURL.Path == "" {
+	// RFC 8414, section 3.1 requires any terminating "/" to be removed from the
+	// issuer identifier before the well-known suffix is inserted, so an issuer
+	// such as "https://auth.example.com/" has no path component at all.
+	issuerPath := strings.Trim(baseURL.Path, "/")
+
+	if issuerPath == "" {
 		// "OAuth 2.0 Authorization Server Metadata".
 		baseURL.Path = "/.well-known/oauth-authorization-server"
 		urls = append(urls, baseURL.String())
@@ -54,15 +59,14 @@ func authorizationServerMetadataURLs(issuerURL string) []string {
 		return urls
 	}
 
-	originalPath := baseURL.Path
 	// "OAuth 2.0 Authorization Server Metadata with path insertion".
-	baseURL.Path = "/.well-known/oauth-authorization-server/" + strings.TrimLeft(originalPath, "/")
+	baseURL.Path = "/.well-known/oauth-authorization-server/" + issuerPath
 	urls = append(urls, baseURL.String())
 	// "OpenID Connect Discovery 1.0 with path insertion".
-	baseURL.Path = "/.well-known/openid-configuration/" + strings.TrimLeft(originalPath, "/")
+	baseURL.Path = "/.well-known/openid-configuration/" + issuerPath
 	urls = append(urls, baseURL.String())
 	// "OpenID Connect Discovery 1.0 with path appending".
-	baseURL.Path = "/" + strings.Trim(originalPath, "/") + "/.well-known/openid-configuration"
+	baseURL.Path = "/" + issuerPath + "/.well-known/openid-configuration"
 	urls = append(urls, baseURL.String())
 
 	return urls
