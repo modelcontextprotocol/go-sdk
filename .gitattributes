@@ -1,0 +1,6 @@
+# Test fixtures are compared byte-for-byte: the conformance tests in mcp assert
+# on base64 "blob" payloads decoded from files under mcp/testdata. Check them out
+# with LF so that core.autocrlf=true — the default for Git for Windows installs —
+# cannot rewrite them as CRLF and fail mcp.TestServerConformance.
+*.txtar text eol=lf
+mcp/testdata/** text eol=lf
