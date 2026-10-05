@@ -354,10 +354,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
 					listenCtx, cancelListen := context.WithCancel(context.Background())
 					cs.listenCancel = cancelListen
-					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
-						cancelListen()
-						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
-					}
+					go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, nil)
 				}
 				return cs, nil
 			}
@@ -1445,37 +1442,44 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 
 	// Subscribe stays non-blocking: the listen stream is awaited on its own
 	// goroutine so that its completion clears the subscription.
-	go cs.awaitResourceListen(listenCtx, uri, gen)
+	subscribeParams := &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{
+			ResourceSubscriptions: []string{uri},
+		},
+	}
+	go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, &gen)
 	return nil
 }
 
-// awaitResourceListen runs a single resource URI's subscriptions/listen stream
-// to completion. It is started as a goroutine by Subscribe so Subscribe itself
-// does not block.
+// awaitSubscriptionsListen runs a subscriptions/listen stream to completion. Connect and
+// Subscribe start it on its own goroutine, so they return without waiting for
+// the server to acknowledge the listen.
 //
 // When the stream ends for a reason other than a client-initiated Unsubscribe
 // or session Close — a graceful listen result, a synthetic transport
 // "terminated" error, or any jsonrpc error, all while listenCtx is not
-// cancelled — the resourceSubs entry for uri is cleared so that a later bare
-// Subscribe re-opens the stream instead of no-oping. The entry is only removed
-// if it still carries this goroutine's generation, which guards an
-// Unsubscribe→Subscribe race and a re-subscribe from inside a callback. The
-// SDK does not auto-resubscribe: a revoked URI would hot-loop, so reopening is
-// left to the application calling Subscribe again.
-func (cs *ClientSession) awaitResourceListen(listenCtx context.Context, uri string, gen uint64) {
-	params := injectRequestMeta(cs, &SubscriptionsListenParams{
-		Notifications: &NotificationSubscriptions{
-			ResourceSubscriptions: []string{uri},
-		},
-	})
-	_ = call(listenCtx, cs.getConn(), methodSubscriptionsListen, params, &SubscriptionsListenResult{})
+// cancelled — the resourceSubs entries for the stream's resource URIs are
+// cleared so that a later bare Subscribe re-opens the stream instead of
+// no-oping. An entry is only removed if it still carries generation gen, which
+// guards an Unsubscribe→Subscribe race and a re-subscribe from inside a
+// callback. The SDK does not auto-resubscribe: a revoked URI would hot-loop, so
+// reopening is left to the application calling Subscribe again. Connect passes
+// a nil gen for its list-changed listen, which owns no resource entries, so
+// its end clears nothing.
+func (cs *ClientSession) awaitSubscriptionsListen(listenCtx context.Context, params *SubscriptionsListenParams, gen *uint64) {
+	_ = cs.subscriptionsListen(listenCtx, params)
 	if listenCtx.Err() != nil {
 		// Client-initiated teardown: Unsubscribe already removed the entry (and
 		// cancelAllResourceSubscriptions nils the whole map on Close), so there
 		// is nothing to clear.
 		return
 	}
-	cs.clearResourceSubIfGen(uri, gen)
+	if gen == nil || params.Notifications == nil {
+		return
+	}
+	for _, uri := range params.Notifications.ResourceSubscriptions {
+		cs.clearResourceSubIfGen(uri, *gen)
+	}
 }
 
 // clearResourceSubIfGen deletes the resourceSubs entry for uri only if it is

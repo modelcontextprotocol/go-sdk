@@ -3602,11 +3602,9 @@ func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
 
 	listenCtx, cancelListen := context.WithCancel(context.Background())
 	defer cancelListen()
-	if err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	go cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{ToolsListChanged: true, PromptsListChanged: true},
-	}); err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	})
 	waitSubListenEvent(t, events, "ack")
 
 	server.mu.Lock()
