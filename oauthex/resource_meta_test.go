@@ -95,6 +95,28 @@ func TestParseWWWAuthenticateEscapedBackslash(t *testing.T) {
 	}
 }
 
+// A quoted string may be empty. An empty realm or error_description must not
+// make the whole header unparseable, or the auth handlers never see the
+// resource_metadata parameter that follows it.
+func TestParseWWWAuthenticateEmptyQuotedValue(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Bearer realm="", error_description="", resource_metadata="https://example.com/.well-known/oauth-protected-resource"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "bearer", Params: map[string]string{
+			"realm":             "",
+			"error_description": "",
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
 func TestSplitChallengesError(t *testing.T) {
 	if _, err := splitChallenges(`"Bearer"`); err == nil {
 		t.Fatal("got nil, want error")
@@ -190,6 +212,20 @@ func TestParseSingleChallenge(t *testing.T) {
 		{
 			name:    "malformed param - no value",
 			input:   "Bearer realm=",
+			wantErr: true,
+		},
+		{
+			name:  "empty quoted param",
+			input: `Bearer realm="", error="invalid_token"`,
+			want: Challenge{
+				Scheme: "bearer",
+				Params: map[string]string{"realm": "", "error": "invalid_token"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "malformed param - no value before comma",
+			input:   `Bearer realm=, error="invalid_token"`,
 			wantErr: true,
 		},
 		{
