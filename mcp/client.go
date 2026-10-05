@@ -356,7 +356,15 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					cs.listenCancel = cancelListen
 					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
 						cancelListen()
-						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
+						cs.listenCancel = nil
+						// Listening for list-changed notifications is optional. Some
+						// servers reject it, but the initialized session is still usable.
+						var rpcErr *jsonrpc.Error
+						if errors.Is(err, jsonrpc2.ErrRejected) || errors.As(err, &rpcErr) {
+							c.opts.Logger.Debug("server rejected optional subscriptions/listen; continuing without list-changed notifications", "error", err)
+						} else {
+							return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
+						}
 					}
 				}
 				return cs, nil
