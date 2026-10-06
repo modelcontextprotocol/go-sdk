@@ -1097,12 +1097,6 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	}
 }
 
-func setStreamDiscoverTimeout(t *testing.T, d time.Duration) {
-	initial := streamDiscoverTimeout
-	streamDiscoverTimeout = d
-	t.Cleanup(func() { streamDiscoverTimeout = initial })
-}
-
 // serveSilentStdio emulates a handshake-era stdio server that answers only
 // initialize and tools/list, silently dropping every other message.
 func serveSilentStdio(r io.Reader, w io.Writer) {
@@ -1141,14 +1135,31 @@ type delegatingTransport struct {
 	Transport
 }
 
-func connectToSilentStdioServer(t *testing.T, ctx context.Context, wrap func(Transport) Transport) {
-	t.Helper()
+// connWrappingTransport is a user-defined Transport that also wraps the
+// Connection, which hides the underlying stream connection from Connect.
+type connWrappingTransport struct {
+	Transport
+}
+
+func (t connWrappingTransport) Connect(ctx context.Context) (Connection, error) {
+	conn, err := t.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return struct{ Connection }{conn}, nil
+}
+
+func silentStdioTransport() *IOTransport {
 	cr, sw := io.Pipe()
 	sr, cw := io.Pipe()
 	go serveSilentStdio(sr, sw)
+	return &IOTransport{Reader: cr, Writer: cw}
+}
 
+func connectWithFallback(t *testing.T, ctx context.Context, tr Transport, opts *ClientSessionOptions) {
+	t.Helper()
 	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, wrap(&IOTransport{Reader: cr, Writer: cw}), nil)
+	cs, err := client.Connect(ctx, tr, opts)
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -1165,43 +1176,56 @@ func connectToSilentStdioServer(t *testing.T, ctx context.Context, wrap func(Tra
 // TestClientConnectDiscover_SilentStdioServer verifies that Connect falls back
 // to initialize when a stdio server never answers server/discover (#1332).
 func TestClientConnectDiscover_SilentStdioServer(t *testing.T) {
-	setStreamDiscoverTimeout(t, 50*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	connectToSilentStdioServer(t, ctx, func(t Transport) Transport { return t })
+	connectWithFallback(t, ctx, silentStdioTransport(), &ClientSessionOptions{DiscoverTimeout: 50 * time.Millisecond})
 }
 
-// TestClientConnectDiscover_SilentStdioServerWrapped verifies the fallback when
-// the stdio transport is wrapped, either by LoggingTransport or by a
-// user-defined Transport.
-func TestClientConnectDiscover_SilentStdioServerWrapped(t *testing.T) {
-	setStreamDiscoverTimeout(t, 50*time.Millisecond)
-	wrappers := map[string]func(Transport) Transport{
-		"logging": func(t Transport) Transport { return &LoggingTransport{Transport: t, Writer: io.Discard} },
-		"custom":  func(t Transport) Transport { return delegatingTransport{t} },
+// TestClientConnectDiscover_SilentStdioServerShortDeadline verifies that the
+// default discover probe leaves part of a short caller deadline for
+// initialize, including when the stdio transport is wrapped.
+func TestClientConnectDiscover_SilentStdioServerShortDeadline(t *testing.T) {
+	transports := map[string]func() Transport{
+		"plain":   func() Transport { return silentStdioTransport() },
+		"logging": func() Transport { return &LoggingTransport{Transport: silentStdioTransport(), Writer: io.Discard} },
+		"custom":  func() Transport { return delegatingTransport{silentStdioTransport()} },
 	}
-	for name, wrap := range wrappers {
+	for name, newTransport := range transports {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			connectToSilentStdioServer(t, ctx, wrap)
+			connectWithFallback(t, ctx, newTransport(), nil)
 		})
 	}
 }
 
-// TestClientConnectDiscover_SilentStdioServerShortDeadline verifies that the
-// discover probe leaves part of a short caller deadline for initialize.
-func TestClientConnectDiscover_SilentStdioServerShortDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+// TestClientConnectDiscover_ExplicitTimeout verifies that an explicit
+// DiscoverTimeout also applies to connections the default doesn't recognize.
+func TestClientConnectDiscover_ExplicitTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	connectToSilentStdioServer(t, ctx, func(t Transport) Transport { return t })
+	tr := connWrappingTransport{silentStdioTransport()}
+	connectWithFallback(t, ctx, tr, &ClientSessionOptions{DiscoverTimeout: 50 * time.Millisecond})
+}
+
+// TestClientConnectDiscover_NegativeTimeout verifies that a negative
+// DiscoverTimeout disables the bound, so a silent server blocks Connect until
+// the caller's deadline.
+func TestClientConnectDiscover_NegativeTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
+	cs, err := client.Connect(ctx, silentStdioTransport(), &ClientSessionOptions{DiscoverTimeout: -1})
+	if err == nil {
+		cs.Close()
+		t.Fatal("client.Connect succeeded, want an error from the caller's deadline")
+	}
 }
 
 // TestClientConnectDiscover_SlowStdioServer verifies that a modern stdio
 // server answering server/discover after the probe timeout still connects
 // through the initialize fallback, and its late reply is ignored.
 func TestClientConnectDiscover_SlowStdioServer(t *testing.T) {
-	setStreamDiscoverTimeout(t, 50*time.Millisecond)
 	ctx := context.Background()
 
 	server := NewServer(&Implementation{Name: "slow-server", Version: "v1"}, nil)
@@ -1222,19 +1246,8 @@ func TestClientConnectDiscover_SlowStdioServer(t *testing.T) {
 	}
 	defer ss.Close()
 
-	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
-	cs, err := client.Connect(ctx, &IOTransport{Reader: cr, Writer: cw}, nil)
-	if err != nil {
-		t.Fatalf("client.Connect: %v", err)
-	}
-	defer cs.Close()
-
-	if got, want := cs.InitializeResult().ProtocolVersion, protocolVersion20251125; got != want {
-		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
-	}
-	if _, err := cs.ListTools(ctx, nil); err != nil {
-		t.Errorf("ListTools after fallback initialize: %v", err)
-	}
+	tr := &IOTransport{Reader: cr, Writer: cw}
+	connectWithFallback(t, ctx, tr, &ClientSessionOptions{DiscoverTimeout: 50 * time.Millisecond})
 }
 
 // TestClientRejectsMissingRequiredParams checks that server-to-client messages
