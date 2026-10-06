@@ -639,6 +639,98 @@ func TestGetProtectedResourceMetadata_Backcompat(t *testing.T) {
 	}
 }
 
+// TestGetProtectedResourceMetadata_BackcompatDropsQuery checks that the
+// 2025-03-26 fallback authorization base URL keeps only the scheme and
+// authority of the MCP server URL: a query or fragment is not part of it.
+func TestGetProtectedResourceMetadata_BackcompatDropsQuery(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
+	for _, mcpURL := range []string{
+		"http://localhost:1234/mcp?tenant=acme",
+		"http://localhost:1234/mcp#frag",
+		"http://localhost:1234/mcp?",
+		"http://localhost:1234?tenant=acme",
+	} {
+		got, err := handler.getProtectedResourceMetadata(t.Context(), nil, mcpURL)
+		if err != nil {
+			t.Fatalf("getProtectedResourceMetadata(%q) error = %v", mcpURL, err)
+		}
+		wantPRM := &oauthex.ProtectedResourceMetadata{
+			Resource:             mcpURL,
+			AuthorizationServers: []string{"http://localhost:1234"},
+		}
+		if diff := cmp.Diff(wantPRM, got); diff != "" {
+			t.Errorf("getProtectedResourceMetadata(%q) metadata mismatch (-want +got):\n%s", mcpURL, diff)
+		}
+	}
+}
+
+// TestAuthorize_BackcompatServerURLWithQuery runs the whole flow against a
+// 2025-03-26 style server (no protected resource metadata, authorization
+// server at the MCP server's root) reached through a URL with a query string.
+func TestAuthorize_BackcompatServerURLWithQuery(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	mcpURL := authServer.URL() + "/mcp?tenant=acme"
+	req := httptest.NewRequest(http.MethodGet, mcpURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	if err := handler.Authorize(t.Context(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+	tokenSource, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	if _, err := tokenSource.Token(); err != nil {
+		t.Fatalf("Failed to get token: %v", err)
+	}
+}
+
 func TestGetProtectedResourceMetadata_Error(t *testing.T) {
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)

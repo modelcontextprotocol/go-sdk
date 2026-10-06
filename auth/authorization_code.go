@@ -443,9 +443,12 @@ func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Cont
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse MCP server URL: %v", err)
 	}
-	u.Path = ""
+	// The authorization base URL is the MCP server URL without its path, so
+	// keep only the scheme and authority: a query or fragment left in place
+	// would end up in the issuer and in the fallback endpoint URLs.
+	authServerURL := &url.URL{Scheme: u.Scheme, Host: u.Host}
 	prm := &oauthex.ProtectedResourceMetadata{
-		AuthorizationServers: []string{u.String()},
+		AuthorizationServers: []string{authServerURL.String()},
 		Resource:             mcpServerURL,
 	}
 	return prm, nil
