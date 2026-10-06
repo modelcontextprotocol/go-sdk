@@ -2029,3 +2029,59 @@ func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
 		t.Fatal("subscriptions/listen was not called")
 	}
 }
+
+// TestStreamableClient_ResourceSubscribeListen404ReturnsError verifies that
+// rejecting an explicit resource subscription is reported to its caller even
+// though rejecting the optional Connect-time list-changed listen is non-fatal.
+func TestStreamableClient_ResourceSubscribeListen404ReturnsError(t *testing.T) {
+	ctx := t.Context()
+
+	discovery := *discoverResult
+	discovery.Capabilities = &ServerCapabilities{
+		Resources: &ResourceCapabilities{Subscribe: true},
+	}
+	var listenServed atomic.Bool
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header:              header{"Content-Type": "application/json"},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, resp(r.ID.Raw().(int64), &discovery, nil)), http.StatusOK
+				},
+			},
+			{"POST", "", methodSubscriptionsListen, ""}: {
+				header: header{"Content-Type": "text/plain"},
+				responseFunc: func(*jsonrpc.Request) (string, int) {
+					listenServed.Store(true)
+					return "404 Not Found", http.StatusNotFound
+				},
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	err = session.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"})
+	if !listenServed.Load() {
+		t.Fatal("subscriptions/listen was not called")
+	}
+	if !errors.Is(err, jsonrpc2.ErrRejected) {
+		t.Fatalf("Subscribe error = %v, want ErrRejected", err)
+	}
+	session.resourceSubsMu.Lock()
+	defer session.resourceSubsMu.Unlock()
+	if got := len(session.resourceSubs); got != 0 {
+		t.Fatalf("resourceSubs contains %d entries after rejected Subscribe, want 0", got)
+	}
+}
