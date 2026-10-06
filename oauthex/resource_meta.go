@@ -289,9 +289,11 @@ func parseSingleChallenge(s string) (Challenge, error) {
 				value = strings.TrimSpace(paramsStr[:commaPos])
 				paramsStr = strings.TrimSpace(paramsStr[commaPos:]) // Keep comma for next check
 			}
-		}
-		if value == "" {
-			return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			// A token is one or more characters. A quoted string may be empty
+			// (RFC 9110, section 5.6.4), so only an unquoted value is checked here.
+			if value == "" {
+				return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			}
 		}
 
 		// Per RFC 9110, parameter keys are case-insensitive.
