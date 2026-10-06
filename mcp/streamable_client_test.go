@@ -2025,7 +2025,5 @@ func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
 	if res == nil {
 		t.Fatal("ListTools result is nil")
 	}
-	if !listenServed.Load() {
-		t.Fatal("subscriptions/listen was not called")
-	}
+	waitUntil(t, 5*time.Second, "subscriptions/listen to be called", listenServed.Load)
 }

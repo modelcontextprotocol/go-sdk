@@ -294,24 +294,6 @@ func (e *peerCancelledError) Error() string {
 
 func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
-//
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
-	call := conn.Call(ctx, method, params)
-
-	go func() {
-		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
-	}()
-}
-
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
