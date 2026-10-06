@@ -59,7 +59,7 @@ func annotateResultType(res Result) {
 
 // InputRequest is a type for parameters that a server can include in the response
 // to request input from client (SEP-2322). Implementations are [*ElicitParams],
-// [*CreateMessageParams], and [*ListRootsParams].
+// [*CreateMessageParams], [*CreateMessageWithToolsParams], and [*ListRootsParams].
 type InputRequest interface{ isInputRequest() }
 
 // InputRequestMap maps server-assigned request IDs to [InputRequest] values.
@@ -143,7 +143,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 
 // InputResponse is a type for results that a client sends back when fulfilling
 // a server input request (SEP-2322). Implementations are [*ElicitResult],
-// [*CreateMessageResult], and [*ListRootsResult].
+// [*CreateMessageResult], [*CreateMessageWithToolsResult], and [*ListRootsResult].
 type InputResponse interface{ isInputResponse() }
 
 // InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
