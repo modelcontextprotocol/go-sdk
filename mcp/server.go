@@ -2065,6 +2065,18 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// to wait for, and the request itself says which protocol it speaks.
 	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
 		req.Method != methodInitialize && req.Method != methodPing {
+		if !slices.ContainsFunc(ss.server.protocolVersions, func(v string) bool {
+			return v < protocolVersion20260728
+		}) {
+			data, _ := json.Marshal(UnsupportedProtocolVersionData{
+				Supported: ss.server.protocolVersions,
+			})
+			return nil, &jsonrpc.Error{
+				Code:    CodeUnsupportedProtocolVersion,
+				Message: "legacy-format requests are not supported by this server",
+				Data:    data,
+			}
+		}
 		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
 		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
 	}

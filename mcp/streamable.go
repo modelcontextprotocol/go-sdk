@@ -472,6 +472,20 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
+	if !info.usesNewProtocol && !slices.ContainsFunc(server.protocolVersions, func(v string) bool {
+		return v < protocolVersion20260728
+	}) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: server.protocolVersions,
+		})
+		writeJSONRPCError(w, http.StatusBadRequest, jsonrpc.ID{}, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "legacy-format requests are not supported by this server",
+			Data:    data,
+		})
+		return
+	}
+
 	var sessionID string
 	if legacySessions && !info.usesNewProtocol {
 		sessionID = req.Header.Get(sessionIDHeader)
