@@ -99,20 +99,28 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 
 	return func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenInfo, errmsg, code := verify(r, verifier, opts)
+			tokenInfo, errmsg, code, authError := verify(r, verifier, opts)
 			if code != 0 {
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
+					var params []string
+					// Emit the RFC 6750 error code so clients can react to it. In
+					// particular, the SDK's own step-up flow only re-authorizes
+					// when it sees error="insufficient_scope" on a 403
+					// (see AuthorizationCodeHandler.Authorize); without it, a
+					// scope shortfall is never upgraded.
+					if authError != "" {
+						params = append(params, fmt.Sprintf("error=%q", authError))
+					}
 					if opts != nil {
-						var params []string
 						if opts.ResourceMetadataURL != "" {
 							params = append(params, fmt.Sprintf("resource_metadata=%q", opts.ResourceMetadataURL))
 						}
 						if len(opts.Scopes) > 0 {
 							params = append(params, fmt.Sprintf("scope=%q", strings.Join(opts.Scopes, " ")))
 						}
-						if len(params) > 0 {
-							w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
-						}
+					}
+					if len(params) > 0 {
+						w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
 					}
 				}
 				http.Error(w, errmsg, code)
@@ -124,27 +132,33 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 	}
 }
 
-func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenOptions) (_ *TokenInfo, errmsg string, code int) {
+// verify authenticates and authorizes req. On failure it returns a non-zero
+// HTTP status code and, where applicable, the RFC 6750 §3.1 error code
+// (authError) to advertise in the WWW-Authenticate challenge. authError is
+// empty when no error code applies — for a missing token (no credentials
+// presented) and for server-side 5xx failures.
+func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenOptions) (_ *TokenInfo, errmsg string, code int, authError string) {
 	// Extract bearer token.
 	authHeader := req.Header.Get("Authorization")
 	fields := strings.Fields(authHeader)
 	if len(fields) != 2 || strings.ToLower(fields[0]) != "bearer" {
-		return nil, "no bearer token", http.StatusUnauthorized
+		// No credentials presented: RFC 6750 §3.1 advertises no error code.
+		return nil, "no bearer token", http.StatusUnauthorized, ""
 	}
 
 	// Verify the token and get information from it.
 	tokenInfo, err := verifier(req.Context(), fields[1], req)
 	if err != nil {
 		if errors.Is(err, ErrInvalidToken) {
-			return nil, err.Error(), http.StatusUnauthorized
+			return nil, err.Error(), http.StatusUnauthorized, "invalid_token"
 		}
 		if errors.Is(err, ErrOAuth) {
-			return nil, err.Error(), http.StatusBadRequest
+			return nil, err.Error(), http.StatusBadRequest, "invalid_request"
 		}
-		return nil, err.Error(), http.StatusInternalServerError
+		return nil, err.Error(), http.StatusInternalServerError, ""
 	}
 	if tokenInfo == nil {
-		return nil, "token validation failed", http.StatusInternalServerError
+		return nil, "token validation failed", http.StatusInternalServerError, ""
 	}
 
 	// Check scopes. All must be present.
@@ -152,7 +166,7 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 		// Note: quadratic, but N is small.
 		for _, s := range opts.Scopes {
 			if !slices.Contains(tokenInfo.Scopes, s) {
-				return nil, "insufficient scope", http.StatusForbidden
+				return nil, "insufficient scope", http.StatusForbidden, "insufficient_scope"
 			}
 		}
 	}
@@ -165,12 +179,12 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 	// AllowMissingExpiration.
 	if tokenInfo.Expiration.IsZero() {
 		if !opts.AllowMissingExpiration {
-			return nil, "token missing expiration", http.StatusUnauthorized
+			return nil, "token missing expiration", http.StatusUnauthorized, "invalid_token"
 		}
 	} else if tokenInfo.Expiration.Add(opts.ClockSkew).Before(time.Now()) {
-		return nil, "token expired", http.StatusUnauthorized
+		return nil, "token expired", http.StatusUnauthorized, "invalid_token"
 	}
-	return tokenInfo, "", 0
+	return tokenInfo, "", 0, ""
 }
 
 // ProtectedResourceMetadataHandler returns an http.Handler that serves OAuth 2.0

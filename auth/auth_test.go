@@ -36,54 +36,99 @@ func TestVerify(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name     string
-		opts     *RequireBearerTokenOptions
-		header   string
-		wantMsg  string
-		wantCode int
+		name          string
+		opts          *RequireBearerTokenOptions
+		header        string
+		wantMsg       string
+		wantCode      int
+		wantAuthError string // RFC 6750 error code to advertise, "" if none
 	}{
 		{
 			"valid", nil, "Bearer valid",
-			"", 0,
+			"", 0, "",
 		},
 		{
 			"bad header", nil, "Barer valid",
-			"no bearer token", 401,
+			"no bearer token", 401, "",
 		},
 		{
 			"invalid", nil, "bearer invalid",
-			"invalid token", 401,
+			"invalid token", 401, "invalid_token",
 		},
 		{
 			"oauth error", nil, "Bearer oauth",
-			"oauth error", 400,
+			"oauth error", 400, "invalid_request",
 		},
 		{
 			"no expiration", nil, "Bearer noexp",
-			"token missing expiration", 401,
+			"token missing expiration", 401, "invalid_token",
 		},
 		{
 			"no expiration with AllowMissingExpiration accepts",
 			&RequireBearerTokenOptions{AllowMissingExpiration: true}, "Bearer noexp",
-			"", 0,
+			"", 0, "",
 		},
 		{
 			"expired", nil, "Bearer expired",
-			"token expired", 401,
+			"token expired", 401, "invalid_token",
 		},
 		{
 			"missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer valid",
-			"insufficient scope", 403,
+			"insufficient scope", 403, "insufficient_scope",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotMsg, gotCode := verify(&http.Request{
+			_, gotMsg, gotCode, gotAuthError := verify(&http.Request{
 				Header: http.Header{"Authorization": {tt.header}},
 			}, verifier, tt.opts)
-			if gotMsg != tt.wantMsg || gotCode != tt.wantCode {
-				t.Errorf("got (%q, %d), want (%q, %d)", gotMsg, gotCode, tt.wantMsg, tt.wantCode)
+			if gotMsg != tt.wantMsg || gotCode != tt.wantCode || gotAuthError != tt.wantAuthError {
+				t.Errorf("got (%q, %d, %q), want (%q, %d, %q)",
+					gotMsg, gotCode, gotAuthError, tt.wantMsg, tt.wantCode, tt.wantAuthError)
 			}
 		})
+	}
+}
+
+func TestRequireBearerTokenAdvertisesInsufficientScope(t *testing.T) {
+	// A valid token lacking a required scope must yield a 403 whose
+	// WWW-Authenticate challenge carries error="insufficient_scope". The SDK's
+	// own client step-up flow (AuthorizationCodeHandler.Authorize) re-authorizes
+	// only when it sees exactly that value, so without it step-up never fires.
+	verifier := func(_ context.Context, _ string, _ *http.Request) (*TokenInfo, error) {
+		return &TokenInfo{Expiration: time.Now().Add(time.Hour), Scopes: []string{"read"}}, nil
+	}
+	mw := RequireBearerToken(verifier, &RequireBearerTokenOptions{
+		Scopes:              []string{"admin"},
+		ResourceMetadataURL: "https://example.com/.well-known/oauth-protected-resource",
+	})
+	handler := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("handler should not be reached on insufficient scope")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/mcp", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	// Parse the challenge exactly as the client does (oauthex.ParseWWWAuthenticate
+	// + a "bearer" scheme match) and confirm the error code is visible.
+	challenges, err := oauthex.ParseWWWAuthenticate(rec.Result().Header[http.CanonicalHeaderKey("WWW-Authenticate")])
+	if err != nil {
+		t.Fatalf("ParseWWWAuthenticate: %v", err)
+	}
+	var gotError string
+	for _, c := range challenges {
+		if c.Scheme == "bearer" && c.Params["error"] != "" {
+			gotError = c.Params["error"]
+		}
+	}
+	if gotError != "insufficient_scope" {
+		t.Errorf("WWW-Authenticate error param = %q, want %q (header: %q)",
+			gotError, "insufficient_scope", rec.Result().Header.Get("WWW-Authenticate"))
 	}
 }
 
@@ -213,7 +258,7 @@ func TestRequireBearerToken(t *testing.T) {
 			name:       "no middleware options",
 			opts:       nil,
 			authHeader: "Bearer invalid",
-			wantHeader: "",
+			wantHeader: "Bearer error=\"invalid_token\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -222,7 +267,7 @@ func TestRequireBearerToken(t *testing.T) {
 				ResourceMetadataURL: "https://example.com/resource-metadata",
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\"",
+			wantHeader: "Bearer error=\"invalid_token\", resource_metadata=\"https://example.com/resource-metadata\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -231,7 +276,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes: []string{"read", "write"},
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer scope=\"read write\"",
+			wantHeader: "Bearer error=\"invalid_token\", scope=\"read write\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -241,7 +286,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes:              []string{"read", "write"},
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
+			wantHeader: "Bearer error=\"invalid_token\", resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -250,7 +295,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes: []string{"admin"},
 			},
 			authHeader: "Bearer valid", // Has "read", needs "admin" -> 403
-			wantHeader: "Bearer scope=\"admin\"",
+			wantHeader: "Bearer error=\"insufficient_scope\", scope=\"admin\"",
 			wantStatus: http.StatusForbidden,
 		},
 		{
