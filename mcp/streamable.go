@@ -2315,7 +2315,8 @@ type streamableClientConn struct {
 
 	// Logical reads are distributed across multiple http requests. Whenever any
 	// of them fails to process their response, we must break the connection, by
-	// failing the pending Read.
+	// failing the pending Read. Without a session, only that call is ended
+	// instead (see [streamableClientConn.endCall]).
 	//
 	// Achieve this by storing the failure message, and signalling when reads are
 	// broken. See also [streamableClientConn.fail] and
@@ -2424,6 +2425,14 @@ func (c *streamableClientConn) fail(err error) {
 			c._failure = err
 			close(c.failed)
 		})
+	}
+}
+
+// endCall ends call with err, leaving the connection usable.
+func (c *streamableClientConn) endCall(call *jsonrpc.Request, err error) {
+	select {
+	case c.incoming <- &jsonrpc2.Response{ID: call.ID, Error: err}:
+	case <-c.done:
 	}
 }
 
@@ -2558,6 +2567,8 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// plain text 404 or 400), which checkResponse cannot classify as a
 			// per-call rejection on its own.
 			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) && c.SessionID() == "" {
+			return jsonrpc2.NonFatal(err)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
 			// Transient errors (wrapped with ErrRejected) should not break the connection.
@@ -2602,7 +2613,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	contentType := baseMediaType(resp.Header.Get("Content-Type"))
 	switch contentType {
 	case "application/json":
-		go c.handleJSON(requestSummary, resp)
+		go c.handleJSON(requestSummary, resp, forCall)
 
 	case "text/event-stream":
 		var forCall *jsonrpc.Request
@@ -2617,7 +2628,11 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	default:
 		resp.Body.Close()
-		return fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
+		err := fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
+		if c.SessionID() == "" {
+			return jsonrpc2.NonFatal(err)
+		}
+		return err
 	}
 	return nil
 }
@@ -2683,16 +2698,26 @@ func protocolVersionFromMessage(msg jsonrpc.Message) string {
 	return v
 }
 
-func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
+func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) {
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		c.fail(fmt.Errorf("%s: failed to read body: %v", requestSummary, err))
+		err = fmt.Errorf("%s: failed to read body: %v", requestSummary, err)
+		if forCall != nil && c.SessionID() == "" {
+			c.endCall(forCall, err)
+		} else {
+			c.fail(err)
+		}
 		return
 	}
 	msg, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
-		c.fail(fmt.Errorf("%s: failed to decode response: %v", requestSummary, err))
+		err = fmt.Errorf("%s: failed to decode response: %v", requestSummary, err)
+		if forCall != nil && c.SessionID() == "" {
+			c.endCall(forCall, err)
+		} else {
+			c.fail(err)
+		}
 		return
 	}
 	select {
@@ -2741,7 +2766,12 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 			retriesWithoutProgress++
 			if retriesWithoutProgress > c.maxRetries {
 				if ctx.Err() == nil {
-					c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
+					err := fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID)
+					if forCall != nil && c.SessionID() == "" {
+						c.endCall(forCall, err)
+					} else {
+						c.fail(err)
+					}
 				}
 				return
 			}
@@ -2751,17 +2781,26 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
 		if err != nil {
 			// If the client didn't cancel this request, any failure to execute it
-			// breaks the logical MCP session.
+			// breaks the logical MCP session, if there is one.
 			if ctx.Err() == nil {
-				// All reconnection attempts failed: fail the connection.
-				c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+				// All reconnection attempts failed.
+				err = fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err)
+				if forCall != nil && c.SessionID() == "" {
+					c.endCall(forCall, err)
+				} else {
+					c.fail(err)
+				}
 			}
 			return
 		}
 
 		resp = newResp
 		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-			c.fail(err)
+			if forCall != nil && c.SessionID() == "" {
+				c.endCall(forCall, err)
+			} else {
+				c.fail(err)
+			}
 			return
 		}
 	}
@@ -2824,9 +2863,14 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			}
 
 			// Malformed events are hard errors that indicate corrupted data or protocol
-			// violations. These should fail the connection permanently.
+			// violations, so the stream is not resumed.
 			if errors.Is(err, errMalformedEvent) {
-				c.fail(fmt.Errorf("%s: %v", requestSummary, err))
+				err = fmt.Errorf("%s: %v", requestSummary, err)
+				if forCall != nil && c.SessionID() == "" {
+					c.endCall(forCall, err)
+				} else {
+					c.fail(err)
+				}
 				return "", 0, true
 			}
 
@@ -2858,7 +2902,12 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
-			c.fail(fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
+			err = fmt.Errorf("%s: failed to decode event: %v", requestSummary, err)
+			if forCall != nil && c.SessionID() == "" {
+				c.endCall(forCall, err)
+			} else {
+				c.fail(err)
+			}
 			return "", 0, true
 		}
 
@@ -2887,14 +2936,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 	// Note that this is different from the cancellation case above, since the
 	// caller is still waiting for a response that will never come.
 	if lastEventID == "" && forCall != nil {
-		errmsg := &jsonrpc2.Response{
-			ID:    forCall.ID,
-			Error: fmt.Errorf("request terminated without response"),
-		}
-		select {
-		case c.incoming <- errmsg:
-		case <-c.done:
-		}
+		c.endCall(forCall, fmt.Errorf("request terminated without response"))
 	}
 	return lastEventID, reconnectDelay, false
 }
