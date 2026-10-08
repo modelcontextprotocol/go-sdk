@@ -54,6 +54,16 @@ func TestSplitChallenges(t *testing.T) {
 			want:  []string{`Basic realm="C:\\"`, ` Bearer error="insufficient_scope"`},
 		},
 		{
+			name:  "empty list element between params",
+			input: `Bearer realm="example",, error="insufficient_scope"`,
+			want:  []string{`Bearer realm="example",, error="insufficient_scope"`},
+		},
+		{
+			name:  "empty list element between challenges",
+			input: `Basic, , Bearer realm="example"`,
+			want:  []string{`Basic`, ` `, ` Bearer realm="example"`},
+		},
+		{
 			name:  "empty input",
 			input: "",
 			want:  []string{""},
@@ -110,6 +120,28 @@ func TestParseWWWAuthenticateEmptyQuotedValue(t *testing.T) {
 			"realm":             "",
 			"error_description": "",
 			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// Recipients must accept empty list elements (RFC 9110, section 5.6.1).
+// An extra comma must not move error="insufficient_scope" out of the Bearer
+// challenge, or the auth handler would not start step-up authorization.
+func TestParseWWWAuthenticateEmptyListElements(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`, Basic realm="a",, Bearer , realm="b",, error="insufficient_scope",`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "basic", Params: map[string]string{"realm": "a"}},
+		{Scheme: "bearer", Params: map[string]string{
+			"realm": "b",
+			"error": "insufficient_scope",
 		}},
 	}
 	if !reflect.DeepEqual(got, want) {

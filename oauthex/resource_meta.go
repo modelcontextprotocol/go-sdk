@@ -198,7 +198,8 @@ func splitChallenges(header string) ([]string, error) {
 			// This is a potential challenge separator.
 			// A new challenge does not start with `key=value`.
 			// We check if the part after the comma looks like a parameter.
-			lookahead := strings.TrimSpace(header[i+1:])
+			// Empty list elements are skipped (RFC 9110, section 5.6.1).
+			lookahead := strings.TrimLeft(header[i+1:], ", \t")
 			eqPos := strings.Index(lookahead, "=")
 
 			isParam := false
@@ -240,7 +241,8 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 	params := make(map[string]string)
 
-	// Parse the key-value parameters.
+	// Parse the key-value parameters, skipping any leading empty list elements.
+	paramsStr = strings.TrimLeft(paramsStr, ", \t")
 	for paramsStr != "" {
 		// Find the end of the parameter key.
 		keyEnd := strings.Index(paramsStr, "=")
@@ -299,9 +301,10 @@ func parseSingleChallenge(s string) (Challenge, error) {
 		// Per RFC 9110, parameter keys are case-insensitive.
 		params[strings.ToLower(key)] = value
 
-		// If there is a comma, consume it and continue to the next parameter.
+		// If there is a comma, consume it, along with any empty list elements
+		// that follow it, and continue to the next parameter.
 		if strings.HasPrefix(paramsStr, ",") {
-			paramsStr = strings.TrimSpace(paramsStr[1:])
+			paramsStr = strings.TrimLeft(paramsStr, ", \t")
 		} else if paramsStr != "" {
 			// If there's content but it's not a new parameter, the format is wrong.
 			return Challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
