@@ -44,76 +44,62 @@ func TestShuttingDownWrapsReadError(t *testing.T) {
 // rather than a nil cause no caller passes.
 var errPeerAskedToStop = errors.New("peer asked to stop")
 
-// TestCancelFromPeerSuppressesResponse verifies that a call the peer asked to
-// cancel receives no response, while a call cancelled locally still does; the
-// barrier is a second call, which handlers answer only after the first one.
-func TestCancelFromPeerSuppressesResponse(t *testing.T) {
+// TestCancelFromPeerTellsWriter verifies that a writer that drops responses is
+// told about a call the peer cancelled before the handler's context is
+// cancelled, and not about a call cancelled locally. The response is written
+// either way; dropping it is up to the writer. The barrier is a second call,
+// which handlers answer only after the first one.
+func TestCancelFromPeerTellsWriter(t *testing.T) {
 	tests := []struct {
-		name     string
-		fromPeer bool
-		want     []ID // the IDs responded to, in order
+		name      string
+		fromPeer  bool
+		dropper   bool // whether the writer is a ResponseDropper
+		want      []ID // the IDs of the responses written, in order
+		wantDrops []ID // the IDs DropResponse is called with
 	}{
-		{"peer cancellation", true, []ID{Int64ID(2)}},
-		{"local cancellation", false, []ID{Int64ID(1), Int64ID(2)}},
+		{"peer cancellation, plain writer", true, false, []ID{Int64ID(1), Int64ID(2)}, nil},
+		{"peer cancellation, writer drops the response", true, true, []ID{Int64ID(1), Int64ID(2)}, []ID{Int64ID(1)}},
+		{"local cancellation", false, true, []ID{Int64ID(1), Int64ID(2)}, nil},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			incoming := make(chan Message, 2)
-			writer := &recordingWriter{written: make(chan *Response, 2)}
-
+			rec := &recordingWriter{written: make(chan *Response, 2)}
+			dropper := &dropperWriter{recordingWriter: rec}
+			var writer Writer = rec
+			if test.dropper {
+				writer = dropper
+			}
 			started := make(chan struct{})
-			handler := HandlerFunc(func(ctx context.Context, req *Request) (any, error) {
-				if req.Method == "barrier" {
-					return struct{}{}, nil
-				}
+			dropsAtCancel := make(chan []ID, 1)
+			conn, incoming := newCancelTestConn(t, writer, func(ctx context.Context) (any, error) {
 				close(started)
 				<-ctx.Done()
+				dropsAtCancel <- dropper.drops()
 				return nil, context.Cause(ctx)
 			})
 
-			conn := NewConnection(context.Background(), ConnectionConfig{
-				Reader: &channelReader{messages: incoming},
-				Writer: writer,
-				Closer: &channelCloser{messages: incoming},
-				Bind:   func(*Connection) Handler { return handler },
-				OnDone: func() {},
-				OnInternalError: func(err error) {
-					t.Errorf("internal error: %v", err)
-				},
-			})
-
-			slow, err := NewCall(Int64ID(1), "slow", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			barrier, err := NewCall(Int64ID(2), "barrier", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			incoming <- slow
+			incoming <- mustCall(t, 1, "slow")
 			<-started
 			if test.fromPeer {
 				conn.CancelFromPeer(Int64ID(1), errPeerAskedToStop)
 			} else {
 				conn.Cancel(Int64ID(1))
 			}
-			incoming <- barrier
+			incoming <- mustCall(t, 2, "barrier")
 
 			var got []ID
 			for range test.want {
-				got = append(got, (<-writer.written).ID)
+				got = append(got, (<-rec.written).ID)
 			}
 			if !equalIDs(got, test.want) {
-				t.Errorf("responded to %v, want %v", got, test.want)
+				t.Errorf("responses written for %v, want %v", got, test.want)
 			}
-
-			var wantDropped []ID
-			if test.fromPeer {
-				wantDropped = []ID{Int64ID(1)}
+			// The writer is told before the handler's context is cancelled.
+			if drops := <-dropsAtCancel; !equalIDs(drops, test.wantDrops) {
+				t.Errorf("when the handler's context was cancelled, DropResponse called for %v, want %v", drops, test.wantDrops)
 			}
-			if dropped := writer.dropped(); !equalIDs(dropped, wantDropped) {
-				t.Errorf("dropped %v, want %v", dropped, wantDropped)
+			if drops := dropper.drops(); !equalIDs(drops, test.wantDrops) {
+				t.Errorf("DropResponse called for %v, want %v", drops, test.wantDrops)
 			}
 
 			if err := conn.Close(); err != nil {
@@ -121,6 +107,83 @@ func TestCancelFromPeerSuppressesResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCancelFromPeerHandlerIgnoresContext verifies that the writer is told of
+// a peer cancellation as soon as it arrives, even when the handler ignores its
+// context, that it still receives the response it drops once the handler
+// returns, and that a cancellation arriving after that is ignored.
+func TestCancelFromPeerHandlerIgnoresContext(t *testing.T) {
+	rec := &recordingWriter{written: make(chan *Response, 2)}
+	dropper := &dropperWriter{recordingWriter: rec}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	conn, incoming := newCancelTestConn(t, dropper, func(context.Context) (any, error) {
+		close(started)
+		<-release
+		return struct{}{}, nil
+	})
+
+	incoming <- mustCall(t, 1, "slow")
+	<-started
+	conn.CancelFromPeer(Int64ID(1), errPeerAskedToStop)
+
+	if drops := dropper.drops(); !equalIDs(drops, []ID{Int64ID(1)}) {
+		t.Errorf("after the cancellation, DropResponse called for %v, want [1]", drops)
+	}
+
+	close(release)
+	incoming <- mustCall(t, 2, "barrier")
+	var got []ID
+	for range 2 {
+		got = append(got, (<-rec.written).ID)
+	}
+	if want := []ID{Int64ID(1), Int64ID(2)}; !equalIDs(got, want) {
+		t.Errorf("responses written for %v, want %v", got, want)
+	}
+	conn.CancelFromPeer(Int64ID(1), errPeerAskedToStop)
+	if drops := dropper.drops(); !equalIDs(drops, []ID{Int64ID(1)}) {
+		t.Errorf("after a late cancellation, DropResponse called for %v, want [1]", drops)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+}
+
+// newCancelTestConn returns a Connection reading from the returned channel
+// and writing to writer. Its handler answers "barrier" at once and runs slow
+// for any other method. Handlers run one at a time, so once the barrier is
+// answered, the slow call is finished.
+func newCancelTestConn(t *testing.T, writer Writer, slow func(context.Context) (any, error)) (*Connection, chan Message) {
+	t.Helper()
+	incoming := make(chan Message, 2)
+	handler := HandlerFunc(func(ctx context.Context, req *Request) (any, error) {
+		if req.Method == "barrier" {
+			return struct{}{}, nil
+		}
+		return slow(ctx)
+	})
+	conn := NewConnection(context.Background(), ConnectionConfig{
+		Reader: &channelReader{messages: incoming},
+		Writer: writer,
+		Closer: &channelCloser{messages: incoming},
+		Bind:   func(*Connection) Handler { return handler },
+		OnDone: func() {},
+		OnInternalError: func(err error) {
+			t.Errorf("internal error: %v", err)
+		},
+	})
+	return conn, incoming
+}
+
+func mustCall(t *testing.T, id int64, method string) *Request {
+	t.Helper()
+	call, err := NewCall(Int64ID(id), method, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return call
 }
 
 // equalIDs reports whether two ID slices hold the same IDs in the same order.
@@ -165,13 +228,9 @@ func (c *channelCloser) Close() error {
 	return nil
 }
 
-// recordingWriter reports the responses a Connection writes, and the calls it
-// is told will get none.
+// recordingWriter reports the responses a Connection writes.
 type recordingWriter struct {
 	written chan *Response
-
-	mu   sync.Mutex
-	drop []ID
 }
 
 func (w *recordingWriter) Write(_ context.Context, msg Message) error {
@@ -181,15 +240,23 @@ func (w *recordingWriter) Write(_ context.Context, msg Message) error {
 	return nil
 }
 
-// DropResponse implements [ResponseDropper].
-func (w *recordingWriter) DropResponse(id ID) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.drop = append(w.drop, id)
+// dropperWriter is a recordingWriter that is also a [ResponseDropper],
+// recording the IDs it is told about.
+type dropperWriter struct {
+	*recordingWriter
+
+	mu      sync.Mutex
+	dropped []ID
 }
 
-func (w *recordingWriter) dropped() []ID {
+func (w *dropperWriter) DropResponse(id ID) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return append([]ID(nil), w.drop...)
+	w.dropped = append(w.dropped, id)
+}
+
+func (w *dropperWriter) drops() []ID {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]ID(nil), w.dropped...)
 }

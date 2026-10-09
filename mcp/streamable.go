@@ -1088,6 +1088,11 @@ type stream struct {
 	// the duration of the subscription, and act as the target for
 	// out-of-band notifications routed through this connection.
 	isListen bool
+
+	// peerTerminated records that the peer cancelled a call on this stream (see
+	// terminate). From then on deliverLocked discards every message, and only
+	// keeps the accounting of requests.
+	peerTerminated bool
 }
 
 // close sends a 'close' event to the client (if protocolVersion >= 2025-11-25
@@ -1109,6 +1114,24 @@ func (s *stream) close(reconnectAfter time.Duration) {
 		}); err != nil {
 			s.logger.Warn(fmt.Sprintf("Writing close event: %v", err))
 		}
+	}
+	close(s.done)
+	s.done = nil
+}
+
+// terminate ends the stream because the peer cancelled a call on it. The
+// hanging request, if any, is released at once, with 204 No Content if
+// nothing was written to it. Anything delivered to the stream afterwards,
+// including the cancelled call's response, is discarded (see deliverLocked).
+func (s *stream) terminate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peerTerminated = true
+	if s.done == nil {
+		return // stream not connected or already closed
+	}
+	if s.pendingJSONMessages != nil || s.lastWrite.IsZero() {
+		s.writeNoContentLocked()
 	}
 	close(s.done)
 	s.done = nil
@@ -1237,11 +1260,11 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 // pendingJSONMessages (for JSON mode). The eventID is used for SSE event ID;
 // pass "" to omit.
 //
-// If data is nil there is nothing to write: the call is only accounting for a
-// request that will never be answered (see [streamableServerConn.DropResponse]).
-//
 // If responseTo is valid, it is removed from the requests map. When all
 // requests have been responded to, the done channel is closed and set to nil.
+//
+// If the stream is peerTerminated, data is discarded without error: only the
+// accounting above is done.
 //
 // If overrideStatus is non-zero, data is treated as a SEP-2575 protocol-level
 // error response (>= 2026-07-28): it is written as a single raw JSON-RPC
@@ -1261,6 +1284,9 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	}
 	// Now, try to deliver the message to the client.
 	done = len(s.requests) == 0 && s.id != ""
+	if s.peerTerminated {
+		return done, nil
+	}
 	if s.done == nil {
 		return done, fmt.Errorf("stream not connected or already closed")
 	}
@@ -1286,12 +1312,8 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	// there's a brief race between request cancellation and releasing the
 	// stream.
 	if s.pendingJSONMessages != nil {
-		if data != nil {
-			s.pendingJSONMessages = append(s.pendingJSONMessages, data)
-		}
-		if done && len(s.pendingJSONMessages) == 0 {
-			s.writeNoContentLocked()
-		} else if done {
+		s.pendingJSONMessages = append(s.pendingJSONMessages, data)
+		if done {
 			// Flush all pending messages as JSON response.
 			var toWrite []byte
 			if len(s.pendingJSONMessages) == 1 && !s.isBatch {
@@ -1306,22 +1328,19 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 				return done, err
 			}
 		}
-	} else if data != nil {
+	} else {
 		// SSE mode: write event to response writer.
 		s.lastIdx++
 		if _, err := writeEvent(s.w, Event{Name: "message", Data: data, ID: eventID}); err != nil {
 			return done, err
 		}
 		s.markWrittenLocked()
-	} else if done && s.lastWrite.IsZero() {
-		// Nothing was ever written, so the header is still ours to set.
-		s.writeNoContentLocked()
 	}
 	return done, nil
 }
 
-// writeNoContentLocked ends a stream that carried nothing: every request the
-// POST brought was cancelled before it was answered, so there is no body and
+// writeNoContentLocked ends a stream that carried nothing because the peer
+// cancelled a call on it before anything was written, so there is no body and
 // the status says so instead of an empty 200 under a Content-Type.
 func (s *stream) writeNoContentLocked() {
 	s.w.Header().Del("Content-Type")
@@ -2120,7 +2139,9 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	delivered := false
 	var errs []error
 	protocolVersion := protocolVersionFromContext(ctx)
-	if c.eventStore != nil && protocolVersion < protocolVersion20260728 {
+	// A terminated stream discards messages, so they must not be replayed on
+	// resumption either.
+	if c.eventStore != nil && protocolVersion < protocolVersion20260728 && !s.peerTerminated {
 		if err := c.eventStore.Append(ctx, c.sessionID, s.id, data); err != nil {
 			errs = append(errs, err)
 		} else {
@@ -2159,33 +2180,20 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	return nil
 }
 
-// DropResponse implements [jsonrpc2.ResponseDropper]: the cancelled call gets
-// no response, but a POST's stream hangs until every call it carried has been
-// answered, so the call is retired from the stream all the same.
+// DropResponse implements [jsonrpc2.ResponseDropper]: the stream that carries
+// the cancelled call is terminated now, rather than when the handler returns.
+// The response still goes through Write, which retires the call as usual but
+// sends nothing, so the call keeps its ID until then.
 func (c *streamableServerConn) DropResponse(id jsonrpc.ID) {
 	c.mu.Lock()
 	var s *stream
 	if streamID, ok := c.requestStreams[id]; ok {
 		s = c.streams[streamID]
 	}
-	delete(c.requestStreams, id)
 	c.mu.Unlock()
 
-	if s == nil {
-		return
-	}
-
-	s.mu.Lock()
-	// A nil payload delivers nothing; it only retires the request. An error
-	// here means the stream is already disconnected, which is not a problem
-	// when there is nothing to send.
-	done, _ := s.deliverLocked(nil, "", id, 0)
-	s.mu.Unlock()
-
-	if done {
-		c.mu.Lock()
-		delete(c.streams, s.id)
-		c.mu.Unlock()
+	if s != nil {
+		s.terminate()
 	}
 }
 

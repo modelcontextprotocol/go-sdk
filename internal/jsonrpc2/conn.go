@@ -173,11 +173,6 @@ type incomingRequest struct {
 	*Request // the request being processed
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
-
-	// peerCancelled records that the peer asked for this request to be
-	// cancelled, as opposed to its context ending for another reason; set by
-	// [Connection.CancelFromPeer] and read by processResult under stateMu.
-	peerCancelled bool
 }
 
 // Reader abstracts the transport mechanics from the JSON RPC protocol.
@@ -204,12 +199,14 @@ type Writer interface {
 	Write(context.Context, Message) error
 }
 
-// ResponseDropper is an optional interface for a [Writer] that holds state per
-// incoming call, and so has to be told when a call the peer cancelled (see
-// [Connection.CancelFromPeer]) will never be answered.
+// ResponseDropper is an optional interface for a [Writer] that can drop the
+// response to a call the peer cancelled (see [Connection.CancelFromPeer]). The
+// Connection still writes the response once the call's handler returns, so
+// that the writer sees the call finish, and the writer discards it.
 type ResponseDropper interface {
-	// DropResponse reports that the incoming call with the given ID is
-	// finished and will receive no response.
+	// DropResponse reports, when the cancellation arrives, that the peer
+	// cancelled the incoming call with the given ID, so its response must not
+	// be sent.
 	DropResponse(id ID)
 }
 
@@ -481,26 +478,34 @@ func (c *Connection) CancelCause(id ID, cause error) {
 }
 
 // CancelFromPeer is [Connection.CancelCause] for a cancellation the peer
-// requested, such as an MCP "notifications/cancelled": it also suppresses the
-// response, which the MCP specification says a cancelled request gets none of.
+// requested, such as an MCP "notifications/cancelled": it also tells a writer
+// that is a [ResponseDropper] to drop the response, which the MCP
+// specification says a cancelled request gets none of.
 func (c *Connection) CancelFromPeer(id ID, cause error) {
 	c.cancelIncoming(id, cause, true)
 }
 
 // cancelIncoming cancels the inbound request with the given ID, recording the
-// cause and whether the peer asked for it. A request already responded to is
-// no longer in incomingByID, so a late cancellation retracts nothing.
+// cause, and tells the writer to drop the response if the peer asked for the
+// cancellation. A request already responded to is no longer in incomingByID,
+// so a late cancellation retracts nothing.
 func (c *Connection) cancelIncoming(id ID, cause error, fromPeer bool) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
-		if req != nil && fromPeer {
-			req.peerCancelled = true
-		}
 	})
-	if req != nil {
-		req.cancel(cause)
+	if req == nil {
+		return
 	}
+	if fromPeer {
+		// Tell the writer before cancelling, so that it knows by the time a
+		// handler that honors its context returns. This runs outside stateMu
+		// since the writer may do I/O.
+		if d, ok := c.writer.(ResponseDropper); ok {
+			d.DropResponse(id)
+		}
+	}
+	req.cancel(cause)
 }
 
 // Wait blocks until the connection is fully closed, but does not close it.
@@ -751,29 +756,17 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 
 		// The caller could theoretically reuse the request's ID as soon as we've
 		// sent the response, so ensure that it is removed from the incoming map
-		// before sending. Reading peerCancelled here keeps it atomic with that
-		// removal: a cancellation either arrives before this point and is
-		// honored, or finds the request gone and does nothing.
-		var peerCancelled bool
+		// before sending.
 		c.updateInFlight(func(s *inFlightState) {
-			peerCancelled = req.peerCancelled
 			delete(s.incomingByID, req.ID)
 		})
-		if respErr != nil {
-			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
-		}
-		if peerCancelled {
-			// The peer cancelled this call, so it gets no response; a Writer that
-			// keeps state per call (a POST's stream stays open until every call
-			// in it is answered) is told the response is not coming.
-			if d, ok := c.writer.(ResponseDropper); ok {
-				d.DropResponse(req.ID)
-			}
-		} else if respErr == nil {
+		if respErr == nil {
 			writeErr := c.write(notDone{req.ctx}, response)
 			if err == nil {
 				err = writeErr
 			}
+		} else {
+			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
 		}
 	} else { // req is a notification
 		if result != nil {

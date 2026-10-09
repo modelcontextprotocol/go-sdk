@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -250,8 +251,9 @@ type cancellationPropagator interface {
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
-// cancelled notifications. The cancelled request is answered with no response
-// at all, as the spec requires.
+// cancelled notifications. Connections that implement
+// [jsonrpc2.ResponseDropper] send no response for the cancelled request, as
+// the spec requires.
 type canceller struct {
 	conn   *jsonrpc2.Connection
 	logger *slog.Logger
@@ -424,8 +426,8 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 }
 
 // DropResponse implements [jsonrpc2.ResponseDropper] by forwarding to the
-// delegate: the connection asks its writer for the interface, and a wrapper
-// without it would silently keep the delegate waiting for the response.
+// delegate: the connection asks its writer for the interface, so a wrapper
+// without it would keep the delegate from learning that a call was cancelled.
 func (s *loggingConn) DropResponse(id jsonrpc.ID) {
 	if dropper, ok := s.delegate.(jsonrpc2.ResponseDropper); ok {
 		dropper.DropResponse(id)
@@ -492,8 +494,12 @@ type ioConn struct {
 
 	// batches correlate incoming requests to the batch in which they arrived.
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
+	//
+	// dropped holds the incoming calls the peer cancelled, whose responses
+	// Write discards (see [ioConn.DropResponse]). It is guarded by batchMu too.
 	batchMu sync.Mutex
 	batches map[jsonrpc2.ID]*msgBatch // lazily allocated
+	dropped map[jsonrpc2.ID]bool      // lazily allocated
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -636,30 +642,50 @@ func (t *ioConn) addBatch(batch *msgBatch) error {
 	return nil
 }
 
+// DropResponse implements [jsonrpc2.ResponseDropper]: the response to the
+// cancelled call is discarded by Write, which still accounts for it in the
+// call's batch, if any, so that the other responses in the batch are sent.
+func (t *ioConn) DropResponse(id jsonrpc.ID) {
+	t.batchMu.Lock()
+	defer t.batchMu.Unlock()
+	if t.dropped == nil {
+		t.dropped = make(map[jsonrpc2.ID]bool)
+	}
+	t.dropped[id] = true
+}
+
 // updateBatch records a response in the message batch tracking the
-// corresponding incoming call, if any.
+// corresponding incoming call, if any. A response to a call the peer
+// cancelled (see [ioConn.DropResponse]) is left out of its batch.
 //
-// The second result reports whether resp was part of a batch. If this is true,
-// the first result is nil if the batch is still incomplete, or the full set of
-// batch responses if resp completed the batch.
+// The second result reports whether resp was part of a batch or dropped. If
+// this is true, the first result holds the responses to send: none if resp's
+// batch is still incomplete or resp was dropped outside a batch, or the
+// batch's responses if resp completed the batch.
 func (t *ioConn) updateBatch(resp *jsonrpc.Response) ([]*jsonrpc.Response, bool) {
 	t.batchMu.Lock()
 	defer t.batchMu.Unlock()
 
+	dropped := t.dropped[resp.ID]
+	delete(t.dropped, resp.ID)
 	if batch, ok := t.batches[resp.ID]; ok {
 		idx, ok := batch.unresolved[resp.ID]
 		if !ok {
 			panic("internal error: inconsistent batches")
 		}
-		batch.responses[idx] = resp
+		if !dropped {
+			batch.responses[idx] = resp
+		}
 		delete(batch.unresolved, resp.ID)
 		delete(t.batches, resp.ID)
 		if len(batch.unresolved) == 0 {
-			return batch.responses, true
+			// nil out dropped responses before returning the batch
+			// a nil response might be present in case of dropped call by notification/cancel
+			return slices.DeleteFunc(batch.responses, func(r *jsonrpc.Response) bool { return r == nil }), true
 		}
 		return nil, true
 	}
-	return nil, false
+	return nil, dropped
 }
 
 // A msgBatch records information about an incoming batch of jsonrpc.2 calls.
@@ -783,10 +809,10 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	// Batching support: if msg is a Response, it may have completed a batch, so
-	// check that first. Otherwise, it is a request or notification, and we may
-	// want to collect it into a batch before sending, if we're configured to use
-	// outgoing batches.
+	// Batching support: if msg is a Response, it may have completed a batch, or
+	// be dropped, so check that first. Otherwise, it is a request or
+	// notification, and we may want to collect it into a batch before sending,
+	// if we're configured to use outgoing batches.
 	if resp, ok := msg.(*jsonrpc.Response); ok {
 		if batch, ok := t.updateBatch(resp); ok {
 			if len(batch) > 0 {

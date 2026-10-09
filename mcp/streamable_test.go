@@ -3862,6 +3862,331 @@ func TestStreamableCancelledCallGetsNoResponse(t *testing.T) {
 	}
 }
 
+// TestStreamableCancelledCallHandlerIgnoresContext checks that the POST of a
+// cancelled call is released as soon as the cancellation arrives, even if the
+// handler keeps running, and that the call's ID stays reserved until the
+// handler returns.
+func TestStreamableCancelledCallHandlerIgnoresContext(t *testing.T) {
+	forEachResponseMode(t, func(t *testing.T, jsonResponse bool) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		server := NewServer(testImpl, nil)
+		server.AddTool(&Tool{Name: "stubborn", InputSchema: &jsonschema.Schema{Type: "object"}},
+			func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+				close(started)
+				<-release
+				return &CallToolResult{}, nil
+			})
+		server.AddTool(&Tool{Name: "noop", InputSchema: &jsonschema.Schema{Type: "object"}},
+			func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+				return &CallToolResult{}, nil
+			})
+		s := newCancelTestSession(t, server, &StreamableHTTPOptions{JSONResponse: jsonResponse}, protocolVersion20250618)
+		// Closing the session waits for the handler, so release it on failure too.
+		releaseHandler := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(releaseHandler)
+
+		call := s.postAsync(req(2, "tools/call", &CallToolParams{Name: "stubborn"}))
+		<-started
+		s.cancel(2)
+
+		got := <-call
+		if got.err != nil {
+			t.Fatalf("the cancelled call's POST was not released while its handler ran: %v", got.err)
+		}
+		if got.status != http.StatusNoContent || len(got.body) > 0 {
+			t.Errorf("the cancelled call's POST: status %d, body %q; want %d and no body", got.status, got.body, http.StatusNoContent)
+		}
+
+		reuse := s.mustPost(req(2, "tools/call", &CallToolParams{Name: "noop"}))
+		if reuse.StatusCode != http.StatusBadRequest {
+			t.Errorf("reusing the ID while its handler runs: status %d, want %d", reuse.StatusCode, http.StatusBadRequest)
+		}
+
+		releaseHandler()
+		s.waitFor("the cancelled call to be forgotten", func(c *streamableServerConn) bool {
+			return len(c.requestStreams) == 0 && len(c.streams) == 1 // only the standalone stream
+		})
+		if again := s.mustPost(req(2, "tools/call", &CallToolParams{Name: "noop"})); again.StatusCode != http.StatusOK {
+			t.Errorf("reusing the ID after its handler returned: status %d, want %d", again.StatusCode, http.StatusOK)
+		}
+	})
+}
+
+// TestStreamableCancelledCallAfterEvents checks that cancelling a call whose
+// SSE stream already carried a message ends the stream normally, with that
+// message and no response. With an event store, resuming the stream must not
+// replay the response either.
+func TestStreamableCancelledCallAfterEvents(t *testing.T) {
+	for _, withStore := range []bool{false, true} {
+		name := "no event store"
+		if withStore {
+			name = "event store"
+		}
+		t.Run(name, func(t *testing.T) {
+			started := make(chan struct{})
+			server := NewServer(testImpl, nil)
+			server.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+				func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{ProgressToken: "tok", Progress: 1}); err != nil {
+						return nil, err
+					}
+					close(started)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				})
+			opts := &StreamableHTTPOptions{}
+			if withStore {
+				opts.EventStore = NewMemoryEventStore(nil)
+			}
+			s := newCancelTestSession(t, server, opts, protocolVersion20250618)
+
+			call := s.postAsync(req(2, "tools/call", &CallToolParams{Name: "slow"}))
+			<-started
+			s.cancel(2)
+
+			got := <-call
+			if got.err != nil {
+				t.Fatalf("the cancelled call's POST: %v", got.err)
+			}
+			if got.status != http.StatusOK {
+				t.Errorf("the cancelled call's POST: status %d, want %d", got.status, http.StatusOK)
+			}
+			if !strings.Contains(got.body, notificationProgress) || strings.Contains(got.body, `"id":2`) {
+				t.Errorf("the cancelled call's stream carried:\n%s\nwant the progress notification and no response", got.body)
+			}
+			s.waitFor("the cancelled call to be forgotten", func(c *streamableServerConn) bool {
+				return len(c.requestStreams) == 0 && len(c.streams) == 1
+			})
+
+			if !withStore {
+				return
+			}
+			var lastEventID string
+			for line := range strings.Lines(got.body) {
+				if id, ok := strings.CutPrefix(strings.TrimSpace(line), "id: "); ok {
+					lastEventID = id
+				}
+			}
+			if lastEventID == "" {
+				t.Fatalf("the cancelled call's stream carried no event ID:\n%s", got.body)
+			}
+			if replayed := s.resume(lastEventID); strings.Contains(replayed, `"id":2`) {
+				t.Errorf("resuming the stream replayed the cancelled call's response:\n%s", replayed)
+			}
+		})
+	}
+}
+
+// TestStreamableCancelledCallInBatch checks that cancelling one call of a
+// 2025-03-26 batch ends the batch's POST at once, even with another call still
+// running, and that nothing is left behind once every handler has returned.
+// Responses to the other calls that were not yet written are dropped.
+func TestStreamableCancelledCallInBatch(t *testing.T) {
+	for _, answeredFirst := range []bool{true, false} {
+		name := "cancelled first"
+		if answeredFirst {
+			name = "answered first"
+		}
+		t.Run(name, func(t *testing.T) {
+			forEachResponseMode(t, func(t *testing.T, jsonResponse bool) {
+				started := make(chan struct{})
+				release := make(chan struct{})
+				server := NewServer(testImpl, nil)
+				server.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+					func(ctx context.Context, _ *CallToolRequest) (*CallToolResult, error) {
+						close(started)
+						<-ctx.Done()
+						return nil, ctx.Err()
+					})
+				server.AddTool(&Tool{Name: "gated", InputSchema: &jsonschema.Schema{Type: "object"}},
+					func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+						<-release
+						return &CallToolResult{Content: []Content{&TextContent{Text: "gated result"}}}, nil
+					})
+				s := newCancelTestSession(t, server, &StreamableHTTPOptions{JSONResponse: jsonResponse}, protocolVersion20250326)
+				releaseHandler := sync.OnceFunc(func() { close(release) })
+				t.Cleanup(releaseHandler)
+
+				call := s.postAsync(
+					req(2, "tools/call", &CallToolParams{Name: "slow"}),
+					req(3, "tools/call", &CallToolParams{Name: "gated"}))
+				<-started
+				if answeredFirst {
+					releaseHandler()
+					s.waitFor("call 3 to be answered", func(c *streamableServerConn) bool {
+						_, ok := c.requestStreams[jsonrpc2.Int64ID(3)]
+						return !ok
+					})
+				}
+				s.cancel(2)
+
+				got := <-call
+				if got.err != nil {
+					t.Fatalf("the batch's POST: %v", got.err)
+				}
+				if strings.Contains(got.body, `"id":2`) {
+					t.Errorf("the batch's POST carried a response to the cancelled call:\n%s", got.body)
+				}
+				releaseHandler()
+				s.waitFor("the batch to be forgotten", func(c *streamableServerConn) bool {
+					return len(c.requestStreams) == 0 && len(c.streams) == 1
+				})
+			})
+		})
+	}
+}
+
+func forEachResponseMode(t *testing.T, f func(t *testing.T, jsonResponse bool)) {
+	t.Run("sse", func(t *testing.T) { f(t, false) })
+	t.Run("json", func(t *testing.T) { f(t, true) })
+}
+
+// cancelTestSession is a raw HTTP client for one session of a streamable
+// server, for tests that cancel calls in flight: an SDK client abandons the
+// POST of a call it cancels, so it cannot observe how the server ends it.
+type cancelTestSession struct {
+	t         *testing.T
+	ctx       context.Context
+	handler   *StreamableHTTPHandler
+	url       string
+	version   string
+	sessionID string
+}
+
+func newCancelTestSession(t *testing.T, server *Server, opts *StreamableHTTPOptions, version string) *cancelTestSession {
+	t.Helper()
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, opts)
+	t.Cleanup(handler.closeAll)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	t.Cleanup(httpServer.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	s := &cancelTestSession{t: t, ctx: ctx, handler: handler, url: httpServer.URL, version: version}
+	s.sessionID = s.mustPost(req(1, methodInitialize, &InitializeParams{ProtocolVersion: version})).Header.Get(sessionIDHeader)
+	if s.sessionID == "" {
+		t.Fatal("initialize response carried no session ID")
+	}
+	s.mustPost(req(0, notificationInitialized, &InitializedParams{}))
+	return s
+}
+
+// post sends msgs in one POST, as a batch if there is more than one.
+func (s *cancelTestSession) post(msgs ...jsonrpc.Message) (*http.Response, error) {
+	var raw []json.RawMessage
+	for _, msg := range msgs {
+		data, err := jsonrpc2.EncodeMessage(msg)
+		if err != nil {
+			return nil, err
+		}
+		raw = append(raw, data)
+	}
+	body := []byte(raw[0])
+	if len(raw) > 1 {
+		body = mustMarshal(raw)
+	}
+	httpReq, err := http.NewRequestWithContext(s.ctx, http.MethodPost, s.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if s.sessionID != "" {
+		httpReq.Header.Set(sessionIDHeader, s.sessionID)
+		httpReq.Header.Set(protocolVersionHeader, s.version)
+	}
+	return http.DefaultClient.Do(httpReq)
+}
+
+// mustPost is like post, but discards the response body.
+func (s *cancelTestSession) mustPost(msgs ...jsonrpc.Message) *http.Response {
+	s.t.Helper()
+	resp, err := s.post(msgs...)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
+type postResult struct {
+	status int
+	body   string
+	err    error
+}
+
+// postAsync is like post, but returns at once and reports the whole response
+// once the server ends it.
+func (s *cancelTestSession) postAsync(msgs ...jsonrpc.Message) <-chan postResult {
+	ch := make(chan postResult, 1)
+	go func() {
+		resp, err := s.post(msgs...)
+		if err != nil {
+			ch <- postResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		ch <- postResult{status: resp.StatusCode, body: string(body), err: err}
+	}()
+	return ch
+}
+
+// resume resumes a stream with a GET carrying lastEventID, and returns the
+// events replayed.
+func (s *cancelTestSession) resume(lastEventID string) string {
+	s.t.Helper()
+	httpReq, err := http.NewRequestWithContext(s.ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set(sessionIDHeader, s.sessionID)
+	httpReq.Header.Set(protocolVersionHeader, s.version)
+	httpReq.Header.Set(lastEventIDHeader, lastEventID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		s.t.Fatalf("resuming the stream: status %d, body %q", resp.StatusCode, body)
+	}
+	return string(body)
+}
+
+func (s *cancelTestSession) cancel(id int64) {
+	s.t.Helper()
+	s.mustPost(req(0, notificationCancelled, &CancelledParams{RequestID: id, Reason: "test cancellation"}))
+}
+
+// waitFor waits until cond holds for the session's connection, with its lock
+// held.
+func (s *cancelTestSession) waitFor(what string, cond func(*streamableServerConn) bool) {
+	s.t.Helper()
+	s.handler.mu.Lock()
+	c := s.handler.sessions[s.sessionID].transport.connection
+	s.handler.mu.Unlock()
+	for {
+		c.mu.Lock()
+		ok := cond(c)
+		c.mu.Unlock()
+		if ok {
+			return
+		}
+		select {
+		case <-s.ctx.Done():
+			s.t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 // TestStreamableStateless_AcceptsNewProtocol is the positive control:
 // confirms that a stateless server still accepts new-protocol requests
 // (the rejection in TestStreamableStateful_RejectsNewProtocol must not
