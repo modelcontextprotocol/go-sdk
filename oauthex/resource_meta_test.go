@@ -117,6 +117,27 @@ func TestParseWWWAuthenticateEmptyQuotedValue(t *testing.T) {
 	}
 }
 
+// A challenge may carry a token68 instead of auth-params (RFC 9110,
+// section 11.6.1). It must not stop the Bearer challenge next to it from
+// being parsed.
+func TestParseWWWAuthenticateToken68(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Negotiate oYH1MIHyoAMKAQ, Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "negotiate"},
+		{Scheme: "bearer", Params: map[string]string{
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
 func TestSplitChallengesError(t *testing.T) {
 	if _, err := splitChallenges(`"Bearer"`); err == nil {
 		t.Fatal("got nil, want error")
@@ -210,8 +231,18 @@ func TestParseSingleChallenge(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "malformed param - no value",
-			input:   "Bearer realm=",
+			name:  "token68",
+			input: "Negotiate oYH1MIHyoAMKAQ",
+			want:  Challenge{Scheme: "negotiate"},
+		},
+		{
+			name:  "token68 with padding",
+			input: "Basic dGVzdA==",
+			want:  Challenge{Scheme: "basic"},
+		},
+		{
+			name:    "malformed token68",
+			input:   "Negotiate abc def",
 			wantErr: true,
 		},
 		{
