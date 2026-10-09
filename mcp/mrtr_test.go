@@ -429,6 +429,139 @@ func TestMultiRoundTrip_AutoRetry_InputRequiredWithoutFields(t *testing.T) {
 	}
 }
 
+// TestMultiRoundTrip_ServerRequestStateOnly verifies that a handler can return
+// a result with only a RequestState for each multi round-trip method: the
+// server labels it input_required, and the client retries it with the state
+// echoed.
+func TestMultiRoundTrip_ServerRequestStateOnly(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			if req.Params.RequestState == "" {
+				return &CallToolResult{RequestState: "continue"}, nil
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+		},
+	)
+	srv.AddPrompt(&Prompt{Name: "review"}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		if req.Params.RequestState == "" {
+			return &GetPromptResult{RequestState: "continue"}, nil
+		}
+		return &GetPromptResult{
+			Messages: []*PromptMessage{{Role: "user", Content: &TextContent{Text: "state=" + req.Params.RequestState}}},
+		}, nil
+	})
+	srv.AddResource(&Resource{URI: "test://data", Name: "data"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		if req.Params.RequestState == "" {
+			return &ReadResourceResult{RequestState: "continue"}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://data", Text: "state=" + req.Params.RequestState}},
+		}, nil
+	})
+
+	cs := mustConnect(t, srv, nil)
+	const want = "state=continue"
+
+	t.Run("tools/call", func(t *testing.T) {
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+		if err != nil {
+			t.Fatalf("CallTool() error = %v", err)
+		}
+		if len(res.Content) != 1 {
+			t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+		}
+		if got := res.Content[0].(*TextContent).Text; got != want {
+			t.Errorf("result text = %q, want %q", got, want)
+		}
+	})
+	t.Run("prompts/get", func(t *testing.T) {
+		res, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review"})
+		if err != nil {
+			t.Fatalf("GetPrompt() error = %v", err)
+		}
+		if len(res.Messages) != 1 {
+			t.Fatalf("GetPrompt() messages = %v, want one message", res.Messages)
+		}
+		if got := res.Messages[0].Content.(*TextContent).Text; got != want {
+			t.Errorf("message text = %q, want %q", got, want)
+		}
+	})
+	t.Run("resources/read", func(t *testing.T) {
+		res, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://data"})
+		if err != nil {
+			t.Fatalf("ReadResource() error = %v", err)
+		}
+		if len(res.Contents) != 1 {
+			t.Fatalf("ReadResource() contents = %v, want one entry", res.Contents)
+		}
+		if got := res.Contents[0].Text; got != want {
+			t.Errorf("contents text = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestMultiRoundTrip_RequestStateOnly_MaxRetries verifies that the client
+// counts requestState-only results as rounds, not as load shedding: a server
+// that keeps asking to continue is called maxMultiRoundTripRetries times.
+func TestMultiRoundTrip_RequestStateOnly_MaxRetries(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "loop", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			calls.Add(1)
+			return &CallToolResult{RequestState: "again"}, nil
+		},
+	)
+
+	cs := mustConnect(t, srv, nil)
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "loop"})
+	if err == nil {
+		t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum retries") {
+		t.Errorf("CallTool() err = %v, want it to mention the retry limit", err)
+	}
+	if got := calls.Load(); got != maxMultiRoundTripRetries {
+		t.Errorf("tool calls = %d, want %d", got, maxMultiRoundTripRetries)
+	}
+}
+
+// TestMultiRoundTrip_ContentWithRequestState verifies that a result with both
+// content and a RequestState is rejected as a server bug, like content with
+// InputRequests.
+func TestMultiRoundTrip_ContentWithRequestState(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "mixed", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{
+				Content:      []Content{&TextContent{Text: "done"}},
+				RequestState: "stray",
+			}, nil
+		},
+	)
+
+	cs := mustConnect(t, srv, nil)
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "mixed"})
+	if err == nil {
+		t.Fatal("CallTool() err = nil, want a server error for content with a requestState")
+	}
+	if !strings.Contains(err.Error(), "both content and inputRequests or requestState") {
+		t.Errorf("CallTool() err = %v, want the content/requestState server error", err)
+	}
+}
+
 func TestMultiRoundTrip_UnsupportedRetryParamsType(t *testing.T) {
 	ctx := context.Background()
 
@@ -734,6 +867,44 @@ func TestMultiRoundTrip_ServerMiddleware_MaxRetries(t *testing.T) {
 	}
 	if got := serverCalls.Load(); got != maxMultiRoundTripRetries {
 		t.Errorf("serverCalls = %d, want %d", got, maxMultiRoundTripRetries)
+	}
+}
+
+// TestMultiRoundTrip_ServerMiddleware_RequestStateOnly verifies that, for a
+// client on an older protocol version, the server-side shim calls the handler
+// again with the state echoed when it returns only a RequestState.
+func TestMultiRoundTrip_ServerMiddleware_RequestStateOnly(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			calls.Add(1)
+			if req.Params.RequestState == "" {
+				return &CallToolResult{RequestState: "continue"}, nil
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+		},
+	)
+
+	cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+	})
+
+	res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+	}
+	if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
+		t.Errorf("result text = %q, want %q", got, "state=continue")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("tool calls = %d, want 2", got)
 	}
 }
 

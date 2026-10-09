@@ -441,10 +441,10 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
-		// Skip when the handler returned input requests (multi round-trip): content and
-		// inputRequests are mutually exclusive on the wire.
+		// Skip when the handler asked for input (multi round-trip): content and
+		// an input-required result are mutually exclusive on the wire.
 		var outval any = out
-		if res.InputRequests != nil {
+		if asksForInput(res) {
 			outval = nil
 		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
@@ -957,7 +957,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Messages == nil && res.InputRequests == nil {
+		if res.Messages == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Messages = []*PromptMessage{} // avoid "null"
 			res = &res2
@@ -1065,7 +1065,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.InputRequests == nil {
+		if res.Content == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1134,7 +1134,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.InputRequests != nil {
+	if asksForInput(res) {
 		return res, nil
 	}
 	if res.Contents == nil {

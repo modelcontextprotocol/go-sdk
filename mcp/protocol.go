@@ -49,7 +49,7 @@ func annotateResultType(res Result) {
 	case multiRoundTripResponse:
 		// These results are complete or input_required, so label them by
 		// whether the handler asked for more client input.
-		if r.inputRequests() != nil {
+		if asksForInput(r) {
 			r.setResultType(resultTypeInputRequired)
 		} else {
 			r.setResultType(resultTypeComplete)
