@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 func TestMultiRoundTrip_ManualRetry(t *testing.T) {
@@ -962,6 +965,24 @@ func TestMultiRoundTrip_NilHandlerResult(t *testing.T) {
 		{protocolVersion20251125, mustConnectOldProtocol},
 	}
 	for _, tt := range tests {
+		t.Run(tt.name+" error code", func(t *testing.T) {
+			c := NewClient(testImpl, tt.opts)
+			var err error
+			switch input := tt.input.(type) {
+			case *CreateMessageParams:
+				_, err = c.createMessage(t.Context(), &CreateMessageWithToolsRequest{Params: createMessageParamsToWithTools(input)})
+			case *ElicitParams:
+				_, err = c.elicit(t.Context(), &ElicitRequest{Params: input})
+			default:
+				t.Fatalf("unexpected input type %T", input)
+			}
+			if code := errorCode(err); code != jsonrpc.CodeInternalError {
+				t.Errorf("got error %v (code %d), want code %d", err, code, jsonrpc.CodeInternalError)
+			}
+			if !errors.Is(err, jsonrpc2.ErrInternal) {
+				t.Errorf("got error %v, want it to wrap jsonrpc2.ErrInternal", err)
+			}
+		})
 		for _, conn := range connections {
 			t.Run(tt.name+" "+conn.version, func(t *testing.T) {
 				srv := NewServer(testImpl, nil)
@@ -978,6 +999,9 @@ func TestMultiRoundTrip_NilHandlerResult(t *testing.T) {
 				}
 				if want := "returned a nil result"; !strings.Contains(err.Error(), want) {
 					t.Errorf("CallTool error = %v, want it to mention %q", err, want)
+				}
+				if code := errorCode(err); code != jsonrpc.CodeInternalError {
+					t.Errorf("CallTool error = %v (code %d), want code %d", err, code, jsonrpc.CodeInternalError)
 				}
 			})
 		}

@@ -754,7 +754,7 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 	if c.opts.CreateMessageWithToolsHandler != nil {
 		res, err := c.opts.CreateMessageWithToolsHandler(ctx, req)
 		if err == nil && res == nil {
-			return nil, errors.New("CreateMessageWithToolsHandler returned a nil result")
+			return nil, fmt.Errorf("%w: CreateMessageWithToolsHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		return res, err
 	}
@@ -773,7 +773,7 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 			return nil, err
 		}
 		if res == nil {
-			return nil, errors.New("CreateMessageHandler returned a nil result")
+			return nil, fmt.Errorf("%w: CreateMessageHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		return res.toWithTools(), nil
 	}
@@ -909,7 +909,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 			return nil, err
 		}
 		if res == nil {
-			return nil, errors.New("ElicitationHandler returned a nil result")
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		// Validate elicitation result content against requested schema.
 		if res.Action == "accept" && schema != nil && res.Content != nil {
@@ -936,7 +936,7 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		// No schema validation for URL mode.
 		res, err := c.opts.ElicitationHandler(ctx, req)
 		if err == nil && res == nil {
-			return nil, errors.New("ElicitationHandler returned a nil result")
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		return res, err
 	default:
