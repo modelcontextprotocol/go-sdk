@@ -17,7 +17,7 @@ info.txt
   "method": "initialize",
   "params": {
     "protocolVersion": "2024-11-05",
-    "capabilities": {},
+    "capabilities": { "roots": {} },
     "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
   }
 }

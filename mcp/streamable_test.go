@@ -824,7 +824,11 @@ func TestStreamableServerTransport(t *testing.T) {
 	// requests.
 
 	// Predefined steps, to avoid repetition below.
-	initReq := req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618})
+	// The client declares roots, so that tools can call ListRoots.
+	initReq := req(1, methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20250618,
+		Capabilities:    &ClientCapabilities{RootsV2: &RootCapabilities{}},
+	})
 	initResp := resp(1, &InitializeResult{
 		Capabilities: &ServerCapabilities{
 			Logging: &LoggingCapabilities{},
