@@ -27,6 +27,20 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   that large integers and other exact JSON values do not silently lose
   precision.
 
+- `disablepromptargsvalidation` added. If set to `1`, `Server.getPrompt` will
+  call the prompt handler even when a required argument of the prompt is
+  missing from the request, restoring the previous behavior. The default
+  behavior was changed to reject such requests with `-32602` (Invalid Params),
+  as the specification asks.
+
+- `allowmissingclientparams` added. If set to `1`, a `Client` accepts
+  `elicitation/create`, `notifications/elicitation/complete` and
+  `notifications/resources/updated` messages whose `params` member is missing
+  or `null`, restoring the previous behavior (the handler then observes nil
+  params, which crashed the built-in elicitation handlers). The default
+  behavior was changed to reject such messages as invalid requests, as the
+  specification lists `params` as required for all three.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

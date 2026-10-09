@@ -542,6 +542,52 @@ func TestNewAuthorizationCodeHandler_Error(t *testing.T) {
 	}
 }
 
+// draft-ietf-oauth-client-id-metadata-document-00 §3, which ClientIDMetadataDocumentConfig.URL cites.
+func TestClientIDMetadataDocumentURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{name: "path", url: "https://example.com/client"},
+		{name: "nested path", url: "https://example.com/oauth/client.json"},
+		{name: "port", url: "https://example.com:8443/client"},
+		{name: "trailing slash", url: "https://example.com/client/"},
+		{name: "root path", url: "https://example.com/"},
+		{name: "dot in segment name", url: "https://example.com/.well-known/client.json"},
+		{name: "encoded hash in path", url: "https://example.com/client%23name"},
+		// The cited draft says a query SHOULD NOT be included, not MUST NOT.
+		{name: "query", url: "https://example.com/client?x=1"},
+		{name: "bare origin", url: "https://example.com", wantErr: "non-root HTTPS URL"},
+		{name: "http", url: "http://example.com/client", wantErr: "non-root HTTPS URL"},
+		{name: "user and password", url: "https://user:pass@example.com/client", wantErr: "username or password"},
+		{name: "username", url: "https://user@example.com/client", wantErr: "username or password"},
+		{name: "password only", url: "https://:pass@example.com/client", wantErr: "username or password"},
+		{name: "empty userinfo", url: "https://@example.com/client", wantErr: "username or password"},
+		{name: "fragment", url: "https://example.com/client#frag", wantErr: "fragment"},
+		{name: "empty fragment", url: "https://example.com/client#", wantErr: "fragment"},
+		{name: "dot segment", url: "https://example.com/./client", wantErr: "dot path"},
+		{name: "dotdot segment", url: "https://example.com/foo/../client", wantErr: "dot path"},
+		{name: "encoded dotdot", url: "https://example.com/%2e%2e/client", wantErr: "dot path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.ClientIDMetadataDocumentConfig.URL = tt.url
+			_, err := NewAuthorizationCodeHandler(cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NewAuthorizationCodeHandler() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestGetProtectedResourceMetadata_Success(t *testing.T) {
 	handler, err := NewAuthorizationCodeHandler(validConfig())
 	if err != nil {

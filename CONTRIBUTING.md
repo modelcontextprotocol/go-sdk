@@ -49,17 +49,20 @@ go work init ./project ./go-sdk
 
 ### Conformance tests
 
-The SDK includes scripts to run the official MCP server and client conformance tests:
+The SDK includes scripts to run the official MCP conformance tests against the
+SDK's conformance server and client:
 
 ```sh
 ./scripts/server-conformance.sh
 ./scripts/client-conformance.sh
 ```
 
-To save server results to a specific directory:
+By default, results are cleaned up after the script runs. To save results to a
+specific directory:
 
 ```sh
 ./scripts/server-conformance.sh --result_dir ./conformance-results
+./scripts/client-conformance.sh --result_dir ./conformance-results
 ```
 
 To run against a local checkout of the
@@ -68,6 +71,7 @@ of the latest npm release:
 
 ```sh
 ./scripts/server-conformance.sh --conformance_repo ~/src/conformance
+./scripts/client-conformance.sh --conformance_repo ~/src/conformance
 ```
 
 Note: you must run `npm install` in the conformance repo first.
@@ -80,8 +84,8 @@ This project uses the [GitHub issue
 tracker](https://github.com/modelcontextprotocol/go-sdk/issues) for issues. The
 process for filing bugs and proposals is described below.
 
-TODO(rfindley): describe a process for asking general questions in the public
-MCP discord server.
+For general questions, see the [Discord](#discord) section below. Prefer GitHub
+issues or discussions for anything that should stay durable and searchable.
 
 ### Bugs
 
@@ -130,7 +134,7 @@ When discussions reach a consensus, they should be promoted into proposals.
 The project uses GitHub pull requests (PRs) to review changes.
 
 Any significant change should be associated with a GitHub issue. Issues that
-are deemed to be good opportunities for contribution are be labeled ['Help
+are deemed to be good opportunities for contribution are labeled ['Help
 Wanted'](https://github.com/modelcontextprotocol/go-sdk/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22).
 If you want to work on such an issue, please first comment on the issue to say
 that you're interested in contributing. For issues _not_ labeled 'Help Wanted',
@@ -199,7 +203,7 @@ change therefore cannot reach existing users by accident; they have to change
 their import path to receive one.
 
 This policy covers the exported API of the SDK's importable packages — `mcp`,
-`jsonrpc`, `auth`, `auth/extauth`, `oauthex` and `skills`. Everything under `internal/`
+`jsonrpc`, `auth`, `auth/extauth` and `oauthex`. Everything under `internal/`
 is not importable outside the module and may change in any release.
 
 Which MCP spec revisions each SDK version speaks is documented in the

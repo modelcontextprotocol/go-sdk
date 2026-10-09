@@ -82,7 +82,7 @@ mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, in MyIn
 ```
 The SDK validates at runtime that a handler does not return both content and `InputRequests` — doing so logs a warning and returns a `CodeInternalError` JSON-RPC error.
 
-An unexported receiving middleware is installed on the server for backward compatibility with older clients. When a handler returns `InputRequests` and the connected client uses a protocol version that does not support MRTR, the middleware fulfills the requests by calling `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the client directly and reinvokes the handler once with the collected `InputResponses`. If any of these calls fail, the entire request fails. Input requests are fulfilled concurrently. This lets server developers write protocol-version-independent code.
+An unexported receiving middleware is installed on the server for backward compatibility with older clients. When a handler returns `InputRequests` and the connected client uses a protocol version that does not support MRTR, the middleware fulfills the requests by calling `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the client directly and reinvokes the handler with the collected `InputResponses`, repeating until the handler completes or the same retry limit as the client-side middleware is reached. If any of these calls fail, the entire request fails. Input requests are fulfilled concurrently. This lets server developers write protocol-version-independent code.
 
 An unexported sending middleware is installed on the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. Clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
 ```go
@@ -195,14 +195,14 @@ if errors.As(err, &inputReqErr) { ... }
 
 The downsides of this approach are:
 * The drift from the protocol, where MRTR is not an error flow.
-* Obscure "customError -> non-error protocol type on wirte -> customError" data lifecycle. 
+* Obscure "customError -> non-error protocol type on write -> customError" data lifecycle. 
 * Things get confusing for error-processing middleware.
 
 ---
 
 ### New functions
 
-We could introduce new functions with a different handler signature where the return type is a sealed interface. This would give us compiler-enforced correctness for values constructed by tool handlers and clients would be forced to unpack `mcp.RoundTripCallToolResult` and make a concious decision for how to handle it.
+We could introduce new functions with a different handler signature where the return type is a sealed interface. This would give us compiler-enforced correctness for values constructed by tool handlers and clients would be forced to unpack `mcp.RoundTripCallToolResult` and make a conscious decision for how to handle it.
 ```go
 type RoundTripToolHandler func(context.Context, *CallToolRequest) (RoundTripCallToolResult, error)
 type RoundTripToolHandlerFor[In, Out any] func(context.Context, *CallToolRequest, In) (RoundTripCallToolResult, Out, error)

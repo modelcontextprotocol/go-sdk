@@ -56,9 +56,6 @@ func ExampleAddHandlers() {
 	// !+skillsclient
 	ctx := context.Background()
 	client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
-	if err := skills.AddMethods(client); err != nil {
-		log.Fatal(err)
-	}
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -72,8 +69,7 @@ func ExampleAddHandlers() {
 	}
 	defer session.Close()
 
-	skillClient := &skills.Client{Session: session}
-	for skill, err := range skillClient.All(ctx, nil) {
+	for skill, err := range skills.All(ctx, session, nil) {
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -81,14 +77,8 @@ func ExampleAddHandlers() {
 	}
 	// !-skillsclient
 
-	// !+skillslimits
-	limits := skills.BaselineLimits()
-	limits.MaxTotalSize = 32 << 20
-	skillClient = &skills.Client{Session: session, Limits: limits}
-	// !-skillslimits
-
 	// !+skillsverify
-	result, err := skillClient.Get(ctx, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
+	result, err := skills.Get(ctx, session, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
 	if err != nil {
 		log.Fatal(err)
 	}

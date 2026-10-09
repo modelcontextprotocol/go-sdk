@@ -14,22 +14,18 @@ The SDK consists of several importable packages:
   [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
   package provides some primitives for supporting OAuth.
 - The
-  [`github.com/modelcontextprotocol/go-sdk/auth/extauth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth/extauth)
-  package provides OAuth handlers for authorization extensions.
-- The
   [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
   package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
+
 - The
   [`github.com/modelcontextprotocol/go-sdk/skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
   package provides opt-in Skills extension support for discovery, directory
   browsing, and content verification.
 
 
-These docs describe the SDK's implementation of the
-[MCP specification](https://modelcontextprotocol.io/specification/2026-07-28)
-and optional extensions. See the [version compatibility table](../README.md#version-compatibility)
-for supported protocol revisions. Use the index below to learn how the SDK
-implements a particular feature.
+These docs mirror the [official MCP spec](https://modelcontextprotocol.io/specification/2026-07-28).
+Use the index below to learn how the SDK implements a particular aspect of the
+protocol.
 
 ## Base Protocol
 
@@ -37,7 +33,7 @@ implements a particular feature.
 1. [Transports](protocol.md#transports)
     1. [Stdio transport](protocol.md#stdio-transport)
     1. [Streamable transport](protocol.md#streamable-transport)
-    1. [Custom transports](protocol.md#stateless-mode)
+    1. [Custom transports](protocol.md#custom-transports)
 1. [Authorization](protocol.md#authorization)
 1. [Security](protocol.md#security)
 1. [Utilities](protocol.md#utilities)
@@ -50,16 +46,14 @@ implements a particular feature.
 1. [Roots](client.md#roots)
 1. [Sampling](client.md#sampling)
 1. [Elicitation](client.md#elicitation)
-1. [Extensions](client.md#extensions)
-    1. [Skills](client.md#skills-extension)
+1. [Skills extension](client.md#skills-extension)
 
 ## Server Features
 
 1. [Prompts](server.md#prompts)
 1. [Resources](server.md#resources)
 1. [Tools](server.md#tools)
-1. [Extensions](server.md#extensions)
-    1. [Skills](server.md#skills-extension)
+1. [Skills extension](server.md#skills-extension)
 1. [Utilities](server.md#utilities)
     1. [Completion](server.md#completion)
     1. [Logging](server.md#logging)

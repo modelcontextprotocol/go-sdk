@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -67,28 +68,28 @@ func TestSpecErrorScenarios(t *testing.T) {
 			{"not a SKILL.md", "skill://demo/other.md"},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				_, err := client.Get(t.Context(), &GetSkillParams{URI: test.uri})
+				_, err := Get(t.Context(), client, &GetSkillParams{URI: test.uri})
 				wantRPCCode(t, test.uri, err, jsonrpc.CodeInvalidParams)
 			})
 		}
 	})
 
 	t.Run("directory", func(t *testing.T) {
-		if _, err := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://missing"}); err != nil {
+		if _, err := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://missing"}); err != nil {
 			wantRPCCode(t, "unknown directory", err, jsonrpc.CodeInvalidParams)
 		} else {
 			t.Error("unknown directory accepted")
 		}
 		// An empty directory is a success with an empty, non-null array.
-		empty, err := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://empty"})
+		empty, err := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://empty"})
 		if err != nil || empty.Resources == nil || len(empty.Resources) != 0 {
 			t.Errorf("empty directory = %+v, %v", empty, err)
 		}
 	})
 
 	t.Run("invalid cursor", func(t *testing.T) {
-		_, listErr := client.List(t.Context(), &ListSkillsParams{Cursor: "%"})
-		_, directoryErr := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://demo", Cursor: "%"})
+		_, listErr := List(t.Context(), client, &ListSkillsParams{Cursor: "%"})
+		_, directoryErr := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo", Cursor: "%"})
 		for method, err := range map[string]error{MethodList: listErr, MethodReadDirectory: directoryErr} {
 			wantRPCCode(t, method, err, jsonrpc.CodeInvalidParams)
 		}
@@ -133,9 +134,9 @@ func TestHandlerErrorMapping(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := connectSkills(t, server, protocolVersionCaching)
-			_, listErr := client.List(t.Context(), nil)
-			_, getErr := client.Get(t.Context(), &GetSkillParams{URI: skill.URI})
-			_, directoryErr := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://demo"})
+			_, listErr := List(t.Context(), client, nil)
+			_, getErr := Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
+			_, directoryErr := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"})
 			for method, err := range map[string]error{MethodList: listErr, MethodGet: getErr, MethodReadDirectory: directoryErr} {
 				rpc := wantRPCCode(t, method, err, test.code)
 				if rpc != nil && test.wantData && string(rpc.Data) != string(coded.Data) {
@@ -154,7 +155,7 @@ func TestHandlerErrorMapping(t *testing.T) {
 		if err := AddHandlers(server, handlers, nil); err != nil {
 			t.Fatal(err)
 		}
-		_, err := connectSkills(t, server, protocolVersionCaching).List(t.Context(), nil)
+		_, err := List(t.Context(), connectSkills(t, server, protocolVersionCaching), nil)
 		wantRPCCode(t, MethodList, err, jsonrpc.CodeInternalError)
 	})
 }
@@ -164,11 +165,11 @@ func TestHandlerErrorMapping(t *testing.T) {
 // rejected locally rather than called.
 func TestClientRequiresCapabilities(t *testing.T) {
 	ctx := t.Context()
-	if _, err := (&Client{}).List(ctx, nil); err == nil {
+	if _, err := List(ctx, nil, nil); err == nil {
 		t.Error("client without a session accepted List")
 	}
 	// A server with no Skills handlers does not advertise the extension.
-	if _, err := connectSkills(t, testServer(), protocolVersionCaching).List(ctx, nil); err == nil {
+	if _, err := List(ctx, connectSkills(t, testServer(), protocolVersionCaching), nil); err == nil {
 		t.Error("client called a server that does not advertise the extension")
 	}
 	// Handlers without ReadDirectory advertise the extension but not directoryRead.
@@ -177,11 +178,11 @@ func TestClientRequiresCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := connectSkills(t, server, protocolVersionCaching)
-	if _, err := client.ReadDirectory(ctx, &ReadDirectoryParams{URI: "skill://demo"}); err == nil {
+	if _, err := ReadDirectory(ctx, client, &ReadDirectoryParams{URI: "skill://demo"}); err == nil {
 		t.Error("client called resources/directory/read without the capability")
 	}
 	for _, params := range []*GetSkillParams{nil, {}} {
-		if _, err := client.Get(ctx, params); err == nil {
+		if _, err := Get(ctx, client, params); err == nil {
 			t.Errorf("Get accepted %+v", params)
 		}
 	}
@@ -213,14 +214,14 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The legacy version omits the cache hints; the modern one requires them.
-	clients := map[string]*Client{"2025-11-25": connectSkills(t, server, "2025-11-25"), protocolVersionCaching: connectSkills(t, server, protocolVersionCaching)}
+	clients := map[string]*mcp.ClientSession{"2025-11-25": connectSkills(t, server, "2025-11-25"), protocolVersionCaching: connectSkills(t, server, protocolVersionCaching)}
 	var wg sync.WaitGroup
 	for version, client := range clients {
 		modern := version == protocolVersionCaching
 		wg.Go(func() {
 			for range 4 {
 				params := &ListSkillsParams{ParamsBase: mcp.ParamsBase{Meta: mcp.Meta{"owner": "caller"}}}
-				listResult, err := client.List(t.Context(), params)
+				listResult, err := List(t.Context(), client, params)
 				if err != nil {
 					t.Error(err)
 					return
@@ -233,7 +234,7 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 				if listResult.cachePresent != modern {
 					t.Errorf("%s: list cachePresent = %v", version, listResult.cachePresent)
 				}
-				getResult, err := client.Get(t.Context(), &GetSkillParams{URI: skill.URI})
+				getResult, err := Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 				if err != nil {
 					t.Error(err)
 					return
@@ -244,7 +245,7 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 				if modern && (getResult.TTLMs != 123 || getResult.CacheScope != "private") {
 					t.Errorf("%s: cache hints lost", version)
 				}
-				if _, err := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://demo"}); err != nil {
+				if _, err := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"}); err != nil {
 					t.Error(err)
 				}
 			}
@@ -308,9 +309,9 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 			}
 			client := connectSkills(t, server, protocolVersionCaching)
 			if test.method == MethodGet {
-				_, err = client.Get(t.Context(), &GetSkillParams{URI: skill.URI})
+				_, err = Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 			} else {
-				_, err = client.List(t.Context(), nil)
+				_, err = List(t.Context(), client, nil)
 			}
 			if err == nil {
 				t.Fatalf("accepted malformed %s response", test.method)
@@ -337,7 +338,7 @@ func TestIteratorOwnership(t *testing.T) {
 	}
 	client := connectSkills(t, server, protocolVersionCaching)
 	params := &ListSkillsParams{ParamsBase: mcp.ParamsBase{Meta: mcp.Meta{"key": "value"}}}
-	seq := client.All(t.Context(), params)
+	seq := All(t.Context(), client, params)
 	for range 2 {
 		count := 0
 		for _, err := range seq {
@@ -352,5 +353,139 @@ func TestIteratorOwnership(t *testing.T) {
 	}
 	if params.Cursor != "" || !reflect.DeepEqual(params.Meta, mcp.Meta{"key": "value"}) {
 		t.Fatal("iterator mutated its parameters")
+	}
+}
+
+func TestListSkipsInvalidSkills(t *testing.T) {
+	valid, _ := json.Marshal(testSkill())
+	for _, version := range []string{"2025-11-25", protocolVersionCaching} {
+		for _, bad := range []string{
+			`null`, `42`, `{"uri":"skill://broken/SKILL.md","frontmatter":{},"resources":"dynamic"}`,
+			`{"uri":"skill://broken/SKILL.md","frontmatter":{"name":"broken","description":"Broken"},"resources":[{"uri":"skill://broken/SKILL.md","digest":"` + testDigest + `"}]}`,
+			`{"uri":"skill://broken/SKILL.md","frontmatter":{"name":"broken","description":"Broken"},"resources":"invalid"}`,
+		} {
+			t.Run(version+"/"+bad, func(t *testing.T) {
+				server := testServer()
+				server.AddExtension(ExtensionID, nil)
+				if err := mcp.AddReceivingCustomMethod(server, MethodList, func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*rawResult, error) {
+					envelope := `,"resultType":"complete","ttlMs":0,"cacheScope":"public"`
+					if version < protocolVersionCaching {
+						envelope = ""
+					}
+					if p.Cursor == "next" {
+						return &rawResult{data: json.RawMessage(fmt.Sprintf(`{"skills":[%s]%s}`, valid, envelope))}, nil
+					}
+					return &rawResult{data: json.RawMessage(fmt.Sprintf(`{"skills":[%s,%s],"nextCursor":"next"%s}`, bad, valid, envelope))}, nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				client := connectSkills(t, server, version)
+				if result, err := List(t.Context(), client, nil); err == nil || result != nil {
+					t.Fatalf("strict List = %+v, %v", result, err)
+				}
+				var rejected []InvalidSkill
+				options := ListOptions{SkipInvalidSkills: true, OnInvalidSkill: func(s InvalidSkill) { rejected = append(rejected, s) }}
+				result, err := List(t.Context(), client, nil, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(result.Skills) != 1 || result.Skills[0].URI != testSkill().URI || result.NextCursor != "next" || len(result.InvalidSkills) != 1 || result.InvalidSkills[0].Index != 0 || result.InvalidSkills[0].Err == nil || len(rejected) != 1 {
+					t.Fatalf("filtered result = %+v, diagnostics = %+v", result, rejected)
+				}
+				rejected = nil
+				count := 0
+				for skill, err := range All(t.Context(), client, nil, options) {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if skill.URI != testSkill().URI {
+						t.Fatal(skill.URI)
+					}
+					count++
+				}
+				if count != 2 || len(rejected) != 1 {
+					t.Fatalf("All returned %d valid, %d invalid", count, len(rejected))
+				}
+			})
+		}
+	}
+}
+
+func TestSkipRejectsInvalidEnvelopesAndDuplicateIdentities(t *testing.T) {
+	valid, _ := json.Marshal(testSkill())
+	for _, body := range []string{
+		`{"skills":null,"resultType":"complete","ttlMs":0,"cacheScope":"public"}`,
+		`{"skills":[],"resultType":"complete","cacheScope":"public"}`,
+		`{"skills":[],"resultType":"input_required","ttlMs":0,"cacheScope":"public"}`,
+		`{"skills":{},"resultType":"complete","ttlMs":0,"cacheScope":"public"}`,
+		fmt.Sprintf(`{"skills":[%s,%s],"nextCursor":"next","resultType":"complete","ttlMs":0,"cacheScope":"public"}`, valid, valid),
+	} {
+		t.Run(body, func(t *testing.T) {
+			server := testServer()
+			server.AddExtension(ExtensionID, nil)
+			if err := mcp.AddReceivingCustomMethod(server, MethodList, func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*rawResult, error) {
+				return &rawResult{data: json.RawMessage(body)}, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := List(t.Context(), connectSkills(t, server, protocolVersionCaching), nil, ListOptions{SkipInvalidSkills: true})
+			if strings.Contains(body, `"nextCursor"`) {
+				if err != nil || len(result.Skills) != 0 || len(result.InvalidSkills) != 2 || result.NextCursor != "next" {
+					t.Fatalf("duplicate identities = %+v, %v", result, err)
+				}
+			} else if err == nil {
+				t.Fatalf("accepted invalid envelope: %+v", result)
+			}
+		})
+	}
+}
+
+func TestAddHandlersRequiresResources(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	if err := AddHandlers(server, fixedHandlers(testSkill()), nil); err == nil {
+		t.Fatal("registered without resources")
+	}
+	if _, ok := server.Capabilities().Extensions[ExtensionID]; ok {
+		t.Fatal("failed registration advertised extension")
+	}
+	server.AddResourceTemplate(&mcp.ResourceTemplate{Name: "skills", URITemplate: "skill://{authority}/{+path}"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) { return nil, nil })
+	if err := AddHandlers(server, fixedHandlers(testSkill()), nil); err != nil {
+		t.Fatal(err)
+	}
+	checkLimitCalls(t, connectSkills(t, server, protocolVersionCaching), testSkill(), true)
+}
+
+func TestAllContinuesAfterEntirelyInvalidPage(t *testing.T) {
+	server := testServer()
+	server.AddExtension(ExtensionID, nil)
+	valid, _ := json.Marshal(testSkill())
+	var cursors []string
+	if err := mcp.AddReceivingCustomMethod(server, MethodList, func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*rawResult, error) {
+		cursors = append(cursors, p.Cursor)
+		if p.Cursor == "" {
+			return &rawResult{data: json.RawMessage(`{"skills":[null],"nextCursor":"next","resultType":"complete","ttlMs":0,"cacheScope":"public"}`)}, nil
+		}
+		return &rawResult{data: json.RawMessage(fmt.Sprintf(`{"skills":[%s],"resultType":"complete","ttlMs":0,"cacheScope":"public"}`, valid))}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := connectSkills(t, server, protocolVersionCaching)
+	var rejected []InvalidSkill
+	options := []ListOptions{{SkipInvalidSkills: true, OnInvalidSkill: func(s InvalidSkill) { rejected = append(rejected, s) }}}
+	params := &ListSkillsParams{}
+	seq := All(t.Context(), client, params, options...)
+	options[0].SkipInvalidSkills = false
+	count := 0
+	for skill, err := range seq {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if skill.URI != testSkill().URI {
+			t.Fatal(skill.URI)
+		}
+		count++
+	}
+	if count != 1 || len(rejected) != 1 || !reflect.DeepEqual(cursors, []string{"", "next"}) || params.Cursor != "" {
+		t.Fatalf("count=%d rejected=%+v cursors=%v params=%+v", count, rejected, cursors, params)
 	}
 }

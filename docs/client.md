@@ -551,16 +551,12 @@ are per-extension settings objects. Extensions require explicit opt-in.
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package provides typed calls for the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
-Register methods before connecting, then bind the skills client to the connected
-session. This example connects to the server from the
+Call package-level functions with the connected session. This example connects to the server from the
 [server example](server.md#skills-extension) over an in-memory transport:
 
 ```go
 ctx := context.Background()
 client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
-if err := skills.AddMethods(client); err != nil {
-	log.Fatal(err)
-}
 
 serverTransport, clientTransport := mcp.NewInMemoryTransports()
 serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -574,8 +570,7 @@ if err != nil {
 }
 defer session.Close()
 
-skillClient := &skills.Client{Session: session}
-for skill, err := range skillClient.All(ctx, nil) {
+for skill, err := range skills.All(ctx, session, nil) {
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -583,38 +578,17 @@ for skill, err := range skillClient.All(ctx, nil) {
 }
 ```
 
-`List`, `Get`, and `All` share `skillClient.Limits`:
+`List`, `Get`, and `All` validate structure without imposing count or size caps.
+They support the required baseline of 512 files and 16 MiB per skill, as well as
+larger manifests. Application download budgets for dynamic content remain the
+host's responsibility.
 
-| Configuration | Manifest limits |
-| --- | --- |
-| Omitted or `Limits: skills.Limits{}` | No count or size caps |
-| `Limits: skills.BaselineLimits()` | 512 resources and 16 MiB per skill |
-| Positive fields in a supplied `Limits` | Exact caps for those dimensions |
-| Zero fields in a supplied `Limits` | Those dimensions are unlimited |
-| Negative fields | Configuration error |
-
-Structural validation always runs. The spec's limits are an interoperability
-baseline: hosts must support at least that much and may support more. They are
-not mandatory rejection thresholds. To opt into caps based on that baseline:
-
-```go
-limits := skills.BaselineLimits()
-limits.MaxTotalSize = 32 << 20
-skillClient = &skills.Client{Session: session, Limits: limits}
-```
-
-A literal containing only `MaxTotalSize` leaves resource count unlimited.
-`BaselineLimits()` follows the spec supported by the installed SDK version.
-Supply explicit numeric values to pin application policy across upgrades.
-Caps below the baseline reduce what the host can accept.
-
-Servers and clients configure these limits independently. Each call captures the
-configured limits before sending its request, and `All` captures them when the
-iterator is created. Do not mutate the client during use.
-
-These caps apply to static manifests. For dynamic skills, applications manage
-their own download, storage, and context budgets; the SDK does not retrieve files
-or maintain cumulative size or file counts.
+List calls reject invalid entries by default. To retain valid entries from a
+malformed page, pass `skills.ListOptions{SkipInvalidSkills: true}` to `List` or
+`All`. `List` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
+report them during iteration. Missing/null lists, invalid cache hints, and
+invalid result types still fail. All entries with a duplicate URI are skipped,
+so no duplicate silently replaces another. Page cursors are preserved.
 
 `ReadDirectory` and `DirectoryEntries` expose optional
 directory browsing when the server advertises `directoryRead: true`. Calls fail
@@ -627,7 +601,7 @@ A listed entry is complete; `Get` also retrieves a skill directly by URI even
 when it was not listed. For example, when the user chooses to load a known skill:
 
 ```go
-result, err := skillClient.Get(ctx, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
+result, err := skills.Get(ctx, session, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
 if err != nil {
 	log.Fatal(err)
 }

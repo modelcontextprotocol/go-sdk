@@ -66,7 +66,7 @@ The SDK ensures that a read succeeds only if the URI matches a registered resour
 or matches the URI pattern of a resource template.
 
 To list a server's resources and resource templates, use the 
-[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+[`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
 and
 [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
 iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
@@ -349,9 +349,11 @@ clients on a protocol version earlier than `2026-07-28`, the middleware
 intercepts any `InputRequiredResult` your handler returns, fulfils each
 input request itself by calling the legacy server-initiated APIs
 (`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
-exactly once with the responses already populated. This means a handler
-written in the MRTR style works against both old and new clients without
-code changes.
+with the responses already populated. If the handler asks for more input,
+the middleware repeats this until the handler completes, up to the same
+limit of 10 rounds that the client-side middleware applies. This means a
+handler written in the MRTR style works against both old and new clients
+without code changes.
 
 ### Example
 
@@ -526,9 +528,10 @@ Use `skills.AddHandlers` for request-time
 `skills/list` and `skills/get` handlers. An optional directory handler enables
 `resources/directory/read` and advertises `directoryRead: true`.
 
-Register the underlying content through `Server.AddResource` or
+Before calling `AddHandlers`, register the underlying content through `Server.AddResource` or
 `Server.AddResourceTemplate`; these also advertise the required `resources`
-capability. An entry's manifest includes every file, including `SKILL.md` and
+capability. Registration fails if the effective resources capability is absent.
+An entry's manifest includes every file, including `SKILL.md` and
 nested skills. Use `skills.DynamicResources()` when stable digests cannot be
 published, not simply because the catalog changes over time.
 
@@ -554,9 +557,8 @@ manifest caps. Positive fields set exact caps, zero fields are unlimited, and
 negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
 the spec's interoperability baseline of 512 resources and 16 MiB per skill.
 Servers should stay within this baseline for broad compatibility; serving larger
-skills is allowed but some clients may decline them. The
-[client documentation](client.md#skills-extension) explains how to customize caps
-and pin application policy across SDK upgrades.
+skills is allowed. Clients accept larger structurally valid manifests; these
+server caps govern publication policy only.
 
 Structural validation always runs; put additional application policy in the
 handlers themselves. Dynamic content budgets belong to the application; the SDK
@@ -582,7 +584,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.
@@ -592,7 +594,7 @@ indicates whether page retrieval failed.
 The `ClientSession` also exposes `ListXXX` methods for fine-grained control
 over pagination.
 
-**Server-side**: pagination is on by default for core feature lists, so in general
-nothing is required server-side. However, you may use
+**Server-side**: pagination is on by default, so in general nothing is required
+server-side. However, you may use
 [`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
 to customize the page size.

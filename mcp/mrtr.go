@@ -111,7 +111,8 @@ func clientMultiRoundTripMiddleware() Middleware {
 // serverMultiRoundTripMiddleware is a receiving middleware for servers that transparently
 // handles multi-round-trip for clients on older protocol versions. When a handler returns
 // InputRequests and the client does not support multi-round-trip, the middleware fulfills
-// the requests by calling the client directly and reinvokes the handler once with the responses.
+// the requests by calling the client directly and reinvokes the handler with the responses,
+// repeating until the handler completes or maxMultiRoundTripRetries is reached.
 func serverMultiRoundTripMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
@@ -127,30 +128,34 @@ func serverMultiRoundTripMiddleware() Middleware {
 				return next(ctx, method, req)
 			}
 
-			res, err := next(ctx, method, req)
-			if err != nil {
-				return res, err
+			for retries := 1; ; retries++ {
+				res, err := next(ctx, method, req)
+				if err != nil {
+					return res, err
+				}
+				mrtrResult, ok := res.(multiRoundTripResponse)
+				if !ok {
+					return res, nil
+				}
+				reqMap := mrtrResult.inputRequests()
+				if reqMap == nil {
+					return res, nil
+				}
+				if len(reqMap) == 0 {
+					return nil, fmt.Errorf("the server is busy, retry later")
+				}
+				if retries >= maxMultiRoundTripRetries {
+					return nil, fmt.Errorf("multi-round-trip: exceeded maximum retries (%d)", maxMultiRoundTripRetries)
+				}
+				responses, err := fulfillServerInputRequests(ctx, ss, reqMap)
+				if err != nil {
+					return nil, err
+				}
+				req, err = setMultiRoundTripRetryParams(method, req, responses, mrtrResult.requestState())
+				if err != nil {
+					return nil, err
+				}
 			}
-			mrtrResult, ok := res.(multiRoundTripResponse)
-			if !ok {
-				return res, nil
-			}
-			reqMap := mrtrResult.inputRequests()
-			if reqMap == nil {
-				return res, nil
-			}
-			if len(reqMap) == 0 {
-				return nil, fmt.Errorf("the server is busy, retry later")
-			}
-			responses, err := fulfillServerInputRequests(ctx, ss, reqMap)
-			if err != nil {
-				return nil, err
-			}
-			req, err = setMultiRoundTripRetryParams(method, req, responses, mrtrResult.requestState())
-			if err != nil {
-				return nil, err
-			}
-			return next(ctx, method, req)
 		}
 	}
 }

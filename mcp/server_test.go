@@ -2717,3 +2717,19 @@ func TestServerUnknownProtocolVersion_NewProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestServerCapabilitiesSnapshot(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	server.AddResource(&Resource{URI: "example://resource", Name: "resource"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) { return nil, nil })
+	server.AddExtension("example/extension", map[string]any{"enabled": true})
+	caps := server.Capabilities()
+	if caps.Resources == nil {
+		t.Fatal("resource capability was not inferred")
+	}
+	caps.Resources.ListChanged = false
+	delete(caps.Extensions, "example/extension")
+	fresh := server.Capabilities()
+	if !fresh.Resources.ListChanged || fresh.Extensions["example/extension"] == nil {
+		t.Fatal("snapshot modified the server")
+	}
+}

@@ -5,8 +5,8 @@
 // Package skills implements the MCP [Skills extension].
 //
 // Servers opt in with [AddHandlers] and serve skill files through the ordinary
-// MCP resource APIs. Clients register [AddMethods] before connecting, then use
-// [Client] to discover entries. [VerifySkillMD] and [VerifyResource] check content
+// MCP resource APIs. Clients use [List], [Get], and [All] on a connected session
+// to discover entries. [VerifySkillMD] and [VerifyResource] check content
 // retrieved on demand against an entry from the same server.
 //
 // [Skills extension]: https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx
@@ -162,6 +162,13 @@ type ListSkillsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+// InvalidSkill describes an entry omitted from a list response.
+type InvalidSkill struct {
+	Index int
+	URI   string
+	Err   error
+}
+
 // ListSkillsResult is one page of skills/list. Each Skill is a complete entry;
 // its manifest is never split across pages.
 // [AddHandlers] sets ResultType and defaults CacheScope to "public"; a zero TTLMs
@@ -170,11 +177,14 @@ type ListSkillsParams struct {
 type ListSkillsResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	ResultType   string   `json:"resultType,omitempty"`
-	NextCursor   string   `json:"nextCursor,omitempty"`
-	Skills       []*Skill `json:"skills"`
-	omitCache    bool
-	cachePresent bool
+	ResultType string   `json:"resultType,omitempty"`
+	NextCursor string   `json:"nextCursor,omitempty"`
+	Skills     []*Skill `json:"skills"`
+	// InvalidSkills reports entries skipped by List with SkipInvalidSkills enabled.
+	InvalidSkills []InvalidSkill `json:"-"`
+	entryErrors   map[int]InvalidSkill
+	omitCache     bool
+	cachePresent  bool
 }
 
 // omittedCache shadows the [mcp.Cacheable] hints with nil pointers, dropping
@@ -264,12 +274,31 @@ func (r *ListSkillsResult) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		wire
 		decodedCache
+		Skills []json.RawMessage `json:"skills"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = ListSkillsResult(decoded.wire)
 	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
+	if decoded.Skills != nil {
+		r.Skills = make([]*Skill, len(decoded.Skills))
+	}
+	for i, raw := range decoded.Skills {
+		var skill *Skill
+		if err := json.Unmarshal(raw, &skill); err != nil {
+			var identity struct {
+				URI string `json:"uri"`
+			}
+			_ = json.Unmarshal(raw, &identity)
+			if r.entryErrors == nil {
+				r.entryErrors = make(map[int]InvalidSkill)
+			}
+			r.entryErrors[i] = InvalidSkill{Index: i, URI: identity.URI, Err: err}
+		} else {
+			r.Skills[i] = skill
+		}
+	}
 	return nil
 }
 

@@ -7,9 +7,11 @@ package mcp_test
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -140,7 +142,7 @@ func TestContent(t *testing.T) {
 		if err := json.Unmarshal([]byte(result), &out); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(test.in, out.Content[0]); diff != "" {
+		if diff := cmp.Diff(test.in, out.Content[0], cmpopts.IgnoreUnexported(mcp.Annotations{})); diff != "" {
 			t.Errorf("json.Unmarshal(%q) mismatch (-want +got):\n%s", string(got), diff)
 		}
 	}
@@ -239,9 +241,108 @@ func TestContentUnmarshal(t *testing.T) {
 			}
 
 			// Verify that the Content field was properly populated
-			if cmp.Diff(tt.expectContent, tt.content) != "" {
-				t.Errorf("Content is not equal: %v", cmp.Diff(tt.expectContent, tt.content))
+			if diff := cmp.Diff(tt.expectContent, tt.content, cmpopts.IgnoreUnexported(mcp.Annotations{})); diff != "" {
+				t.Errorf("Content is not equal: %v", diff)
 			}
 		})
+	}
+}
+
+func TestAnnotationsPriority(t *testing.T) {
+	withPriority := func(p float64) *mcp.Annotations {
+		a := &mcp.Annotations{}
+		a.SetPriority(p)
+		return a
+	}
+	for _, test := range []struct {
+		name    string
+		in      *mcp.Annotations
+		want    string
+		wantHas bool
+	}{
+		{"zero Priority field", &mcp.Annotations{}, `{}`, false},
+		{"non-zero Priority field", &mcp.Annotations{Priority: 0.5}, `{"priority":0.5}`, true},
+		{"SetPriority(0)", withPriority(0), `{"priority":0}`, true},
+		{"SetPriority(1)", withPriority(1), `{"priority":1}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := json.Marshal(test.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.want {
+				t.Errorf("json.Marshal = %s, want %s", got, test.want)
+			}
+			if has := test.in.HasPriority(); has != test.wantHas {
+				t.Errorf("HasPriority() = %v, want %v", has, test.wantHas)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		in, want string
+		wantHas  bool
+	}{
+		{`{}`, `{}`, false},
+		{`{"priority":null}`, `{}`, false},
+		{`{"priority":0}`, `{"priority":0}`, true},
+		{`{"priority":0.5}`, `{"priority":0.5}`, true},
+		{`{"priority":1}`, `{"priority":1}`, true},
+		{
+			`{"audience":["user"],"lastModified":"2025-01-12T15:00:58Z","priority":0}`,
+			`{"audience":["user"],"lastModified":"2025-01-12T15:00:58Z","priority":0}`,
+			true,
+		},
+	} {
+		t.Run(test.in, func(t *testing.T) {
+			var a mcp.Annotations
+			if err := json.Unmarshal([]byte(test.in), &a); err != nil {
+				t.Fatal(err)
+			}
+			if has := a.HasPriority(); has != test.wantHas {
+				t.Errorf("HasPriority() = %v, want %v", has, test.wantHas)
+			}
+			got, err := json.Marshal(&a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.want {
+				t.Errorf("round trip = %s, want %s", got, test.want)
+			}
+		})
+	}
+
+	// An explicit 0 received in content survives re-serialization, as in a
+	// gateway that relays tool results.
+	for _, content := range []string{
+		`{"type":"text","text":"x","annotations":{"priority":0}}`,
+		`{"type":"image","mimeType":"image/png","data":"YTFiMmMz","annotations":{"priority":0}}`,
+		`{"type":"audio","mimeType":"audio/wav","data":"YTFiMmMz","annotations":{"priority":0}}`,
+		`{"type":"resource","resource":{"uri":"file://foo","mimeType":"text","text":"abc"},"annotations":{"priority":0}}`,
+		`{"type":"resource_link","uri":"file:///f.txt","name":"f.txt","annotations":{"priority":0}}`,
+	} {
+		var res mcp.CallToolResult
+		if err := json.Unmarshal([]byte(`{"content":[`+content+`]}`), &res); err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(res.Content[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != content {
+			t.Errorf("content round trip = %s, want %s", got, content)
+		}
+	}
+
+	var r mcp.Resource
+	if err := json.Unmarshal([]byte(`{"uri":"file:///f.txt","name":"f.txt","annotations":{"priority":0}}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(&r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"annotations":{"priority":0}`; !strings.Contains(string(got), want) {
+		t.Errorf("resource round trip = %s, want it to contain %s", got, want)
 	}
 }
