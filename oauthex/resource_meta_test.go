@@ -54,6 +54,16 @@ func TestSplitChallenges(t *testing.T) {
 			want:  []string{`Basic realm="C:\\"`, ` Bearer error="insufficient_scope"`},
 		},
 		{
+			name:  "empty list element between params",
+			input: `Bearer realm="example",, error="invalid_token"`,
+			want:  []string{`Bearer realm="example",, error="invalid_token"`},
+		},
+		{
+			name:  "empty list element between challenges",
+			input: `Basic, , Bearer realm="example"`,
+			want:  []string{`Basic`, ` `, ` Bearer realm="example"`},
+		},
+		{
 			name:  "empty input",
 			input: "",
 			want:  []string{""},
@@ -111,6 +121,28 @@ func TestParseWWWAuthenticateEmptyQuotedValue(t *testing.T) {
 			"error_description": "",
 			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
 		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// RFC 9110, section 5.6.1.2, requires recipients to accept empty list
+// elements. An extra comma must not move the parameters after it into a
+// separate challenge, or the auth handlers never see resource_metadata.
+func TestParseWWWAuthenticateEmptyListElements(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Bearer , realm="example",, resource_metadata="https://example.com/.well-known/oauth-protected-resource" ,, Basic realm="other",`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "bearer", Params: map[string]string{
+			"realm":             "example",
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+		{Scheme: "basic", Params: map[string]string{"realm": "other"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
@@ -206,6 +238,15 @@ func TestParseSingleChallenge(t *testing.T) {
 			want: Challenge{
 				Scheme: "bearer",
 				Params: map[string]string{"realm": "example.com"},
+			},
+			wantErr: false,
+		},
+		{
+			name:  "empty list elements around params",
+			input: `Bearer , realm="example",, error=invalid_token, ,`,
+			want: Challenge{
+				Scheme: "bearer",
+				Params: map[string]string{"realm": "example", "error": "invalid_token"},
 			},
 			wantErr: false,
 		},

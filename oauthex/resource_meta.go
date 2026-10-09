@@ -198,7 +198,7 @@ func splitChallenges(header string) ([]string, error) {
 			// This is a potential challenge separator.
 			// A new challenge does not start with `key=value`.
 			// We check if the part after the comma looks like a parameter.
-			lookahead := strings.TrimSpace(header[i+1:])
+			lookahead := trimEmptyListElements(header[i+1:])
 			eqPos := strings.Index(lookahead, "=")
 
 			isParam := false
@@ -239,6 +239,7 @@ func parseSingleChallenge(s string) (Challenge, error) {
 	}
 
 	params := make(map[string]string)
+	paramsStr = trimEmptyListElements(paramsStr)
 
 	// Parse the key-value parameters.
 	for paramsStr != "" {
@@ -301,7 +302,7 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 		// If there is a comma, consume it and continue to the next parameter.
 		if strings.HasPrefix(paramsStr, ",") {
-			paramsStr = strings.TrimSpace(paramsStr[1:])
+			paramsStr = trimEmptyListElements(paramsStr[1:])
 		} else if paramsStr != "" {
 			// If there's content but it's not a new parameter, the format is wrong.
 			return Challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
@@ -310,4 +311,13 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 	// Per RFC 9110, the scheme is case-insensitive.
 	return Challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
+}
+
+// trimEmptyListElements removes leading whitespace and any empty list
+// elements, such as the extra comma in "a=1,, b=2". RFC 9110, section 5.6.1.2,
+// requires recipients to accept them.
+func trimEmptyListElements(s string) string {
+	return strings.TrimLeftFunc(s, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
 }
