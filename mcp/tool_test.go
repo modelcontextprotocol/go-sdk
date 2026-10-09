@@ -44,6 +44,8 @@ func TestApplySchema(t *testing.T) {
 		{`{"x": 1}`, new(map[string]any), &map[string]any{"x": 1.0}},
 		{`{}`, new(map[string]any), &map[string]any{"x": 3.0}}, // default applied
 		{`{"x": 0}`, new(map[string]any), &map[string]any{"x": 0.0}},
+		{`null`, new(S), &S{X: 3}},                               // default applied
+		{`null`, new(map[string]any), &map[string]any{"x": 3.0}}, // default applied
 	} {
 		raw := json.RawMessage(tt.data)
 		raw, err = applySchema(raw, resolved, false)
