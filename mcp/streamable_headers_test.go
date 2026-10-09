@@ -1593,3 +1593,141 @@ func TestValidateParamHeaders_NestedArguments(t *testing.T) {
 		t.Error("validateParamHeaders() = nil, want error for mismatched nested value")
 	}
 }
+
+// TestValidateParamHeaders_EmptyString verifies that an empty string
+// parameter, which the client mirrors as a present but empty header, is told
+// apart from a header that was not sent at all.
+func TestValidateParamHeaders_EmptyString(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	tests := []struct {
+		name    string
+		header  []string // values of Mcp-Param-Region; nil means not sent
+		args    map[string]any
+		wantErr string // substring of the expected error; empty means none
+	}{
+		{"empty string with empty header", []string{""}, map[string]any{"region": ""}, ""},
+		{"empty string without header", nil, map[string]any{"region": ""}, "missing"},
+		{"empty string with non-empty header", []string{"us-west1"}, map[string]any{"region": ""}, "does not match"},
+		{"absent parameter with empty header", []string{""}, map[string]any{}, "unexpected"},
+		{"null parameter with empty header", []string{""}, map[string]any{"region": nil}, "unexpected"},
+		{"absent parameter without header", nil, map[string]any{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			for _, v := range tt.header {
+				header.Add(paramHeaderPrefix+"Region", v)
+			}
+			msg := &jsonrpc.Request{
+				Method: "tools/call",
+				Params: mustMarshal(&CallToolParams{Name: "test", Arguments: tt.args}),
+			}
+			err := validateParamHeaders(header, msg, tool)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("validateParamHeaders() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("validateParamHeaders() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestParamHeaderEmptyStringRoundTrip verifies that the server accepts the
+// present but empty Mcp-Param header the client sends for an empty string.
+func TestParamHeaderEmptyStringRoundTrip(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	msg := &jsonrpc.Request{
+		Method: "tools/call",
+		Params: mustMarshal(&CallToolParams{Name: "test", Arguments: map[string]any{"region": ""}}),
+	}
+	header := http.Header{}
+	header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+	setStandardHeaders(context.WithValue(context.Background(), toolContextKey, tool), header, msg)
+
+	if got := header.Values(paramHeaderPrefix + "Region"); len(got) != 1 || got[0] != "" {
+		t.Fatalf("Mcp-Param-Region = %q, want one empty value", got)
+	}
+	lookup := func(string) (*serverTool, bool) { return &serverTool{tool: tool}, true }
+	if err := validateMcpHeaders(header, msg, lookup); err != nil {
+		t.Errorf("validateMcpHeaders() on client-generated headers = %v, want nil", err)
+	}
+}
+
+// TestMcpNameHeaderEncodingRoundTrip verifies that a name which is not
+// header-safe is Base64-wrapped by the client per the 2026-07-28 transport
+// spec, and that the server's validation accepts what the client produced.
+func TestMcpNameHeaderEncodingRoundTrip(t *testing.T) {
+	tests := []struct {
+		name       string
+		msg        *jsonrpc.Request
+		wantHeader string
+	}{
+		{
+			name:       "ascii-safe tool name is sent as-is",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
+			wantHeader: "my-tool",
+		},
+		{
+			name:       "non-ascii tool name is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "café-tool"})},
+			wantHeader: encodeBase64("café-tool"),
+		},
+		{
+			name:       "prompt name with a leading space is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: " leading-space"})},
+			wantHeader: encodeBase64(" leading-space"),
+		},
+		{
+			name:       "resource uri with a control character is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "resources/read", Params: mustMarshal(&ReadResourceParams{URI: "file:///a\tb.txt"})},
+			wantHeader: encodeBase64("file:///a\tb.txt"),
+		},
+		{
+			name:       "name that looks like the sentinel is base64 encoded",
+			msg:        &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "=?base64?abc?="})},
+			wantHeader: encodeBase64("=?base64?abc?="),
+		},
+		{
+			name:       "empty prompt name is sent as an empty header",
+			msg:        &jsonrpc.Request{Method: "prompts/get", Params: mustMarshal(&GetPromptParams{Name: ""})},
+			wantHeader: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(protocolVersionHeader, minVersionForStandardHeaders)
+			setStandardHeaders(context.Background(), header, tt.msg)
+
+			if got := header.Values(nameHeader); len(got) != 1 || got[0] != tt.wantHeader {
+				t.Errorf("Mcp-Name = %q, want [%q]", got, tt.wantHeader)
+			}
+
+			// The server must accept the headers the client just generated.
+			if err := validateMcpHeaders(header, tt.msg, nil); err != nil {
+				t.Errorf("validateMcpHeaders() on client-generated headers = %v, want nil", err)
+			}
+		})
+	}
+}

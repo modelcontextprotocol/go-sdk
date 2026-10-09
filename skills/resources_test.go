@@ -20,9 +20,6 @@ import (
 func connectResourceClient(t *testing.T, server *mcp.Server) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(&mcp.Implementation{Name: "resources-test", Version: "v1"}, nil)
-	if err := AddClient(client); err != nil {
-		t.Fatal(err)
-	}
 	ct, st := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(t.Context(), st, nil)
 	if err != nil {

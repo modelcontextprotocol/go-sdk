@@ -44,6 +44,15 @@ func Unmarshal(data []byte, v any) error {
 	return NewDecoder(bytes.NewReader(data)).Decode(v)
 }
 
+func UnmarshalUseNumber(data []byte, v any) error {
+	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
+		return err
+	}
+	dec := NewDecoder(bytes.NewReader(data))
+	dec.dec.UseNumber()
+	return dec.Decode(v)
+}
+
 // checkMaxDepth scans data once and reports [errMaxDepthExceeded] if the
 // nesting of JSON objects and arrays exceeds maxDepth. It is a lightweight pass which
 // tracks '{' and '[' against '}' and ']' while skipping over the contents of strings.

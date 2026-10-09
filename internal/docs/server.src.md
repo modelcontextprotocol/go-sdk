@@ -66,7 +66,7 @@ The SDK ensures that a read succeeds only if the URI matches a registered resour
 or matches the URI pattern of a resource template.
 
 To list a server's resources and resource templates, use the 
-[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+[`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
 and
 [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
 iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
@@ -349,9 +349,11 @@ clients on a protocol version earlier than `2026-07-28`, the middleware
 intercepts any `InputRequiredResult` your handler returns, fulfils each
 input request itself by calling the legacy server-initiated APIs
 (`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
-exactly once with the responses already populated. This means a handler
-written in the MRTR style works against both old and new clients without
-code changes.
+with the responses already populated. If the handler asks for more input,
+the middleware repeats this until the handler completes, up to the same
+limit of 10 rounds that the client-side middleware applies. This means a
+handler written in the MRTR style works against both old and new clients
+without code changes.
 
 ### Example
 
@@ -437,8 +439,12 @@ server produces logs that remain server-side, for use by server maintainers.)
 **Server-side**:
 The minimum log level is part of the server state.
 For stateful sessions, there is no default log level: no log messages will be sent
-until the client calls `SetLevel` (see below).
-For stateful sessions, the level defaults to "info".
+until the client calls `SetLoggingLevel` (see below).
+For legacy stateless sessions the level defaults to "info".
+For sessionless 2026-07-28 requests there is no server-side default: each request
+carries its level in `_meta` (`io.modelcontextprotocol/logLevel`), and nothing is
+logged until the client sends one.
+(Note: logging is deprecated as of 2026-07-28 / SEP-2577.)
 
 [`ServerSession.Log`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Log) is the low-level way for servers to log to clients.
 It sends a logging notification to the client if the level of the message
@@ -454,7 +460,7 @@ Servers always report the logging capability.
 **Client-side**:
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
-Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
+Call [`ClientSession.SetLoggingLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLoggingLevel) to change the log level for a session.
 
 %include ../../mcp/server_example_test.go logging -
 
@@ -511,17 +517,61 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 adds an `extensions` map to `ServerCapabilities` so that optional
 capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
-per-extension settings objects.
+per-extension settings objects. Extensions require explicit opt-in.
 
 #### Skills extension
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package implements SEP-2640. Use `skills.AddHandlers` to provide custom
+package implements the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Use `skills.AddHandlers` for request-time
 `skills/list` and `skills/get` handlers. An optional directory handler enables
 `resources/directory/read` and advertises `directoryRead: true`.
 
-Custom providers may return `skills.DynamicResources()` for generated skills
-that cannot publish stable file digests.
+Before calling `AddHandlers`, register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate`; these also advertise the required `resources`
+capability. Registration fails if the effective resources capability is absent.
+An entry's manifest includes every file, including `SKILL.md` and
+nested skills. Use `skills.DynamicResources()` when stable digests cannot be
+published, not simply because the catalog changes over time.
+
+This example serves a complete static manifest and its content. The
+[client example](client.md#skills-extension) connects to this server and verifies
+the resource bytes:
+
+%include ../../skills/example_test.go skillsserver -
+
+Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
+returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
+with an empty resource list. Explicit JSON-RPC errors retain their code and data;
+other handler errors and invalid results become Internal Error (`-32603`).
+
+Handlers own pagination. `skills.PaginateSkills` and
+`skills.PaginateDirectoryResources` sort by URI and return one page without
+modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
+`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+entry contains its complete manifest, which is never split across pages.
+
+`skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
+manifest caps. Positive fields set exact caps, zero fields are unlimited, and
+negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
+the spec's interoperability baseline of 512 resources and 16 MiB per skill.
+Servers should stay within this baseline for broad compatibility; serving larger
+skills is allowed. Clients accept larger structurally valid manifests; these
+server caps govern publication policy only.
+
+Structural validation always runs; put additional application policy in the
+handlers themselves. Dynamic content budgets belong to the application; the SDK
+does not accumulate sizes across resource reads. It copies options at registration and
+prepares outgoing results without mutating handler-owned data.
+
+On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
+`cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+through the result's `mcp.Cacheable` field. The SDK also supports the extension on
+earlier protocols as a compatibility backport, omitting cache fields and
+`resultType`. The extension does not prefetch files or start background work.
+
+#### Filesystem helper
 
 For skills stored on disk, `skills.AddDirectory` installs a filesystem-backed
 provider. By default it discovers skills and files on every request, so
@@ -605,9 +655,11 @@ Register one filesystem provider per server. Applications that need to combine
 multiple filesystems can use an overlay `fs.FS` or aggregate them behind custom
 `AddHandlers` handlers.
 
-SEP validation is enabled by default, including the 512-resource and 16 MiB
-per-skill limits. `skills.ServerOptions` supports additional validators and
-explicit unsafe overrides.
+Filesystem manifests use `skills.BaselineLimits()` by default. Override publication
+caps through `DirectoryOptions.ServerOptions.Limits`; an explicit zero value
+removes caps. Structural validation always runs. Catalog validators can add
+application checks. Options are copied at construction.
+
 
 ### Pagination
 

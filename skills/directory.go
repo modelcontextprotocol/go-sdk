@@ -139,7 +139,7 @@ func NewFSProvider(fsys fs.FS, options *DirectoryOptions) (*DirectoryProvider, e
 }
 
 func newDirectoryProvider(fsys fs.FS, options *DirectoryOptions) (*DirectoryProvider, error) {
-	p := &DirectoryProvider{fsys: fsys, pageSize: mcp.DefaultPageSize}
+	p := &DirectoryProvider{fsys: fsys, pageSize: mcp.DefaultPageSize, serverOptions: &ServerOptions{Limits: BaselineLimits()}}
 	if options != nil {
 		if options.PageSize < 0 {
 			return nil, fmt.Errorf("skills: invalid page size %d", options.PageSize)
@@ -156,7 +156,13 @@ func newDirectoryProvider(fsys fs.FS, options *DirectoryOptions) (*DirectoryProv
 			p.maxAge = options.Cache.MaxAge
 			p.invalidate = options.Cache.Invalidate
 		}
-		p.serverOptions = cloneServerOptions(options.ServerOptions)
+		if options.ServerOptions != nil {
+			copy := *options.ServerOptions
+			p.serverOptions = &copy
+		}
+		if err := p.serverOptions.Limits.validate(); err != nil {
+			return nil, err
+		}
 		p.catalogValidators = slices.Clone(options.CatalogValidators)
 		if options.URIPathPrefix != "" {
 			p.prefix = strings.Split(strings.Trim(options.URIPathPrefix, "/"), "/")
@@ -200,18 +206,21 @@ func AddFS(server *mcp.Server, fsys fs.FS, options *DirectoryOptions) error {
 // AddTo registers the provider's extension handlers, resource template, and live
 // resource listing. Register one filesystem provider per server.
 func (p *DirectoryProvider) AddTo(server *mcp.Server) error {
-	if err := AddHandlers(server, &Handlers{
-		List:          p.ListSkills,
-		Get:           p.GetSkill,
-		ReadDirectory: p.ReadDirectory,
-	}, p.serverOptions); err != nil {
+	if server == nil {
+		return fmt.Errorf("skills: nil server")
+	}
+	if err := p.serverOptions.Limits.validate(); err != nil {
 		return err
 	}
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
-		Name:        "skills",
-		Description: "Resources served by the MCP Skills extension.",
+		Name: "skills", Description: "Resources served by the MCP Skills extension.",
 		URITemplate: "skill://{authority}/{+path}",
 	}, p.ReadResource)
+	if err := AddHandlers(server, &Handlers{
+		List: p.ListSkills, Get: p.GetSkill, ReadDirectory: p.ReadDirectory,
+	}, p.serverOptions); err != nil {
+		return err
+	}
 	server.AddReceivingMiddleware(p.listResourcesMiddleware)
 	return nil
 }
@@ -430,7 +439,7 @@ func (p *DirectoryProvider) scanCatalog(ctx context.Context, mode catalogMode) (
 			return nil, err
 		}
 		var resources []*Resource
-		defaultValidation, limits := validationSettings(p.serverOptions)
+		limits := p.serverOptions.Limits
 		var totalSize int64
 		for _, item := range entries {
 			if err := ctx.Err(); err != nil {
@@ -439,7 +448,7 @@ func (p *DirectoryProvider) scanCatalog(ctx context.Context, mode catalogMode) (
 			if item.info.IsDir() || !withinDir(skillDir, item.path) {
 				continue
 			}
-			if manifests && defaultValidation {
+			if manifests {
 				if limits.MaxResourcesPerSkill > 0 && len(resources) == limits.MaxResourcesPerSkill {
 					return nil, fmt.Errorf("skill %q exceeds the resource limit of %d", rootURI, limits.MaxResourcesPerSkill)
 				}
@@ -484,7 +493,7 @@ func (p *DirectoryProvider) scanCatalog(ctx context.Context, mode catalogMode) (
 		if manifests {
 			slices.SortFunc(resources, func(a, b *Resource) int { return strings.Compare(a.URI, b.URI) })
 			skill := &Skill{URI: rootURI + "/SKILL.md", Frontmatter: frontmatter, Resources: StaticResources(resources...)}
-			if err := validateSkillResult(ctx, skill, p.serverOptions); err != nil {
+			if err := ValidateSkillWithLimits(skill, p.serverOptions.Limits); err != nil {
 				return nil, err
 			}
 			if _, exists := catalog.bySkill[skill.URI]; exists {
@@ -515,8 +524,12 @@ func (p *DirectoryProvider) scanCatalog(ctx context.Context, mode catalogMode) (
 		slices.SortFunc(catalog.dirs[uri], func(a, b *mcp.Resource) int { return strings.Compare(a.URI, b.URI) })
 	}
 	if manifests {
-		if err := runValidators(ctx, p.catalogValidators, catalog.skills); err != nil {
-			return nil, err
+		for _, validate := range p.catalogValidators {
+			if validate != nil {
+				if err := validate(ctx, catalog.skills); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	return catalog, nil

@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,7 +26,15 @@ import (
 
 const maxDiscoveryRedirects = 10
 
-var defaultDiscoveryTransport = newDiscoveryTransport(http.DefaultTransport)
+// Build this on first use, not when the package loads. Building it checks the
+// proxy via http.ProxyFromEnvironment, and net/http only reads the proxy
+// environment once and then remembers it for the whole run. If that happened
+// at import time, it would lock in the proxy setting before the app had a
+// chance to set HTTPS_PROXY. sync.OnceValue waits until first use and still
+// builds the transport just once. See #1276.
+var defaultDiscoveryTransport = sync.OnceValue(func() http.RoundTripper {
+	return newDiscoveryTransport(http.DefaultTransport)
+})
 
 type httpStatusError struct {
 	StatusCode int
@@ -103,7 +112,7 @@ func checkHTTPSOrLoopback(addr string) error {
 }
 
 func newDiscoveryClient(c *http.Client) *http.Client {
-	transport := defaultDiscoveryTransport
+	transport := defaultDiscoveryTransport()
 	if c != nil && c.Transport != nil {
 		// a caller that has taken over dialing or TLS opts out of the checks
 		if t, ok := c.Transport.(*http.Transport); ok && t.DialContext == nil && t.DialTLSContext == nil {

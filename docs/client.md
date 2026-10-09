@@ -304,7 +304,7 @@ func Example_elicitation() {
 `ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
 client renders as a form. Two field keywords shape that form.
 
-A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034)) prefills a
+A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034--support-default-values-for-all-primitive-types-in)) prefills a
 field. When the user accepts without supplying it, the SDK fills the field in
 from the schema before the result reaches either side's caller — the client
 does so after its elicitation handler returns, and `ServerSession.Elicit` does
@@ -313,7 +313,7 @@ defaulted field `Required` defeats it: accepted content is validated against
 the schema before defaults are applied, so an answer that omits the field is
 rejected rather than defaulted.
 
-An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330)) restricts a
+An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330-elicitation-enum-schema-improvements-and-standards)) restricts a
 field to a fixed set of values, which the client renders as a choice. Enums
 are supported only on `"string"` fields; declaring one on another type is
 rejected. To label the choices, set the legacy `enumNames` keyword through
@@ -544,10 +544,90 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
 adds an `extensions` map to `ClientCapabilities` and `ServerCapabilities` so
 that optional capabilities outside the core protocol can be declared on the
 wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
-are per-extension settings objects.
+are per-extension settings objects. Extensions require explicit opt-in.
+
+#### Skills extension
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package provides typed clients for SEP-2640. Call `skills.AddClient` before
-connecting, then use `skills.List`, `skills.Get`, or `skills.ReadDirectory`.
-The `skills.All` and `skills.DirectoryEntries` iterators follow pagination
-cursors automatically without modifying caller-owned parameters.
+package provides typed calls for the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Call package-level functions with the connected session. This example connects to the server from the
+[server example](server.md#skills-extension) over an in-memory transport:
+
+```go
+ctx := context.Background()
+client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
+
+serverTransport, clientTransport := mcp.NewInMemoryTransports()
+serverSession, err := server.Connect(ctx, serverTransport, nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer serverSession.Close()
+session, err := client.Connect(ctx, clientTransport, nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer session.Close()
+
+for skill, err := range skills.All(ctx, session, nil) {
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(skill.URI, skill.Frontmatter["description"])
+}
+```
+
+`List`, `Get`, and `All` validate structure without imposing count or size caps.
+They support the required baseline of 512 files and 16 MiB per skill, as well as
+larger manifests. Application download budgets for dynamic content remain the
+host's responsibility.
+
+List calls reject invalid entries by default. To retain valid entries from a
+malformed page, pass `skills.ListOptions{SkipInvalidSkills: true}` to `List` or
+`All`. `List` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
+report them during iteration. Missing/null lists, invalid cache hints, and
+invalid result types still fail. All entries with a duplicate URI are skipped,
+so no duplicate silently replaces another. Page cursors are preserved.
+
+`ReadDirectory` and `DirectoryEntries` expose optional
+directory browsing when the server advertises `directoryRead: true`. Calls fail
+if the required server capabilities are absent. Iterators follow cursors without
+modifying request parameters and stop after the first error.
+
+Listing does not fetch content. Read files on demand with `session.ReadResource`
+and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use.
+A listed entry is complete; `Get` also retrieves a skill directly by URI even
+when it was not listed. For example, when the user chooses to load a known skill:
+
+```go
+result, err := skills.Get(ctx, session, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
+if err != nil {
+	log.Fatal(err)
+}
+resource, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: result.Skill.URI})
+if err != nil {
+	log.Fatal(err)
+}
+if len(resource.Contents) != 1 || resource.Contents[0] == nil || resource.Contents[0].URI != result.Skill.URI || resource.Contents[0].Blob != nil {
+	log.Fatal("expected one text resource for SKILL.md")
+}
+if err := skills.VerifySkillMD(result.Skill, []byte(resource.Contents[0].Text)); err != nil {
+	log.Fatal(err)
+}
+fmt.Println("verified", result.Skill.URI)
+```
+
+Keep skill entries scoped to their originating session: equal URIs from different
+servers are different skills. Use a host-assigned server identity when persisting
+entries or approvals. Directory results are live observations; they do not expand
+the files authorized by a held manifest.
+
+`VerifyResource` checks manifest membership, byte length, and SHA-256 digest.
+`VerifySkillMD` also compares every frontmatter field. JSON frontmatter numbers
+are decoded as `json.Number` to preserve integer precision. For dynamic manifests,
+`VerifySkillMD` still checks frontmatter and returns `skills.ErrDynamicResources`
+only when it matches; malformed or mismatched frontmatter returns a different error.
+Applications decide whether to accept content without integrity verification and
+own skill approval and execution policy. A digest match alone does not make remote
+instructions trustworthy.

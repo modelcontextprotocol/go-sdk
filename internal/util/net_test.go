@@ -16,6 +16,8 @@ func TestIsLoopback(t *testing.T) {
 	}{
 		{"localhost", true},
 		{"localhost:3000", true},
+		{"LOCALHOST", true},
+		{"LocalHost:3000", true},
 		{"127.0.0.1", true},
 		{"127.0.0.1:3000", true},
 		{"[::1]", true},
@@ -25,6 +27,7 @@ func TestIsLoopback(t *testing.T) {
 		{"evil.com", false},
 		{"evil.com:80", false},
 		{"localhost.evil.com", false},
+		{"LOCALHOST.evil.com", false},
 		{"127.0.0.1.evil.com", false},
 	}
 

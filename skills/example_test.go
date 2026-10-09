@@ -6,29 +6,44 @@ package skills_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/skills"
 )
 
 func ExampleAddHandlers() {
+	// !+skillsserver
 	server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, nil)
+	const uri = "skill://greeting/SKILL.md"
+	const content = "---\nname: greeting\ndescription: Greet the user.\n---\n# Greeting\nSay hello to the user.\n"
 	entry := &skills.Skill{
-		URI: "skill://generated/SKILL.md",
+		URI: uri,
 		Frontmatter: skills.Frontmatter{
-			"name": "generated", "description": "Instructions generated on demand.",
+			"name": "greeting", "description": "Greet the user.",
 		},
-		Resources: skills.DynamicResources(),
+		Resources: skills.StaticResources(&skills.Resource{
+			URI: uri, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))), Size: int64(len(content)),
+		}),
 	}
+
+	server.AddResource(&mcp.Resource{
+		URI: uri, Name: "greeting", Description: "Greet the user.", MIMEType: "text/markdown",
+	}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+			URI: uri, MIMEType: "text/markdown", Text: content,
+		}}}, nil
+	})
 	err := skills.AddHandlers(server, &skills.Handlers{
-		List: func(context.Context, *mcp.ServerSession, *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
-			return &skills.ListSkillsResult{Skills: []*skills.Skill{entry}}, nil
+		List: func(_ context.Context, _ *mcp.ServerSession, params *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
+			page, next, err := skills.PaginateSkills([]*skills.Skill{entry}, params.Cursor, 0)
+			return &skills.ListSkillsResult{Skills: page, NextCursor: next}, err
 		},
 		Get: func(_ context.Context, _ *mcp.ServerSession, params *skills.GetSkillParams) (*skills.GetSkillResult, error) {
 			if params.URI != entry.URI {
-				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "unknown skill"}
+				return nil, nil
 			}
 			return &skills.GetSkillResult{Skill: entry}, nil
 		},
@@ -36,4 +51,51 @@ func ExampleAddHandlers() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// !-skillsserver
+
+	// !+skillsclient
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer serverSession.Close()
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close()
+
+	for skill, err := range skills.All(ctx, session, nil) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(skill.URI, skill.Frontmatter["description"])
+	}
+	// !-skillsclient
+
+	// !+skillsverify
+	result, err := skills.Get(ctx, session, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	resource, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: result.Skill.URI})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(resource.Contents) != 1 || resource.Contents[0] == nil || resource.Contents[0].URI != result.Skill.URI || resource.Contents[0].Blob != nil {
+		log.Fatal("expected one text resource for SKILL.md")
+	}
+	if err := skills.VerifySkillMD(result.Skill, []byte(resource.Contents[0].Text)); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("verified", result.Skill.URI)
+	// !-skillsverify
+
+	// Output:
+	// skill://greeting/SKILL.md Greet the user.
+	// verified skill://greeting/SKILL.md
 }

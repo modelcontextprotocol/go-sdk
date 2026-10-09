@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 )
@@ -131,8 +132,9 @@ type AuthServerMeta struct {
 //   - The metadataURL must use HTTPS or be a local address.
 //   - The Issuer field is checked against metadataURL.Issuer.
 //
-// It also verifies that the authorization server supports PKCE and that the URLs
-// in the metadata don't use dangerous schemes.
+// It also verifies that the authorization server supports PKCE with the S256
+// code challenge method, which is the one this SDK's clients use, and that the
+// URLs in the metadata don't use dangerous schemes.
 //
 // It returns an error if the request fails with a non-4xx status code or the fetched
 // metadata doesn't pass security validations.
@@ -160,6 +162,9 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 
 	if len(asm.CodeChallengeMethodsSupported) == 0 {
 		return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuer)
+	}
+	if !slices.Contains(asm.CodeChallengeMethodsSupported, "S256") {
+		return nil, fmt.Errorf("authorization server at %s does not support the S256 PKCE method", issuer)
 	}
 
 	// Validate endpoint URLs to prevent XSS attacks (see #526).

@@ -207,7 +207,12 @@ func setStandardHeaders(ctx context.Context, header http.Header, msg jsonrpc.Mes
 	case *jsonrpc.Request:
 		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			header.Set(nameHeader, name)
+			// Names are only SHOULD-constrained to header-safe characters, so a
+			// name outside the safe set is Base64-wrapped with the =?base64?...?=
+			// sentinel, the same rule applied to Mcp-Param-* values.
+			if encoded, ok := encodeHeaderValue(name); ok {
+				header.Set(nameHeader, encoded)
+			}
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok && tool != nil {
@@ -374,10 +379,11 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func
 
 		var nameInBody string
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
-			nameInHeader := header.Get(nameHeader)
-			if nameInHeader == "" {
+			// A name can be empty, which is sent as a present, empty header.
+			if len(header.Values(nameHeader)) == 0 {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
+			nameInHeader := header.Get(nameHeader)
 			// A name that is not header-safe may be Base64-wrapped by the client
 			// (=?base64?...?=), so decode before comparing, as with Mcp-Param-*.
 			decodedName, ok := decodeHeaderValue(nameInHeader)
@@ -419,17 +425,20 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 
 	for _, b := range paramHeaders {
 		fullHeader := paramHeaderPrefix + b.Header
+		// An empty string argument is mirrored as a present, empty header, so
+		// presence is decided by the header being sent, not by its value.
+		headerPresent := len(header.Values(fullHeader)) > 0
 		headerVal := header.Get(fullHeader)
 		argRaw, argExists := lookupArgument(raw.Arguments, b.Path)
 
 		if !argExists || string(argRaw) == "null" {
-			if headerVal != "" {
+			if headerPresent {
 				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, strings.Join(b.Path, "."))
 			}
 			continue
 		}
 
-		if headerVal == "" {
+		if !headerPresent {
 			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, strings.Join(b.Path, "."))
 		}
 

@@ -31,9 +31,6 @@ func TestDirectoryProviderLiveAndPaginated(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1"}, nil)
-	if err := AddClient(client); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, st, nil)
@@ -349,4 +346,31 @@ type countingFS struct {
 func (f *countingFS) Open(name string) (fs.File, error) {
 	f.opens[name]++
 	return f.FS.Open(name)
+}
+
+func TestDirectoryOptionsLimitOwnership(t *testing.T) {
+	files := fstest.MapFS{"demo/SKILL.md": {Data: []byte("---\nname: demo\ndescription: Demo\n---\n")}}
+	options := &DirectoryOptions{ServerOptions: &ServerOptions{Limits: BaselineLimits()}}
+	provider, err := NewFSProvider(files, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.ServerOptions.Limits = Limits{MaxTotalSize: -1}
+	server := mcp.NewServer(&mcp.Implementation{Name: "fs", Version: "1"}, nil)
+	if err := provider.AddTo(server); err != nil {
+		t.Fatal(err)
+	}
+	if server.Capabilities().Resources == nil {
+		t.Fatal("provider did not advertise resources before skills registration")
+	}
+	result, err := List(t.Context(), connectSkills(t, server, protocolVersionCaching), nil)
+	if err != nil || len(result.Skills) != 1 {
+		t.Fatalf("List = %+v, %v", result, err)
+	}
+	if _, err := NewFSProvider(files, options); err == nil {
+		t.Fatal("accepted negative publication limits")
+	}
+	if err := provider.AddTo(nil); err == nil {
+		t.Fatal("accepted nil server")
+	}
 }
