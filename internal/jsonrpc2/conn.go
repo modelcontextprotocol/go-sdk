@@ -199,6 +199,21 @@ type Writer interface {
 	Write(context.Context, Message) error
 }
 
+// NonFatal marks an error returned by [Writer.Write] as a failure of the
+// written message only: the connection remains usable. Unlike [ErrRejected],
+// the caller receives err itself.
+func NonFatal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &nonFatalError{err}
+}
+
+type nonFatalError struct{ err error }
+
+func (e *nonFatalError) Error() string { return e.err.Error() }
+func (e *nonFatalError) Unwrap() error { return e.err }
+
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
 type ConnectionConfig struct {
 	Reader          Reader                    // required
@@ -768,6 +783,9 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
+	}
+	if nf, ok := err.(*nonFatalError); ok {
+		return nf.err
 	}
 
 	// For cancelled or rejected requests, we don't set the writeErr (which would

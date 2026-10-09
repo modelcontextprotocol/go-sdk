@@ -1854,24 +1854,23 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		},
 		{
 			// Same server response, but the user opted out via
-			// MCPGODEBUG=noprotocolerrorbody=1. Pre-fix behavior: the
-			// session is torn down.
+			// MCPGODEBUG=noprotocolerrorbody=1. The body is ignored, but
+			// without a session the failure still fails only the call.
 			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1)",
 			callStatus:        http.StatusBadRequest,
 			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
 			disableBodyDecode: true,
 			wantErrRejected:   false,
-			wantSessionAlive:  false,
+			wantSessionAlive:  true,
 		},
 		{
-			// Legacy server returns plain-text 400 with no JSON-RPC
-			// body: cannot be classified as a per-call rejection, so the
-			// session is still torn down.
+			// Plain-text 400 with no JSON-RPC body: without a session,
+			// only the call fails.
 			name:             "400 with plain-text body",
 			callStatus:       http.StatusBadRequest,
 			callBody:         "Bad Request",
 			wantErrRejected:  false,
-			wantSessionAlive: false,
+			wantSessionAlive: true,
 		},
 		{
 			// SEP-2575: server returns -32601 for an unimplemented
@@ -1884,13 +1883,13 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			wantSessionAlive: true,
 		},
 		{
-			// A bare 404 with no JSON-RPC body means the session has
-			// been terminated. Session must not survive.
-			name:             "404 with empty body (terminated session)",
+			// A bare 404 with no JSON-RPC body: there is no session to
+			// terminate, so only the call fails.
+			name:             "404 with empty body",
 			callStatus:       http.StatusNotFound,
 			callBody:         "",
 			wantErrRejected:  false,
-			wantSessionAlive: false,
+			wantSessionAlive: true,
 		},
 	}
 
