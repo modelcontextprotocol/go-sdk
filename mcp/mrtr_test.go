@@ -342,6 +342,93 @@ type wrappedCallToolParams struct{ *CallToolParams }
 // retry loop reports an explicit error when the params carry a type it
 // cannot build retry params for, instead of silently resending the request
 // unchanged until the retry cap.
+// rawJSONResult is a result sent exactly as given, standing in for a server
+// built with another SDK.
+type rawJSONResult struct {
+	ResultBase
+	raw string
+}
+
+func (r *rawJSONResult) MarshalJSON() ([]byte, error) { return []byte(r.raw), nil }
+
+// TestMultiRoundTrip_AutoRetry_RequestStateOnly verifies that the client
+// retries an input-required result that carries a requestState but no
+// inputRequests, echoing the state, instead of returning it as the final
+// result. The spec requires at least one of the two fields, so a result with
+// only requestState is valid.
+func TestMultiRoundTrip_AutoRetry_RequestStateOnly(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+		},
+	)
+	// The SDK's own server never sends a requestState-only result, so send
+	// one directly on the first call.
+	srv.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodCallTool && req.GetParams().(*CallToolParamsRaw).RequestState == "" {
+				return &rawJSONResult{raw: `{"resultType":"input_required","requestState":"continue"}`}, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	cs := mustConnect(t, srv, nil)
+
+	res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatalf("CallTool() returned an input-required result: requestState = %q", res.RequestState)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+	}
+	if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
+		t.Errorf("result text = %q, want %q", got, "state=continue")
+	}
+}
+
+// TestMultiRoundTrip_AutoRetry_InputRequiredWithoutFields verifies that an
+// input-required result with neither inputRequests nor requestState is not
+// returned as the final result. It is retried like load shedding until the
+// load-shedding limit is reached.
+func TestMultiRoundTrip_AutoRetry_InputRequiredWithoutFields(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
+		},
+	)
+	srv.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodCallTool {
+				calls.Add(1)
+				return &rawJSONResult{raw: `{"resultType":"input_required"}`}, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	cs := mustConnect(t, srv, nil)
+
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "act"}); err == nil {
+		t.Fatal("CallTool() err = nil, want error for an input-required result without inputRequests or requestState")
+	}
+	if got := calls.Load(); got != maxLoadSheddingMultiRoundTripRetries {
+		t.Errorf("tools/call requests = %d, want %d", got, maxLoadSheddingMultiRoundTripRetries)
+	}
+}
+
 func TestMultiRoundTrip_UnsupportedRetryParamsType(t *testing.T) {
 	ctx := context.Background()
 

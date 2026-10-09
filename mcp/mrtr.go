@@ -34,6 +34,7 @@ type multiRoundTripResponse interface {
 	inputRequests() map[string]InputRequest
 	requestState() string
 	hasContent() bool
+	NeedsInput() bool
 }
 
 // validateMultiRoundTripResult rejects a result that carries both content and
@@ -79,7 +80,10 @@ func clientMultiRoundTripMiddleware() Middleware {
 					return res, nil
 				}
 				reqMap := mrtrResult.inputRequests()
-				if reqMap == nil {
+				// An input-required result may carry only a requestState
+				// (SEP-2322 requires at least one of the two fields), so the
+				// result type, not the map alone, decides whether to retry.
+				if reqMap == nil && !mrtrResult.NeedsInput() {
 					return res, nil
 				}
 				if len(reqMap) == 0 {
