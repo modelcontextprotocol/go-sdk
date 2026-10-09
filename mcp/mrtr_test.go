@@ -557,6 +557,99 @@ func TestMultiRoundTrip_ServerMiddleware_GetPrompt(t *testing.T) {
 	}
 }
 
+// TestMultiRoundTrip_ServerMiddleware_MultipleRounds verifies that the
+// server-side shim keeps fulfilling input requests for a client on an older
+// protocol version until the handler completes, as the client-side
+// middleware does, instead of returning a later round's input-required
+// result, which that client cannot interpret.
+func TestMultiRoundTrip_ServerMiddleware_MultipleRounds(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			switch req.Params.RequestState {
+			case "":
+				return &CallToolResult{
+					InputRequests: InputRequestMap{"first": &ElicitParams{Message: "First?"}},
+					RequestState:  "step-1",
+				}, nil
+			case "step-1":
+				return &CallToolResult{
+					InputRequests: InputRequestMap{"second": &ElicitParams{Message: "Second?"}},
+					RequestState:  "step-2",
+				}, nil
+			default:
+				return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
+			}
+		},
+	)
+
+	var elicitations atomic.Int32
+	// Disable the client-side middleware so the client behaves like one
+	// built for 2025-11-25, which has no notion of input-required results.
+	cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			elicitations.Add(1)
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool() content = %v, inputRequests = %v; want one content block", res.Content, res.InputRequests)
+	}
+	if got := res.Content[0].(*TextContent).Text; got != "done" {
+		t.Errorf("result text = %q, want %q", got, "done")
+	}
+	if got := elicitations.Load(); got != 2 {
+		t.Errorf("elicitation requests = %d, want 2", got)
+	}
+}
+
+// TestMultiRoundTrip_ServerMiddleware_MaxRetries verifies that the
+// server-side shim stops after maxMultiRoundTripRetries handler calls when
+// the handler keeps asking an older client for input.
+func TestMultiRoundTrip_ServerMiddleware_MaxRetries(t *testing.T) {
+	ctx := context.Background()
+
+	var serverCalls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "loop", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, _ *CallToolRequest) (*CallToolResult, error) {
+			serverCalls.Add(1)
+			return &CallToolResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Again?"}},
+				RequestState:  "loop-state",
+			}, nil
+		},
+	)
+
+	cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "loop"})
+	if err == nil {
+		t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum retries") {
+		t.Errorf("CallTool() err = %v, want it to mention the retry limit", err)
+	}
+	if got := serverCalls.Load(); got != maxMultiRoundTripRetries {
+		t.Errorf("serverCalls = %d, want %d", got, maxMultiRoundTripRetries)
+	}
+}
+
 func TestMultiRoundTrip_GetPrompt_AutoRetry(t *testing.T) {
 
 	ctx := context.Background()
