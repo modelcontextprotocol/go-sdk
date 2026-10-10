@@ -199,6 +199,17 @@ type Writer interface {
 	Write(context.Context, Message) error
 }
 
+// ResponseDropper is an optional interface for a [Writer] that can drop the
+// response to a call the peer cancelled (see [Connection.CancelFromPeer]). The
+// Connection still writes the response once the call's handler returns, so
+// that the writer sees the call finish, and the writer discards it.
+type ResponseDropper interface {
+	// DropResponse reports, when the cancellation arrives, that the peer
+	// cancelled the incoming call with the given ID, so its response must not
+	// be sent.
+	DropResponse(id ID)
+}
+
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
 type ConnectionConfig struct {
 	Reader          Reader                    // required
@@ -452,21 +463,49 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 // Cancel will not complain if the ID is not a currently active message, and it
 // will not cause any messages that have not arrived yet with that ID to be
 // cancelled.
+//
+// The inbound call is still answered: use [Connection.CancelFromPeer] when the
+// peer itself asked for the cancellation.
 func (c *Connection) Cancel(id ID) {
-	c.CancelCause(id, nil)
+	c.cancelIncoming(id, nil, false)
 }
 
 // CancelCause is like [Connection.Cancel], but records cause as the reason
 // the Context was cancelled, so that the Handle call can read it back through
 // [context.Cause]. A nil cause reads as [context.Canceled].
 func (c *Connection) CancelCause(id ID, cause error) {
+	c.cancelIncoming(id, cause, false)
+}
+
+// CancelFromPeer is [Connection.CancelCause] for a cancellation the peer
+// requested, such as an MCP "notifications/cancelled": it also tells a writer
+// that is a [ResponseDropper] to drop the response, which the MCP
+// specification says a cancelled request gets none of.
+func (c *Connection) CancelFromPeer(id ID, cause error) {
+	c.cancelIncoming(id, cause, true)
+}
+
+// cancelIncoming cancels the inbound request with the given ID, recording the
+// cause, and tells the writer to drop the response if the peer asked for the
+// cancellation. A request already responded to is no longer in incomingByID,
+// so a late cancellation retracts nothing.
+func (c *Connection) cancelIncoming(id ID, cause error, fromPeer bool) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
 	})
-	if req != nil {
-		req.cancel(cause)
+	if req == nil {
+		return
 	}
+	if fromPeer {
+		// Tell the writer before cancelling, so that it knows by the time a
+		// handler that honors its context returns. This runs outside stateMu
+		// since the writer may do I/O.
+		if d, ok := c.writer.(ResponseDropper); ok {
+			d.DropResponse(id)
+		}
+	}
+	req.cancel(cause)
 }
 
 // Wait blocks until the connection is fully closed, but does not close it.
@@ -813,10 +852,10 @@ func (c *Connection) internalErrorf(format string, args ...any) error {
 // which by default is wrapped in notDone so a transport-level cancellation
 // does not implicitly cancel every in-flight handler. Cancellation of an
 // in-flight handler is instead expected to flow only through the jsonrpc2
-// layer's explicit channels: the [Preempter] calling [Connection.Cancel] in
-// response to the peer's cancel notification, or the transport itself
-// failing (the read loop exits on EOF or a write fails) — both of which
-// cancel every in-flight incoming request in turn.
+// layer's explicit channels: the [Preempter] calling
+// [Connection.CancelFromPeer] in response to the peer's cancel notification,
+// or the transport itself failing (the read loop exits on EOF or a write
+// fails) — both of which cancel every in-flight incoming request in turn.
 type notDone struct{ ctx context.Context }
 
 func (ic notDone) Value(key any) any {
