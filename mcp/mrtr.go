@@ -34,20 +34,28 @@ type multiRoundTripResponse interface {
 	inputRequests() map[string]InputRequest
 	requestState() string
 	hasContent() bool
+	NeedsInput() bool
+}
+
+// asksForInput reports whether a handler's result is an input-required result.
+// SEP-2322 requires at least one of inputRequests and requestState, so a
+// result with only a requestState asks the client to continue too.
+func asksForInput(res multiRoundTripResponse) bool {
+	return res.inputRequests() != nil || res.requestState() != ""
 }
 
 // validateMultiRoundTripResult rejects a result that carries both content and
-// input requests. [annotateResultType] labels the result later, in
-// [ServerSession.handle], so this function does not set resultType.
+// input requests or a request state. [annotateResultType] labels the result
+// later, in [ServerSession.handle], so this function does not set resultType.
 func validateMultiRoundTripResult(logger *slog.Logger, res multiRoundTripResponse) error {
 	if res == nil {
 		return nil
 	}
-	if res.inputRequests() != nil && res.hasContent() {
-		logger.Warn("handler returned both content and inputRequests")
+	if asksForInput(res) && res.hasContent() {
+		logger.Warn("handler returned both content and inputRequests or requestState")
 		return &jsonrpc.Error{
 			Code:    jsonrpc.CodeInternalError,
-			Message: "server bug: result has both content and inputRequests",
+			Message: "server bug: result has both content and inputRequests or requestState",
 		}
 	}
 	return nil
@@ -79,10 +87,15 @@ func clientMultiRoundTripMiddleware() Middleware {
 					return res, nil
 				}
 				reqMap := mrtrResult.inputRequests()
-				if reqMap == nil {
+				// An input-required result may carry only a requestState
+				// (SEP-2322 requires at least one of the two fields), so the
+				// result type, not the map alone, decides whether to retry.
+				if reqMap == nil && !mrtrResult.NeedsInput() {
 					return res, nil
 				}
-				if len(reqMap) == 0 {
+				// A result with a requestState asks to continue, so it counts as
+				// a round, not as load shedding.
+				if len(reqMap) == 0 && mrtrResult.requestState() == "" {
 					loadSheddingFailures++
 				}
 				if loadSheddingFailures >= maxLoadSheddingMultiRoundTripRetries {
@@ -112,7 +125,9 @@ func clientMultiRoundTripMiddleware() Middleware {
 // handles multi-round-trip for clients on older protocol versions. When a handler returns
 // InputRequests and the client does not support multi-round-trip, the middleware fulfills
 // the requests by calling the client directly and reinvokes the handler with the responses,
-// repeating until the handler completes or maxMultiRoundTripRetries is reached.
+// repeating until the handler completes or maxMultiRoundTripRetries is reached. A result
+// with a RequestState and no input requests reinvokes the handler with that state and no
+// responses.
 func serverMultiRoundTripMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
@@ -137,11 +152,11 @@ func serverMultiRoundTripMiddleware() Middleware {
 				if !ok {
 					return res, nil
 				}
-				reqMap := mrtrResult.inputRequests()
-				if reqMap == nil {
+				if !asksForInput(mrtrResult) {
 					return res, nil
 				}
-				if len(reqMap) == 0 {
+				reqMap := mrtrResult.inputRequests()
+				if len(reqMap) == 0 && mrtrResult.requestState() == "" {
 					return nil, fmt.Errorf("the server is busy, retry later")
 				}
 				if retries >= maxMultiRoundTripRetries {

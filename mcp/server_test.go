@@ -1637,8 +1637,8 @@ func TestServerSessionHandle_SetsResultTypeWhenMiddlewareShortCircuits(t *testin
 			want: resultTypeComplete,
 		},
 		{
-			// setResultType is unexported, so populating InputRequests is
-			// the only way a middleware can ask for input.
+			// setResultType is unexported, so populating InputRequests or
+			// RequestState is the only way a middleware can ask for input.
 			name:   "tools/call input required",
 			method: methodCallTool,
 			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
@@ -1646,6 +1646,27 @@ func TestServerSessionHandle_SetsResultTypeWhenMiddlewareShortCircuits(t *testin
 				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Continue?"}},
 			},
 			want: resultTypeInputRequired,
+		},
+		{
+			name:   "tools/call request state only",
+			method: methodCallTool,
+			params: newProtocolParams(map[string]any{"name": "tool", "arguments": map[string]any{}}),
+			result: &CallToolResult{RequestState: "continue"},
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "prompts/get request state only",
+			method: methodGetPrompt,
+			params: newProtocolParams(map[string]any{"name": "prompt"}),
+			result: &GetPromptResult{RequestState: "continue"},
+			want:   resultTypeInputRequired,
+		},
+		{
+			name:   "resources/read request state only",
+			method: methodReadResource,
+			params: newProtocolParams(map[string]any{"uri": "test://resource"}),
+			result: &ReadResourceResult{RequestState: "continue"},
+			want:   resultTypeInputRequired,
 		},
 	}
 
