@@ -1704,6 +1704,9 @@ func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
 
 // ListRoots lists the client roots.
 //
+// It returns an error, without sending the request, if the client did not
+// declare the roots capability.
+//
 // Deprecated: the roots feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
 // (at least twelve months). Migrate to passing paths via tool parameters,
@@ -1716,7 +1719,19 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 	if err := ss.assertServerInitiatedRequestAllowed(methodListRoots); err != nil {
 		return nil, err
 	}
+	if caps := ss.clientCapabilities(); caps == nil || caps.RootsV2 == nil {
+		return nil, errors.New("client does not support roots")
+	}
 	return handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, orZero[Params](params)))
+}
+
+// clientCapabilities returns the capabilities the client declared when it
+// initialized the session, or nil if it hasn't.
+func (ss *ServerSession) clientCapabilities() *ClientCapabilities {
+	if iparams := ss.InitializeParams(); iparams != nil {
+		return iparams.Capabilities
+	}
+	return nil
 }
 
 // CreateMessage sends a sampling request to the client.
@@ -1724,6 +1739,9 @@ func (ss *ServerSession) ListRoots(ctx context.Context, params *ListRootsParams)
 // If the client returns multiple content blocks (e.g. parallel tool calls),
 // CreateMessage returns an error. Use [ServerSession.CreateMessageWithTools]
 // for tool-enabled sampling.
+//
+// It returns an error, without sending the request, if the client did not
+// declare the sampling capability.
 //
 // Deprecated: the sampling feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
@@ -1736,6 +1754,9 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 	}
 	if err := ss.assertServerInitiatedRequestAllowed(methodCreateMessage); err != nil {
 		return nil, err
+	}
+	if caps := ss.clientCapabilities(); caps == nil || caps.Sampling == nil {
+		return nil, errors.New("client does not support sampling")
 	}
 	if params == nil {
 		params = &CreateMessageParams{Messages: []*SamplingMessage{}}
@@ -1771,6 +1792,10 @@ func (ss *ServerSession) CreateMessage(ctx context.Context, params *CreateMessag
 // (for parallel tool calls). Use this instead of [ServerSession.CreateMessage]
 // when the request includes tools.
 //
+// It returns an error, without sending the request, if the client did not
+// declare the sampling capability, or if the request has tools or a tool
+// choice and the client did not declare sampling.tools.
+//
 // Deprecated: the sampling feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
 // (at least twelve months). Migrate to calling LLM provider APIs directly
@@ -1785,6 +1810,13 @@ func (ss *ServerSession) CreateMessageWithTools(ctx context.Context, params *Cre
 	}
 	if params == nil {
 		params = &CreateMessageWithToolsParams{Messages: []*SamplingMessageV2{}}
+	}
+	caps := ss.clientCapabilities()
+	if caps == nil || caps.Sampling == nil {
+		return nil, errors.New("client does not support sampling")
+	}
+	if (len(params.Tools) > 0 || params.ToolChoice != nil) && caps.Sampling.Tools == nil {
+		return nil, errors.New("client does not support sampling with tools")
 	}
 	if params.Messages == nil {
 		p2 := *params
