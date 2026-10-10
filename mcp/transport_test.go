@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -362,5 +364,124 @@ func TestIOConnFrameCap(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// cancelAfterResponseTransport wraps a Transport so that a test can cancel a
+// context at a point the client cannot observe from the outside: the first
+// Read after the response to the given method has been delivered. The
+// jsonrpc2 read loop dispatches a message before it reads the next one, so
+// by then the call has been retired with its result while the caller may
+// still be decoding it. The transport also records the methods written to
+// it, so a test can check that no cancelled notification followed.
+type cancelAfterResponseTransport struct {
+	Transport
+	method string
+	cancel context.CancelFunc
+
+	mu       sync.Mutex
+	requests map[int64]string // id -> method, for requests written by the client
+	written  []string
+}
+
+func (t *cancelAfterResponseTransport) Connect(ctx context.Context) (Connection, error) {
+	conn, err := t.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t.requests = make(map[int64]string)
+	return &cancelAfterResponseConn{Connection: conn, t: t}, nil
+}
+
+type cancelAfterResponseConn struct {
+	Connection
+	t *cancelAfterResponseTransport
+
+	delivered bool // the response to t.method has been returned from Read
+	cancelled bool
+}
+
+func (c *cancelAfterResponseConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	if c.delivered && !c.cancelled {
+		c.cancelled = true
+		c.t.cancel()
+	}
+	msg, err := c.Connection.Read(ctx)
+	if resp, ok := msg.(*jsonrpc.Response); ok {
+		if id, isInt := resp.ID.Raw().(int64); isInt {
+			c.t.mu.Lock()
+			c.delivered = c.t.requests[id] == c.t.method
+			c.t.mu.Unlock()
+		}
+	}
+	return msg, err
+}
+
+func (c *cancelAfterResponseConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	if req, ok := msg.(*jsonrpc.Request); ok {
+		c.t.mu.Lock()
+		if id, isInt := req.ID.Raw().(int64); isInt {
+			c.t.requests[id] = req.Method
+		}
+		c.t.written = append(c.t.written, req.Method)
+		c.t.mu.Unlock()
+	}
+	return c.Connection.Write(ctx, msg)
+}
+
+func (t *cancelAfterResponseTransport) writtenMethods() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.written)
+}
+
+// TestCallKeepsDeliveredResponseOnCancel verifies that a response that has
+// already arrived is returned to the caller even if the caller's context is
+// cancelled while the result is being decoded, and that no cancelled
+// notification is sent for a request the client has the response to. The
+// specification allows cancellation notifications only for requests that
+// are believed to still be in progress.
+func TestCallKeepsDeliveredResponseOnCancel(t *testing.T) {
+	// A large tool list keeps the client decoding the result for a while
+	// after the response has been retired, which is the window the test
+	// targets.
+	const numTools = 2000
+
+	ctx := context.Background()
+	server := NewServer(testImpl, &ServerOptions{PageSize: numTools})
+	for i := range numTools {
+		server.AddTool(&Tool{Name: fmt.Sprintf("tool-%04d", i), InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+				return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+			})
+	}
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	transport := &cancelAfterResponseTransport{Transport: ct, method: methodListTools, cancel: cancel}
+	cs, err := NewClient(testImpl, nil).Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.ListTools(callCtx, nil)
+	if err != nil {
+		t.Fatalf("ListTools() = %v, want the delivered result", err)
+	}
+	if got := len(res.Tools); got != numTools {
+		t.Errorf("ListTools() returned %d tools, want %d", got, numTools)
+	}
+	if callCtx.Err() == nil {
+		t.Fatal("the context was not cancelled after the response was delivered; the test did not exercise the race")
+	}
+	if slices.Contains(transport.writtenMethods(), notificationCancelled) {
+		t.Errorf("client sent %s for a request whose response it had already received", notificationCancelled)
 	}
 }

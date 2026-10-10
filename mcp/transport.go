@@ -301,6 +301,12 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
+	case err == nil:
+		// The response arrived and decoded. It is returned even if ctx has
+		// been cancelled in the meantime: the request is complete, so there
+		// is nothing to cancel, and the spec permits notifications/cancelled
+		// only for requests believed to still be in progress.
+		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
