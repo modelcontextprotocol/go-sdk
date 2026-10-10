@@ -1004,3 +1004,134 @@ func mustConnectOldProtocol(t *testing.T, s *Server, clientOpts *ClientOptions) 
 	})
 	return cs
 }
+
+// gatedResourceServer returns a server whose "test://gated" resource asks for
+// an elicitation before it reveals its contents, and whose "test://plain"
+// resource answers at once. Every result is marked cacheable for a minute.
+// handlerCalls counts invocations of the gated handler.
+func gatedResourceServer(handlerCalls *atomic.Int32) *Server {
+	srv := NewServer(testImpl, &ServerOptions{
+		SetCacheable: func(_ context.Context, _ Request, c *Cacheable) {
+			c.TTLMs = 60_000
+			c.CacheScope = "private"
+		},
+	})
+	srv.AddResource(&Resource{URI: "test://gated", Name: "gated"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		handlerCalls.Add(1)
+		if len(req.Params.InputResponses) == 0 {
+			return &ReadResourceResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Reveal the document?"}},
+				RequestState:  "gated-state",
+			}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: req.Params.URI, Text: "the document"}},
+		}, nil
+	})
+	srv.AddResource(&Resource{URI: "test://plain", Name: "plain"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: req.Params.URI, Text: "plain"}},
+		}, nil
+	})
+	return srv
+}
+
+// TestMultiRoundTrip_ReadResource_RetryResultNotCached verifies that a
+// resources/read result produced by an automatic multi round-trip retry is
+// not cached: the caching specification says results of requests carrying
+// inputResponses or requestState MUST NOT be cached, because they depend on
+// inputs that are not part of the cache key. A second read of the same URI
+// must therefore go back to the server and ask the user again, while a
+// resource that needed no input stays cached.
+func TestMultiRoundTrip_ReadResource_RetryResultNotCached(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls, elicitations atomic.Int32
+	cs := mustConnect(t, gatedResourceServer(&handlerCalls), &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			elicitations.Add(1)
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	for i := 1; i <= 2; i++ {
+		res, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+		if err != nil {
+			t.Fatalf("read %d: ReadResource() error = %v", i, err)
+		}
+		if len(res.Contents) != 1 || res.Contents[0].Text != "the document" {
+			t.Fatalf("read %d: Contents = %+v, want the document", i, res.Contents)
+		}
+		// Each read is one input-required round plus one retry.
+		if got, want := handlerCalls.Load(), int32(2*i); got != want {
+			t.Errorf("read %d: handler calls = %d, want %d", i, got, want)
+		}
+		if got, want := elicitations.Load(), int32(i); got != want {
+			t.Errorf("read %d: elicitations = %d, want %d; the retry result was served from the cache", i, got, want)
+		}
+	}
+
+	// A result that needed no input is cacheable, so the second read of the
+	// plain resource is served without a round trip.
+	first, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Error("second read of test://plain was not served from the cache")
+	}
+}
+
+// TestMultiRoundTrip_ReadResource_ManualRetryBypassesCache covers the
+// caller-driven retry loop. An input-required result is not cacheable, the
+// retry request carries parameters the cache key does not include and so
+// must reach the server, and the retry's result must not be cached either.
+func TestMultiRoundTrip_ReadResource_ManualRetryBypassesCache(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls atomic.Int32
+	cs := mustConnect(t, gatedResourceServer(&handlerCalls), &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+	})
+
+	interim, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+	if err != nil {
+		t.Fatalf("ReadResource() error = %v", err)
+	}
+	if !interim.NeedsInput() {
+		t.Fatal("NeedsInput() = false, want true")
+	}
+
+	res, err := cs.ReadResource(ctx, &ReadResourceParams{
+		URI:            "test://gated",
+		InputResponses: InputResponseMap{"confirm": &ElicitResult{Action: "accept"}},
+		RequestState:   interim.RequestState,
+	})
+	if err != nil {
+		t.Fatalf("ReadResource() retry error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("retry: NeedsInput() = true, want false; the interim result was served from the cache")
+	}
+	if len(res.Contents) != 1 {
+		t.Fatalf("retry: len(Contents) = %d, want 1", len(res.Contents))
+	}
+	if got := handlerCalls.Load(); got != 2 {
+		t.Errorf("handler calls after the retry = %d, want 2", got)
+	}
+
+	// A fresh read must start the gate over instead of reusing the retry's
+	// contents.
+	again, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+	if err != nil {
+		t.Fatalf("ReadResource() after retry error = %v", err)
+	}
+	if !again.NeedsInput() {
+		t.Error("read after the retry: NeedsInput() = false, want true; the retry result was cached")
+	}
+	if got := handlerCalls.Load(); got != 3 {
+		t.Errorf("handler calls after the third read = %d, want 3", got)
+	}
+}
