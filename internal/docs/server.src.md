@@ -66,7 +66,7 @@ The SDK ensures that a read succeeds only if the URI matches a registered resour
 or matches the URI pattern of a resource template.
 
 To list a server's resources and resource templates, use the 
-[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
+[`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
 and
 [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
 iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
@@ -517,7 +517,149 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 adds an `extensions` map to `ServerCapabilities` so that optional
 capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
-per-extension settings objects.
+per-extension settings objects. Extensions require explicit opt-in.
+
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+package implements the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Use `skills.AddHandlers` for request-time
+`skills/list` and `skills/get` handlers. An optional directory handler enables
+`resources/directory/read` and advertises `directoryRead: true`.
+
+Before calling `AddHandlers`, register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate`; these also advertise the required `resources`
+capability. Registration fails if the effective resources capability is absent.
+An entry's manifest includes every file, including `SKILL.md` and
+nested skills. Use `skills.DynamicResources()` when stable digests cannot be
+published, not simply because the catalog changes over time.
+
+This example serves a complete static manifest and its content. The
+[client example](client.md#skills-extension) connects to this server and verifies
+the resource bytes:
+
+%include ../../skills/example_test.go skillsserver -
+
+Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
+returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
+with an empty resource list. Explicit JSON-RPC errors retain their code and data;
+other handler errors and invalid results become Internal Error (`-32603`).
+
+Handlers own pagination. `skills.PaginateSkills` and
+`skills.PaginateDirectoryResources` sort by URI and return one page without
+modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
+`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+entry contains its complete manifest, which is never split across pages.
+
+`skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
+manifest caps. Positive fields set exact caps, zero fields are unlimited, and
+negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
+the spec's interoperability baseline of 512 resources and 16 MiB per skill.
+Servers should stay within this baseline for broad compatibility; serving larger
+skills is allowed. Clients accept larger structurally valid manifests; these
+server caps govern publication policy only.
+
+Structural validation always runs; put additional application policy in the
+handlers themselves. Dynamic content budgets belong to the application; the SDK
+does not accumulate sizes across resource reads. It copies options at registration and
+prepares outgoing results without mutating handler-owned data.
+
+On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
+`cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+through the result's `mcp.Cacheable` field. The SDK also supports the extension on
+earlier protocols as a compatibility backport, omitting cache fields and
+`resultType`. The extension does not prefetch files or start background work.
+
+#### Filesystem helper
+
+For skills stored on disk, `skills.AddDirectory` installs a filesystem-backed
+provider. By default it discovers skills and files on every request, so
+resources added after server startup are available without re-registering
+them. This applies to `skills/list`, `skills/get`, `resources/list`,
+`resources/read`, and `resources/directory/read`. Changes and removals are
+visible on the next request too.
+
+```go
+if err := skills.AddDirectory(server, "./skills", &skills.DirectoryOptions{
+    PageSize: 100,
+}); err != nil {
+    return err
+}
+```
+
+`resources/list` includes the skill files alongside ordinary registered
+resources. `SKILL.md` entries carry their frontmatter name and description and
+the `text/markdown` MIME type. Directory reads return only direct children,
+including subdirectories with MIME type `inode/directory`, and use the same
+file metadata. Neither listing reads supporting file contents just to enumerate
+them; `skills/list` and `skills/get` also hash files to build static manifests.
+
+The helper combines all pages of the underlying resource listing with its
+current catalog, deduplicates by URI, and paginates the result using
+`DirectoryOptions.PageSize`. Exact resource registrations take precedence over
+the template, for both listing and reading. This uses existing receiving
+middleware and resource-template routing; it does not change the core SDK APIs.
+The merge costs a traversal of the underlying resource list on each request.
+
+Live discovery does not require `skills.DynamicResources()`: that marker means
+the server cannot provide a complete manifest with stable digests, not that its
+catalog changes over time. A filesystem provider returns a complete static
+manifest for the current catalog; a later request can return a different one.
+
+Clients must re-list to see changes. The helper starts no watcher and sends no
+filesystem-change notifications; SEP-2640 defines no `skills/list_changed`
+notification. The merged `resources/list` response has a zero TTL and private
+cache scope so a TTL configured for ordinary resources cannot conceal changes.
+These cache fields are omitted on older protocol versions by the core SDK.
+
+Set `Cache` to `&skills.DirectoryCacheOptions{}` to load the catalog on the
+first request and cache it indefinitely. Set `Preload: true` to load it while
+constructing the provider, which also makes the constructor report initial scan
+and validation errors. A positive `MaxAge` expires the cache after that
+duration; the first request after expiry rebuilds it.
+
+Cached providers can also be invalidated by a clock or filesystem monitor through
+`DirectoryCacheOptions.Invalidate`. Signals are coalesced and consumed when a
+request arrives; use a buffered channel so producers do not block. Both
+`MaxAge` and `Invalidate` are lazy: they do not start a background goroutine.
+A failed rebuild retains the previous catalog but leaves it stale: requests
+retry rebuilding until successful, even if the invalidation signal has already
+been consumed. They return the scan error instead of silently serving stale
+metadata. Resource bytes are always read on demand, including in cached modes.
+
+To rebuild before the next request, construct a provider directly and call
+`Refresh` from the application's watcher goroutine. The caller owns goroutine
+lifetime, cancellation, and error handling:
+
+```go
+provider, err := skills.NewDirectoryProvider("./skills", &skills.DirectoryOptions{
+    Cache: &skills.DirectoryCacheOptions{Preload: true},
+})
+if err != nil {
+    return err
+}
+if err := provider.AddTo(server); err != nil {
+    return err
+}
+go func() {
+    for range changed {
+        if err := provider.Refresh(ctx); err != nil {
+            logger.Error("refreshing skills", "error", err)
+        }
+    }
+}()
+```
+
+Register one filesystem provider per server. Applications that need to combine
+multiple filesystems can use an overlay `fs.FS` or aggregate them behind custom
+`AddHandlers` handlers.
+
+Filesystem manifests use `skills.BaselineLimits()` by default. Override publication
+caps through `DirectoryOptions.ServerOptions.Limits`; an explicit zero value
+removes caps. Structural validation always runs. Catalog validators can add
+application checks. Options are copied at construction.
+
 
 ### Pagination
 
