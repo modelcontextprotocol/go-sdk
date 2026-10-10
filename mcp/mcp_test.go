@@ -4083,9 +4083,6 @@ func TestCustomMethods(t *testing.T) {
 	t.Cleanup(func() { _ = ss.Close() })
 
 	c := NewClient(testImpl, nil)
-	if err := AddSendingCustomMethod[*searchParams, *searchResult](c, "acme/search"); err != nil {
-		t.Fatal(err)
-	}
 
 	cs, err := c.Connect(ctx, ct, nil)
 	if err != nil {
@@ -4118,7 +4115,7 @@ func TestCustomMethods(t *testing.T) {
 		t.Errorf("CallCustomMethod: unexpected total: %d", result2.Total)
 	}
 
-	// CallCustomMethod must reject methods that were never registered.
+	// Unknown methods still return the server's Method Not Found error.
 	if _, err := CallCustomMethod[*searchParams, *searchResult](
 		ctx, cs, "acme/unregistered", &searchParams{Query: "x"}); err == nil {
 		t.Error("CallCustomMethod: expected error for unregistered method, got nil")
@@ -4462,5 +4459,60 @@ func TestResourceSubscriptions_GenGuard(t *testing.T) {
 	// Clearing an absent URI is a no-op, not a panic.
 	if cs.clearResourceSubIfGen("file:///gone", 1) {
 		t.Fatal("clearing an absent URI reported a deletion")
+	}
+}
+
+func TestCallCustomMethodAutomaticRegistration(t *testing.T) {
+	type params struct{ ParamsBase }
+	type result struct {
+		ResultBase
+		Value string `json:"value"`
+	}
+	type otherResult struct{ ResultBase }
+	server := NewServer(testImpl, nil)
+	if err := AddReceivingCustomMethod(server, "example/auto", func(context.Context, *ServerSession, *params) (*result, error) { return &result{Value: "ok"}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(testImpl, nil)
+	st, ct := NewInMemoryTransports()
+	ss, err := server.Connect(t.Context(), st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := client.Connect(t.Context(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			r, err := CallCustomMethod[*params, *result](t.Context(), cs, "example/auto", nil)
+			if err != nil {
+				t.Error(err)
+			} else if r.Value != "ok" {
+				t.Errorf("result = %+v", r)
+			}
+		})
+	}
+	wg.Wait()
+	for _, method := range []string{"tools/call", "resources/read"} {
+		if _, err := CallCustomMethod[*params, *result](t.Context(), cs, method, nil); err == nil {
+			t.Errorf("accepted standard method %s", method)
+		}
+	}
+	if _, err := CallCustomMethod[*params, *otherResult](t.Context(), cs, "example/auto", nil); err == nil {
+		t.Fatal("accepted incompatible result type")
+	}
+	// The failed call must preserve the original registration.
+	if _, err := CallCustomMethod[*params, *result](t.Context(), cs, "example/auto", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddSendingCustomMethod[*params, *result](client, "example/auto"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CallCustomMethod[*params, *result](t.Context(), cs, "example/auto", nil); err != nil {
+		t.Fatal(err)
 	}
 }

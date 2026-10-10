@@ -1212,7 +1212,7 @@ var clientMethodInfosLegacyParams = func() map[string]methodInfo {
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
-	return cs.client.sendMethods
+	return maps.Clone(cs.client.sendMethods)
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
@@ -1745,21 +1745,33 @@ func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
 // CallCustomMethod sends a custom (non-standard) JSON-RPC method to the
 // server and decodes the response into R.
 //
-// The method must have been registered on the session's client via
-// [AddSendingCustomMethod].
+// The method is registered automatically on first use. An existing registration
+// is preserved and must decode into R. Standard MCP methods are rejected.
 func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	ctx context.Context,
 	cs *ClientSession,
 	method string,
 	params P,
 ) (R, error) {
+	var zero R
+	if cs == nil {
+		return zero, fmt.Errorf("mcp: CallCustomMethod: nil session")
+	}
+	if _, ok := serverMethodInfos[method]; ok {
+		return zero, fmt.Errorf("mcp: CallCustomMethod: %q shadows a standard MCP method", method)
+	}
 	c := cs.client
 	c.mu.Lock()
-	_, ok := c.sendMethods[method]
-	c.mu.Unlock()
+	mi, ok := c.sendMethods[method]
 	if !ok {
-		var zero R
-		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
+		mi = methodInfo{newResult: func() Result {
+			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
+		}}
+		c.sendMethods[method] = mi
+	}
+	c.mu.Unlock()
+	if _, ok := mi.newResult().(R); !ok {
+		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is registered with a different result type", method)
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)

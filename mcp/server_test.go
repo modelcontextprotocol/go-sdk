@@ -478,6 +478,31 @@ func TestServerCapabilities(t *testing.T) {
 	}
 }
 
+func TestServerAddExtension(t *testing.T) {
+	capabilities := &ServerCapabilities{Tools: &ToolCapabilities{}}
+	server := NewServer(testImpl, &ServerOptions{Capabilities: capabilities})
+	settings := map[string]any{"enabled": true}
+	server.AddExtension("io.example/test", settings)
+	settings["enabled"] = false
+
+	got := server.capabilities().Extensions["io.example/test"]
+	want := map[string]any{"enabled": true}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("extension settings mismatch (-want +got):\n%s", diff)
+	}
+	if capabilities.Extensions != nil {
+		t.Fatal("AddExtension mutated the caller's capabilities")
+	}
+}
+
+func TestServerAddExtensionPreservesDefaultCapabilities(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	server.AddExtension("io.example/test", nil)
+	if server.capabilities().Logging == nil {
+		t.Fatal("AddExtension removed the default logging capability")
+	}
+}
+
 func TestServerAddResourceTemplate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -2690,5 +2715,21 @@ func TestServerUnknownProtocolVersion_NewProtocol(t *testing.T) {
 				t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestServerCapabilitiesSnapshot(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	server.AddResource(&Resource{URI: "example://resource", Name: "resource"}, func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) { return nil, nil })
+	server.AddExtension("example/extension", map[string]any{"enabled": true})
+	caps := server.Capabilities()
+	if caps.Resources == nil {
+		t.Fatal("resource capability was not inferred")
+	}
+	caps.Resources.ListChanged = false
+	delete(caps.Extensions, "example/extension")
+	fresh := server.Capabilities()
+	if !fresh.Resources.ListChanged || fresh.Extensions["example/extension"] == nil {
+		t.Fatal("snapshot modified the server")
 	}
 }
