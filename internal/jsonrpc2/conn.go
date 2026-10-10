@@ -453,12 +453,19 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 // will not cause any messages that have not arrived yet with that ID to be
 // cancelled.
 func (c *Connection) Cancel(id ID) {
+	c.CancelCause(id, nil)
+}
+
+// CancelCause is like [Connection.Cancel], but records cause as the reason
+// the Context was cancelled, so that the Handle call can read it back through
+// [context.Cause]. A nil cause reads as [context.Canceled].
+func (c *Connection) CancelCause(id ID, cause error) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
 	})
 	if req != nil {
-		req.cancel(nil)
+		req.cancel(cause)
 	}
 }
 

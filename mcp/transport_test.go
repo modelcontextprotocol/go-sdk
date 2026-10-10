@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -118,6 +119,15 @@ func TestIOConnRead(t *testing.T) {
 			requested:       protocolVersion20241105,
 			protocolVersion: protocolVersion20251125,
 		},
+		{
+			// A SEP-2575 session runs no initialize. The version its first call
+			// declared is recorded as negotiated once the server accepts it, and
+			// the connection follows it like any version from 2025-06-18 on.
+			name:            "batching on a new-protocol session",
+			input:           `[{"jsonrpc":"2.0","id":1,"method":"test1"},{"jsonrpc":"2.0","id":2,"method":"test2"}]`,
+			want:            "JSON-RPC batching is not supported in 2025-06-18 and later (request version: 2026-07-28)",
+			protocolVersion: protocolVersion20260728,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,6 +178,109 @@ func TestIOConnRead_EmptyMethod(t *testing.T) {
 	}
 	if req.ID != jsonrpc2.Int64ID(5) {
 		t.Errorf("ID = %v, want 5", req.ID.Raw())
+	}
+}
+
+// TestIOConnReadBatchNotifications is a regression test for go-sdk#1256:
+// notifications carried inside a JSON-RPC batch must not be tracked as awaiting
+// a response. Only calls belong in a batch's response array, so a batch's
+// notifications must neither keep it from completing nor pollute the
+// per-connection duplicate-ID tracking.
+func TestIOConnReadBatchNotifications(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		// input is one or more newline-separated batch payloads.
+		input string
+		// wantCalls records, for each message Read returns in order, whether it
+		// is a call (true) or a notification (false). Reading every message
+		// must succeed.
+		wantCalls []bool
+		// wantTrackedCalls is the number of in-flight call requests tracked across
+		// batches awaiting a response once every message has been read, before any
+		// response is written.
+		wantTrackedCalls int
+		// respondIDs are the call IDs to respond to, in order.
+		respondIDs []int64
+		// wantWrites are the batch response payloads expected on the wire, each
+		// matched as a substring.
+		wantWrites []string
+	}{
+		{
+			name:             "call and notification is answered",
+			input:            `[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}]`,
+			wantCalls:        []bool{true, false},
+			wantTrackedCalls: 1,
+			respondIDs:       []int64{2},
+			wantWrites:       []string{`[{"jsonrpc":"2.0","id":2,"result":{}}]`},
+		},
+		{
+			name:             "only notifications keeps the connection open",
+			input:            `[{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":98}},{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}]`,
+			wantCalls:        []bool{false, false},
+			wantTrackedCalls: 0,
+		},
+		{
+			name: "repeated batches holding a notification",
+			input: `[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}]` + "\n" +
+				`[{"jsonrpc":"2.0","id":3,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}]`,
+			wantCalls:        []bool{true, false, true, false},
+			wantTrackedCalls: 2,
+			respondIDs:       []int64{2, 3},
+			wantWrites: []string{
+				`[{"jsonrpc":"2.0","id":2,"result":{}}]`,
+				`[{"jsonrpc":"2.0","id":3,"result":{}}]`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := new(bytes.Buffer)
+			tr := newIOConn(rwc{
+				rc: io.NopCloser(strings.NewReader(tt.input)),
+				wc: nopCloserWriter{sink},
+			})
+			t.Cleanup(func() { tr.Close() })
+
+			for i, wantCall := range tt.wantCalls {
+				msg, err := tr.Read(ctx)
+				if err != nil {
+					t.Fatalf("Read() #%d: unexpected error: %v", i, err)
+				}
+				req, ok := msg.(*jsonrpc.Request)
+				if !ok {
+					t.Fatalf("Read() #%d = %T, want *jsonrpc.Request", i, msg)
+				}
+				if req.IsCall() != wantCall {
+					t.Fatalf("Read() #%d IsCall() = %t, want %t", i, req.IsCall(), wantCall)
+				}
+			}
+
+			// Only calls are tracked as awaiting a response; notifications must
+			// not linger in the batch bookkeeping.
+			tr.batchMu.Lock()
+			gotTrackedCalls := len(tr.batches)
+			tr.batchMu.Unlock()
+			if gotTrackedCalls != tt.wantTrackedCalls {
+				t.Errorf("tracked calls = %d, want %d", gotTrackedCalls, tt.wantTrackedCalls)
+			}
+
+			for _, id := range tt.respondIDs {
+				resp := &jsonrpc.Response{ID: jsonrpc2.Int64ID(id), Result: []byte("{}")}
+				if err := tr.Write(ctx, resp); err != nil {
+					t.Fatalf("Write(response id=%d): %v", id, err)
+				}
+			}
+
+			got := sink.String()
+			for _, want := range tt.wantWrites {
+				if !strings.Contains(got, want) {
+					t.Errorf("batch responses = %q, missing %q", got, want)
+				}
+			}
+		})
 	}
 }
 

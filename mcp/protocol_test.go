@@ -1285,7 +1285,7 @@ func TestContentUnmarshal(t *testing.T) {
 		Meta:              Meta{"m": true},
 		Content:           content,
 		IsError:           true,
-		StructuredContent: 3.0,
+		StructuredContent: json.Number("3"),
 	}
 	var gotf CallToolResult
 	roundtrip(ctrf, &gotf)
@@ -1296,6 +1296,24 @@ func TestContentUnmarshal(t *testing.T) {
 	}
 	var gotpm PromptMessage
 	roundtrip(pm, &gotpm)
+}
+
+func TestCallToolResultStructuredContentFloat64Compatibility(t *testing.T) {
+	prev := structuredcontentfloat64
+	structuredcontentfloat64 = "1"
+	t.Cleanup(func() { structuredcontentfloat64 = prev })
+
+	var got CallToolResult
+	if err := json.Unmarshal([]byte(`{"content":[],"structuredContent":{"id":9007199254740993}}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := got.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", got.StructuredContent)
+	}
+	if got := structured["id"]; got != float64(9007199254740992) {
+		t.Errorf("id = %v (%T), want rounded float64 value", got, got)
+	}
 }
 
 func TestToolAnnotations_MarshalJSON(t *testing.T) {

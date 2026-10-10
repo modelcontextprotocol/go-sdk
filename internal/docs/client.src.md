@@ -99,7 +99,7 @@ pattern.
 `ElicitParams.RequestedSchema` is a flat schema of primitive fields, which the
 client renders as a form. Two field keywords shape that form.
 
-A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034)) prefills a
+A `Default` ([SEP-1034](https://modelcontextprotocol.io/seps/1034--support-default-values-for-all-primitive-types-in)) prefills a
 field. When the user accepts without supplying it, the SDK fills the field in
 from the schema before the result reaches either side's caller — the client
 does so after its elicitation handler returns, and `ServerSession.Elicit` does
@@ -108,7 +108,7 @@ defaulted field `Required` defeats it: accepted content is validated against
 the schema before defaults are applied, so an answer that omits the field is
 rejected rather than defaulted.
 
-An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330)) restricts a
+An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330-elicitation-enum-schema-improvements-and-standards)) restricts a
 field to a fixed set of values, which the client renders as a choice. Enums
 are supported only on `"string"` fields; declaring one on another type is
 rejected. To label the choices, set the legacy `enumNames` keyword through

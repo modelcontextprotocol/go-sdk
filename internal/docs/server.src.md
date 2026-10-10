@@ -349,9 +349,11 @@ clients on a protocol version earlier than `2026-07-28`, the middleware
 intercepts any `InputRequiredResult` your handler returns, fulfils each
 input request itself by calling the legacy server-initiated APIs
 (`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
-exactly once with the responses already populated. This means a handler
-written in the MRTR style works against both old and new clients without
-code changes.
+with the responses already populated. If the handler asks for more input,
+the middleware repeats this until the handler completes, up to the same
+limit of 10 rounds that the client-side middleware applies. This means a
+handler written in the MRTR style works against both old and new clients
+without code changes.
 
 ### Example
 
@@ -437,8 +439,12 @@ server produces logs that remain server-side, for use by server maintainers.)
 **Server-side**:
 The minimum log level is part of the server state.
 For stateful sessions, there is no default log level: no log messages will be sent
-until the client calls `SetLevel` (see below).
-For stateful sessions, the level defaults to "info".
+until the client calls `SetLoggingLevel` (see below).
+For legacy stateless sessions the level defaults to "info".
+For sessionless 2026-07-28 requests there is no server-side default: each request
+carries its level in `_meta` (`io.modelcontextprotocol/logLevel`), and nothing is
+logged until the client sends one.
+(Note: logging is deprecated as of 2026-07-28 / SEP-2577.)
 
 [`ServerSession.Log`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.Log) is the low-level way for servers to log to clients.
 It sends a logging notification to the client if the level of the message
@@ -454,7 +460,7 @@ Servers always report the logging capability.
 **Client-side**:
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
-Call [`ClientSession.SetLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLevel) to change the log level for a session.
+Call [`ClientSession.SetLoggingLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLoggingLevel) to change the log level for a session.
 
 %include ../../mcp/server_example_test.go logging -
 

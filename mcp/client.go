@@ -21,6 +21,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -359,10 +360,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
 					listenCtx, cancelListen := context.WithCancel(context.Background())
 					cs.listenCancel = cancelListen
-					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
-						cancelListen()
-						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
-					}
+					go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, nil)
 				}
 				return cs, nil
 			}
@@ -501,14 +499,28 @@ type ClientSession struct {
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// resourceSubsMu guards resourceSubs.
+	// resourceSubsMu guards resourceSubs and nextResourceSubGen.
 	resourceSubsMu sync.Mutex
-	// resourceSubs maps a subscribed resource URI to the cancel func of the
+	// resourceSubs maps a subscribed resource URI to the state of the
 	// goroutine running its dedicated subscriptions/listen stream. Populated
 	// only under SEP-2575; the legacy protocol routes Subscribe and
 	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
 	// RPCs and leaves this map untouched.
-	resourceSubs map[string]context.CancelFunc
+	resourceSubs map[string]*resourceSub
+	// nextResourceSubGen assigns a monotonically increasing generation to each
+	// resourceSubs entry, so a listen goroutine only clears the entry it
+	// created and not one installed by a later Subscribe for the same URI.
+	nextResourceSubGen uint64
+}
+
+// resourceSub is the per-URI state of a SEP-2575 resource subscription: the
+// cancel func for its subscriptions/listen stream, and the generation that
+// lets a completing listen goroutine tell its own entry from one a racing
+// Unsubscribe→Subscribe (or a re-subscribe inside the callback) has since
+// installed for the same URI.
+type resourceSub struct {
+	cancel context.CancelFunc
+	gen    uint64
 }
 
 type clientSessionState struct {
@@ -1076,24 +1088,26 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 	switch items.Type {
 	case "string":
 		// Untitled enums.
-		if items.Enum == nil {
+		if items.Enum != nil {
+			return nil
+		}
+		// Titled enums may also declare "type": "string" alongside anyOf.
+		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify enum for untitled enums", propName)
 		}
-		return nil
 	case "":
-		// Titled enums.
 		if len(items.AnyOf) == 0 {
 			return fmt.Errorf("elicit schema property %q items must specify anyOf for titled enums", propName)
 		}
-		for _, entry := range items.AnyOf {
-			if err := validateTitledEnumEntry(entry); err != nil {
-				return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
-			}
-		}
-		return nil
 	default:
 		return fmt.Errorf("elicit schema property %q items have unsupported type %q", propName, items.Type)
 	}
+	for _, entry := range items.AnyOf {
+		if err := validateTitledEnumEntry(entry); err != nil {
+			return fmt.Errorf("elicit schema property %q items has invalid entry: %v", propName, err)
+		}
+	}
+	return nil
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
@@ -1153,11 +1167,21 @@ func (c *Client) AddSendingMiddleware(middleware ...Middleware) {
 //
 // Receiving middleware is called when a request is received. It is useful for tasks
 // such as authentication, request logging and metrics.
+//
+// A received message need not carry params: use [HasParams] before inspecting
+// [Request.GetParams].
 func (c *Client) AddReceivingMiddleware(middleware ...Middleware) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	addMiddleware(&c.receivingMethodHandler_, middleware)
 }
+
+// allowmissingclientparams, when set to "1" via MCPGODEBUG, restores the previous
+// behavior of accepting elicitation/create, notifications/elicitation/complete
+// and notifications/resources/updated messages whose "params" member is missing
+// or null, even though the specification requires it. The handler then observes
+// nil Params. See the documentation for the mcpgodebug package.
+var allowmissingclientparams = mcpgodebug.Value("allowmissingclientparams")
 
 // clientMethodInfos maps from the RPC method name to serverMethodInfos.
 //
@@ -1169,17 +1193,27 @@ var clientMethodInfos = map[string]methodInfo{
 	methodPing:                      newClientMethodInfo(clientSessionMethod((*ClientSession).ping), missingParamsOK),
 	methodListRoots:                 newClientMethodInfo(clientMethod((*Client).listRoots), missingParamsOK),
 	methodCreateMessage:             newClientMethodInfo(clientMethod((*Client).createMessage), 0),
-	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK),
+	methodElicit:                    newClientMethodInfo(clientMethod((*Client).elicit), 0),
 	notificationCancelled:           newClientMethodInfo(clientSessionMethod((*ClientSession).cancel), notification|missingParamsOK),
 	notificationToolListChanged:     newClientMethodInfo(clientMethod((*Client).callToolChangedHandler), notification|missingParamsOK),
 	notificationPromptListChanged:   newClientMethodInfo(clientMethod((*Client).callPromptChangedHandler), notification|missingParamsOK),
 	notificationResourceListChanged: newClientMethodInfo(clientMethod((*Client).callResourceChangedHandler), notification|missingParamsOK),
-	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK),
+	notificationResourceUpdated:     newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification),
 	notificationLoggingMessage:      newClientMethodInfo(clientMethod((*Client).callLoggingHandler), notification),
 	notificationProgress:            newClientMethodInfo(clientSessionMethod((*ClientSession).callProgressNotificationHandler), notification),
-	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK),
+	notificationElicitationComplete: newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification),
 	notificationSubscriptionsAck:    newClientMethodInfo(clientMethod((*Client).callSubscriptionsAckHandler), notification|missingParamsOK),
 }
+
+// clientMethodInfosLegacyParams is clientMethodInfos with the pre-1.9 params
+// flags, selected by MCPGODEBUG=allowmissingclientparams=1.
+var clientMethodInfosLegacyParams = func() map[string]methodInfo {
+	m := maps.Clone(clientMethodInfos)
+	m[methodElicit] = newClientMethodInfo(clientMethod((*Client).elicit), missingParamsOK)
+	m[notificationResourceUpdated] = newClientMethodInfo(clientMethod((*Client).callResourceUpdatedHandler), notification|missingParamsOK)
+	m[notificationElicitationComplete] = newClientMethodInfo(clientMethod((*Client).callElicitationCompleteHandler), notification|missingParamsOK)
+	return m
+}()
 
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 	cs.client.mu.Lock()
@@ -1188,6 +1222,9 @@ func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
+	if allowmissingclientparams == "1" {
+		return clientMethodInfosLegacyParams
+	}
 	return clientMethodInfos
 }
 
@@ -1394,27 +1431,73 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	}
 	uri := params.URI
 
-	var listenCtx context.Context
 	cs.resourceSubsMu.Lock()
-	if _, exists := cs.resourceSubs[uri]; !exists {
-		var cancel context.CancelFunc
-		listenCtx, cancel = context.WithCancel(context.Background())
-		if cs.resourceSubs == nil {
-			cs.resourceSubs = make(map[string]context.CancelFunc)
-		}
-		cs.resourceSubs[uri] = cancel
-	}
-	cs.resourceSubsMu.Unlock()
-	if listenCtx == nil {
-		// Already subscribed to this URI
+	if _, exists := cs.resourceSubs[uri]; exists {
+		// Already subscribed to this URI.
+		cs.resourceSubsMu.Unlock()
 		return nil
 	}
+	if cs.resourceSubs == nil {
+		cs.resourceSubs = make(map[string]*resourceSub)
+	}
+	listenCtx, cancel := context.WithCancel(context.Background())
+	cs.nextResourceSubGen++
+	gen := cs.nextResourceSubGen
+	cs.resourceSubs[uri] = &resourceSub{cancel: cancel, gen: gen}
+	cs.resourceSubsMu.Unlock()
 
-	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	// Subscribe stays non-blocking: the listen stream is awaited on its own
+	// goroutine so that its completion clears the subscription.
+	subscribeParams := &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
-	})
+	}
+	go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, &gen)
+	return nil
+}
+
+// awaitSubscriptionsListen runs a subscriptions/listen stream to completion. Connect and
+// Subscribe start it on its own goroutine, so they return without waiting for
+// the server to acknowledge the listen.
+//
+// When the stream ends for a reason other than a client-initiated Unsubscribe
+// or session Close — a graceful listen result, a synthetic transport
+// "terminated" error, or any jsonrpc error, all while listenCtx is not
+// cancelled — the resourceSubs entries for the stream's resource URIs are
+// cleared so that a later bare Subscribe re-opens the stream instead of
+// no-oping. An entry is only removed if it still carries generation gen, which
+// guards an Unsubscribe→Subscribe race and a re-subscribe from inside a
+// callback. The SDK does not auto-resubscribe: a revoked URI would hot-loop, so
+// reopening is left to the application calling Subscribe again. Connect passes
+// a nil gen for its list-changed listen, which owns no resource entries, so
+// its end clears nothing.
+func (cs *ClientSession) awaitSubscriptionsListen(listenCtx context.Context, params *SubscriptionsListenParams, gen *uint64) {
+	_ = cs.subscriptionsListen(listenCtx, params)
+	if listenCtx.Err() != nil {
+		// Client-initiated teardown: Unsubscribe already removed the entry (and
+		// cancelAllResourceSubscriptions nils the whole map on Close), so there
+		// is nothing to clear.
+		return
+	}
+	if gen == nil || params.Notifications == nil {
+		return
+	}
+	for _, uri := range params.Notifications.ResourceSubscriptions {
+		cs.clearResourceSubIfGen(uri, *gen)
+	}
+}
+
+// clearResourceSubIfGen deletes the resourceSubs entry for uri only if it is
+// still present and carries the given generation, reporting whether it did.
+func (cs *ClientSession) clearResourceSubIfGen(uri string, gen uint64) bool {
+	cs.resourceSubsMu.Lock()
+	defer cs.resourceSubsMu.Unlock()
+	if sub, ok := cs.resourceSubs[uri]; ok && sub.gen == gen {
+		delete(cs.resourceSubs, uri)
+		return true
+	}
+	return false
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
@@ -1433,11 +1516,11 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 		return fmt.Errorf("Unsubscribe: missing URI")
 	}
 	cs.resourceSubsMu.Lock()
-	cancel, ok := cs.resourceSubs[params.URI]
+	sub, ok := cs.resourceSubs[params.URI]
 	delete(cs.resourceSubs, params.URI)
 	cs.resourceSubsMu.Unlock()
 	if ok {
-		cancel()
+		sub.cancel()
 	}
 	return nil
 }
@@ -1450,8 +1533,8 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 	subs := cs.resourceSubs
 	cs.resourceSubs = nil
 	cs.resourceSubsMu.Unlock()
-	for _, cancel := range subs {
-		cancel()
+	for _, sub := range subs {
+		sub.cancel()
 	}
 }
 
