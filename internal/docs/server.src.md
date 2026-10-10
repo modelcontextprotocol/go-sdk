@@ -351,8 +351,8 @@ clients on a protocol version earlier than `2026-07-28`, the middleware
 intercepts any `InputRequiredResult` your handler returns, fulfils each
 input request itself by calling the legacy server-initiated APIs
 (`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
-with the responses already populated. A result with only a `RequestState`
-re-invokes it with that state and no responses. If the handler asks for more input,
+with the responses already populated. A result with a `RequestState` and no
+input requests re-invokes it with that state and no responses. If the handler asks for more input,
 the middleware repeats this until the handler completes, up to the same
 limit of 10 rounds that the client-side middleware applies. This means a
 handler written in the MRTR style works against both old and new clients

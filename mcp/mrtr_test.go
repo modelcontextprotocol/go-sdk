@@ -338,10 +338,6 @@ func TestMultiRoundTrip_ReadResource_AutoRetryDoesNotMutateCallerParams(t *testi
 // retry does not recognize.
 type wrappedCallToolParams struct{ *CallToolParams }
 
-// TestMultiRoundTrip_UnsupportedRetryParamsType verifies that the client
-// retry loop reports an explicit error when the params carry a type it
-// cannot build retry params for, instead of silently resending the request
-// unchanged until the retry cap.
 // rawJSONResult is a result sent exactly as given, standing in for a server
 // built with another SDK.
 type rawJSONResult struct {
@@ -562,6 +558,10 @@ func TestMultiRoundTrip_ContentWithRequestState(t *testing.T) {
 	}
 }
 
+// TestMultiRoundTrip_UnsupportedRetryParamsType verifies that the client
+// retry loop reports an explicit error when the params carry a type it
+// cannot build retry params for, instead of silently resending the request
+// unchanged until the retry cap.
 func TestMultiRoundTrip_UnsupportedRetryParamsType(t *testing.T) {
 	ctx := context.Background()
 
@@ -613,6 +613,7 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 	testCases := []struct {
 		name        string
 		requests    InputRequestMap
+		state       string
 		wantRetries int
 	}{
 		{
@@ -621,8 +622,15 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 			wantRetries: maxLoadSheddingMultiRoundTripRetries,
 		},
 		{
+			name:        "empty requests with state",
+			requests:    InputRequestMap{},
+			state:       "loop-state",
+			wantRetries: maxMultiRoundTripRetries,
+		},
+		{
 			name:        "input request",
 			requests:    InputRequestMap{"confirm": &ElicitParams{Message: "Again?"}},
+			state:       "loop-state",
 			wantRetries: maxMultiRoundTripRetries,
 		},
 	}
@@ -635,7 +643,7 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 			srv := NewServer(testImpl, nil)
 			AddTool(srv, &Tool{Name: "loop"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
 				serverCalls.Add(1)
-				return &CallToolResult{InputRequests: tc.requests, RequestState: "loop-state"}, nil, nil
+				return &CallToolResult{InputRequests: tc.requests, RequestState: tc.state}, nil, nil
 			})
 
 			conn := mustConnect(t, srv, &ClientOptions{
@@ -872,8 +880,57 @@ func TestMultiRoundTrip_ServerMiddleware_MaxRetries(t *testing.T) {
 
 // TestMultiRoundTrip_ServerMiddleware_RequestStateOnly verifies that, for a
 // client on an older protocol version, the server-side shim calls the handler
-// again with the state echoed when it returns only a RequestState.
+// again with the state echoed when it returns a RequestState and no input
+// requests.
 func TestMultiRoundTrip_ServerMiddleware_RequestStateOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		requests InputRequestMap
+	}{
+		{name: "nil requests", requests: nil},
+		{name: "empty requests", requests: InputRequestMap{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			var calls atomic.Int32
+			srv := NewServer(testImpl, nil)
+			srv.AddTool(
+				&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+				func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					calls.Add(1)
+					if req.Params.RequestState == "" {
+						return &CallToolResult{InputRequests: tc.requests, RequestState: "continue"}, nil
+					}
+					return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+				},
+			)
+
+			cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+				MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+			})
+
+			res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+			if err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			if len(res.Content) != 1 {
+				t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+			}
+			if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
+				t.Errorf("result text = %q, want %q", got, "state=continue")
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("tool calls = %d, want 2", got)
+			}
+		})
+	}
+}
+
+// TestMultiRoundTrip_ServerMiddleware_Busy verifies that, for a client on an
+// older protocol version, the server-side shim reports an empty input request
+// map without a RequestState as busy instead of calling the handler again.
+func TestMultiRoundTrip_ServerMiddleware_Busy(t *testing.T) {
 	ctx := context.Background()
 
 	var calls atomic.Int32
@@ -882,10 +939,7 @@ func TestMultiRoundTrip_ServerMiddleware_RequestStateOnly(t *testing.T) {
 		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
 		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
 			calls.Add(1)
-			if req.Params.RequestState == "" {
-				return &CallToolResult{RequestState: "continue"}, nil
-			}
-			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+			return &CallToolResult{InputRequests: InputRequestMap{}}, nil
 		},
 	)
 
@@ -893,18 +947,12 @@ func TestMultiRoundTrip_ServerMiddleware_RequestStateOnly(t *testing.T) {
 		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
 	})
 
-	res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
-	if err != nil {
-		t.Fatalf("CallTool() error = %v", err)
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("CallTool() error = %v, want a busy error", err)
 	}
-	if len(res.Content) != 1 {
-		t.Fatalf("CallTool() content = %v, want one content block", res.Content)
-	}
-	if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
-		t.Errorf("result text = %q, want %q", got, "state=continue")
-	}
-	if got := calls.Load(); got != 2 {
-		t.Errorf("tool calls = %d, want 2", got)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("tool calls = %d, want 1", got)
 	}
 }
 

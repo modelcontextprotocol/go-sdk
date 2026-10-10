@@ -93,10 +93,9 @@ func clientMultiRoundTripMiddleware() Middleware {
 				if reqMap == nil && !mrtrResult.NeedsInput() {
 					return res, nil
 				}
-				// A requestState-only result asks to continue, so it counts as a
-				// round, not as load shedding.
-				continuing := reqMap == nil && mrtrResult.requestState() != ""
-				if len(reqMap) == 0 && !continuing {
+				// A result with a requestState asks to continue, so it counts as
+				// a round, not as load shedding.
+				if len(reqMap) == 0 && mrtrResult.requestState() == "" {
 					loadSheddingFailures++
 				}
 				if loadSheddingFailures >= maxLoadSheddingMultiRoundTripRetries {
@@ -127,7 +126,8 @@ func clientMultiRoundTripMiddleware() Middleware {
 // InputRequests and the client does not support multi-round-trip, the middleware fulfills
 // the requests by calling the client directly and reinvokes the handler with the responses,
 // repeating until the handler completes or maxMultiRoundTripRetries is reached. A result
-// with only a RequestState reinvokes the handler with that state and no responses.
+// with a RequestState and no input requests reinvokes the handler with that state and no
+// responses.
 func serverMultiRoundTripMiddleware() Middleware {
 	return func(next MethodHandler) MethodHandler {
 		return func(ctx context.Context, method string, req Request) (Result, error) {
@@ -156,7 +156,7 @@ func serverMultiRoundTripMiddleware() Middleware {
 					return res, nil
 				}
 				reqMap := mrtrResult.inputRequests()
-				if reqMap != nil && len(reqMap) == 0 {
+				if len(reqMap) == 0 && mrtrResult.requestState() == "" {
 					return nil, fmt.Errorf("the server is busy, retry later")
 				}
 				if retries >= maxMultiRoundTripRetries {
