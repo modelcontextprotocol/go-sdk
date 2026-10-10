@@ -44,6 +44,14 @@ func asksForInput(res multiRoundTripResponse) bool {
 	return res.inputRequests() != nil || res.requestState() != ""
 }
 
+// A retriedResult is a result that can record that a multi round-trip retry
+// produced it. The caching specification forbids caching such results, so
+// the one cacheable multi round-trip result, [ReadResourceResult], implements
+// it and [ClientSession.ReadResource] consults it.
+type retriedResult interface {
+	markRetried()
+}
+
 // validateMultiRoundTripResult rejects a result that carries both content and
 // input requests or a request state. [annotateResultType] labels the result
 // later, in [ServerSession.handle], so this function does not set resultType.
@@ -81,6 +89,9 @@ func clientMultiRoundTripMiddleware() Middleware {
 				res, err := next(ctx, method, req)
 				if err != nil {
 					return res, err
+				}
+				if r, ok := res.(retriedResult); ok && retries > 1 && !res.isNil() {
+					r.markRetried()
 				}
 				mrtrResult, ok := res.(multiRoundTripResponse)
 				if !ok {
