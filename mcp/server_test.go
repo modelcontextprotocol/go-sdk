@@ -2692,3 +2692,192 @@ func TestServerUnknownProtocolVersion_NewProtocol(t *testing.T) {
 		})
 	}
 }
+
+// rawSession is a JSON-RPC connection to a server, driven message by message
+// so a test can run a handshake the SDK's own client does not offer.
+type rawSession struct {
+	write func(jsonrpc.Message, error)
+	read  func() jsonrpc.Message
+}
+
+// connectNegotiatedDown runs initialize declaring protocolVersion20260728 and
+// asserts it settles on protocolVersion20251125, so InitializeParams and the
+// negotiated version disagree.
+func connectNegotiatedDown(t *testing.T, ctx context.Context, srv *Server) *rawSession {
+	t.Helper()
+
+	ct, st := NewInMemoryTransports()
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect() error = %v", err)
+	}
+	t.Cleanup(func() { ss.Close() })
+
+	conn, err := ct.Connect(ctx)
+	if err != nil {
+		t.Fatalf("transport.Connect() error = %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	sess := &rawSession{
+		write: func(msg jsonrpc.Message, err error) {
+			t.Helper()
+			if err != nil {
+				t.Fatalf("building message: %v", err)
+			}
+			if err := conn.Write(ctx, msg); err != nil {
+				t.Fatalf("conn.Write() error = %v", err)
+			}
+		},
+		read: func() jsonrpc.Message {
+			t.Helper()
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				t.Fatalf("conn.Read() error = %v", err)
+			}
+			return msg
+		},
+	}
+
+	sess.write(jsonrpc2.NewCall(jsonrpc2.Int64ID(1), methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20260728,
+		ClientInfo:      testImpl,
+		Capabilities:    &ClientCapabilities{},
+	}))
+	initResp, ok := sess.read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("initialize was not answered with a response")
+	}
+	if initResp.Error != nil {
+		t.Fatalf("initialize failed: %v", initResp.Error)
+	}
+	var initRes InitializeResult
+	if err := json.Unmarshal(initResp.Result, &initRes); err != nil {
+		t.Fatalf("unmarshalling initialize result: %v", err)
+	}
+	if initRes.ProtocolVersion != protocolVersion20251125 {
+		t.Fatalf("negotiated protocol version = %q, want %q", initRes.ProtocolVersion, protocolVersion20251125)
+	}
+	sess.write(jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{}))
+	return sess
+}
+
+// TestNotifySessions_NegotiatedDownFromNewProtocol asserts that a session
+// negotiated down from protocolVersion20260728 receives a list-changed
+// notification on the shared session channel.
+func TestNotifySessions_NegotiatedDownFromNewProtocol(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := NewServer(testImpl, nil)
+	sess := connectNegotiatedDown(t, ctx, srv)
+
+	srv.AddTool(&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}}, nil)
+
+	msg := sess.read()
+	note, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		t.Fatalf("got %T, want the %q notification", msg, notificationToolListChanged)
+	}
+	if note.Method != notificationToolListChanged {
+		t.Fatalf("notification method = %q, want %q", note.Method, notificationToolListChanged)
+	}
+}
+
+// TestResourceUpdated_NegotiatedDownFromNewProtocol asserts the same for a
+// resource update, which must also carry no subscription id in _meta, since
+// the negotiated version does not define one.
+func TestResourceUpdated_NegotiatedDownFromNewProtocol(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const uri = "test://resource"
+	srv := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+	})
+	srv.AddResource(&Resource{URI: uri, Name: "res"},
+		func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error) {
+			return &ReadResourceResult{Contents: []*ResourceContents{{URI: uri, Text: "data"}}}, nil
+		})
+
+	sess := connectNegotiatedDown(t, ctx, srv)
+
+	sess.write(jsonrpc2.NewCall(jsonrpc2.Int64ID(2), methodSubscribe, &SubscribeParams{URI: uri}))
+	subResp, ok := sess.read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("subscribe was not answered with a response")
+	}
+	if subResp.Error != nil {
+		t.Fatalf("subscribe failed: %v", subResp.Error)
+	}
+
+	if err := srv.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: uri}); err != nil {
+		t.Fatalf("ResourceUpdated() error = %v", err)
+	}
+
+	msg := sess.read()
+	note, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		t.Fatalf("got %T, want the %q notification", msg, notificationResourceUpdated)
+	}
+	if note.Method != notificationResourceUpdated {
+		t.Fatalf("notification method = %q, want %q", note.Method, notificationResourceUpdated)
+	}
+	var params ResourceUpdatedNotificationParams
+	if err := json.Unmarshal(note.Params, &params); err != nil {
+		t.Fatalf("unmarshalling notification params: %v", err)
+	}
+	if params.URI != uri {
+		t.Errorf("notification URI = %q, want %q", params.URI, uri)
+	}
+	if _, ok := params.GetMeta()[MetaKeySubscriptionID]; ok {
+		t.Errorf("notification carries %q, which protocol version %s does not define",
+			MetaKeySubscriptionID, protocolVersion20251125)
+	}
+}
+
+// TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy pins that a session with no
+// recorded protocol version reads as the current protocol, since a session
+// without an initialize handshake is a SEP-2575 session.
+func TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy(t *testing.T) {
+	tests := []struct {
+		name  string
+		state ServerSessionState
+		want  bool
+	}{
+		{name: "no handshake", want: false},
+		{
+			name: "discover, new protocol",
+			state: ServerSessionState{
+				InitializeParams: &InitializeParams{ProtocolVersion: protocolVersion20260728},
+			},
+			want: false,
+		},
+		{
+			name: "initialize, legacy version",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20251125},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: true,
+		},
+		{
+			name: "initialize, negotiated down",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20260728},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ss := &ServerSession{state: tt.state}
+			if got := ss.negotiatedLegacyProtocol(); got != tt.want {
+				t.Errorf("negotiatedLegacyProtocol() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
