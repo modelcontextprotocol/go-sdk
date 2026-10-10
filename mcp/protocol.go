@@ -1705,12 +1705,17 @@ type ReadResourceResult struct {
 	// resultType records whether the call finished or needs more client input.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
+	// retried records that the client middleware produced this result by
+	// retrying the request with input responses. Such a result depends on
+	// inputs that are not part of the cache key, so it must not be cached.
+	retried bool
 }
 
 func (*ReadResourceResult) isResult()     {}
 func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) markRetried()                { r.retried = true }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
 	if r == nil {
