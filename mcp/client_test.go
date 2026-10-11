@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -761,6 +762,55 @@ func TestClientConnectDiscover(t *testing.T) {
 				t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// TestClientPingRemovedOnNewProtocol verifies that Ping on a 2026-07-28
+// session returns a descriptive local error instead of sending the ping
+// method, which the 2026-07-28 protocol removed. The session state is set
+// directly (in-package) because the SDK's fallback initialize caps the
+// negotiated version at 2025-11-25; only the discovery path produces a
+// 2026-07-28 session.
+func TestClientPingRemovedOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	var gotPing bool
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	// Registered before Connect: the session caches its sending handler at
+	// connect time. The middleware asserts that no ping request is sent.
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodPing {
+				gotPing = true
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	cs.state.InitializeResult.ProtocolVersion = protocolVersion20260728
+
+	err = cs.Ping(ctx, nil)
+	if err == nil {
+		t.Fatal("Ping on a 2026-07-28 session = nil error, want a removed-method error")
+	}
+	if !strings.Contains(err.Error(), "ping is not supported") {
+		t.Errorf("Ping error %q does not explain the removal", err.Error())
+	}
+	if gotPing {
+		t.Error("ping request was sent despite the removed-method guard")
 	}
 }
 

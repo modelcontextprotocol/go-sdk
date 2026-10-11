@@ -1262,7 +1262,16 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 }
 
 // Ping makes an MCP "ping" request to the server.
+//
+// On 2026-07-28 sessions Ping returns an error without a round trip: the
+// 2026-07-28 protocol removed the ping method, so servers answer it with
+// MethodNotFound (or reject the request at the transport for missing
+// header/meta consistency). Verify liveness with a capability list request
+// instead (tools/list, resources/list, prompts/list).
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
+	if cs.usesNewProtocol() {
+		return fmt.Errorf("mcp: ping is not supported on %s sessions (the method was removed); verify liveness with tools/list, resources/list, or prompts/list", protocolVersion20260728)
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
