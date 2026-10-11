@@ -1282,6 +1282,14 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 }
 
 func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emptyResult, error) {
+	return s.endSubscription(ctx, req, jsonrpc.ID{})
+}
+
+// endSubscription ends the session's subscription to req.Params.URI. A zero
+// listenID removes the entry whichever request made it; a valid one removes it
+// only while the entry still records that listen, since a later listen on the
+// session may have replaced it. The UnsubscribeHandler is called either way.
+func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, listenID jsonrpc.ID) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1293,7 +1301,9 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		delete(subscribedSessions, req.Session)
+		if !listenID.IsValid() || subscribedSessions[req.Session] == listenID {
+			delete(subscribedSessions, req.Session)
+		}
 		if len(subscribedSessions) == 0 {
 			delete(s.resourceSubscriptions, req.Params.URI)
 		}
@@ -1330,13 +1340,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		// several listens at once, and deleting by session alone retires a
 		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		if allowed.ToolsListChanged {
+		if allowed.ToolsListChanged && s.toolChangeSubscriptions[req.Session] == requestID {
 			delete(s.toolChangeSubscriptions, req.Session)
 		}
-		if allowed.PromptsListChanged {
+		if allowed.PromptsListChanged && s.promptChangeSubscriptions[req.Session] == requestID {
 			delete(s.promptChangeSubscriptions, req.Session)
 		}
-		if allowed.ResourcesListChanged {
+		if allowed.ResourcesListChanged && s.resourceChangeSubscriptions[req.Session] == requestID {
 			delete(s.resourceChangeSubscriptions, req.Session)
 		}
 		s.mu.Unlock()
@@ -1353,13 +1363,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		if err != nil {
 			return nil, err
 		}
-		defer s.unsubscribe(ctx, &UnsubscribeRequest{
+		defer s.endSubscription(ctx, &UnsubscribeRequest{
 			Session: req.Session,
 			Params: &UnsubscribeParams{
 				URI:  uri,
 				Meta: req.Params.GetMeta(),
 			},
-		})
+		}, requestID)
 	}
 
 	ackParams := &SubscriptionsAcknowledgedParams{
