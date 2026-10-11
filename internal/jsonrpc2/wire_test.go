@@ -185,3 +185,60 @@ func checkJSON(t *testing.T, got, want []byte) {
 		t.Errorf("encoded message does not match\nGot:\n%s\nWant:\n%s", g, w)
 	}
 }
+
+// TestIntegerIDs covers request/response correlation without decoding through float64.
+func TestIntegerIDs(t *testing.T) {
+	for _, id := range []int64{0, 42, 9007199254740992, 9007199254740993, -9007199254740993, 9223372036854775807, -9223372036854775808} {
+		for _, response := range []bool{false, true} {
+			var want jsonrpc2.Message = newCall(id, "ping", nil)
+			if response {
+				want = newResponse(id, "pong", nil)
+			}
+			encoded, err := jsonrpc2.EncodeMessage(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := jsonrpc2.DecodeMessage(encoded)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("DecodeMessage(%s) = %#v, want %#v", encoded, got, want)
+			}
+			roundtrip, err := jsonrpc2.EncodeMessage(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkJSON(t, roundtrip, encoded)
+		}
+	}
+}
+
+func TestDecodeInvalidIntegerID(t *testing.T) {
+	for _, literal := range []string{"9223372036854775808", "-9223372036854775809", "1.5", "1e100000000", "1e-100000000"} {
+		data := []byte(`{"jsonrpc":"2.0","id":` + literal + `,"method":"ping"}`)
+
+		_, err := jsonrpc2.DecodeMessage(data)
+
+		if !errors.Is(err, jsonrpc2.ErrParse) {
+			t.Errorf("DecodeMessage(%s) error = %v, want ErrParse", data, err)
+		}
+	}
+}
+
+func TestIntegralIDNotation(t *testing.T) {
+	for literal, want := range map[string]int64{"1e3": 1000, "1000.0": 1000, "100000e-2": 1000, "9007199254740993.0": 9007199254740993, "90071992547409930e-1": 9007199254740993, "0e999999999": 0} {
+		data := []byte(`{"jsonrpc":"2.0","id":` + literal + `,"method":"ping"}`)
+
+		msg, err := jsonrpc2.DecodeMessage(data)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := msg.(*jsonrpc2.Request).ID; got != jsonrpc2.Int64ID(want) {
+			t.Errorf("ID = %v, want %d", got, want)
+		}
+	}
+}

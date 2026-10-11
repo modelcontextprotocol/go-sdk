@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"strconv"
+	"strings"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -20,7 +23,9 @@ type ID struct {
 }
 
 // MakeID coerces the given Go value to an ID. The value should be the
-// default JSON marshaling of a Request identifier: nil, float64, or string.
+// JSON representation of a Request identifier: nil, float64, json.Number, or string.
+// A json.Number must represent an integer within the int64 range.
+// Use json.Number when decoding JSON to avoid losing integer precision.
 //
 // Returns an error if the value type was not a valid Request ID type.
 //
@@ -31,12 +36,43 @@ func MakeID(v any) (ID, error) {
 	switch v := v.(type) {
 	case nil:
 		return ID{}, nil
+	case json.Number:
+		i, err := integerID(v)
+		if err != nil {
+			return ID{}, fmt.Errorf("%w: invalid ID %q: %v", ErrParse, v, err)
+		}
+		return Int64ID(i), nil
 	case float64:
 		return Int64ID(int64(v)), nil
 	case string:
 		return StringID(v), nil
 	}
 	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
+}
+
+// integerID accepts integral decimal and exponent forms as well as integer literals.
+func integerID(n json.Number) (int64, error) {
+	if i, err := n.Int64(); err == nil {
+		return i, nil
+	}
+	// Check magnitude before using big.Rat, so a short input with a very large
+	// exponent cannot cause an unbounded allocation.
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil || f < -0x1p63 || f > 0x1p63 {
+		return 0, fmt.Errorf("ID out of int64 range")
+	}
+	if f == 0 {
+		mantissa, _, _ := strings.Cut(strings.ToLower(string(n)), "e")
+		if strings.Trim(mantissa, "-+.0") == "" {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("ID is not an integer")
+	}
+	r, ok := new(big.Rat).SetString(string(n))
+	if !ok || !r.IsInt() || !r.Num().IsInt64() {
+		return 0, fmt.Errorf("ID is not an int64 integer")
+	}
+	return r.Num().Int64(), nil
 }
 
 // Message is the interface to all jsonrpc2 message types.
@@ -185,7 +221,7 @@ type wireDecode struct {
 
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireDecode{}
-	if err := internaljson.Unmarshal(data, &msg); err != nil {
+	if err := internaljson.UnmarshalUseNumber(data, &msg); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
 	if msg.VersionTag != wireVersion {

@@ -513,11 +513,28 @@ type CancelledParams struct {
 	// An optional string describing the reason for the cancellation. This may be
 	// logged or presented to the user.
 	Reason string `json:"reason,omitempty"`
-	// The ID of the request to cancel.
+	// The ID of the request to cancel. Numeric IDs decoded from JSON are
+	// represented as json.Number to preserve integer precision.
 	//
 	// This must correspond to the ID of a request previously issued in the same
 	// direction.
 	RequestID any `json:"requestId"`
+}
+
+// UnmarshalJSON preserves numeric request IDs without changing metadata decoding.
+func (x *CancelledParams) UnmarshalJSON(data []byte) error {
+	type plain CancelledParams
+	wire := struct {
+		*plain
+		RequestID json.RawMessage `json:"requestId"`
+	}{plain: (*plain)(x)}
+	if err := internaljson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.RequestID) == 0 {
+		return nil
+	}
+	return internaljson.UnmarshalUseNumber(wire.RequestID, &x.RequestID)
 }
 
 func (x *CancelledParams) isParams()              {}

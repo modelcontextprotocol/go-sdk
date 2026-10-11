@@ -22,7 +22,9 @@ type (
 )
 
 // MakeID coerces the given Go value to an ID. The value should be the
-// default JSON marshaling of a Request identifier: nil, float64, or string.
+// JSON representation of a Request identifier: nil, float64, json.Number, or string.
+// A json.Number must represent a integer within the int64 range.
+// Use json.Number when decoding JSON to avoid losing integer precision.
 //
 // Returns an error if the value type was not a valid Request ID type.
 func MakeID(v any) (ID, error) {
