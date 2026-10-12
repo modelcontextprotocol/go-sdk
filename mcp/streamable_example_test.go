@@ -5,7 +5,7 @@
 package mcp_test
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -40,34 +40,29 @@ func ExampleStreamableHTTPHandler() {
 
 // !-streamablehandler
 
-// !+httpmiddleware
+// !+requestsummary
 
-func ExampleStreamableHTTPHandler_middleware() {
+func ExampleStreamableHTTPHandler_requestSummary() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// Example debugging; you could also capture the response.
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		req.Body.Close() // ignore error
-		req.Body = io.NopCloser(bytes.NewBuffer(body))
-		fmt.Println(req.Method, string(body))
-		handler.ServeHTTP(w, req)
+	}, &mcp.StreamableHTTPOptions{
+		Stateless: true,
+		OnRequestSummary: func(_ context.Context, summary mcp.StreamableHTTPRequestSummary) {
+			fmt.Printf("method=%q notification=%t response=%t\n",
+				summary.Method, summary.IsNotification, summary.IsResponse)
+		},
 	})
-	httpServer := httptest.NewServer(loggingHandler)
+	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
 	// The SDK is currently permissive of some missing keys in "params".
 	mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
 	// Output:
-	// POST {"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}
+	// method="initialize" notification=false response=false
 }
 
-// !-httpmiddleware
+// !-requestsummary
 
 func mustPostMessage(msg, url string) string {
 	req := orFatal(http.NewRequest("POST", url, strings.NewReader(msg)))

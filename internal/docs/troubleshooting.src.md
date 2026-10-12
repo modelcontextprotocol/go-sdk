@@ -30,13 +30,17 @@ That example uses a `bytes.Buffer`, but you can also log to a file, or to
 
 ## Inspecting HTTP traffic
 
-There are a couple different ways to investigate traffic to an HTTP transport
-([streamable](protocol.md#streamable-transport) or legacy SSE).
+For the [streamable HTTP transport](protocol.md#streamable-transport), use
+`StreamableHTTPOptions.OnRequestSummary` to inspect decoded message metadata
+without recording request parameters:
 
-The first is to use an HTTP middleware:
+%include ../../mcp/streamable_example_test.go requestsummary -
 
-%include ../../mcp/streamable_example_test.go httpmiddleware -
+The callback runs before validation and dispatch. It does not run for batches
+or requests rejected before message decoding. To observe those failures, wrap
+the handler in HTTP middleware that records properties such as the HTTP method
+and status code without reading or logging the request body.
 
-The second is to use a general purpose tool to inspect http traffic, such as
+For full HTTP traffic, including legacy SSE, use a general-purpose tool such as
 [wireshark](https://www.wireshark.org/) or
 [tcpdump](https://linux.die.net/man/8/tcpdump).

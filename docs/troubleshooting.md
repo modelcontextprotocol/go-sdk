@@ -60,38 +60,37 @@ That example uses a `bytes.Buffer`, but you can also log to a file, or to
 
 ## Inspecting HTTP traffic
 
-There are a couple different ways to investigate traffic to an HTTP transport
-([streamable](protocol.md#streamable-transport) or legacy SSE).
-
-The first is to use an HTTP middleware:
+For the [streamable HTTP transport](protocol.md#streamable-transport), use
+`StreamableHTTPOptions.OnRequestSummary` to inspect decoded message metadata
+without recording request parameters:
 
 ```go
-func ExampleStreamableHTTPHandler_middleware() {
+func ExampleStreamableHTTPHandler_requestSummary() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.1.0"}, nil)
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// Example debugging; you could also capture the response.
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		req.Body.Close() // ignore error
-		req.Body = io.NopCloser(bytes.NewBuffer(body))
-		fmt.Println(req.Method, string(body))
-		handler.ServeHTTP(w, req)
+	}, &mcp.StreamableHTTPOptions{
+		Stateless: true,
+		OnRequestSummary: func(_ context.Context, summary mcp.StreamableHTTPRequestSummary) {
+			fmt.Printf("method=%q notification=%t response=%t\n",
+				summary.Method, summary.IsNotification, summary.IsResponse)
+		},
 	})
-	httpServer := httptest.NewServer(loggingHandler)
+	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
 	// The SDK is currently permissive of some missing keys in "params".
 	mustPostMessage(`{"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}`, httpServer.URL)
 	// Output:
-	// POST {"jsonrpc": "2.0", "id": 1, "method":"initialize", "params": {}}
+	// method="initialize" notification=false response=false
 }
 ```
 
-The second is to use a general purpose tool to inspect http traffic, such as
+The callback runs before validation and dispatch. It does not run for batches
+or requests rejected before message decoding. To observe those failures, wrap
+the handler in HTTP middleware that records properties such as the HTTP method
+and status code without reading or logging the request body.
+
+For full HTTP traffic, including legacy SSE, use a general-purpose tool such as
 [wireshark](https://www.wireshark.org/) or
 [tcpdump](https://linux.die.net/man/8/tcpdump).
