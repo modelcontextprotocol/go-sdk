@@ -90,9 +90,6 @@ func clientMultiRoundTripMiddleware() Middleware {
 				if err != nil {
 					return res, err
 				}
-				if r, ok := res.(retriedResult); ok && retries > 1 && !res.isNil() {
-					r.markRetried()
-				}
 				mrtrResult, ok := res.(multiRoundTripResponse)
 				if !ok {
 					return res, nil
@@ -102,6 +99,9 @@ func clientMultiRoundTripMiddleware() Middleware {
 				// (SEP-2322 requires at least one of the two fields), so the
 				// result type, not the map alone, decides whether to retry.
 				if reqMap == nil && !mrtrResult.NeedsInput() {
+					if r, ok := res.(retriedResult); ok && retries > 1 && !res.isNil() {
+						r.markRetried()
+					}
 					return res, nil
 				}
 				// A result with a requestState asks to continue, so it counts as
