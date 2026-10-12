@@ -2476,7 +2476,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			requestMethod = msg.Method
 		}
 	case *jsonrpc.Response:
-		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
+		requestSummary = fmt.Sprintf("sending jsonrpc response #%v", msg.ID.Raw())
 	default:
 		panic("unreachable")
 	}
