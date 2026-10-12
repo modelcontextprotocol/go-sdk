@@ -4,9 +4,8 @@ client:
   - auth/client-credentials-jwt
   - auth/enterprise-managed-authorization
 
-  # SEP-1932 (DPoP Sender-Constrained Tokens) client-side support not yet
-  # implemented by the Go MCP SDK.
-  - auth/dpop
+  # SEP-1932 (DPoP Sender-Constrained Tokens): baseline auth/dpop is
+  # implemented by the conformance client; nonce posture is not yet.
   - auth/dpop-nonce
 
   # SEP-1933 (Workload Identity Federation JWT-bearer) client-side support
