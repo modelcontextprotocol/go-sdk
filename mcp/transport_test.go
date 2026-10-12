@@ -367,58 +367,46 @@ func TestIOConnFrameCap(t *testing.T) {
 }
 
 // TestIOConnDropResponse checks that ioConn discards the response to a call
-// the peer cancelled, and leaves it out of the batch the call arrived in while
-// still sending the batch's other responses.
+// the peer cancelled on a session using protocol version 2026-07-28 or later,
+// and still sends it on earlier versions.
 func TestIOConnDropResponse(t *testing.T) {
-	call := func(id int) string { return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"m"}`, id) }
 	tests := []struct {
 		name    string
-		in      string  // the incoming payload
-		drop    []int64 // the calls the peer cancelled
-		respond []int64 // the responses written, in order
-		want    [][]any // the IDs of the responses on the wire, by line
+		version string
+		drop    bool  // whether the peer cancelled call 1
+		want    []any // the IDs of the responses on the wire, in order
 	}{
-		{"single call, dropped", call(1), []int64{1}, []int64{1}, nil},
-		{"single call, not dropped", call(1), nil, []int64{1}, [][]any{{int64(1)}}},
-		{"batch, one dropped", "[" + call(1) + "," + call(2) + "]", []int64{1}, []int64{1, 2}, [][]any{{int64(2)}}},
-		{"batch, dropped last", "[" + call(1) + "," + call(2) + "]", []int64{2}, []int64{1, 2}, [][]any{{int64(1)}}},
-		{"batch, all dropped", "[" + call(1) + "," + call(2) + "]", []int64{1, 2}, []int64{2, 1}, nil},
+		{"new protocol, cancelled", protocolVersion20260728, true, []any{int64(2)}},
+		{"new protocol, not cancelled", protocolVersion20260728, false, []any{int64(1), int64(2)}},
+		{"earlier protocol, cancelled", protocolVersion20251125, true, []any{int64(1), int64(2)}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			var out bytes.Buffer
 			tr := newIOConn(rwc{
-				rc: io.NopCloser(strings.NewReader(test.in + "\n")),
+				rc: io.NopCloser(strings.NewReader("")),
 				wc: nopCloserWriter{&out},
 			})
 			t.Cleanup(func() { tr.Close() })
+			tr.sessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
 
-			for range strings.Count(test.in, `"method"`) {
-				if _, err := tr.Read(ctx); err != nil {
-					t.Fatal(err)
-				}
+			if test.drop {
+				tr.DropResponse(jsonrpc2.Int64ID(1))
 			}
-			for _, id := range test.drop {
-				tr.DropResponse(jsonrpc2.Int64ID(id))
-			}
-			for _, id := range test.respond {
+			for _, id := range []int64{1, 2} {
 				if err := tr.Write(ctx, &jsonrpc.Response{ID: jsonrpc2.Int64ID(id), Result: []byte("{}")}); err != nil {
 					t.Fatalf("Write(response %d): %v", id, err)
 				}
 			}
 
-			var got [][]any
+			var got []any
 			for line := range strings.Lines(out.String()) {
-				msgs, _, err := readBatch([]byte(line))
+				msg, err := jsonrpc2.DecodeMessage([]byte(line))
 				if err != nil {
 					t.Fatalf("decoding %q: %v", line, err)
 				}
-				var ids []any
-				for _, m := range msgs {
-					ids = append(ids, m.(*jsonrpc.Response).ID.Raw())
-				}
-				got = append(got, ids)
+				got = append(got, msg.(*jsonrpc.Response).ID.Raw())
 			}
 			if fmt.Sprint(got) != fmt.Sprint(test.want) {
 				t.Errorf("responses on the wire: %v, want %v", got, test.want)
@@ -431,8 +419,8 @@ func TestIOConnDropResponse(t *testing.T) {
 }
 
 // TestIOConnCancelledCallGetsNoResponse checks end to end, over an in-memory
-// transport wrapped for logging, that a call the client cancels with
-// notifications/cancelled gets no response.
+// transport wrapped for logging, that on a 2026-07-28 session a call the
+// client cancels with notifications/cancelled gets no response.
 func TestIOConnCancelledCallGetsNoResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -443,6 +431,9 @@ func TestIOConnCancelledCallGetsNoResponse(t *testing.T) {
 		close(started)
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
+	})
+	AddTool(server, &Tool{Name: "fast"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+		return &CallToolResult{}, nil, nil
 	})
 	serverT, clientT := NewInMemoryTransports()
 	var log safeBuffer
@@ -499,15 +490,15 @@ func TestIOConnCancelledCallGetsNoResponse(t *testing.T) {
 		}
 	}
 
-	send(req(1, methodInitialize, &InitializeParams{ProtocolVersion: protocolVersion20250618}))
-	awaitResponse(1)
-	send(req(0, notificationInitialized, &InitializedParams{}))
-	send(req(2, "tools/call", &CallToolParams{Name: "slow"}))
+	// A 2026-07-28 session has no initialize: each request declares the
+	// protocol version in its _meta.
+	meta := newProtocolMeta("")
+	send(req(2, "tools/call", &CallToolParams{Meta: meta, Name: "slow"}))
 	<-started
 	send(req(0, notificationCancelled, &CancelledParams{RequestID: int64(2)}))
 
 	// The logging wrapper logs the response once ioConn has dropped it; after
-	// that, a response sent on the wire would precede the ping's.
+	// that, a response sent on the wire would precede the next call's.
 	for !strings.Contains(string(log.Bytes()), `write: {"jsonrpc":"2.0","id":2,`) {
 		select {
 		case <-ctx.Done():
@@ -515,7 +506,7 @@ func TestIOConnCancelledCallGetsNoResponse(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	send(req(3, "ping", nil))
+	send(req(3, "tools/call", &CallToolParams{Meta: meta, Name: "fast"}))
 	awaitResponse(3)
 }
 
