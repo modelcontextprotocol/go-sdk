@@ -199,8 +199,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	if config.AuthorizationCodeFetcher == nil {
 		return nil, errors.New("AuthorizationCodeFetcher is required")
 	}
-	if config.ClientIDMetadataDocumentConfig != nil && !isNonRootHTTPSURL(config.ClientIDMetadataDocumentConfig.URL) {
-		return nil, fmt.Errorf("client ID metadata document URL must be a non-root HTTPS URL")
+	if config.ClientIDMetadataDocumentConfig != nil {
+		if err := validateClientIDMetadataDocumentURL(config.ClientIDMetadataDocumentConfig.URL); err != nil {
+			return nil, err
+		}
 	}
 	if config.PreregisteredClient != nil {
 		if err := config.PreregisteredClient.Validate(); err != nil {
@@ -242,12 +244,27 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 	}, nil
 }
 
-func isNonRootHTTPSURL(u string) bool {
+// validateClientIDMetadataDocumentURL checks the client identifier URL
+// restrictions in draft-ietf-oauth-client-id-metadata-document-00 §3.
+// A query is left alone: that draft says SHOULD NOT, not MUST NOT.
+func validateClientIDMetadataDocumentURL(u string) error {
 	pu, err := url.Parse(u)
-	if err != nil {
-		return false
+	if err != nil || pu.Scheme != "https" || pu.Path == "" {
+		return errors.New("client ID metadata document URL must be a non-root HTTPS URL")
 	}
-	return pu.Scheme == "https" && pu.Path != ""
+	if pu.User != nil {
+		return errors.New("client ID metadata document URL must not include a username or password")
+	}
+	// url.Parse drops an empty fragment, so look for "#" in the raw URL.
+	if strings.Contains(u, "#") {
+		return errors.New("client ID metadata document URL must not include a fragment")
+	}
+	for _, seg := range strings.Split(pu.Path, "/") {
+		if seg == "." || seg == ".." {
+			return errors.New("client ID metadata document URL must not contain dot path segments")
+		}
+	}
+	return nil
 }
 
 // inferApplicationType returns an application type based on the redirect URIs.
