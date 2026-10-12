@@ -441,10 +441,10 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
-		// Skip when the handler returned input requests (multi round-trip): content and
-		// inputRequests are mutually exclusive on the wire.
+		// Skip when the handler asked for input (multi round-trip): content and
+		// an input-required result are mutually exclusive on the wire.
 		var outval any = out
-		if res.InputRequests != nil {
+		if asksForInput(res) {
 			outval = nil
 		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
@@ -957,7 +957,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Messages == nil && res.InputRequests == nil {
+		if res.Messages == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Messages = []*PromptMessage{} // avoid "null"
 			res = &res2
@@ -1065,7 +1065,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.InputRequests == nil {
+		if res.Content == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1134,7 +1134,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.InputRequests != nil {
+	if asksForInput(res) {
 		return res, nil
 	}
 	if res.Contents == nil {
@@ -1282,6 +1282,14 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 }
 
 func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emptyResult, error) {
+	return s.endSubscription(ctx, req, jsonrpc.ID{})
+}
+
+// endSubscription ends the session's subscription to req.Params.URI. A zero
+// listenID removes the entry whichever request made it; a valid one removes it
+// only while the entry still records that listen, since a later listen on the
+// session may have replaced it. The UnsubscribeHandler is called either way.
+func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, listenID jsonrpc.ID) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1293,7 +1301,9 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		delete(subscribedSessions, req.Session)
+		if !listenID.IsValid() || subscribedSessions[req.Session] == listenID {
+			delete(subscribedSessions, req.Session)
+		}
 		if len(subscribedSessions) == 0 {
 			delete(s.resourceSubscriptions, req.Params.URI)
 		}
@@ -1330,13 +1340,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		// several listens at once, and deleting by session alone retires a
 		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		if allowed.ToolsListChanged {
+		if allowed.ToolsListChanged && s.toolChangeSubscriptions[req.Session] == requestID {
 			delete(s.toolChangeSubscriptions, req.Session)
 		}
-		if allowed.PromptsListChanged {
+		if allowed.PromptsListChanged && s.promptChangeSubscriptions[req.Session] == requestID {
 			delete(s.promptChangeSubscriptions, req.Session)
 		}
-		if allowed.ResourcesListChanged {
+		if allowed.ResourcesListChanged && s.resourceChangeSubscriptions[req.Session] == requestID {
 			delete(s.resourceChangeSubscriptions, req.Session)
 		}
 		s.mu.Unlock()
@@ -1353,13 +1363,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		if err != nil {
 			return nil, err
 		}
-		defer s.unsubscribe(ctx, &UnsubscribeRequest{
+		defer s.endSubscription(ctx, &UnsubscribeRequest{
 			Session: req.Session,
 			Params: &UnsubscribeParams{
 				URI:  uri,
 				Meta: req.Params.GetMeta(),
 			},
-		})
+		}, requestID)
 	}
 
 	ackParams := &SubscriptionsAcknowledgedParams{

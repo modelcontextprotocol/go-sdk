@@ -3625,6 +3625,197 @@ func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
 	})
 }
 
+// waitListens waits until the server session has exactly n listens in
+// flight, which is how a test knows that a cancelled listen has finished
+// unwinding.
+func waitListens(t *testing.T, ss *ServerSession, n int, what string) {
+	t.Helper()
+	waitUntil(t, 5*time.Second, what, func() bool { return listenIDsCount(ss) == n })
+}
+
+// TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown verifies that a
+// Subscribe right after Unsubscribe survives the first listen's teardown,
+// which the UnsubscribeHandler holds until the second listen is acknowledged.
+func TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown(t *testing.T) {
+	const uri = "file:///r1"
+	release := make(chan struct{})
+	releaseTeardown := sync.OnceFunc(func() { close(release) })
+	var unsubscribes atomic.Int32
+	server := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler: func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
+			if unsubscribes.Add(1) == 1 {
+				<-release
+			}
+			return nil
+		},
+	})
+	server.AddResource(&Resource{Name: "r1", URI: uri}, nil)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	events := make(chan subListenEvent, 16)
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+	// Deferred last so that it runs first: closing the session waits for the
+	// held teardown.
+	defer releaseTeardown()
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	first := waitSubListenEvent(t, events, "ack")
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("second Subscribe: %v", err)
+	}
+	second := waitSubListenEvent(t, events, "ack")
+	if second.id == first.id {
+		t.Fatalf("second listen reused subscription ID %s", first.id)
+	}
+
+	// Only now does the first listen finish unwinding.
+	releaseTeardown()
+	waitListens(t, ss, 1, "the first listen to unwind")
+
+	if err := server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: uri}); err != nil {
+		t.Fatalf("ResourceUpdated: %v", err)
+	}
+	if got := waitSubListenEvent(t, events, "updated"); got.id != second.id {
+		t.Errorf("update carried subscription ID %s, want the second listen's %s", got.id, second.id)
+	}
+
+	// The second listen still retires the subscription when it ends.
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("second Unsubscribe: %v", err)
+	}
+	waitUntil(t, 5*time.Second, "the subscription to be retired", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, ok := server.resourceSubscriptions[uri]
+		return !ok
+	})
+}
+
+// TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown verifies that the
+// auto-listen's teardown leaves in place a second listen's registration for
+// the same list-changed notification.
+func TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		kind   string
+		filter NotificationSubscriptions
+		change func(*Server)
+	}{
+		{
+			kind:   "tool",
+			filter: NotificationSubscriptions{ToolsListChanged: true},
+			change: func(s *Server) { AddTool(s, &Tool{Name: "t2"}, sayHi) },
+		},
+		{
+			kind:   "prompt",
+			filter: NotificationSubscriptions{PromptsListChanged: true},
+			change: func(s *Server) { s.AddPrompt(&Prompt{Name: "p2"}, nil) },
+		},
+		{
+			kind:   "resource",
+			filter: NotificationSubscriptions{ResourcesListChanged: true},
+			change: func(s *Server) { s.AddResource(&Resource{Name: "r2", URI: "file:///r2"}, nil) },
+		},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			server := newSubListenServer()
+			server.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(context.Background(), st, nil)
+			if err != nil {
+				t.Fatalf("server connect: %v", err)
+			}
+			defer ss.Close()
+
+			// A client with all three handlers, so that the auto-listen opened
+			// by Connect asks for every list-changed notification.
+			events := make(chan subListenEvent, 16)
+			notified := func(kind string, meta Meta) {
+				events <- subListenEvent{kind, fmt.Sprint(meta[MetaKeySubscriptionID])}
+			}
+			c := NewClient(testImpl, &ClientOptions{
+				ToolListChangedHandler: func(_ context.Context, req *ToolListChangedRequest) {
+					notified("tool", req.Params.Meta)
+				},
+				PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
+					notified("prompt", req.Params.Meta)
+				},
+				ResourceListChangedHandler: func(_ context.Context, req *ResourceListChangedRequest) {
+					notified("resource", req.Params.Meta)
+				},
+			})
+			c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == notificationSubscriptionsAck {
+						if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+							notified("ack", cr.Params.Meta)
+						}
+					}
+					return next(ctx, method, req)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatalf("client connect: %v", err)
+			}
+			defer cs.Close()
+			autoListen := waitSubListenEvent(t, events, "ack")
+
+			listenCtx, cancelListen := context.WithCancel(context.Background())
+			defer cancelListen()
+			go cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{Notifications: &tc.filter})
+			second := waitSubListenEvent(t, events, "ack")
+			if second.id == autoListen.id {
+				t.Fatalf("second listen reused subscription ID %s", autoListen.id)
+			}
+
+			// End the auto-listen.
+			cs.listenCancel()
+			waitListens(t, ss, 1, "the auto-listen to unwind")
+
+			tc.change(server)
+			if got := waitSubListenEvent(t, events, tc.kind); got.id != second.id {
+				t.Errorf("%s notification carried subscription ID %s, want the second listen's %s", tc.kind, got.id, second.id)
+			}
+		})
+	}
+}
+
 // waitUntil polls cond until it reports true, failing the test after timeout.
 func waitUntil(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
