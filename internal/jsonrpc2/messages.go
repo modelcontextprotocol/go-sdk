@@ -122,6 +122,9 @@ func NewResponse(id ID, result any, rerr error) (*Response, error) {
 
 func (msg *Response) marshal(to *wireCombined) {
 	to.ID = msg.ID.value
+	if !msg.ID.IsValid() && msg.Error != nil {
+		to.ID = json.RawMessage("null")
+	}
 	to.Error = toWireError(msg.Error)
 	to.Result = msg.Result
 }
@@ -183,6 +186,9 @@ type wireDecode struct {
 	Error      *WireError      `json:"error,omitempty"`
 }
 
+// ErrInvalidRequestID identifies a request whose ID cannot be decoded.
+var ErrInvalidRequestID = fmt.Errorf("%w: invalid request ID", ErrParse)
+
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireDecode{}
 	if err := internaljson.Unmarshal(data, &msg); err != nil {
@@ -193,6 +199,9 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	id, err := MakeID(msg.ID)
 	if err != nil {
+		if len(msg.Method) > 0 {
+			return nil, ErrInvalidRequestID
+		}
 		return nil, err
 	}
 	if len(msg.Method) > 0 {
