@@ -472,20 +472,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	if !info.usesNewProtocol && !slices.ContainsFunc(server.protocolVersions, func(v string) bool {
-		return v < protocolVersion20260728
-	}) {
-		data, _ := json.Marshal(UnsupportedProtocolVersionData{
-			Supported: server.protocolVersions,
-		})
-		writeJSONRPCError(w, http.StatusBadRequest, jsonrpc.ID{}, &jsonrpc.Error{
-			Code:    CodeUnsupportedProtocolVersion,
-			Message: "legacy-format requests are not supported by this server",
-			Data:    data,
-		})
-		return
-	}
-
 	var sessionID string
 	if legacySessions && !info.usesNewProtocol {
 		sessionID = req.Header.Get(sessionIDHeader)
@@ -1226,10 +1212,10 @@ func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committe
 //   - InvalidParams (-32602), UnsupportedProtocolVersion (-32022) and
 //     CodeMissingRequiredClientCapabilities (-32021) MUST
 //     return HTTP 400.
+//
+// UnsupportedProtocolVersion is the one code mapped for every protocol
+// version.
 func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
-	if protocolVersionFromContext(ctx) < protocolVersion20260728 {
-		return 0
-	}
 	resp, ok := msg.(*jsonrpc.Response)
 	if !ok || resp.Error == nil {
 		return 0
@@ -1238,10 +1224,20 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 	if !errors.As(resp.Error, &jerr) {
 		return 0
 	}
+	// A legacy request gets this code only from a server that supports no
+	// version before 2026-07-28, which rejects it in ServerSession.handle
+	// before any handler runs, so nothing has been written to the response
+	// yet.
+	if jerr.Code == CodeUnsupportedProtocolVersion {
+		return http.StatusBadRequest
+	}
+	if protocolVersionFromContext(ctx) < protocolVersion20260728 {
+		return 0
+	}
 	switch jerr.Code {
 	case jsonrpc.CodeMethodNotFound:
 		return http.StatusNotFound
-	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion, CodeMissingRequiredClientCapabilities:
+	case jsonrpc.CodeInvalidParams, CodeMissingRequiredClientCapabilities:
 		return http.StatusBadRequest
 	}
 	return 0
