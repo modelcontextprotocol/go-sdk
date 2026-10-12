@@ -27,7 +27,7 @@ import (
 // prevent XSS attacks. If you add a new URL field, you must also add it to that
 // function.
 //
-// [RFC 8414]: https://tools.ietf.org/html/rfc8414)
+// [RFC 8414]: https://tools.ietf.org/html/rfc8414
 type AuthServerMeta struct {
 	// Issuer is the REQUIRED URL identifying the authorization server.
 	Issuer string `json:"issuer"`
