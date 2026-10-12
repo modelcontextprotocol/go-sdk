@@ -45,7 +45,7 @@ type DynamicClientRegistrationConfig struct {
 }
 
 // AuthorizationResult is the result of an authorization flow.
-// It is returned by [AuthorizationCodeHandler].AuthorizationCodeFetcher implementations.
+// It is returned by [AuthorizationCodeFetcher] implementations.
 type AuthorizationResult struct {
 	// Code is the authorization code obtained from the authorization server.
 	Code string
@@ -612,7 +612,7 @@ type authResult struct {
 	usedCodeVerifier string
 }
 
-// getAuthorizationCode uses the [AuthorizationCodeHandler.AuthorizationCodeFetcher]
+// getAuthorizationCode uses the [AuthorizationCodeFetcher]
 // to obtain an authorization code.
 func (h *AuthorizationCodeHandler) getAuthorizationCode(ctx context.Context, cfg *oauth2.Config, resourceURL string) (*authResult, error) {
 	codeVerifier := oauth2.GenerateVerifier()

@@ -125,7 +125,7 @@ type ClientOptions struct {
 	// Setting ElicitationHandler to a non-nil value automatically causes the
 	// client to advertise the elicitation capability, with default value
 	// &ElicitationCapabilities{}. If [ClientOptions.Capabilities] is set and has
-	// a non nil value for [ClientCapabilities.ELicitattion], that value
+	// a non nil value for [ClientCapabilities.Elicitation], that value
 	// overrides the inferred capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
 	// Capabilities optionally configures the client's default capabilities,
