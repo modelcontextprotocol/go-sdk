@@ -418,3 +418,13 @@ func TestSelectTokenAuthMethod(t *testing.T) {
 		})
 	}
 }
+
+func TestResourceMetadataURLFromChallengesUsesBearerChallenge(t *testing.T) {
+	challenges := []oauthex.Challenge{
+		{Scheme: "Basic", Params: map[string]string{"resource_metadata": "https://basic.example/metadata"}},
+		{Scheme: "Bearer", Params: map[string]string{"resource_metadata": "https://bearer.example/metadata"}},
+	}
+	if got, want := resourceMetadataURLFromChallenges(challenges), "https://bearer.example/metadata"; got != want {
+		t.Errorf("resourceMetadataURLFromChallenges() = %q, want %q", got, want)
+	}
+}

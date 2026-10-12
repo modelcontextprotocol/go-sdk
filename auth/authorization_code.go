@@ -405,7 +405,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 // or the empty string if there is none.
 func resourceMetadataURLFromChallenges(cs []oauthex.Challenge) string {
 	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; u != "" {
+		if u := c.Params["resource_metadata"]; strings.EqualFold(c.Scheme, "Bearer") && u != "" {
 			return u
 		}
 	}
