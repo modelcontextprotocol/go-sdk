@@ -22,11 +22,8 @@ func TestInvalidRequestIDClassification(t *testing.T) {
 		{"null", `{"jsonrpc":"2.0","method":"ping","id":null}`, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			// Arrange.
 			wire := []byte(tt.wire)
-			// Act.
 			_, err := DecodeMessage(wire)
-			// Assert.
 			if (err != nil) != tt.rejected || errors.Is(err, ErrInvalidRequestID) != tt.rejectedRequest {
 				t.Fatalf("DecodeMessage error = %v", err)
 			}
@@ -35,11 +32,8 @@ func TestInvalidRequestIDClassification(t *testing.T) {
 }
 
 func TestUnknownIDErrorEncoding(t *testing.T) {
-	// Arrange.
 	response := &Response{Error: ErrInvalidRequest}
-	// Act.
 	wire, err := EncodeMessage(response)
-	// Assert.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,15 +47,12 @@ func TestUnknownIDErrorEncoding(t *testing.T) {
 }
 
 func TestNullIDErrorResponseRoundTrip(t *testing.T) {
-	// Arrange.
 	original := &Response{Error: &WireError{Code: -32600, Message: "invalid request ID"}}
-	// Act.
 	wire, err := EncodeMessage(original)
 	if err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := DecodeMessage(wire)
-	// Assert.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +74,7 @@ func TestInvalidUnknownIDResponse(t *testing.T) {
 		`{"jsonrpc":"2.0","id":null,"result":null,"error":{"code":-32600,"message":"bad"}}`,
 		`{"jsonrpc":"2.0","ID":null,"error":{"code":-32600,"message":"bad"}}`,
 	} {
-		// Arrange / Act.
 		_, err := DecodeMessage([]byte(wire))
-		// Assert.
 		if !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("DecodeMessage(%s) error = %v", wire, err)
 		}
