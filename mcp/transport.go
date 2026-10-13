@@ -272,7 +272,9 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		// travels as the cause of the request's context rather than being
 		// dropped here.
 		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
-		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
+		// Resolve the active request before the read loop can admit another
+		// invocation with the same ID. A deferred lookup could cancel that one.
+		c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
