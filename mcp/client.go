@@ -1263,14 +1263,20 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 
 // Ping makes an MCP "ping" request to the server.
 //
-// On 2026-07-28 sessions Ping returns an error without a round trip: the
-// 2026-07-28 protocol removed the ping method, so servers answer it with
-// MethodNotFound (or reject the request at the transport for missing
-// header/meta consistency). Verify liveness with a capability list request
-// instead (tools/list, resources/list, prompts/list).
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method. (A
+// ping sent without per-request _meta is additionally rejected by transports
+// that validate header/meta consistency, with -32020.) Use a capability
+// list request (tools/list, resources/list, prompts/list) to verify
+// liveness on those sessions instead.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 	if cs.usesNewProtocol() {
-		return fmt.Errorf("mcp: ping is not supported on %s sessions (the method was removed); verify liveness with tools/list, resources/list, or prompts/list", protocolVersion20260728)
+		return &jsonrpc.Error{
+			Code: jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol; verify liveness with tools/list, resources/list, or prompts/list",
+				methodPing),
+		}
 	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err

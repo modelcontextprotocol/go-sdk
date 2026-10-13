@@ -9,6 +9,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -765,12 +766,11 @@ func TestClientConnectDiscover(t *testing.T) {
 	}
 }
 
-// TestClientPingRemovedOnNewProtocol verifies that Ping on a 2026-07-28
-// session returns a descriptive local error instead of sending the ping
-// method, which the 2026-07-28 protocol removed. The session state is set
-// directly (in-package) because the SDK's fallback initialize caps the
-// negotiated version at 2025-11-25; only the discovery path produces a
-// 2026-07-28 session.
+// TestClientPingRemovedOnNewProtocol verifies that Ping on a session
+// negotiated at 2026-07-28 returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the ping method, which the
+// 2026-07-28 protocol schema removes. A plain Connect negotiates
+// 2026-07-28 over in-memory transports via server/discover.
 func TestClientPingRemovedOnNewProtocol(t *testing.T) {
 	ctx := context.Background()
 	var gotPing bool
@@ -800,14 +800,23 @@ func TestClientPingRemovedOnNewProtocol(t *testing.T) {
 	}
 	defer cs.Close()
 
-	cs.state.InitializeResult.ProtocolVersion = protocolVersion20260728
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
 
 	err = cs.Ping(ctx, nil)
-	if err == nil {
-		t.Fatal("Ping on a 2026-07-28 session = nil error, want a removed-method error")
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("Ping on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
 	}
-	if !strings.Contains(err.Error(), "ping is not supported") {
-		t.Errorf("Ping error %q does not explain the removal", err.Error())
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if !strings.Contains(jsonrpcErr.Message, "not supported in the new protocol") {
+		t.Errorf("message %q does not explain the removal", jsonrpcErr.Message)
+	}
+	if !strings.Contains(jsonrpcErr.Message, "tools/list") {
+		t.Errorf("message %q does not point at a liveness alternative", jsonrpcErr.Message)
 	}
 	if gotPing {
 		t.Error("ping request was sent despite the removed-method guard")
