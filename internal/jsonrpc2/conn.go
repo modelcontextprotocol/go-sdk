@@ -200,13 +200,12 @@ type Writer interface {
 }
 
 // ResponseDropper is an optional interface for a [Writer] that can drop the
-// response to a call the peer cancelled (see [Connection.CancelFromPeer]). The
-// Connection still writes the response once the call's handler returns, so
-// that the writer sees the call finish, and the writer discards it.
+// response to a call the peer cancelled (see [Connection.CancelFromPeer]).
 type ResponseDropper interface {
 	// DropResponse reports, when the cancellation arrives, that the peer
 	// cancelled the incoming call with the given ID, so its response must not
-	// be sent.
+	// be sent. It is called with the Connection's internal lock held, so it
+	// must return quickly and must not call back into the Connection.
 	DropResponse(id ID)
 }
 
@@ -463,9 +462,6 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 // Cancel will not complain if the ID is not a currently active message, and it
 // will not cause any messages that have not arrived yet with that ID to be
 // cancelled.
-//
-// The inbound call is still answered: use [Connection.CancelFromPeer] when the
-// peer itself asked for the cancellation.
 func (c *Connection) Cancel(id ID) {
 	c.cancelIncoming(id, nil, false)
 }
@@ -493,19 +489,17 @@ func (c *Connection) cancelIncoming(id ID, cause error, fromPeer bool) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
-	})
-	if req == nil {
-		return
-	}
-	if fromPeer {
-		// Tell the writer before cancelling, so that it knows by the time a
-		// handler that honors its context returns. This runs outside stateMu
-		// since the writer may do I/O.
-		if d, ok := c.writer.(ResponseDropper); ok {
-			d.DropResponse(id)
+		if req != nil && fromPeer {
+			// Telling the writer under stateMu makes this atomic with processResult
+			// removing the request before it writes the response.
+			if d, ok := c.writer.(ResponseDropper); ok {
+				d.DropResponse(id)
+			}
 		}
+	})
+	if req != nil {
+		req.cancel(cause)
 	}
-	req.cancel(cause)
 }
 
 // Wait blocks until the connection is fully closed, but does not close it.
