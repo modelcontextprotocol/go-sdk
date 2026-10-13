@@ -83,3 +83,34 @@ func TestInvalidRequestIDIORecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestIONullIDErrorResponse(t *testing.T) {
+	// Arrange.
+	data := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request ID"}}` + "\n" + `{"jsonrpc":"2.0","id":7,"result":{}}` + "\n"
+	writer := &invalidIDWriter{}
+	conn := newIOConn(rwc{rc: io.NopCloser(strings.NewReader(data)), wc: writer})
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Act.
+	first, err := conn.Read(ctx)
+	// Assert.
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := first.(*jsonrpc.Response)
+	if !ok || response.ID.IsValid() || response.Error == nil {
+		t.Fatalf("first = %#v", first)
+	}
+	second, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok = second.(*jsonrpc.Response)
+	if !ok || response.ID.Raw() != int64(7) {
+		t.Fatalf("second = %#v", second)
+	}
+	if writer.Len() != 0 {
+		t.Fatalf("unexpected reply to error response: %s", writer.String())
+	}
+}

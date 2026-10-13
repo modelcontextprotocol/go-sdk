@@ -1844,6 +1844,13 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
 	}{
 		{
+			name:             "400 with null-ID JSON-RPC error",
+			callStatus:       http.StatusBadRequest,
+			callBody:         `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request ID"}}`,
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
 			// SEP-2575 §"Missing Required Capabilities": server returns
 			// -32021 at HTTP 400. Session must survive.
 			name:             "400 with JSON-RPC error body (default)",

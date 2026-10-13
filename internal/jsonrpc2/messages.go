@@ -218,7 +218,20 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	// no method key, should be a response
 	if !id.IsValid() {
-		return nil, ErrInvalidRequest
+		if msg.Error == nil || len(msg.Result) != 0 {
+			return nil, ErrInvalidRequest
+		}
+		// The interface-valued ID conflates absent and null. Check presence
+		// only on this error path, without adding work to ordinary messages.
+		var raw struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := internaljson.Unmarshal(data, &raw); err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(bytes.TrimSpace(raw.ID), []byte("null")) {
+			return nil, ErrInvalidRequest
+		}
 	}
 	resp := &Response{
 		ID:     id,

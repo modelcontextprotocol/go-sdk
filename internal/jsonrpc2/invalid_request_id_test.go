@@ -51,3 +51,43 @@ func TestUnknownIDErrorEncoding(t *testing.T) {
 		t.Fatalf("invalid error response: %s", wire)
 	}
 }
+
+func TestNullIDErrorResponseRoundTrip(t *testing.T) {
+	// Arrange.
+	original := &Response{Error: &WireError{Code: -32600, Message: "invalid request ID"}}
+	// Act.
+	wire, err := EncodeMessage(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeMessage(wire)
+	// Assert.
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := decoded.(*Response)
+	if !ok {
+		t.Fatalf("decoded %T, want response", decoded)
+	}
+	var wireErr *WireError
+	if response.ID.IsValid() || !errors.As(response.Error, &wireErr) || wireErr.Code != -32600 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestInvalidUnknownIDResponse(t *testing.T) {
+	for _, wire := range []string{
+		`{"jsonrpc":"2.0","error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","id":null,"result":{}}`,
+		`{"jsonrpc":"2.0","id":null,"error":null}`,
+		`{"jsonrpc":"2.0","id":null,"result":null,"error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","ID":null,"error":{"code":-32600,"message":"bad"}}`,
+	} {
+		// Arrange / Act.
+		_, err := DecodeMessage([]byte(wire))
+		// Assert.
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("DecodeMessage(%s) error = %v", wire, err)
+		}
+	}
+}
