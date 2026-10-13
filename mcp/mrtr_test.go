@@ -338,6 +338,226 @@ func TestMultiRoundTrip_ReadResource_AutoRetryDoesNotMutateCallerParams(t *testi
 // retry does not recognize.
 type wrappedCallToolParams struct{ *CallToolParams }
 
+// rawJSONResult is a result sent exactly as given, standing in for a server
+// built with another SDK.
+type rawJSONResult struct {
+	ResultBase
+	raw string
+}
+
+func (r *rawJSONResult) MarshalJSON() ([]byte, error) { return []byte(r.raw), nil }
+
+// TestMultiRoundTrip_AutoRetry_RequestStateOnly verifies that the client
+// retries an input-required result that carries a requestState but no
+// inputRequests, echoing the state, instead of returning it as the final
+// result. The spec requires at least one of the two fields, so a result with
+// only requestState is valid.
+func TestMultiRoundTrip_AutoRetry_RequestStateOnly(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+		},
+	)
+	// The SDK's own server never sends a requestState-only result, so send
+	// one directly on the first call.
+	srv.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodCallTool && req.GetParams().(*CallToolParamsRaw).RequestState == "" {
+				return &rawJSONResult{raw: `{"resultType":"input_required","requestState":"continue"}`}, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	cs := mustConnect(t, srv, nil)
+
+	res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatalf("CallTool() returned an input-required result: requestState = %q", res.RequestState)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+	}
+	if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
+		t.Errorf("result text = %q, want %q", got, "state=continue")
+	}
+}
+
+// TestMultiRoundTrip_AutoRetry_InputRequiredWithoutFields verifies that an
+// input-required result with neither inputRequests nor requestState is not
+// returned as the final result. It is retried like load shedding until the
+// load-shedding limit is reached.
+func TestMultiRoundTrip_AutoRetry_InputRequiredWithoutFields(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
+		},
+	)
+	srv.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodCallTool {
+				calls.Add(1)
+				return &rawJSONResult{raw: `{"resultType":"input_required"}`}, nil
+			}
+			return next(ctx, method, req)
+		}
+	})
+
+	cs := mustConnect(t, srv, nil)
+
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "act"}); err == nil {
+		t.Fatal("CallTool() err = nil, want error for an input-required result without inputRequests or requestState")
+	}
+	if got := calls.Load(); got != maxLoadSheddingMultiRoundTripRetries {
+		t.Errorf("tools/call requests = %d, want %d", got, maxLoadSheddingMultiRoundTripRetries)
+	}
+}
+
+// TestMultiRoundTrip_ServerRequestStateOnly verifies that a handler can return
+// a result with only a RequestState for each multi round-trip method: the
+// server labels it input_required, and the client retries it with the state
+// echoed.
+func TestMultiRoundTrip_ServerRequestStateOnly(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			if req.Params.RequestState == "" {
+				return &CallToolResult{RequestState: "continue"}, nil
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+		},
+	)
+	srv.AddPrompt(&Prompt{Name: "review"}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		if req.Params.RequestState == "" {
+			return &GetPromptResult{RequestState: "continue"}, nil
+		}
+		return &GetPromptResult{
+			Messages: []*PromptMessage{{Role: "user", Content: &TextContent{Text: "state=" + req.Params.RequestState}}},
+		}, nil
+	})
+	srv.AddResource(&Resource{URI: "test://data", Name: "data"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		if req.Params.RequestState == "" {
+			return &ReadResourceResult{RequestState: "continue"}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: "test://data", Text: "state=" + req.Params.RequestState}},
+		}, nil
+	})
+
+	cs := mustConnect(t, srv, nil)
+	const want = "state=continue"
+
+	t.Run("tools/call", func(t *testing.T) {
+		res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+		if err != nil {
+			t.Fatalf("CallTool() error = %v", err)
+		}
+		if len(res.Content) != 1 {
+			t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+		}
+		if got := res.Content[0].(*TextContent).Text; got != want {
+			t.Errorf("result text = %q, want %q", got, want)
+		}
+	})
+	t.Run("prompts/get", func(t *testing.T) {
+		res, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review"})
+		if err != nil {
+			t.Fatalf("GetPrompt() error = %v", err)
+		}
+		if len(res.Messages) != 1 {
+			t.Fatalf("GetPrompt() messages = %v, want one message", res.Messages)
+		}
+		if got := res.Messages[0].Content.(*TextContent).Text; got != want {
+			t.Errorf("message text = %q, want %q", got, want)
+		}
+	})
+	t.Run("resources/read", func(t *testing.T) {
+		res, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://data"})
+		if err != nil {
+			t.Fatalf("ReadResource() error = %v", err)
+		}
+		if len(res.Contents) != 1 {
+			t.Fatalf("ReadResource() contents = %v, want one entry", res.Contents)
+		}
+		if got := res.Contents[0].Text; got != want {
+			t.Errorf("contents text = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestMultiRoundTrip_RequestStateOnly_MaxRetries verifies that the client
+// counts requestState-only results as rounds, not as load shedding: a server
+// that keeps asking to continue is called maxMultiRoundTripRetries times.
+func TestMultiRoundTrip_RequestStateOnly_MaxRetries(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "loop", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			calls.Add(1)
+			return &CallToolResult{RequestState: "again"}, nil
+		},
+	)
+
+	cs := mustConnect(t, srv, nil)
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "loop"})
+	if err == nil {
+		t.Fatal("CallTool() err = nil, want error for exceeded max retries")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum retries") {
+		t.Errorf("CallTool() err = %v, want it to mention the retry limit", err)
+	}
+	if got := calls.Load(); got != maxMultiRoundTripRetries {
+		t.Errorf("tool calls = %d, want %d", got, maxMultiRoundTripRetries)
+	}
+}
+
+// TestMultiRoundTrip_ContentWithRequestState verifies that a result with both
+// content and a RequestState is rejected as a server bug, like content with
+// InputRequests.
+func TestMultiRoundTrip_ContentWithRequestState(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "mixed", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{
+				Content:      []Content{&TextContent{Text: "done"}},
+				RequestState: "stray",
+			}, nil
+		},
+	)
+
+	cs := mustConnect(t, srv, nil)
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "mixed"})
+	if err == nil {
+		t.Fatal("CallTool() err = nil, want a server error for content with a requestState")
+	}
+	if !strings.Contains(err.Error(), "both content and inputRequests or requestState") {
+		t.Errorf("CallTool() err = %v, want the content/requestState server error", err)
+	}
+}
+
 // TestMultiRoundTrip_UnsupportedRetryParamsType verifies that the client
 // retry loop reports an explicit error when the params carry a type it
 // cannot build retry params for, instead of silently resending the request
@@ -393,6 +613,7 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 	testCases := []struct {
 		name        string
 		requests    InputRequestMap
+		state       string
 		wantRetries int
 	}{
 		{
@@ -401,8 +622,15 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 			wantRetries: maxLoadSheddingMultiRoundTripRetries,
 		},
 		{
+			name:        "empty requests with state",
+			requests:    InputRequestMap{},
+			state:       "loop-state",
+			wantRetries: maxMultiRoundTripRetries,
+		},
+		{
 			name:        "input request",
 			requests:    InputRequestMap{"confirm": &ElicitParams{Message: "Again?"}},
+			state:       "loop-state",
 			wantRetries: maxMultiRoundTripRetries,
 		},
 	}
@@ -415,7 +643,7 @@ func TestMultiRoundTrip_MaxRetries(t *testing.T) {
 			srv := NewServer(testImpl, nil)
 			AddTool(srv, &Tool{Name: "loop"}, func(ctx context.Context, req *CallToolRequest, input struct{}) (*CallToolResult, any, error) {
 				serverCalls.Add(1)
-				return &CallToolResult{InputRequests: tc.requests, RequestState: "loop-state"}, nil, nil
+				return &CallToolResult{InputRequests: tc.requests, RequestState: tc.state}, nil, nil
 			})
 
 			conn := mustConnect(t, srv, &ClientOptions{
@@ -647,6 +875,84 @@ func TestMultiRoundTrip_ServerMiddleware_MaxRetries(t *testing.T) {
 	}
 	if got := serverCalls.Load(); got != maxMultiRoundTripRetries {
 		t.Errorf("serverCalls = %d, want %d", got, maxMultiRoundTripRetries)
+	}
+}
+
+// TestMultiRoundTrip_ServerMiddleware_RequestStateOnly verifies that, for a
+// client on an older protocol version, the server-side shim calls the handler
+// again with the state echoed when it returns a RequestState and no input
+// requests.
+func TestMultiRoundTrip_ServerMiddleware_RequestStateOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		requests InputRequestMap
+	}{
+		{name: "nil requests", requests: nil},
+		{name: "empty requests", requests: InputRequestMap{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			var calls atomic.Int32
+			srv := NewServer(testImpl, nil)
+			srv.AddTool(
+				&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+				func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					calls.Add(1)
+					if req.Params.RequestState == "" {
+						return &CallToolResult{InputRequests: tc.requests, RequestState: "continue"}, nil
+					}
+					return &CallToolResult{Content: []Content{&TextContent{Text: "state=" + req.Params.RequestState}}}, nil
+				},
+			)
+
+			cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+				MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+			})
+
+			res, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+			if err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			if len(res.Content) != 1 {
+				t.Fatalf("CallTool() content = %v, want one content block", res.Content)
+			}
+			if got := res.Content[0].(*TextContent).Text; got != "state=continue" {
+				t.Errorf("result text = %q, want %q", got, "state=continue")
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("tool calls = %d, want 2", got)
+			}
+		})
+	}
+}
+
+// TestMultiRoundTrip_ServerMiddleware_Busy verifies that, for a client on an
+// older protocol version, the server-side shim reports an empty input request
+// map without a RequestState as busy instead of calling the handler again.
+func TestMultiRoundTrip_ServerMiddleware_Busy(t *testing.T) {
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			calls.Add(1)
+			return &CallToolResult{InputRequests: InputRequestMap{}}, nil
+		},
+	)
+
+	cs := mustConnectOldProtocol(t, srv, &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+	})
+
+	_, err := cs.CallTool(ctx, &CallToolParams{Name: "act"})
+	if err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("CallTool() error = %v, want a busy error", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("tool calls = %d, want 1", got)
 	}
 }
 
@@ -1003,4 +1309,135 @@ func mustConnectOldProtocol(t *testing.T, s *Server, clientOpts *ClientOptions) 
 		_ = cs.Close()
 	})
 	return cs
+}
+
+// gatedResourceServer returns a server whose "test://gated" resource asks for
+// an elicitation before it reveals its contents, and whose "test://plain"
+// resource answers at once. Every result is marked cacheable for a minute.
+// handlerCalls counts invocations of the gated handler.
+func gatedResourceServer(handlerCalls *atomic.Int32) *Server {
+	srv := NewServer(testImpl, &ServerOptions{
+		SetCacheable: func(_ context.Context, _ Request, c *Cacheable) {
+			c.TTLMs = 60_000
+			c.CacheScope = "private"
+		},
+	})
+	srv.AddResource(&Resource{URI: "test://gated", Name: "gated"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		handlerCalls.Add(1)
+		if len(req.Params.InputResponses) == 0 {
+			return &ReadResourceResult{
+				InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "Reveal the document?"}},
+				RequestState:  "gated-state",
+			}, nil
+		}
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: req.Params.URI, Text: "the document"}},
+		}, nil
+	})
+	srv.AddResource(&Resource{URI: "test://plain", Name: "plain"}, func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+		return &ReadResourceResult{
+			Contents: []*ResourceContents{{URI: req.Params.URI, Text: "plain"}},
+		}, nil
+	})
+	return srv
+}
+
+// TestMultiRoundTrip_ReadResource_RetryResultNotCached verifies that a
+// resources/read result produced by an automatic multi round-trip retry is
+// not cached: the caching specification says results of requests carrying
+// inputResponses or requestState MUST NOT be cached, because they depend on
+// inputs that are not part of the cache key. A second read of the same URI
+// must therefore go back to the server and ask the user again, while a
+// resource that needed no input stays cached.
+func TestMultiRoundTrip_ReadResource_RetryResultNotCached(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls, elicitations atomic.Int32
+	cs := mustConnect(t, gatedResourceServer(&handlerCalls), &ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *ElicitRequest) (*ElicitResult, error) {
+			elicitations.Add(1)
+			return &ElicitResult{Action: "accept"}, nil
+		},
+	})
+
+	for i := 1; i <= 2; i++ {
+		res, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+		if err != nil {
+			t.Fatalf("read %d: ReadResource() error = %v", i, err)
+		}
+		if len(res.Contents) != 1 || res.Contents[0].Text != "the document" {
+			t.Fatalf("read %d: Contents = %+v, want the document", i, res.Contents)
+		}
+		// Each read is one input-required round plus one retry.
+		if got, want := handlerCalls.Load(), int32(2*i); got != want {
+			t.Errorf("read %d: handler calls = %d, want %d", i, got, want)
+		}
+		if got, want := elicitations.Load(), int32(i); got != want {
+			t.Errorf("read %d: elicitations = %d, want %d; the retry result was served from the cache", i, got, want)
+		}
+	}
+
+	// A result that needed no input is cacheable, so the second read of the
+	// plain resource is served without a round trip.
+	first, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Error("second read of test://plain was not served from the cache")
+	}
+}
+
+// TestMultiRoundTrip_ReadResource_ManualRetryBypassesCache covers the
+// caller-driven retry loop. An input-required result is not cacheable, the
+// retry request carries parameters the cache key does not include and so
+// must reach the server, and the retry's result must not be cached either.
+func TestMultiRoundTrip_ReadResource_ManualRetryBypassesCache(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls atomic.Int32
+	cs := mustConnect(t, gatedResourceServer(&handlerCalls), &ClientOptions{
+		MultiRoundTrip: &MultiRoundTripOptions{Disabled: true},
+	})
+
+	interim, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+	if err != nil {
+		t.Fatalf("ReadResource() error = %v", err)
+	}
+	if !interim.NeedsInput() {
+		t.Fatal("NeedsInput() = false, want true")
+	}
+
+	res, err := cs.ReadResource(ctx, &ReadResourceParams{
+		URI:            "test://gated",
+		InputResponses: InputResponseMap{"confirm": &ElicitResult{Action: "accept"}},
+		RequestState:   interim.RequestState,
+	})
+	if err != nil {
+		t.Fatalf("ReadResource() retry error = %v", err)
+	}
+	if res.NeedsInput() {
+		t.Fatal("retry: NeedsInput() = true, want false; the interim result was served from the cache")
+	}
+	if len(res.Contents) != 1 {
+		t.Fatalf("retry: len(Contents) = %d, want 1", len(res.Contents))
+	}
+	if got := handlerCalls.Load(); got != 2 {
+		t.Errorf("handler calls after the retry = %d, want 2", got)
+	}
+
+	// A fresh read must start the gate over instead of reusing the retry's
+	// contents.
+	again, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "test://gated"})
+	if err != nil {
+		t.Fatalf("ReadResource() after retry error = %v", err)
+	}
+	if !again.NeedsInput() {
+		t.Error("read after the retry: NeedsInput() = false, want true; the retry result was cached")
+	}
+	if got := handlerCalls.Load(); got != 3 {
+		t.Errorf("handler calls after the third read = %d, want 3", got)
+	}
 }
