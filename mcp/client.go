@@ -1386,7 +1386,13 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	if cs.usesNewProtocol() {
+	// The cache is keyed by URI alone. A request that carries input responses
+	// or request state is a multi round-trip retry whose result depends on
+	// those inputs, so the caching specification keeps it out of the cache in
+	// both directions: it is not served from the cache and its result is not
+	// stored (2026-07-28, Caching, "Cache Key").
+	useCache := cs.usesNewProtocol() && !isMultiRoundTripRetry(params)
+	if useCache {
 		var uri string
 		if params != nil {
 			uri = params.URI
@@ -1394,16 +1400,27 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 		if result, ok := cs.readResourceCache.get(uri); ok {
 			return result, nil
 		}
+	}
+	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	if cs.usesNewProtocol() {
+	// A result the middleware obtained by retrying is excluded for the same
+	// reason, and an input-required result is an interim one that the
+	// specification declares not cacheable.
+	if useCache && !result.retried && !result.NeedsInput() {
 		cs.readResourceCache.put(params.URI, result)
 	}
 	return result, nil
+}
+
+// isMultiRoundTripRetry reports whether params carry the input responses or
+// request state of a multi round-trip retry. A nil params is a plain read.
+func isMultiRoundTripRetry(params *ReadResourceParams) bool {
+	return params != nil && (params.InputResponses != nil || params.RequestState != "")
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {

@@ -2445,6 +2445,26 @@ func TestServerHandle_LegacyCallBeforeInitialize(t *testing.T) {
 			if want := fmt.Sprintf("method %q is invalid during session initialization", tc.method); err.Error() != want {
 				t.Errorf("handle(%q) error = %q, want %q", tc.method, err.Error(), want)
 			}
+			var rpcErr *jsonrpc.Error
+			if !errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidRequest {
+				t.Errorf("handle(%q) error = %#v, want a JSON-RPC error with code %d", tc.method, err, jsonrpc.CodeInvalidRequest)
+			}
+			// MCPGODEBUG=nopreinitinvalidrequest=1 restores the old code, 0.
+			func() {
+				defer func(old string) { nopreinitinvalidrequest = old }(nopreinitinvalidrequest)
+				nopreinitinvalidrequest = "1"
+				_, err := ss.handle(ctx, &jsonrpc.Request{
+					ID:     jsonrpc2.Int64ID(2),
+					Method: tc.method,
+					Params: json.RawMessage(tc.params),
+				})
+				if err == nil {
+					t.Fatalf("handle(%q), old error code restored, served the call before initialize", tc.method)
+				}
+				if errors.As(err, &rpcErr) {
+					t.Errorf("handle(%q), old error code restored, error = %#v, want a plain error (code 0 on the wire)", tc.method, err)
+				}
+			}()
 			if handlerRan {
 				t.Errorf("handle(%q) ran the server's handler for a call it refused", tc.method)
 			}
