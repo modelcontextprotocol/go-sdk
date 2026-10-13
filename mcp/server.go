@@ -2010,6 +2010,14 @@ func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 // getConn implements [session.getConn].
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 
+// nopreinitinvalidrequest is a compatibility parameter that restores the
+// previous behavior of a legacy server session that has not been initialized,
+// where a request other than initialize or ping was refused with JSON-RPC
+// error code 0 instead of -32600 (Invalid Request). See the documentation for
+// the mcpgodebug package for instructions how to enable it. The option will be
+// removed in a future version of the SDK.
+var nopreinitinvalidrequest = mcpgodebug.Value("nopreinitinvalidrequest")
+
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
@@ -2076,7 +2084,11 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
 		req.Method != methodInitialize && req.Method != methodPing {
 		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		err := fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		if nopreinitinvalidrequest == "1" {
+			return nil, err
+		}
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: err.Error()}
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and

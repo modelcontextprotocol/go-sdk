@@ -54,9 +54,8 @@ func TestScanEvents(t *testing.T) {
 			},
 		},
 		{
-			name:    "malformed line",
-			input:   "invalid line\n\n",
-			wantErr: "malformed line",
+			name:  "line without a colon is an ignored field",
+			input: "invalid line\n\n",
 		},
 		{
 			name:  "message with 2 data lines and another event",
@@ -125,10 +124,15 @@ func TestScanEvents(t *testing.T) {
 			},
 		},
 		{
-
-			name:    "malformed data event",
-			input:   "someline",
-			wantErr: "malformed event",
+			name:  "line without a colon at EOF is an ignored field",
+			input: "someline",
+		},
+		{
+			name:  "bare data line adds an empty data line",
+			input: "data: hello\ndata\n\n",
+			want: []Event{
+				{Data: []byte("hello\n")},
+			},
 		},
 	}
 
