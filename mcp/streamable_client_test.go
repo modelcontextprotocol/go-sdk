@@ -2027,3 +2027,55 @@ func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
 	}
 	waitUntil(t, 5*time.Second, "subscriptions/listen to be called", listenServed.Load)
 }
+
+// TestStreamableClientConnect_ColonlessSSELine verifies that a line without a
+// colon in an SSE response does not tear down the session. The SSE parsing
+// rules define such a line as a field name with an empty value, so an unknown
+// field is ignored and a bare "data" line contributes an empty data line.
+func TestStreamableClientConnect_ColonlessSSELine(t *testing.T) {
+	ctx := context.Background()
+
+	for _, extra := range []string{"heartbeat\n", "data\n", ": keepalive\n"} {
+		t.Run(strings.TrimRight(extra, "\n"), func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "text/event-stream",
+							sessionIDHeader: "test-session",
+						},
+						body: extra + "data: " + jsonBody(t, initResp) + "\n\n",
+					},
+					{"POST", "test-session", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"GET", "test-session", "", ""}: {
+						// Disable the standalone SSE stream to simplify the test.
+						status: http.StatusMethodNotAllowed,
+					},
+					{"DELETE", "test-session", "", ""}: {optional: true},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			session, err := NewClient(testImpl, nil).Connect(ctx,
+				&StreamableClientTransport{Endpoint: httpServer.URL},
+				&ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatalf("Connect with a %q line: %v", extra, err)
+			}
+			defer session.Close()
+
+			if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+				t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20251125)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("missing requests: %v", missing)
+			}
+		})
+	}
+}
