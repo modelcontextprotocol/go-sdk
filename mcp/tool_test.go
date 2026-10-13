@@ -225,6 +225,53 @@ func TestToolErrorHandling(t *testing.T) {
 	})
 }
 
+func TestToolErrorResultOmitsOutput(t *testing.T) {
+	type out struct {
+		Status string `json:"status"`
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{
+		Name: "failing",
+		OutputSchema: &jsonschema.Schema{
+			Type:       "object",
+			Required:   []string{"status"},
+			Properties: map[string]*jsonschema.Schema{"status": {Type: "string", Enum: []any{"ok"}}},
+		},
+	}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, out, error) {
+		return &CallToolResult{
+			IsError: true,
+			Content: []Content{&TextContent{Text: "no such item"}},
+		}, out{}, nil
+	})
+
+	ct, st := NewInMemoryTransports()
+	if _, err := server.Connect(context.Background(), st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := NewClient(testImpl, nil).Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.CallTool(context.Background(), &CallToolParams{Name: "failing", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Error("IsError = false, want true")
+	}
+	if res.StructuredContent != nil {
+		t.Errorf("StructuredContent = %v, want nil", res.StructuredContent)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("got %d content blocks, want 1", len(res.Content))
+	}
+	if tc, ok := res.Content[0].(*TextContent); !ok || tc.Text != "no such item" {
+		t.Errorf("Content[0] = %v, want the handler's error text", res.Content[0])
+	}
+}
+
 func TestValidateToolName(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		validTests := []struct {
