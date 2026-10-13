@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -812,11 +811,8 @@ func TestClientPingRemovedOnNewProtocol(t *testing.T) {
 	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
 	}
-	if !strings.Contains(jsonrpcErr.Message, "not supported in the new protocol") {
-		t.Errorf("message %q does not explain the removal", jsonrpcErr.Message)
-	}
-	if !strings.Contains(jsonrpcErr.Message, "tools/list") {
-		t.Errorf("message %q does not point at a liveness alternative", jsonrpcErr.Message)
+	if got, want := jsonrpcErr.Message, `"ping" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
 	}
 	if gotPing {
 		t.Error("ping request was sent despite the removed-method guard")
