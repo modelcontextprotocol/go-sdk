@@ -443,8 +443,10 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		// Marshal the output and put the RawMessage in the StructuredContent field.
 		// Skip when the handler asked for input (multi round-trip): content and
 		// an input-required result are mutually exclusive on the wire.
+		// Skip for an error result too: out is not a tool result then, and
+		// its zero value may not satisfy the output schema.
 		var outval any = out
-		if asksForInput(res) {
+		if asksForInput(res) || res.IsError {
 			outval = nil
 		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.

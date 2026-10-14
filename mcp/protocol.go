@@ -105,7 +105,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	var rawMap map[string]*raw
+	var rawMap map[string]raw
 	if err := json.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
