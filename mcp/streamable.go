@@ -1619,6 +1619,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 	// logic.
 	incoming, isBatch, err := readBatch(body)
 	if err != nil {
+		if !isBatch && errors.Is(err, jsonrpc2.ErrInvalidRequest) {
+			writeJSONRPCError(w, http.StatusBadRequest, jsonrpc.ID{}, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInvalidRequest,
+				Message: err.Error(),
+			})
+			return
+		}
 		http.Error(w, fmt.Sprintf("malformed payload: %v", err), http.StatusBadRequest)
 		return
 	}

@@ -692,59 +692,71 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 		return next, nil
 	}
 
-	var raw json.RawMessage
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	for {
+		var raw json.RawMessage
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 
-	case v := <-t.incoming:
-		if v.err != nil {
-			return nil, v.err
+		case v := <-t.incoming:
+			if v.err != nil {
+				return nil, v.err
+			}
+			raw = v.msg
+
+		case <-t.closed:
+			return nil, io.EOF
 		}
-		raw = v.msg
 
-	case <-t.closed:
-		return nil, io.EOF
-	}
+		msgs, batch, err := readBatch(raw)
+		if err != nil {
+			if !batch && errors.Is(err, jsonrpc2.ErrInvalidRequest) {
+				errResp := &jsonrpc.Response{
+					ID:    jsonrpc.ID{},
+					Error: jsonrpc2.ErrInvalidRequest,
+				}
+				if writeErr := t.Write(ctx, errResp); writeErr != nil {
+					return nil, writeErr
+				}
+				continue
+			}
+			return nil, err
+		}
+		var protocolVersion string
+		t.sessionMu.Lock()
+		protocolVersion = t.protocolVersion
+		t.sessionMu.Unlock()
+		if batch && protocolVersion >= protocolVersion20250618 {
+			return nil, fmt.Errorf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion)
+		}
 
-	msgs, batch, err := readBatch(raw)
-	if err != nil {
-		return nil, err
-	}
-	var protocolVersion string
-	t.sessionMu.Lock()
-	protocolVersion = t.protocolVersion
-	t.sessionMu.Unlock()
-	if batch && protocolVersion >= protocolVersion20250618 {
-		return nil, fmt.Errorf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion)
-	}
+		t.queue = msgs[1:]
 
-	t.queue = msgs[1:]
-
-	if batch {
-		var respBatch *msgBatch // track incoming requests in the batch
-		for _, msg := range msgs {
-			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
-				if respBatch == nil {
-					respBatch = &msgBatch{
-						unresolved: make(map[jsonrpc2.ID]int),
+		if batch {
+			var respBatch *msgBatch // track incoming requests in the batch
+			for _, msg := range msgs {
+				if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
+					if respBatch == nil {
+						respBatch = &msgBatch{
+							unresolved: make(map[jsonrpc2.ID]int),
+						}
 					}
+					if _, ok := respBatch.unresolved[req.ID]; ok {
+						return nil, fmt.Errorf("duplicate message ID %q", req.ID)
+					}
+					respBatch.unresolved[req.ID] = len(respBatch.responses)
+					respBatch.responses = append(respBatch.responses, nil)
 				}
-				if _, ok := respBatch.unresolved[req.ID]; ok {
-					return nil, fmt.Errorf("duplicate message ID %q", req.ID)
+			}
+			if respBatch != nil {
+				// The batch contains one or more incoming requests to track.
+				if err := t.addBatch(respBatch); err != nil {
+					return nil, err
 				}
-				respBatch.unresolved[req.ID] = len(respBatch.responses)
-				respBatch.responses = append(respBatch.responses, nil)
 			}
 		}
-		if respBatch != nil {
-			// The batch contains one or more incoming requests to track.
-			if err := t.addBatch(respBatch); err != nil {
-				return nil, err
-			}
-		}
+		return msgs[0], nil
 	}
-	return msgs[0], err
 }
 
 // readBatch reads batch data, which may be either a single JSON-RPC message,

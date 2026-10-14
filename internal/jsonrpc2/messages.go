@@ -36,7 +36,7 @@ func MakeID(v any) (ID, error) {
 	case string:
 		return StringID(v), nil
 	}
-	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
+	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrInvalidRequest, v)
 }
 
 // Message is the interface to all jsonrpc2 message types.
@@ -121,7 +121,11 @@ func NewResponse(id ID, result any, rerr error) (*Response, error) {
 }
 
 func (msg *Response) marshal(to *wireCombined) {
-	to.ID = msg.ID.value
+	if msg.ID.value == nil {
+		to.ID = json.RawMessage("null")
+	} else {
+		to.ID = msg.ID.value
+	}
 	to.Error = toWireError(msg.Error)
 	to.Result = msg.Result
 }
