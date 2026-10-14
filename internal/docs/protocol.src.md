@@ -607,6 +607,13 @@ When an RPC exits due to a cancellation error, there's a guarantee that the
 cancellation notification has been sent, but there's no guarantee that the
 server has observed it (see [concurrency](#concurrency)).
 
+On a session using protocol version 2026-07-28 or later over a stdio-style
+transport (`StdioTransport`, `CommandTransport`, `IOTransport` or
+`InMemoryTransport`), a server that receives a cancellation notification sends
+no response for the cancelled request, as the spec requires. Over the
+streamable HTTP transport, a 2026-07-28 request is cancelled by closing its
+HTTP request instead (see `StreamableHTTPOptions.PropagateRequestCancellation`).
+
 %include ../../mcp/mcp_example_test.go cancellation -
 
 ### Ping
