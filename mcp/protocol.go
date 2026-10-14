@@ -2490,8 +2490,8 @@ const (
 type UnsupportedProtocolVersionData struct {
 	// Supported is the list of protocol versions the server supports.
 	Supported []string `json:"supported"`
-	// Requested is the protocol version the client asked for.
-	Requested string `json:"requested"`
+	// Requested is the protocol version the client asked for, if known.
+	Requested string `json:"requested,omitempty"`
 }
 
 // MissingRequiredClientCapabilityData is the SEP-2575 payload carried in the
