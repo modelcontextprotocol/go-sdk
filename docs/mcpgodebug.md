@@ -34,6 +34,21 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   behavior was changed to reject such requests with `-32602` (Invalid Params),
   as the specification asks.
 
+- `allowmissingclientparams` added. If set to `1`, a `Client` accepts
+  `elicitation/create`, `notifications/elicitation/complete` and
+  `notifications/resources/updated` messages whose `params` member is missing
+  or `null`, restoring the previous behavior (the handler then observes nil
+  params, which crashed the built-in elicitation handlers). The default
+  behavior was changed to reject such messages as invalid requests, as the
+  specification lists `params` as required for all three.
+
+- `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
+  has not been initialized refuses a request other than `initialize` or `ping`
+  with JSON-RPC error code `0`, restoring the previous behavior. The default
+  behavior was changed to refuse it with `-32600` (Invalid Request): `0`
+  tells a client nothing and is indistinguishable from an unset code. See
+  issue #1367.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

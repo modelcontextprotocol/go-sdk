@@ -44,6 +44,8 @@ func TestApplySchema(t *testing.T) {
 		{`{"x": 1}`, new(map[string]any), &map[string]any{"x": 1.0}},
 		{`{}`, new(map[string]any), &map[string]any{"x": 3.0}}, // default applied
 		{`{"x": 0}`, new(map[string]any), &map[string]any{"x": 0.0}},
+		{`null`, new(S), &S{X: 3}},                               // default applied
+		{`null`, new(map[string]any), &map[string]any{"x": 3.0}}, // default applied
 	} {
 		raw := json.RawMessage(tt.data)
 		raw, err = applySchema(raw, resolved, false)
@@ -221,6 +223,53 @@ func TestToolErrorHandling(t *testing.T) {
 			t.Errorf("expected error message in content, got: %s", textContent.Text)
 		}
 	})
+}
+
+func TestToolErrorResultOmitsOutput(t *testing.T) {
+	type out struct {
+		Status string `json:"status"`
+	}
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{
+		Name: "failing",
+		OutputSchema: &jsonschema.Schema{
+			Type:       "object",
+			Required:   []string{"status"},
+			Properties: map[string]*jsonschema.Schema{"status": {Type: "string", Enum: []any{"ok"}}},
+		},
+	}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, out, error) {
+		return &CallToolResult{
+			IsError: true,
+			Content: []Content{&TextContent{Text: "no such item"}},
+		}, out{}, nil
+	})
+
+	ct, st := NewInMemoryTransports()
+	if _, err := server.Connect(context.Background(), st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := NewClient(testImpl, nil).Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.CallTool(context.Background(), &CallToolParams{Name: "failing", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Error("IsError = false, want true")
+	}
+	if res.StructuredContent != nil {
+		t.Errorf("StructuredContent = %v, want nil", res.StructuredContent)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("got %d content blocks, want 1", len(res.Content))
+	}
+	if tc, ok := res.Content[0].(*TextContent); !ok || tc.Text != "no such item" {
+		t.Errorf("Content[0] = %v, want the handler's error text", res.Content[0])
+	}
 }
 
 func TestValidateToolName(t *testing.T) {

@@ -158,12 +158,8 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
-	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
-	} else {
-		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
-			return nil, err
-		}
+	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
+		return nil, err
 	}
 	return res, nil
 }

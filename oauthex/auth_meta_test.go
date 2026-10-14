@@ -37,6 +37,7 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 	tests := []struct {
 		name                    string
 		hasPKCESupport          bool
+		pkceMethods             []string // overrides the default ["S256"] when set
 		wantError               string
 		issuerWithTrailingSlash bool
 	}{
@@ -48,6 +49,19 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			name:           "server_without_pkce_support",
 			hasPKCESupport: false,
 			wantError:      "does not implement PKCE",
+		},
+		{
+			// The client always sends an S256 code challenge, so a server
+			// that offers only plain cannot complete the flow.
+			name:           "server_with_only_plain_pkce",
+			hasPKCESupport: true,
+			pkceMethods:    []string{"plain"},
+			wantError:      "does not support the S256 PKCE method",
+		},
+		{
+			name:           "server_with_plain_and_s256_pkce",
+			hasPKCESupport: true,
+			pkceMethods:    []string{"plain", "S256"},
 		},
 		{
 			// ProtectedResourceMetadata may contain AuthorizationServers with a trailing slash (see Issue #953)
@@ -79,6 +93,9 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 				// Add PKCE support based on test case
 				if tt.hasPKCESupport {
 					metadata.CodeChallengeMethodsSupported = []string{"S256"}
+					if tt.pkceMethods != nil {
+						metadata.CodeChallengeMethodsSupported = tt.pkceMethods
+					}
 				}
 				// If hasPKCESupport is false, CodeChallengeMethodsSupported remains empty
 

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -55,6 +56,7 @@ func TestMain(m *testing.M) {
 var serverFuncs = map[string]func(){
 	"default":       runServer,
 	"cancelContext": runCancelContextServer,
+	"largeFrame":    runLargeFrameServer,
 }
 
 func runServer() {
@@ -65,6 +67,11 @@ func runServer() {
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runLargeFrameServer() {
+	_, _ = os.Stdout.WriteString("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"pad\":\"" +
+		strings.Repeat("A", 128<<10) + "\"}}\n")
 }
 
 func runCancelContextServer() {
@@ -226,6 +233,31 @@ func TestCmdTransport(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("closing server: %v", err)
+	}
+}
+
+func TestCommandTransportMaxLineLength(t *testing.T) {
+	requireExec(t)
+
+	transport := &mcp.CommandTransport{
+		Command:       createServerCommand(t, "largeFrame"),
+		MaxLineLength: 64 << 10,
+	}
+	conn, err := transport.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if transport.Command.Process != nil {
+			_ = transport.Command.Process.Kill()
+		}
+		_ = conn.Close()
+	})
+
+	_, err = conn.Read(t.Context())
+	const want = "inbound JSON-RPC frame exceeded the configured maximum line length"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Read() error = %v, want error containing %q", err, want)
 	}
 }
 

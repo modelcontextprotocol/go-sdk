@@ -272,7 +272,9 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		// travels as the cause of the request's context rather than being
 		// dropped here.
 		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
-		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
+		// Resolve the active request before the read loop can admit another
+		// invocation with the same ID. A deferred lookup could cancel that one.
+		c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
@@ -294,24 +296,6 @@ func (e *peerCancelledError) Error() string {
 
 func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
-//
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
-	call := conn.Call(ctx, method, params)
-
-	go func() {
-		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
-	}()
-}
-
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
@@ -319,6 +303,12 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
+	case err == nil:
+		// The response arrived and decoded. It is returned even if ctx has
+		// been cancelled in the meantime: the request is complete, so there
+		// is nothing to cancel, and the spec permits notifications/cancelled
+		// only for requests believed to still be in progress.
+		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:

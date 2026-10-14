@@ -49,7 +49,7 @@ func annotateResultType(res Result) {
 	case multiRoundTripResponse:
 		// These results are complete or input_required, so label them by
 		// whether the handler asked for more client input.
-		if r.inputRequests() != nil {
+		if asksForInput(r) {
 			r.setResultType(resultTypeInputRequired)
 		} else {
 			r.setResultType(resultTypeComplete)
@@ -59,7 +59,7 @@ func annotateResultType(res Result) {
 
 // InputRequest is a type for parameters that a server can include in the response
 // to request input from client (SEP-2322). Implementations are [*ElicitParams],
-// [*CreateMessageParams], and [*ListRootsParams].
+// [*CreateMessageParams], [*CreateMessageWithToolsParams], and [*ListRootsParams].
 type InputRequest interface{ isInputRequest() }
 
 // InputRequestMap maps server-assigned request IDs to [InputRequest] values.
@@ -105,7 +105,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	var rawMap map[string]*raw
+	var rawMap map[string]raw
 	if err := json.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 
 // InputResponse is a type for results that a client sends back when fulfilling
 // a server input request (SEP-2322). Implementations are [*ElicitResult],
-// [*CreateMessageResult], and [*ListRootsResult].
+// [*CreateMessageResult], [*CreateMessageWithToolsResult], and [*ListRootsResult].
 type InputResponse interface{ isInputResponse() }
 
 // InputResponseMap maps request IDs (from [InputRequestMap]) to [InputResponse]
@@ -223,7 +223,65 @@ type Annotations struct {
 	// A value of 1 means "most important," and indicates that the data is
 	// effectively required, while 0 means "least important," and indicates that the
 	// data is entirely optional.
+	//
+	// A zero Priority assigned directly is treated as unset and omitted when
+	// marshaling. To send an explicit priority of 0, use [Annotations.SetPriority].
+	// A priority received on the wire, including 0, is preserved when the
+	// annotations are marshaled again.
 	Priority float64 `json:"priority,omitempty"`
+
+	hasPriority bool // set by UnmarshalJSON or SetPriority
+}
+
+// SetPriority sets the priority and marks it as explicitly present, so that a
+// priority of 0 (least important) is not omitted when marshaling.
+func (a *Annotations) SetPriority(p float64) {
+	a.Priority = p
+	a.hasPriority = true
+}
+
+// HasPriority reports whether a priority was explicitly set with
+// [Annotations.SetPriority], received on the wire, or assigned a non-zero value.
+func (a *Annotations) HasPriority() bool {
+	return a.hasPriority || a.Priority != 0
+}
+
+// UnmarshalJSON implements [json.Unmarshaler] for Annotations. It records
+// whether priority was present, so that an explicit 0 survives a round trip.
+func (a *Annotations) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	var w wire
+	if err := internaljson.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*a = Annotations{Audience: w.Audience, LastModified: w.LastModified}
+	if w.Priority != nil {
+		a.SetPriority(*w.Priority)
+	}
+	return nil
+}
+
+// MarshalJSON implements [json.Marshaler] for Annotations. It emits priority
+// whenever [Annotations.HasPriority] reports true, including a priority of 0.
+func (a Annotations) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Audience     []Role   `json:"audience,omitempty"`
+		LastModified string   `json:"lastModified,omitempty"`
+		Priority     *float64 `json:"priority,omitempty"`
+	}
+	w := wire{
+		Audience:     a.Audience,
+		LastModified: a.LastModified,
+	}
+	if a.HasPriority() {
+		p := a.Priority
+		w.Priority = &p
+	}
+	return json.Marshal(w)
 }
 
 // CallToolParams is used by clients to call a tool.
@@ -1647,12 +1705,17 @@ type ReadResourceResult struct {
 	// resultType records whether the call finished or needs more client input.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
+	// retried records that the client middleware produced this result by
+	// retrying the request with input responses. Such a result depends on
+	// inputs that are not part of the cache key, so it must not be cached.
+	retried bool
 }
 
 func (*ReadResourceResult) isResult()     {}
 func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) markRetried()                { r.retried = true }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
 	if r == nil {

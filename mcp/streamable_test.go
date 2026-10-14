@@ -1291,6 +1291,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc.Error{
+						Code:    jsonrpc.CodeInvalidRequest,
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
 				},
@@ -3061,6 +3062,13 @@ func TestStreamableLocalhostProtection(t *testing.T) {
 			name:              "127.0.0.1 accepts localhost",
 			listenAddr:        "127.0.0.1:0",
 			hostHeader:        "localhost:1234",
+			disableProtection: false,
+			wantStatus:        http.StatusOK,
+		},
+		{
+			name:              "127.0.0.1 accepts localhost in any case",
+			listenAddr:        "127.0.0.1:0",
+			hostHeader:        "LocalHost:1234",
 			disableProtection: false,
 			wantStatus:        http.StatusOK,
 		},

@@ -151,7 +151,7 @@ func NewLoggingHandler(ss *ServerSession, opts *LoggingHandlerOptions) *LoggingH
 
 // Enabled implements [slog.Handler.Enabled] by comparing level to the [ServerSession]'s level.
 func (h *LoggingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	// This is also checked in ServerSession.LoggingMessage, so checking it here
+	// This is also checked in ServerSession.Log, so checking it here
 	// is just an optimization that skips building the JSON.
 	if mcpLevel, ok := logLevelFromContext(ctx); ok {
 		return mcpLevel != "" && level >= mcpLevelToSlog(mcpLevel)
@@ -177,7 +177,7 @@ func (h *LoggingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Handle implements [slog.Handler.Handle] by writing the Record to a JSONHandler,
-// then calling [ServerSession.LoggingMessage] with the result.
+// then calling [ServerSession.Log] with the result.
 func (h *LoggingHandler) Handle(ctx context.Context, r slog.Record) error {
 	err := h.handle(ctx, r)
 	// TODO(jba): find a way to surface the error.

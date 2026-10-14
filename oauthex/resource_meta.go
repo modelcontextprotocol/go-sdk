@@ -178,16 +178,22 @@ func ParseWWWAuthenticate(headers []string) ([]Challenge, error) {
 func splitChallenges(header string) ([]string, error) {
 	var challenges []string
 	inQuotes := false
+	escaped := false
 	start := 0
 	for i, r := range header {
-		if r == '"' {
-			if i > 0 && header[i-1] != '\\' {
-				inQuotes = !inQuotes
-			} else if i == 0 {
+		if escaped {
+			// The previous backslash began a quoted-pair, so this character is
+			// literal, even if it is a quote or another backslash.
+			escaped = false
+		} else if r == '\\' && inQuotes {
+			escaped = true
+		} else if r == '"' {
+			if i == 0 {
 				// A challenge begins with an auth-scheme, which is a token, which cannot contain
 				// a quote.
 				return nil, errors.New(`challenge begins with '"'`)
 			}
+			inQuotes = !inQuotes
 		} else if r == ',' && !inQuotes {
 			// This is a potential challenge separator.
 			// A new challenge does not start with `key=value`.
@@ -198,7 +204,8 @@ func splitChallenges(header string) ([]string, error) {
 			isParam := false
 			if eqPos > 0 {
 				// Check if the part before '=' is a single token (no spaces).
-				token := lookahead[:eqPos]
+				// Whitespace between the token and '=' is allowed (BWS, RFC 9110 section 11.2).
+				token := strings.TrimRight(lookahead[:eqPos], " \t")
 				if strings.IndexFunc(token, unicode.IsSpace) == -1 {
 					isParam = true
 				}
@@ -282,9 +289,11 @@ func parseSingleChallenge(s string) (Challenge, error) {
 				value = strings.TrimSpace(paramsStr[:commaPos])
 				paramsStr = strings.TrimSpace(paramsStr[commaPos:]) // Keep comma for next check
 			}
-		}
-		if value == "" {
-			return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			// A token is one or more characters. A quoted string may be empty
+			// (RFC 9110, section 5.6.4), so only an unquoted value is checked here.
+			if value == "" {
+				return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			}
 		}
 
 		// Per RFC 9110, parameter keys are case-insensitive.
