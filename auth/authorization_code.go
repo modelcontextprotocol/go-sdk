@@ -402,14 +402,23 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from the given "WWW-Authenticate" header challenges,
-// or the empty string if there is none.
+// preferring a "Bearer" challenge and otherwise the first other scheme that carries one. It returns the empty string if
+// there is none.
 func resourceMetadataURLFromChallenges(cs []oauthex.Challenge) string {
+	var fallback string
 	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; u != "" {
+		u := c.Params["resource_metadata"]
+		if u == "" {
+			continue
+		}
+		if strings.EqualFold(c.Scheme, "Bearer") {
 			return u
 		}
+		if fallback == "" {
+			fallback = u
+		}
 	}
-	return ""
+	return fallback
 }
 
 // scopesFromChallenges returns the scopes from the given "WWW-Authenticate" header challenges.
