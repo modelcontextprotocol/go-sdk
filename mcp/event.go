@@ -100,6 +100,9 @@ func scanEventsLimited(r io.Reader, maxEventSize int) iter.Seq2[Event, error] {
 		//  - Unrecognized fields are ignored. Since we only care about 'event', 'id', and
 		//   'data', these are the only three we consider.
 		//  - Lines starting with ":" are ignored.
+		//  - A line without a ":" is a field name with an empty value, so an
+		//   unknown such line is ignored and a bare `data` line adds an empty
+		//   data line.
 		//  - Records are terminated with two consecutive newlines.
 		var (
 			evt        Event
@@ -148,10 +151,12 @@ func scanEventsLimited(r io.Reader, maxEventSize int) iter.Seq2[Event, error] {
 				}
 				continue
 			}
-			before, after, found := bytes.Cut(line, []byte{':'})
-			if !found {
-				yield(Event{}, fmt.Errorf("%w: malformed line in SSE stream: %q", errMalformedEvent, string(line)))
-				return
+			// A line with no colon is a field name with an empty value, per the SSE
+			// parsing rules:
+			// https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+			before, after := line, []byte(nil)
+			if b, a, found := bytes.Cut(line, []byte{':'}); found {
+				before, after = b, a
 			}
 			switch {
 			case bytes.Equal(before, eventKey):

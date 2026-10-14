@@ -104,9 +104,10 @@ func computeURIFilepath(rawURI, dirFilepath string, rootFilepaths []string) (str
 	}
 	// The URI's path is interpreted relative to dirFilepath, and in the local filesystem.
 	// It must not try to escape its directory.
-	uriFilepathRel, err := filepath.Localize(strings.TrimPrefix(uri.Path, "/"))
+	relPath := strings.TrimPrefix(uri.Path, "/")
+	uriFilepathRel, err := filepath.Localize(relPath)
 	if err != nil {
-		return "", fmt.Errorf("%q cannot be localized: %w", uriFilepathRel, err)
+		return "", fmt.Errorf("%q cannot be localized: %w", relPath, err)
 	}
 
 	// Check roots, if there are any.
