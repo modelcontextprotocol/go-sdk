@@ -260,7 +260,8 @@ type canceller struct {
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
+		// UseNumber keeps a numeric requestId exact, as in jsonrpc2.DecodeMessage.
+		if err := internaljson.UnmarshalUseNumber(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)

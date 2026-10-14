@@ -19,8 +19,10 @@ type ID struct {
 	value any
 }
 
-// MakeID coerces the given Go value to an ID. The value should be the
-// default JSON marshaling of a Request identifier: nil, float64, or string.
+// MakeID coerces the given Go value to an ID. The value should be the JSON
+// decoding of a Request identifier: nil, float64, json.Number, or string.
+// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
+// must be an integer literal in the int64 range.
 //
 // Returns an error if the value type was not a valid Request ID type.
 //
@@ -33,6 +35,14 @@ func MakeID(v any) (ID, error) {
 		return ID{}, nil
 	case float64:
 		return Int64ID(int64(v)), nil
+	case json.Number:
+		// MCP requires integer IDs, and encoders write them as plain integer
+		// literals; a fraction or exponent only comes from a float-typed ID.
+		i, err := v.Int64()
+		if err != nil {
+			return ID{}, fmt.Errorf("%w: numeric ID is not an int64 integer", ErrParse)
+		}
+		return Int64ID(i), nil
 	case string:
 		return StringID(v), nil
 	}
@@ -185,7 +195,9 @@ type wireDecode struct {
 
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireDecode{}
-	if err := internaljson.Unmarshal(data, &msg); err != nil {
+	// UseNumber keeps a numeric ID exact (see MakeID). The other fields are
+	// raw or typed, so it affects nothing else.
+	if err := internaljson.UnmarshalUseNumber(data, &msg); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
 	if msg.VersionTag != wireVersion {
