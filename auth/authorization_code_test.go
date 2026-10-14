@@ -1606,3 +1606,89 @@ func TestInitialTokenSource(t *testing.T) {
 		t.Errorf("expected access token 'set_token', got '%s'", tok.AccessToken)
 	}
 }
+
+// TestAuthorize_ResourceParameterUsesRequestedResource pins Option A: when the
+// protected-resource metadata advertises an ancestor identifier (an origin, as
+// Otter does) for a path-bearing endpoint, the RFC 8707 resource parameter
+// still carries the client-requested endpoint, not the broader metadata value.
+func TestAuthorize_ResourceParameterUsesRequestedResource(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+
+	requestedURL := resourceServer.URL + "/mcp"
+	// The Otter shape: the metadata declares the origin, not the endpoint.
+	resourceMux.Handle("/.well-known/oauth-protected-resource/mcp", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceServer.URL + "/",
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	var gotResourceParam string
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID: "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: "test_client_secret",
+			},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			u, err := url.Parse(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse auth URL: %v", err)
+			}
+			gotResourceParam = u.Query().Get("resource")
+			// The fake authorization server will redirect to an URL with code and state.
+			client := &http.Client{
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, requestedURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/mcp")
+
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+	if gotResourceParam != requestedURL {
+		t.Errorf("resource parameter = %q, want requested endpoint %q", gotResourceParam, requestedURL)
+	}
+}

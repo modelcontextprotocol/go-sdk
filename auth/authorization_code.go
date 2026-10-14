@@ -318,7 +318,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return nil
 	}
 
-	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, req.URL.String())
+	// requestedResourceURL is the resource this client actually connects to.
+	// PRM discovery may accept an ancestor identifier (for example the origin)
+	// for this URL; that matching tolerance must not widen the RFC 8707 token
+	// audience, so the resource parameter always uses the requested URL.
+	requestedResourceURL := req.URL.String()
+	prm, err := h.getProtectedResourceMetadata(ctx, wwwChallenges, requestedResourceURL)
 	if err != nil {
 		return err
 	}
@@ -384,7 +389,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		Scopes:      requestedScopes,
 	}
 
-	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
+	authRes, err := h.getAuthorizationCode(ctx, cfg, requestedResourceURL)
 	if err != nil {
 		// Purposefully leaving the error unwrappable so it can be handled by the caller.
 		return err
@@ -393,7 +398,7 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		return err
 	}
 
-	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, prm.Resource)
+	err = h.exchangeAuthorizationCode(ctx, cfg, authRes, requestedResourceURL)
 	if err != nil {
 		return err
 	}

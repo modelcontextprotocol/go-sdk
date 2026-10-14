@@ -24,6 +24,7 @@ func TestResourceMatches(t *testing.T) {
 		{"child path", otterEndpoint, "https://mcp.otter.ai/mcp/tools", false},
 		{"sibling path", otterEndpoint, "https://mcp.otter.ai/other", false},
 		{"segment boundary", "https://mcp.otter.ai/api", "https://mcp.otter.ai/api123", false},
+		{"endpoint with trailing slash is not a parent", "https://h.example/mcp", "https://h.example/mcp/", false},
 
 		{"different host", otterEndpoint, "https://evil.example/", false},
 		{"host substring", otterEndpoint, "https://mcp.otter.ai.evil.example/", false},
