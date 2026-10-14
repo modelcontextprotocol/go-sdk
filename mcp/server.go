@@ -443,8 +443,10 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		// Marshal the output and put the RawMessage in the StructuredContent field.
 		// Skip when the handler asked for input (multi round-trip): content and
 		// an input-required result are mutually exclusive on the wire.
+		// Skip for an error result too: out is not a tool result then, and
+		// its zero value may not satisfy the output schema.
 		var outval any = out
-		if asksForInput(res) {
+		if asksForInput(res) || res.IsError {
 			outval = nil
 		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
@@ -2042,6 +2044,22 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, &jsonrpc.Error{
 			Code:    CodeUnsupportedProtocolVersion,
 			Message: "unsupported protocol version",
+			Data:    data,
+		}
+	}
+
+	// A server that supports only 2026-07-28 and later serves no legacy call,
+	// initialize included.
+	if !validatedMeta.usesNewProtocol && req.IsCall() &&
+		!slices.ContainsFunc(ss.server.protocolVersions, func(v string) bool {
+			return v < protocolVersion20260728
+		}) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: ss.server.protocolVersions,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "legacy protocol version requests are not supported by this server",
 			Data:    data,
 		}
 	}

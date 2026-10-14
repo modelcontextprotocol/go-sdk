@@ -2129,16 +2129,6 @@ func TestServerSupportedProtocolVersions(t *testing.T) {
 				want:      protocolVersion20250326,
 			},
 			{
-				// Nothing the server supports can carry an initialize
-				// handshake, so the answer names a handshake-era version the
-				// client can act on rather than one it could mistake for the
-				// new protocol.
-				name:      "server with no handshake version",
-				supported: []string{protocolVersion20260728},
-				client:    protocolVersion20250618,
-				want:      protocolVersion20251125,
-			},
-			{
 				name:      "unrestricted server keeps the default behavior",
 				supported: nil,
 				client:    protocolVersion20241105,
@@ -2220,7 +2210,93 @@ func TestServerSupportedProtocolVersions_NewProtocol(t *testing.T) {
 	}
 }
 
-// TestNotifySessionsIsolatesStalledPeer verifies that a session whose write
+// TestServerSupportedProtocolVersions_InitializeLegacy verifies that a legacy
+// initialize request is rejected with [CodeUnsupportedProtocolVersion], naming
+// the supported versions, when [ServerOptions.SupportedProtocolVersions]
+// leaves the server no version that has an initialize handshake.
+func TestServerSupportedProtocolVersions_InitializeLegacy(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20260728},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	_ = ct
+
+	params, err := json.Marshal(&InitializeParams{
+		ProtocolVersion: protocolVersion20251125,
+		Capabilities:    &ClientCapabilities{},
+		ClientInfo:      &Implementation{Name: "test", Version: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodInitialize,
+		Params: json.RawMessage(params),
+	})
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
+	}
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
+		t.Fatalf("unmarshal error data: %v", err)
+	}
+	if diff := cmp.Diff([]string{protocolVersion20260728}, data.Supported); diff != "" {
+		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+	if ss.InitializeParams() != nil {
+		t.Errorf("session initialized after a rejected initialize: %+v", ss.InitializeParams())
+	}
+}
+
+// TestServerSupportedProtocolVersions_LegacyDispatch verifies that a legacy
+// request (no _meta) is rejected with [CodeUnsupportedProtocolVersion] when
+// the server only supports protocol versions >= 2026-07-28 via
+// [ServerOptions.SupportedProtocolVersions].
+func TestServerSupportedProtocolVersions_LegacyDispatch(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20260728},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	_ = ct
+
+	_, err = ss.handle(ctx, &jsonrpc.Request{
+		ID:     jsonrpc2.Int64ID(1),
+		Method: methodListTools,
+		Params: json.RawMessage(`{}`),
+	})
+	var jerr *jsonrpc.Error
+	if !errors.As(err, &jerr) {
+		t.Fatalf("handle returned %v, want a *jsonrpc.Error", err)
+	}
+	if jerr.Code != CodeUnsupportedProtocolVersion {
+		t.Fatalf("error code = %d, want %d", jerr.Code, CodeUnsupportedProtocolVersion)
+	}
+	var data UnsupportedProtocolVersionData
+	if err := json.Unmarshal(jerr.Data, &data); err != nil {
+		t.Fatalf("unmarshal error data: %v", err)
+	}
+	if diff := cmp.Diff([]string{protocolVersion20260728}, data.Supported); diff != "" {
+		t.Errorf("UnsupportedProtocolVersionData.Supported mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // stalls — here a peer that never reads its end of the pipe — does not delay
 // or fail delivery to the other sessions in the same broadcast.
 func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
