@@ -2048,6 +2048,22 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		}
 	}
 
+	// A server that supports only 2026-07-28 and later serves no legacy call,
+	// initialize included.
+	if !validatedMeta.usesNewProtocol && req.IsCall() &&
+		!slices.ContainsFunc(ss.server.protocolVersions, func(v string) bool {
+			return v < protocolVersion20260728
+		}) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: ss.server.protocolVersions,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "legacy protocol version requests are not supported by this server",
+			Data:    data,
+		}
+	}
+
 	switch req.Method {
 	case methodInitialize, methodPing, notificationInitialized, notificationRootsListChanged, methodSetLevel, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
