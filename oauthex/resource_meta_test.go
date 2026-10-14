@@ -296,6 +296,31 @@ func TestGetProtectedResourceMetadata(t *testing.T) {
 	})
 }
 
+func TestGetProtectedResourceMetadataAcceptsOriginResource(t *testing.T) {
+	// The document publishes an origin ("https://host:port/") while the
+	// client asks about the /mcp endpoint: the tolerant match must accept it.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resource := "https://" + r.Host + "/"
+		if err := json.NewEncoder(w).Encode(&ProtectedResourceMetadata{Resource: resource}); err != nil {
+			panic(err)
+		}
+	}))
+	defer server.Close()
+
+	prm, err := GetProtectedResourceMetadata(t.Context(),
+		server.URL+"/.well-known/oauth-protected-resource", server.URL+"/mcp", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prm == nil {
+		t.Fatal("nil prm")
+	}
+	if want := server.URL + "/"; prm.Resource != want {
+		t.Fatalf("Resource = %q, want %q", prm.Resource, want)
+	}
+}
+
 type fakeResourceHandler struct {
 	http.ServeMux
 	resourceOverride string // If set, use this instead of correct resource (for testing validation)

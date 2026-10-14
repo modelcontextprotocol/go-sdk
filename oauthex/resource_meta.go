@@ -119,7 +119,8 @@ type Challenge struct {
 // The resourceURL is the resource URI the metadataURL is for.
 // The following checks are performed:
 //   - The metadataURL must use HTTPS or be a local address.
-//   - The resource field of the resulting metadata must match the resourceURL.
+//   - The resource field of the resulting metadata must match the resourceURL;
+//     an origin or parent path of resourceURL is also accepted (RFC 9728 section 3.3).
 //   - The authorization_servers field of the resulting metadata is checked for dangerous URL schemes.
 func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL string, c *http.Client) (_ *ProtectedResourceMetadata, err error) {
 	defer util.Wrapf(&err, "GetProtectedResourceMetadata(%q)", metadataURL)
@@ -131,9 +132,11 @@ func GetProtectedResourceMetadata(ctx context.Context, metadataURL, resourceURL 
 	if err != nil {
 		return nil, err
 	}
-	// Validate the Resource field (see RFC 9728, section 3.3).
-	if prm.Resource != resourceURL {
-		return nil, fmt.Errorf("got metadata resource %q, want %q", prm.Resource, resourceURL)
+	// Validate the Resource field (see RFC 9728, section 3.3). Servers may
+	// publish an origin or parent path of the endpoint, as the TypeScript and
+	// Rust MCP SDKs accept; resourceMatches implements those semantics.
+	if !resourceMatches(resourceURL, prm.Resource) {
+		return nil, fmt.Errorf("got metadata resource %q, want %q (or an origin/parent path of it)", prm.Resource, resourceURL)
 	}
 	// Validate the authorization server URLs to prevent XSS attacks (see #526).
 	for i, u := range prm.AuthorizationServers {
