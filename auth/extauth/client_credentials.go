@@ -236,14 +236,24 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from
-// WWW-Authenticate challenges, or the empty string if there is none.
+// WWW-Authenticate challenges, preferring a Bearer challenge and otherwise the
+// first other scheme that carries one. It returns the empty string if there is
+// none.
 func resourceMetadataURLFromChallenges(cs []oauthex.Challenge) string {
+	var fallback string
 	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; strings.EqualFold(c.Scheme, "Bearer") && u != "" {
+		u := c.Params["resource_metadata"]
+		if u == "" {
+			continue
+		}
+		if strings.EqualFold(c.Scheme, "Bearer") {
 			return u
 		}
+		if fallback == "" {
+			fallback = u
+		}
 	}
-	return ""
+	return fallback
 }
 
 // scopesFromChallenges returns scopes from WWW-Authenticate challenges.

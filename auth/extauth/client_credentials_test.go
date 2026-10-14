@@ -428,3 +428,14 @@ func TestResourceMetadataURLFromChallengesUsesBearerChallenge(t *testing.T) {
 		t.Errorf("resourceMetadataURLFromChallenges() = %q, want %q", got, want)
 	}
 }
+
+func TestResourceMetadataURLFromChallengesFallsBackToOtherSchemes(t *testing.T) {
+	challenges := []oauthex.Challenge{
+		{Scheme: "Basic", Params: map[string]string{}},
+		{Scheme: "Digest", Params: map[string]string{"resource_metadata": "https://digest.example/metadata"}},
+		{Scheme: "Basic", Params: map[string]string{"resource_metadata": "https://basic.example/metadata"}},
+	}
+	if got, want := resourceMetadataURLFromChallenges(challenges), "https://digest.example/metadata"; got != want {
+		t.Errorf("resourceMetadataURLFromChallenges() = %q, want %q", got, want)
+	}
+}
