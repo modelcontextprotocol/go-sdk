@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -259,5 +260,24 @@ func TestResultCacheFieldsOmittedForLegacyProtocol(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSkillMetaRoundTrips(t *testing.T) {
+	skill := skillWith(func(s *Skill) { s.Meta = mcp.Meta{"io.modelcontextprotocol.skills/x": float64(1)} })
+	data, err := json.Marshal(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Skill
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Meta, skill.Meta) {
+		t.Fatalf("_meta = %v, want %v", got.Meta, skill.Meta)
+	}
+	plain, _ := json.Marshal(testSkill())
+	if strings.Contains(string(plain), "_meta") {
+		t.Fatalf("empty _meta serialized: %s", plain)
 	}
 }

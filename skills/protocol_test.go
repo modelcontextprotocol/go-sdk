@@ -196,7 +196,7 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 	skill := testSkill()
 	list := &ListSkillsResult{Skills: []*Skill{skill}, ResultBase: mcp.ResultBase{Meta: mcp.Meta{"owner": "app"}}}
 	get := &GetSkillResult{Skill: skill, ResultBase: mcp.ResultBase{Meta: mcp.Meta{"owner": "app"}}, Cacheable: mcp.Cacheable{TTLMs: 123, CacheScope: "private"}}
-	dir := &ReadDirectoryResult{}
+	dir := &ReadDirectoryResult{Cacheable: mcp.Cacheable{TTLMs: 456, CacheScope: "private"}}
 	handlers := &Handlers{
 		List: func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
 			return list, nil
@@ -245,8 +245,16 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 				if modern && (getResult.TTLMs != 123 || getResult.CacheScope != "private") {
 					t.Errorf("%s: cache hints lost", version)
 				}
-				if _, err := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"}); err != nil {
+				dirResult, err := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"})
+				if err != nil {
 					t.Error(err)
+					return
+				}
+				if dirResult.cachePresent != modern {
+					t.Errorf("%s: directory cachePresent = %v", version, dirResult.cachePresent)
+				}
+				if modern && (dirResult.TTLMs != 456 || dirResult.CacheScope != "private") {
+					t.Errorf("%s: directory cache hints lost", version)
 				}
 			}
 		})
@@ -290,15 +298,19 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 		{"get/missing-scope", MethodGet, fmt.Sprintf(`{"skill":%s,"resultType":"complete","ttlMs":0}`, encoded)},
 		{"get/missing-ttl", MethodGet, fmt.Sprintf(`{"skill":%s,"resultType":"complete","cacheScope":"public"}`, encoded)},
 		{"get/null-skill", MethodGet, `{"skill":null,"resultType":"complete","ttlMs":0,"cacheScope":"public"}`},
+		{"dir/missing-ttl", MethodReadDirectory, `{"resources":[],"resultType":"complete","cacheScope":"public"}`},
+		{"dir/missing-scope", MethodReadDirectory, `{"resources":[],"resultType":"complete","ttlMs":0}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := testServer()
-			server.AddExtension(ExtensionID, nil)
+			server.AddExtension(ExtensionID, map[string]any{capabilityDirectoryRead: true})
 			raw := &rawResult{data: json.RawMessage(test.body)}
 			// Register only the method under test, bypassing AddHandlers so that
 			// the body reaches the client exactly as written.
 			var err error
 			switch test.method {
+			case MethodReadDirectory:
+				err = mcp.AddReceivingCustomMethod(server, MethodReadDirectory, func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*rawResult, error) { return raw, nil })
 			case MethodGet:
 				err = mcp.AddReceivingCustomMethod(server, MethodGet, func(context.Context, *mcp.ServerSession, *GetSkillParams) (*rawResult, error) { return raw, nil })
 			default:
@@ -308,9 +320,12 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := connectSkills(t, server, protocolVersionCaching)
-			if test.method == MethodGet {
+			switch test.method {
+			case MethodReadDirectory:
+				_, err = ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"})
+			case MethodGet:
 				_, err = Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
-			} else {
+			default:
 				_, err = List(t.Context(), client, nil)
 			}
 			if err == nil {

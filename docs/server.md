@@ -1287,8 +1287,8 @@ handlers themselves. Dynamic content budgets belong to the application; the SDK
 does not accumulate sizes across resource reads. It copies options at registration and
 prepares outgoing results without mutating handler-owned data.
 
-On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
-`cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+On protocol `2026-07-28` and later, list, get, and directory responses carry
+`ttlMs` and `cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
 through the result's `mcp.Cacheable` field. The SDK also supports the extension on
 earlier protocols as a compatibility backport, omitting cache fields and
 `resultType`. The extension does not prefetch files or start background work.
