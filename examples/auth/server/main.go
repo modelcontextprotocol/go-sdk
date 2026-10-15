@@ -67,12 +67,28 @@ func verifyToken(ctx context.Context, token string, _ *http.Request) (*auth.Toke
 		Scope  string `json:"scope"`
 		Exp    int64  `json:"exp"`
 		Sub    string `json:"sub"`
+		Aud    any    `json:"aud"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
 
 	if !result.Active {
+		return nil, auth.ErrInvalidToken
+	}
+
+	var aud []string
+	switch v := result.Aud.(type) {
+	case string:
+		aud = []string{v}
+	case []any:
+		for _, a := range v {
+			if s, ok := a.(string); ok {
+				aud = append(aud, s)
+			}
+		}
+	}
+	if !oauthex.MatchesResource(aud, resourceURL()) {
 		return nil, auth.ErrInvalidToken
 	}
 
@@ -95,10 +111,14 @@ func echo(ctx context.Context, req *mcp.CallToolRequest, args args) (*mcp.CallTo
 	}, nil, nil
 }
 
+func resourceURL() string {
+	return fmt.Sprintf("http://localhost:%d/mcp", *port)
+}
+
 func main() {
 	flag.Parse()
 	metadata := &oauthex.ProtectedResourceMetadata{
-		Resource:             fmt.Sprintf("http://localhost:%d/mcp", *port),
+		Resource:             resourceURL(),
 		AuthorizationServers: []string{authorizationServer},
 		ScopesSupported:      []string{"read"},
 	}

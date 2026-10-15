@@ -1291,6 +1291,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc.Error{
+						Code:    jsonrpc.CodeInvalidRequest,
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
 				},
@@ -1754,6 +1755,53 @@ func TestStreamableStateless(t *testing.T) {
 
 	testStreamableHandler(t, statelessHandler, requests)
 	testClientCompatibility(t, statelessHandler)
+}
+
+// TestStreamableStateless_RejectsLegacyOn2026OnlyServer verifies that a
+// stateless server configured with [ServerOptions.SupportedProtocolVersions]
+// set to only ["2026-07-28"] rejects legacy-format requests (no _meta, no
+// Mcp-Protocol-Version header) with [CodeUnsupportedProtocolVersion].
+func TestStreamableStateless_RejectsLegacyOn2026OnlyServer(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20260728},
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body, _ := jsonrpc2.EncodeMessage(req(1, methodListTools, &ListToolsParams{}))
+	httpReq, err := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	var errResp struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(got, &errResp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, got)
+	}
+	if errResp.Error.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d", errResp.Error.Code, CodeUnsupportedProtocolVersion)
+	}
 }
 
 func textContent(t *testing.T, res *CallToolResult) string {
