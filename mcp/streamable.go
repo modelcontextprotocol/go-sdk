@@ -347,6 +347,12 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // permanently fails the connection.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
+// fatalnewprotocolerrors is a compatibility parameter that restores the
+// previous behavior of permanently failing the connection when an independent
+// new-protocol request fails. The option will be removed in the 1.11.0 version
+// of the SDK.
+var fatalnewprotocolerrors = mcpgodebug.Value("fatalnewprotocolerrors")
+
 // plaintextstatefulrejection is a compatibility parameter that restores the
 // previous behavior of a stateful [StreamableHTTPHandler] when it receives a
 // request carrying SEP-2575 per-request metadata (i.e. an
@@ -2325,8 +2331,8 @@ type streamableClientConn struct {
 
 	// Logical reads are distributed across multiple http requests. Whenever any
 	// of them fails to process their response, we must break the connection, by
-	// failing the pending Read. Without a session, only that call is ended
-	// instead (see [streamableClientConn.endCall]).
+	// failing the pending Read. An independent new-protocol request only ends
+	// that call instead (see [streamableClientConn.endCall]).
 	//
 	// Achieve this by storing the failure message, and signalling when reads are
 	// broken. See also [streamableClientConn.fail] and
@@ -2577,8 +2583,10 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// plain text 404 or 400), which checkResponse cannot classify as a
 			// per-call rejection on its own.
 			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
-		} else if !errors.Is(err, jsonrpc2.ErrRejected) && c.SessionID() == "" {
-			return jsonrpc2.NonFatal(err)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) && canFailIndependently(msg) {
+			// An independent request failure applies only to that request. Wrap it with
+			// ErrRejected so jsonrpc2 does not treat the connection as broken.
+			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
 			// Transient errors (wrapped with ErrRejected) should not break the connection.
@@ -2638,11 +2646,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 
 	default:
 		resp.Body.Close()
-		err := fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
-		if c.SessionID() == "" {
-			return jsonrpc2.NonFatal(err)
-		}
-		return err
+		return fmt.Errorf("%s: unsupported content type %q", requestSummary, contentType)
 	}
 	return nil
 }
@@ -2708,12 +2712,18 @@ func protocolVersionFromMessage(msg jsonrpc.Message) string {
 	return v
 }
 
+// canFailIndependently reports whether msg carries SEP-2575 per-request
+// metadata and the caller has not opted out of independent failure handling.
+func canFailIndependently(msg jsonrpc.Message) bool {
+	return fatalnewprotocolerrors != "1" && protocolVersionFromMessage(msg) != ""
+}
+
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) {
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		err = fmt.Errorf("%s: failed to read body: %v", requestSummary, err)
-		if forCall != nil && c.SessionID() == "" {
+		if canFailIndependently(forCall) {
 			c.endCall(forCall, err)
 		} else {
 			c.fail(err)
@@ -2723,7 +2733,7 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 	msg, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
 		err = fmt.Errorf("%s: failed to decode response: %v", requestSummary, err)
-		if forCall != nil && c.SessionID() == "" {
+		if canFailIndependently(forCall) {
 			c.endCall(forCall, err)
 		} else {
 			c.fail(err)
@@ -2776,12 +2786,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 			retriesWithoutProgress++
 			if retriesWithoutProgress > c.maxRetries {
 				if ctx.Err() == nil {
-					err := fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID)
-					if forCall != nil && c.SessionID() == "" {
-						c.endCall(forCall, err)
-					} else {
-						c.fail(err)
-					}
+					c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
 				}
 				return
 			}
@@ -2791,26 +2796,17 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		newResp, err := c.connectSSE(ctx, lastEventID, reconnectDelay, false)
 		if err != nil {
 			// If the client didn't cancel this request, any failure to execute it
-			// breaks the logical MCP session, if there is one.
+			// breaks the logical MCP session.
 			if ctx.Err() == nil {
-				// All reconnection attempts failed.
-				err = fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err)
-				if forCall != nil && c.SessionID() == "" {
-					c.endCall(forCall, err)
-				} else {
-					c.fail(err)
-				}
+				// All reconnection attempts failed: fail the connection.
+				c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
 			}
 			return
 		}
 
 		resp = newResp
 		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-			if forCall != nil && c.SessionID() == "" {
-				c.endCall(forCall, err)
-			} else {
-				c.fail(err)
-			}
+			c.fail(err)
 			return
 		}
 	}
@@ -2876,7 +2872,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			// violations, so the stream is not resumed.
 			if errors.Is(err, errMalformedEvent) {
 				err = fmt.Errorf("%s: %v", requestSummary, err)
-				if forCall != nil && c.SessionID() == "" {
+				if canFailIndependently(forCall) {
 					c.endCall(forCall, err)
 				} else {
 					c.fail(err)
@@ -2913,7 +2909,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
 			err = fmt.Errorf("%s: failed to decode event: %v", requestSummary, err)
-			if forCall != nil && c.SessionID() == "" {
+			if canFailIndependently(forCall) {
 				c.endCall(forCall, err)
 			} else {
 				c.fail(err)
