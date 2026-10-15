@@ -41,7 +41,7 @@ func MakeID(v any) (ID, error) {
 		if i, err := v.Int64(); err == nil {
 			return Int64ID(i), nil
 		} else if !errors.Is(err, strconv.ErrRange) {
-			// Fallback to float64 to maintain backward compatibility for large integers
+			// Fallback to float64 to maintain backward compatibility
 			if f, err := v.Float64(); err == nil && f >= math.MinInt64 && f < math.MaxInt64 {
 				return Int64ID(int64(f)), nil
 			}
