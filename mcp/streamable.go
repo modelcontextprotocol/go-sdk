@@ -2714,8 +2714,14 @@ func protocolVersionFromMessage(msg jsonrpc.Message) string {
 
 // canFailIndependently reports whether msg carries SEP-2575 per-request
 // metadata and the caller has not opted out of independent failure handling.
-func canFailIndependently(msg jsonrpc.Message) bool {
-	return fatalnewprotocolerrors != "1" && protocolVersionFromMessage(msg) != ""
+func (c *streamableClientConn) canFailIndependently(msg jsonrpc.Message) bool {
+	if fatalnewprotocolerrors == "1" {
+		return false
+	}
+	if pv := protocolVersionFromMessage(msg); pv != "" {
+		return pv >= protocolVersion20260728
+	}
+	return c.initializedResult != nil && c.initializedResult.ProtocolVersion >= protocolVersion20260728
 }
 
 func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) {
