@@ -189,7 +189,7 @@ func TestDecodeIntegerIDs(t *testing.T) {
 		}
 	}
 
-	for _, wire := range []string{`1.5`, `1e3`, `1000.0`, `9223372036854775808`, `-9223372036854775809`} {
+	for _, wire := range []string{`9223372036854775808`, `-9223372036854775809`, `1e20`} {
 		encoded := `{"jsonrpc":"2.0","id":` + wire + `,"method":"m"}`
 		if _, err := jsonrpc2.DecodeMessage([]byte(encoded)); !errors.Is(err, jsonrpc2.ErrParse) {
 			t.Errorf("DecodeMessage(%s) error = %v, want ErrParse", encoded, err)

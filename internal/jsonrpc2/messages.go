@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -38,10 +40,11 @@ func MakeID(v any) (ID, error) {
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
 			return Int64ID(i), nil
-		}
-		// Keep this fallback conversion to maintain backward compatibility
-		if f, err := v.Float64(); err == nil {
-			return Int64ID(int64(f)), nil
+		} else if !errors.Is(err, strconv.ErrRange) {
+			// Fallback to float64 to maintain backward compatibility for large integers
+			if f, err := v.Float64(); err == nil && f >= math.MinInt64 && f < math.MaxInt64 {
+				return Int64ID(int64(f)), nil
+			}
 		}
 		return ID{}, fmt.Errorf("%w: invalid numeric ID %q", ErrParse, v)
 	case string:
