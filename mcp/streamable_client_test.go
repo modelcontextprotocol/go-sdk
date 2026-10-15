@@ -1840,6 +1840,8 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		callStatus        int    // HTTP status returned for the tools/call
 		callBody          string // response body for the tools/call ("" for empty; may be a JSON-RPC error)
 		disableBodyDecode bool   // if true, sets noprotocolerrorbody="1" for the duration of the test
+		fatalNewErrors    bool   // if true, sets fatalnewprotocolerrors="1" for the duration of the test
+		protocolVersion   string // defaults to protocolVersion20260728
 		wantErrRejected   bool   // whether the returned error should match errors.Is(err, jsonrpc2.ErrRejected)
 		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
 	}{
@@ -1853,25 +1855,52 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			wantSessionAlive: true,
 		},
 		{
+			// Plain-text 400 with no JSON-RPC body: without a session,
+			// only the call fails.
+			name:             "400 with plain-text body",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "400 with plain-text body (legacy protocol)",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			protocolVersion:  protocolVersion20251125,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
+			name:             "400 with plain-text body (fatalnewprotocolerrors=1)",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			fatalNewErrors:   true,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
 			// Same server response, but the user opted out via
-			// MCPGODEBUG=noprotocolerrorbody=1. Pre-fix behavior: the
-			// session is torn down.
+			// MCPGODEBUG=noprotocolerrorbody=1. The body is ignored, but
+			// without a session the failure still fails only the call.
 			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1)",
 			callStatus:        http.StatusBadRequest,
 			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
 			disableBodyDecode: true,
-			wantErrRejected:   false,
-			wantSessionAlive:  false,
+			wantErrRejected:   true,
+			wantSessionAlive:  true,
 		},
 		{
-			// Legacy server returns plain-text 400 with no JSON-RPC
-			// body: cannot be classified as a per-call rejection, so the
-			// session is still torn down.
-			name:             "400 with plain-text body",
-			callStatus:       http.StatusBadRequest,
-			callBody:         "Bad Request",
-			wantErrRejected:  false,
-			wantSessionAlive: false,
+			// Same server response, but the user opted out via
+			// MCPGODEBUG=noprotocolerrorbody=1 and fatalnewprotocolerrors=1.
+			// Pre-fix behavior: the session is torn down.
+			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1, fatalnewprotocolerrors=1)",
+			callStatus:        http.StatusBadRequest,
+			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
+			disableBodyDecode: true,
+			fatalNewErrors:    true,
+			wantErrRejected:   false,
+			wantSessionAlive:  false,
 		},
 		{
 			// SEP-2575: server returns -32601 for an unimplemented
@@ -1886,9 +1915,34 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		{
 			// A bare 404 with no JSON-RPC body means the session has
 			// been terminated. Session must not survive.
-			name:             "404 with empty body (terminated session)",
+			name:             "404 with empty body (terminated session, fatalnewprotocolerrors=1)",
 			callStatus:       http.StatusNotFound,
 			callBody:         "",
+			fatalNewErrors:   true,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
+			// A bare 404 with no JSON-RPC body: there is no session to
+			// terminate, so only the call fails.
+			name:             "404 with empty body",
+			callStatus:       http.StatusNotFound,
+			callBody:         "",
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "200 with invalid JSON body",
+			callStatus:       http.StatusOK,
+			callBody:         "not JSON",
+			wantErrRejected:  false,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "200 with invalid JSON body (fatalnewprotocolerrors=1)",
+			callStatus:       http.StatusOK,
+			callBody:         "not JSON",
+			fatalNewErrors:   true,
 			wantErrRejected:  false,
 			wantSessionAlive: false,
 		},
@@ -1896,12 +1950,20 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			protocolVersion := test.protocolVersion
+			if protocolVersion == "" {
+				protocolVersion = protocolVersion20260728
+			}
 			if test.disableBodyDecode {
 				prev := noprotocolerrorbody
 				noprotocolerrorbody = "1"
 				t.Cleanup(func() { noprotocolerrorbody = prev })
 			}
-
+			if test.fatalNewErrors {
+				prev := fatalnewprotocolerrors
+				fatalnewprotocolerrors = "1"
+				t.Cleanup(func() { fatalnewprotocolerrors = prev })
+			}
 			// Track how many tools/call requests we've served: first
 			// returns the error under test, subsequent calls succeed so
 			// we can observe whether the session is still alive.
@@ -1917,6 +1979,18 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 						responseFunc: func(r *jsonrpc.Request) (string, int) {
 							return jsonBody(t, resp(r.ID.Raw().(int64), discoverResult, nil)), http.StatusOK
 						},
+					},
+					{"POST", "", methodInitialize, ""}: {
+						header: header{"Content-Type": "application/json"},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(initResult)}), http.StatusOK
+						},
+						optional: true,
+					},
+					{"POST", "", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+						optional:            true,
 					},
 					{"POST", "", "tools/call", ""}: {
 						header: header{"Content-Type": "application/json"},
@@ -1934,9 +2008,12 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			httpServer := httptest.NewServer(fake)
 			defer httpServer.Close()
 
-			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			transport := &StreamableClientTransport{
+				Endpoint:             httpServer.URL,
+				DisableStandaloneSSE: protocolVersion < protocolVersion20260728,
+			}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion})
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
