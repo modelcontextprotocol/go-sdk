@@ -36,13 +36,14 @@ func MakeID(v any) (ID, error) {
 	case float64:
 		return Int64ID(int64(v)), nil
 	case json.Number:
-		// MCP requires integer IDs, and encoders write them as plain integer
-		// literals; a fraction or exponent only comes from a float-typed ID.
-		i, err := v.Int64()
-		if err != nil {
-			return ID{}, fmt.Errorf("%w: numeric ID is not an int64 integer", ErrParse)
+		if i, err := v.Int64(); err == nil {
+			return Int64ID(i), nil
 		}
-		return Int64ID(i), nil
+		// Keep this fallback conversion to maintain backward compatibility
+		if f, err := v.Float64(); err == nil {
+			return Int64ID(int64(f)), nil
+		}
+		return ID{}, fmt.Errorf("%w: invalid numeric ID %q", ErrParse, v)
 	case string:
 		return StringID(v), nil
 	}
