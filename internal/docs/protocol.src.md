@@ -628,9 +628,9 @@ or
 > **Note**: `ping` is removed from the protocol as of `2026-07-28` by
 > [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
 > The SDK preserves the API for backward compatibility with legacy clients;
-> when both peers negotiate `2026-07-28`, the server returns
-> `MethodNotFound` (`-32601`) for `ping` and `KeepAlive` should not be
-> enabled.
+> when a session negotiates `2026-07-28` or later, `Ping` returns
+> `MethodNotFound` (`-32601`) locally, without a round trip, and
+> `KeepAlive` should not be enabled.
 
 ### Progress
 

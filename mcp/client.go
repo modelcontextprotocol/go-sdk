@@ -1265,9 +1265,7 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 //
 // On sessions negotiated at protocol version 2026-07-28 or later, Ping
 // returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
-// round trip: the 2026-07-28 protocol schema removes the ping method. (A
-// ping sent without per-request _meta is additionally rejected by transports
-// that validate header/meta consistency, with -32020.)
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
 	if cs.usesNewProtocol() {
 		return &jsonrpc.Error{
