@@ -110,6 +110,7 @@ type Challenge struct {
 	Scheme string
 	// Params is a map of authentication parameters.
 	// Keys are case-insensitive. Parsed keys are always lower-case.
+	// A challenge that carries a token68 instead of parameters has no Params.
 	Params map[string]string
 }
 
@@ -237,6 +238,11 @@ func parseSingleChallenge(s string) (Challenge, error) {
 	if !found {
 		return c, nil
 	}
+	if isToken68(strings.TrimSpace(paramsStr)) {
+		// The challenge carries a token68 (for example, Negotiate with a
+		// SPNEGO token) rather than auth-params. It has no parameters.
+		return c, nil
+	}
 
 	params := make(map[string]string)
 
@@ -310,4 +316,23 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 	// Per RFC 9110, the scheme is case-insensitive.
 	return Challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
+}
+
+// isToken68 reports whether s is a token68 (RFC 9110, section 11.2):
+//
+//	token68 = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="
+func isToken68(s string) bool {
+	body := strings.TrimRight(s, "=")
+	if body == "" {
+		return false
+	}
+	for _, r := range body {
+		switch {
+		case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
+		case strings.ContainsRune("-._~+/", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
