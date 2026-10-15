@@ -2740,14 +2740,12 @@ func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Resp
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		err = fmt.Errorf("%s: failed to read body: %v", requestSummary, err)
-		c.endCall(forCall, err)
+		c.endCall(forCall, fmt.Errorf("%s: failed to read body: %v", requestSummary, err))
 		return
 	}
 	msg, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
-		err = fmt.Errorf("%s: failed to decode response: %v", requestSummary, err)
-		c.endCall(forCall, err)
+		c.endCall(forCall, fmt.Errorf("%s: failed to decode response: %v", requestSummary, err))
 		return
 	}
 	select {
@@ -2881,8 +2879,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			// Malformed events are hard errors that indicate corrupted data or protocol
 			// violations, so the stream is not resumed.
 			if errors.Is(err, errMalformedEvent) {
-				err = fmt.Errorf("%s: %v", requestSummary, err)
-				c.endCall(forCall, err)
+				c.endCall(forCall, fmt.Errorf("%s: %v", requestSummary, err))
 				return "", 0, true
 			}
 
@@ -2914,8 +2911,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
-			err = fmt.Errorf("%s: failed to decode event: %v", requestSummary, err)
-			c.endCall(forCall, err)
+			c.endCall(forCall, fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
 			return "", 0, true
 		}
 
