@@ -728,6 +728,10 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 			}
 		} else {
 			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+			// Still answer the call, so the peer isn't left waiting. Write
+			// failures are already recorded by c.write.
+			resp := &Response{ID: req.ID, Error: NewError(-32603, "internal error: result could not be encoded")}
+			_ = c.write(notDone{req.ctx}, resp)
 		}
 	} else { // req is a notification
 		if result != nil {
