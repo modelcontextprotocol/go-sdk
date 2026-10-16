@@ -21,8 +21,10 @@ type (
 	Error = jsonrpc2.WireError
 )
 
-// MakeID coerces the given Go value to an ID. The value should be the
-// default JSON marshaling of a Request identifier: nil, float64, or string.
+// MakeID coerces the given Go value to an ID. The value should be the JSON
+// decoding of a Request identifier: nil, float64, json.Number, or string.
+// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
+// must be an integer literal in the int64 range.
 //
 // Returns an error if the value type was not a valid Request ID type.
 func MakeID(v any) (ID, error) {
