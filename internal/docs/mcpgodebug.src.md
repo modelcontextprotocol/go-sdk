@@ -48,6 +48,11 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   tells a client nothing and is indistinguishable from an unset code. See
   issue #1367.
 
+- `fatalnewprotocolerrors` added. If set to `1`, a streamable HTTP client
+  permanently fails its connection when an independent `2026-07-28` request
+  fails, restoring the previous behavior. By default, the failure is returned
+  only to the affected call.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

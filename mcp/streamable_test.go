@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -1755,6 +1756,90 @@ func TestStreamableStateless(t *testing.T) {
 
 	testStreamableHandler(t, statelessHandler, requests)
 	testClientCompatibility(t, statelessHandler)
+}
+
+// TestStreamableUnencodableToolResult verifies that a tool result that cannot
+// be marshaled produces a JSON-RPC error instead of hanging the request.
+func TestStreamableUnencodableToolResult(t *testing.T) {
+	for _, stateless := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "bad"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+				return &CallToolResult{
+					Content:           []Content{&TextContent{Text: "inf"}},
+					StructuredContent: map[string]any{"value": math.Inf(1)},
+				}, nil, nil
+			})
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+				&StreamableHTTPOptions{Stateless: stateless})
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			_, err = cs.CallTool(ctx, &CallToolParams{Name: "bad", Arguments: map[string]any{}})
+			var wireErr *jsonrpc.Error
+			if !errors.As(err, &wireErr) {
+				t.Fatalf("CallTool() error = %v, want a JSON-RPC error", err)
+			}
+			if wireErr.Code != jsonrpc.CodeInternalError {
+				t.Errorf("error code = %d, want %d", wireErr.Code, jsonrpc.CodeInternalError)
+			}
+		})
+	}
+}
+
+// TestStreamableStateless_RejectsLegacyOn2026OnlyServer verifies that a
+// stateless server configured with [ServerOptions.SupportedProtocolVersions]
+// set to only ["2026-07-28"] rejects legacy-format requests (no _meta, no
+// Mcp-Protocol-Version header) with [CodeUnsupportedProtocolVersion].
+func TestStreamableStateless_RejectsLegacyOn2026OnlyServer(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20260728},
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body, _ := jsonrpc2.EncodeMessage(req(1, methodListTools, &ListToolsParams{}))
+	httpReq, err := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	var errResp struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(got, &errResp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, got)
+	}
+	if errResp.Error.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d", errResp.Error.Code, CodeUnsupportedProtocolVersion)
+	}
 }
 
 func textContent(t *testing.T, res *CallToolResult) string {
