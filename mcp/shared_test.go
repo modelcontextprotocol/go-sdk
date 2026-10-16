@@ -5,8 +5,10 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -656,5 +658,84 @@ func TestUnmarshalParamsInvalidParamsCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unmarshaling") {
 		t.Errorf("error message = %q, want it to mention unmarshaling", err.Error())
+	}
+}
+
+// TestHandlerErrorWithoutCode asserts that an error returned by a request
+// handler without a JSON-RPC error code reaches the peer as -32603 (Internal
+// error) with its message unchanged, while an error that carries a code keeps
+// it. Both directions use the same path: a server's prompt handler and a
+// client's sampling handler. See
+// https://github.com/modelcontextprotocol/go-sdk/issues/1394.
+func TestHandlerErrorWithoutCode(t *testing.T) {
+	coded := &jsonrpc.Error{Code: -32002, Message: "prompt is gone"}
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode int64
+	}{
+		{"plain", errors.New("prompt failed"), jsonrpc.CodeInternalError},
+		{"wrapped plain", fmt.Errorf("rendering: %w", errors.New("prompt failed")), jsonrpc.CodeInternalError},
+		{"coded", coded, -32002},
+		{"wrapped coded", fmt.Errorf("lookup: %w", coded), -32002},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			server := NewServer(&Implementation{Name: "server", Version: "v0.0.1"}, nil)
+			server.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+				return nil, tc.err
+			})
+			client := NewClient(&Implementation{Name: "client", Version: "v0.0.1"}, &ClientOptions{
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return nil, tc.err
+				},
+			})
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			// Sampling outside a request needs a protocol version before 2026-07-28.
+			cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			check := func(who string, err error) {
+				t.Helper()
+				var rpcErr *jsonrpc.Error
+				if !errors.As(err, &rpcErr) {
+					t.Fatalf("%s: error %v carries no JSON-RPC error", who, err)
+				}
+				if rpcErr.Code != tc.wantCode {
+					t.Errorf("%s: code = %d, want %d", who, rpcErr.Code, tc.wantCode)
+				}
+				if !strings.Contains(rpcErr.Message, tc.err.Error()) {
+					t.Errorf("%s: message = %q, want it to contain %q", who, rpcErr.Message, tc.err.Error())
+				}
+			}
+			_, err = cs.GetPrompt(ctx, &GetPromptParams{Name: "p"})
+			check("server prompt handler", err)
+			_, err = ss.CreateMessage(ctx, &CreateMessageParams{Messages: []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}}})
+			check("client sampling handler", err)
+
+			// MCPGODEBUG=nointernalerrorcode=1 restores the old code, 0, for errors without one.
+			defer func(old string) { nointernalerrorcode = old }(nointernalerrorcode)
+			nointernalerrorcode = "1"
+			_, err = cs.GetPrompt(ctx, &GetPromptParams{Name: "p"})
+			var rpcErr *jsonrpc.Error
+			if !errors.As(err, &rpcErr) {
+				t.Fatalf("old behavior: error %v carries no JSON-RPC error", err)
+			}
+			want := tc.wantCode
+			if want == jsonrpc.CodeInternalError {
+				want = 0
+			}
+			if rpcErr.Code != want {
+				t.Errorf("old behavior: code = %d, want %d", rpcErr.Code, want)
+			}
+		})
 	}
 }
