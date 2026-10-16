@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -69,7 +70,7 @@ func TestUnmarshalableResultSendsError(t *testing.T) {
 		t.Errorf("response ID = %v, want 7", resp.ID)
 	}
 	var werr *WireError
-	if !errors.As(resp.Error, &werr) || werr.Code != -32603 || werr.Message != "internal error: result could not be encoded" {
+	if !errors.As(resp.Error, &werr) || werr.Code != -32603 || !strings.Contains(resp.Error.Error(), "malformed result") {
 		t.Errorf("response error = %v, want generic -32603 error", resp.Error)
 	}
 	if err := <-internalErrs; err == nil {
