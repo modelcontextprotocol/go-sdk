@@ -680,6 +680,7 @@ type msgBatch struct {
 }
 
 func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+readNext:
 	// As a matter of principle, enforce that reads on a closed context return an
 	// error.
 	select {
@@ -710,6 +711,13 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 
 	msgs, batch, err := readBatch(raw)
 	if err != nil {
+		if !batch && errors.Is(err, jsonrpc2.ErrInvalidRequestID) {
+			response := &jsonrpc.Response{Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: "invalid request ID"}}
+			if err := t.Write(ctx, response); err != nil {
+				return nil, err
+			}
+			goto readNext
+		}
 		return nil, err
 	}
 	var protocolVersion string
