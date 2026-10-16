@@ -25,11 +25,8 @@ func TestDecodeMethodValue(t *testing.T) {
 		{"array", `[]`, "", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			// Arrange.
 			wire := []byte(`{"jsonrpc":"2.0","id":1,"method":` + tt.value + `}`)
-			// Act.
 			msg, err := DecodeMessage(wire)
-			// Assert.
 			if tt.invalid {
 				if err == nil {
 					t.Fatal("expected invalid method error")
@@ -49,11 +46,8 @@ func TestDecodeMethodValue(t *testing.T) {
 
 func TestDecodeMethodEnvelopeGuards(t *testing.T) {
 	t.Run("case sensitive field", func(t *testing.T) {
-		// Arrange.
 		wire := []byte(`{"jsonrpc":"2.0","id":1,"Method":"ping","result":{}}`)
-		// Act.
 		msg, err := DecodeMessage(wire)
-		// Assert.
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,11 +56,8 @@ func TestDecodeMethodEnvelopeGuards(t *testing.T) {
 		}
 	})
 	t.Run("depth limit", func(t *testing.T) {
-		// Arrange.
 		wire := []byte(`{"jsonrpc":"2.0","id":1,"method":` + strings.Repeat("[", 1001) + `0` + strings.Repeat("]", 1001) + `}`)
-		// Act.
 		_, err := DecodeMessage(wire)
-		// Assert.
 		if err == nil || !strings.Contains(err.Error(), "maximum nesting depth") {
 			t.Fatalf("error = %v, want depth rejection", err)
 		}
