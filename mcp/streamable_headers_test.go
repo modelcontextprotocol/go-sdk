@@ -897,6 +897,35 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "primitive types",
 		},
+		{
+			name: "number type next to a type array is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+						"note":  map[string]any{"type": []any{"null", "string"}},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "type array on annotated property is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": []any{"null", "string"}, "x-mcp-header": "Region"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: `got ["null","string"]`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1316,6 +1345,53 @@ func TestExtractToolParamHeaders(t *testing.T) {
 				},
 			},
 			want: map[string]string{"user.id": "UserId"},
+		},
+		{
+			name: "sibling property with a type array",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"note":   map[string]any{"type": []any{"null", "string"}},
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "sibling boolean schema",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"extra":  true,
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "jsonschema.For with a pointer field",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: func() *jsonschema.Schema {
+					type in struct {
+						Region string  `json:"region"`
+						Note   *string `json:"note,omitempty"`
+					}
+					s, err := jsonschema.For[in](nil)
+					if err != nil {
+						panic(err)
+					}
+					s.Properties["region"].Extra = map[string]any{"x-mcp-header": "Region"}
+					return s
+				}(),
+			},
+			want: map[string]string{"region": "Region"},
 		},
 	}
 
