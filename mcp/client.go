@@ -93,7 +93,8 @@ type ClientOptions struct {
 	// client to advertise the sampling capability, with default value
 	// &SamplingCapabilities{}. If [ClientOptions.Capabilities] is set and has a
 	// non nil value for [ClientCapabilities.Sampling], that value overrides the
-	// inferred capability.
+	// inferred capability. Unless that capability includes tools, a request
+	// that uses tools is answered with an error.
 	//
 	// Deprecated: the sampling feature is deprecated as of protocol version
 	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
@@ -109,7 +110,8 @@ type ClientOptions struct {
 	// Setting this handler causes the client to advertise the sampling
 	// capability with tools support (sampling.tools). As with
 	// [CreateMessageHandler], [ClientOptions.Capabilities].Sampling overrides
-	// the inferred capability.
+	// the inferred capability, and a request that uses tools is answered with
+	// an error unless it includes Tools.
 	//
 	// It is a panic to set both CreateMessageHandler and
 	// CreateMessageWithToolsHandler.
@@ -751,26 +753,41 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 }
 
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+	if c.opts.CreateMessageWithToolsHandler == nil && c.opts.CreateMessageHandler == nil {
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
+	}
+	// A client that didn't declare sampling.tools must return an error for a
+	// request that uses tools, rather than answer it without them.
+	if p := req.Params; p != nil && (p.Tools != nil || p.ToolChoice != nil) {
+		if caps := c.declaredCapabilities(); caps.Sampling == nil || caps.Sampling.Tools == nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "client does not support sampling with tools"}
+		}
+	}
 	if c.opts.CreateMessageWithToolsHandler != nil {
 		return c.opts.CreateMessageWithToolsHandler(ctx, req)
 	}
-	if c.opts.CreateMessageHandler != nil {
-		// Downconvert the request for the basic handler.
-		baseParams, err := req.Params.toBase()
-		if err != nil {
-			return nil, err
-		}
-		baseReq := &CreateMessageRequest{
-			Session: req.Session,
-			Params:  baseParams,
-		}
-		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
-		if err != nil {
-			return nil, err
-		}
-		return res.toWithTools(), nil
+	// Downconvert the request for the basic handler.
+	baseParams, err := req.Params.toBase()
+	if err != nil {
+		return nil, err
 	}
-	return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
+	baseReq := &CreateMessageRequest{
+		Session: req.Session,
+		Params:  baseParams,
+	}
+	res, err := c.opts.CreateMessageHandler(ctx, baseReq)
+	if err != nil {
+		return nil, err
+	}
+	return res.toWithTools(), nil
+}
+
+// declaredCapabilities returns the capabilities the client declares to
+// servers. The protocol version only decides whether an inferred elicitation
+// capability spells out form mode, which it implies either way, so it doesn't
+// matter to the checks that use this.
+func (c *Client) declaredCapabilities() *ClientCapabilities {
+	return c.capabilities("")
 }
 
 // urlElicitationMiddleware returns middleware that automatically handles URL elicitation
@@ -886,6 +903,14 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 	mode := req.Params.Mode
 	if mode == "" {
 		mode = "form"
+	}
+
+	// A request for a mode the client didn't declare is invalid params. As on
+	// the server, an elicitation capability without modes means form mode.
+	if caps := c.declaredCapabilities().Elicitation; caps != nil {
+		if (mode == "url" && caps.URL == nil) || (mode == "form" && caps.Form == nil && caps.URL != nil) {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("client does not support %q elicitation", mode)}
+		}
 	}
 
 	switch mode {
