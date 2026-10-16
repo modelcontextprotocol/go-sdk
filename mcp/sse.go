@@ -426,7 +426,17 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %v", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.Endpoint, nil)
+	// The event stream outlives ctx; ctx only bounds the handshake.
+	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatch := context.AfterFunc(ctx, cancel)
+	connected := false
+	defer func() {
+		if !connected {
+			stopWatch()
+			cancel()
+		}
+	}()
+	req, err := http.NewRequestWithContext(streamCtx, "GET", c.Endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +485,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	}
 
 	// From here on, the stream takes ownership of resp.Body.
+	if !stopWatch() {
+		resp.Body.Close()
+		return nil, ctx.Err()
+	}
+	connected = true
 	s := &sseClientConn{
+		cancel:      cancel,
 		client:      httpClient,
 		msgEndpoint: msgEndpoint,
 		incoming:    make(chan []byte, 100),
@@ -510,6 +526,7 @@ type sseClientConn struct {
 	client      *http.Client // HTTP client to use for requests
 	msgEndpoint *url.URL     // session endpoint for POSTs
 	incoming    chan []byte  // queue of incoming messages
+	cancel      context.CancelFunc
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -576,6 +593,7 @@ func (c *sseClientConn) Close() error {
 	defer c.mu.Unlock()
 	if !c.closed {
 		c.closed = true
+		c.cancel()
 		_ = c.body.Close()
 		close(c.done)
 	}
