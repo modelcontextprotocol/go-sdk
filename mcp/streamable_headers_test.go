@@ -443,6 +443,50 @@ func TestValidateToolParamHeaders(t *testing.T) {
 		wantErrSub string
 	}{
 		{
+			name: "array type on an unannotated sibling does not hide an invalid annotation",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+						"note":  map[string]any{"type": []any{"null", "string"}},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "nullable annotated property is rejected as non-primitive",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"note": map[string]any{"type": []any{"null", "string"}, "x-mcp-header": "Note"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
+			name: "boolean subschema does not hide an invalid annotation",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"count": map[string]any{"type": "number", "x-mcp-header": "Count"},
+						"extra": true,
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "primitive types",
+		},
+		{
 			name: "valid tool with x-mcp-header",
 			tool: &Tool{
 				Name: "test",
@@ -1316,6 +1360,34 @@ func TestExtractToolParamHeaders(t *testing.T) {
 				},
 			},
 			want: map[string]string{"user.id": "UserId"},
+		},
+		{
+			name: "array type on an unannotated sibling does not hide annotations",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"note":   map[string]any{"type": []any{"null", "string"}},
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
+		},
+		{
+			name: "boolean subschema does not hide annotations",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+						"extra":  true,
+					},
+				},
+			},
+			want: map[string]string{"region": "Region"},
 		},
 	}
 

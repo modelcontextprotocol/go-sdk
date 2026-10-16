@@ -61,6 +61,37 @@ type headerSchemaProperty struct {
 	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
 }
 
+// UnmarshalJSON decodes a single schema property without letting a sibling's
+// unusual schema shape fail the whole schema. JSON Schema allows "type" to be
+// an array (jsonschema.For emits ["null", "string"] for pointer fields) and a
+// property to be a boolean subschema; neither carries an x-mcp-header that
+// this code can use, so they are decoded leniently. A non-string "type" is
+// kept as its raw JSON text, so it fails the primitive-type check.
+func (p *headerSchemaProperty) UnmarshalJSON(data []byte) error {
+	var obj struct {
+		Type       json.RawMessage                 `json:"type,omitempty"`
+		XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
+		Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		var boolSchema bool
+		if json.Unmarshal(data, &boolSchema) == nil {
+			*p = headerSchemaProperty{}
+			return nil
+		}
+		return err
+	}
+	*p = headerSchemaProperty{XMCPHeader: obj.XMCPHeader, Properties: obj.Properties}
+	if len(obj.Type) > 0 {
+		var typeName string
+		if err := json.Unmarshal(obj.Type, &typeName); err != nil {
+			typeName = string(obj.Type)
+		}
+		p.Type = typeName
+	}
+	return nil
+}
+
 // unmarshalSchemaProperties normalizes any InputSchema type
 // (*jsonschema.Schema, map[string]any, or json.RawMessage) into a common
 // representation by marshaling to JSON and unmarshaling only the fields we need.
