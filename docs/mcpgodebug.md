@@ -54,6 +54,12 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   fails, restoring the previous behavior. By default, the failure is returned
   only to the affected call.
 
+- `noplainerrorinternalcode` added. If set to `1`, an error returned by a
+  handler that carries no JSON-RPC code is sent with the zero-value code `0`,
+  restoring the previous behavior. The default behavior was changed to send
+  such errors, with their message unchanged, with `-32603` (Internal error). See
+  issue #1394.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

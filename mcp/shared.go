@@ -42,6 +42,15 @@ import (
 // The option will be removed in a future version of the SDK.
 var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
 
+// noplainerrorinternalcode is a compatibility parameter that restores the
+// previous behavior of [handleReceive]. When unset (the default), an error
+// returned by a handler that carries no JSON-RPC code is sent with code -32603
+// ("internal error") rather than the zero-value code 0.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var noplainerrorinternalcode = mcpgodebug.Value("noplainerrorinternalcode")
+
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
 	// the SDK supports.
@@ -212,10 +221,32 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
+		if noplainerrorinternalcode != "1" && !hasErrorCode(err) {
+			// A plain error carries no JSON-RPC code, which would reach the
+			// peer as code 0. Report it as an internal error instead, keeping
+			// the message and the original error for errors.Is/As.
+			err = &internalCodeError{err}
+		}
 		return nil, err
 	}
 	return res, nil
 }
+
+// hasErrorCode reports whether err is, or wraps, an error that already
+// determines its JSON-RPC error code.
+func hasErrorCode(err error) bool {
+	var we *jsonrpc2.WireError
+	return errors.As(err, &we) ||
+		errors.Is(err, jsonrpc2.ErrNotHandled) ||
+		errors.Is(err, jsonrpc2.ErrMethodNotFound)
+}
+
+// internalCodeError marks a plain handler error to be sent with the
+// JSON-RPC internal error code (-32603). Its message is that of the original.
+type internalCodeError struct{ err error }
+
+func (e *internalCodeError) Error() string   { return e.err.Error() }
+func (e *internalCodeError) Unwrap() []error { return []error{e.err, jsonrpc2.ErrInternal} }
 
 // checkRequest checks the given request against the provided method info, to
 // ensure it is a valid MCP request.

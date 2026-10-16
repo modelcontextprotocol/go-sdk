@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -656,5 +657,51 @@ func TestUnmarshalParamsInvalidParamsCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unmarshaling") {
 		t.Errorf("error message = %q, want it to mention unmarshaling", err.Error())
+	}
+}
+
+// TestPlainHandlerErrorCode checks that an error without a JSON-RPC code
+// returned by a handler reaches the peer with CodeInternalError rather than 0,
+// and that a coded error keeps its code.
+func TestPlainHandlerErrorCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int64
+	}{
+		{"plain", errors.New("boom"), jsonrpc.CodeInternalError},
+		{"coded", &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "bad"}, jsonrpc.CodeInvalidParams},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			server := NewServer(&Implementation{Name: "s", Version: "v"}, nil)
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == methodListPrompts {
+						return nil, tc.err
+					}
+					return next(ctx, method, req)
+				}
+			})
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			cs, err := NewClient(&Implementation{Name: "c", Version: "v"}, nil).Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+			_, err = cs.ListPrompts(ctx, nil)
+			var jerr *jsonrpc.Error
+			if !errors.As(err, &jerr) {
+				t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
+			}
+			if int64(jerr.Code) != tc.want {
+				t.Errorf("code = %d, want %d", jerr.Code, tc.want)
+			}
+		})
 	}
 }
