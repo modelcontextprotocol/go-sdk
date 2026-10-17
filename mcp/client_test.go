@@ -12,6 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -1244,4 +1247,215 @@ func TestClientAllowMissingParamsCompat(t *testing.T) {
 	if got.Load() != 1 {
 		t.Errorf("handler called with nil params %d times, want 1", got.Load())
 	}
+}
+
+// TestProgressBeforeResult verifies that notifications sent by a server before
+// a call's response are handled by the client before CallTool returns
+// (go-sdk#1337).
+func TestProgressBeforeResult(t *testing.T) {
+	const (
+		numCalls        = 100
+		progressPerCall = 3
+	)
+
+	newUpstream := func() *Server {
+		s := NewServer(testImpl, nil)
+		AddTool(s, &Tool{Name: "work"}, func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+			for i := range progressPerCall {
+				if err := req.Session.NotifyProgress(ctx, &ProgressNotificationParams{
+					ProgressToken: req.Params.GetProgressToken(),
+					Progress:      float64(i + 1),
+					Total:         progressPerCall,
+				}); err != nil {
+					return nil, nil, err
+				}
+			}
+			return &CallToolResult{}, nil, nil
+		})
+		return s
+	}
+
+	type progressTracker struct {
+		mu       sync.Mutex
+		seen     map[any]int
+		returned map[any]bool
+		late     int
+	}
+	newTracker := func() *progressTracker {
+		return &progressTracker{seen: make(map[any]int), returned: make(map[any]bool)}
+	}
+	handleProgress := func(tr *progressTracker) func(context.Context, *ProgressNotificationClientRequest) {
+		return func(_ context.Context, req *ProgressNotificationClientRequest) {
+			tr.mu.Lock()
+			defer tr.mu.Unlock()
+			if tr.returned[req.Params.ProgressToken] {
+				tr.late++
+			}
+			tr.seen[req.Params.ProgressToken]++
+		}
+	}
+	callAndCheck := func(t *testing.T, cs *ClientSession, tr *progressTracker) {
+		t.Helper()
+		ctx := context.Background()
+		violations := 0
+		for i := range numCalls {
+			token := fmt.Sprintf("call-%d", i)
+			params := &CallToolParams{Name: "work"}
+			params.SetProgressToken(token)
+			if _, err := cs.CallTool(ctx, params); err != nil {
+				t.Fatalf("CallTool %d: %v", i, err)
+			}
+			tr.mu.Lock()
+			tr.returned[token] = true
+			seen := tr.seen[token]
+			tr.mu.Unlock()
+			if seen < progressPerCall {
+				violations++
+			}
+		}
+		tr.mu.Lock()
+		late := tr.late
+		tr.mu.Unlock()
+		if violations > 0 || late > 0 {
+			t.Errorf("CallTool returned before all progress notifications were handled in %d/%d calls (%d late notifications)", violations, numCalls, late)
+		}
+	}
+
+	t.Run("in_memory", func(t *testing.T) {
+		ctx := context.Background()
+		st, ct := NewInMemoryTransports()
+		ss, err := newUpstream().Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		tr := newTracker()
+		cs, err := NewClient(testImpl, &ClientOptions{
+			ProgressNotificationHandler: handleProgress(tr),
+		}).Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		callAndCheck(t, cs, tr)
+	})
+
+	t.Run("streamable_http", func(t *testing.T) {
+		ctx := context.Background()
+		upstream := newUpstream()
+		srv := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return upstream }, nil))
+		defer srv.Close()
+
+		tr := newTracker()
+		cs, err := NewClient(testImpl, &ClientOptions{
+			ProgressNotificationHandler: handleProgress(tr),
+		}).Connect(ctx, &StreamableClientTransport{Endpoint: srv.URL}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		callAndCheck(t, cs, tr)
+	})
+
+	t.Run("proxy", func(t *testing.T) {
+		ctx := context.Background()
+		upST, upCT := NewInMemoryTransports()
+		upSS, err := newUpstream().Connect(ctx, upST, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer upSS.Close()
+
+		var (
+			forwarders sync.Map
+			dropped    atomic.Int64
+		)
+		upCS, err := NewClient(testImpl, &ClientOptions{
+			ProgressNotificationHandler: func(_ context.Context, req *ProgressNotificationClientRequest) {
+				if f, ok := forwarders.Load(req.Params.ProgressToken); ok {
+					f.(func(*ProgressNotificationParams))(req.Params)
+				} else {
+					dropped.Add(1)
+				}
+			},
+		}).Connect(ctx, upCT, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer upCS.Close()
+
+		proxySrv := NewServer(testImpl, nil)
+		AddTool(proxySrv, &Tool{Name: "work"}, func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+			token := req.Params.GetProgressToken()
+			forwarders.Store(token, func(n *ProgressNotificationParams) {
+				_ = req.Session.NotifyProgress(ctx, n)
+			})
+			defer forwarders.Delete(token)
+
+			params := &CallToolParams{Name: "work"}
+			params.SetProgressToken(token)
+			res, err := upCS.CallTool(ctx, params)
+			return res, nil, err
+		})
+
+		downST, downCT := NewInMemoryTransports()
+		downSS, err := proxySrv.Connect(ctx, downST, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer downSS.Close()
+
+		tr := newTracker()
+		cs, err := NewClient(testImpl, &ClientOptions{
+			ProgressNotificationHandler: handleProgress(tr),
+		}).Connect(ctx, downCT, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		callAndCheck(t, cs, tr)
+		if n := dropped.Load(); n > 0 {
+			t.Errorf("proxy dropped %d upstream progress notifications after upstream CallTool returned", n)
+		}
+	})
+
+	t.Run("notification_handler_nested_call", func(t *testing.T) {
+		ctx := context.Background()
+		s := NewServer(testImpl, &ServerOptions{HasTools: true})
+		st, ct := NewInMemoryTransports()
+		ss, err := s.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		listed := make(chan int, 1)
+		c := NewClient(testImpl, &ClientOptions{
+			ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {
+				res, err := req.Session.ListTools(ctx, nil)
+				if err != nil {
+					t.Errorf("ListTools in ToolListChangedHandler: %v", err)
+					listed <- -1
+					return
+				}
+				listed <- len(res.Tools)
+			},
+		})
+		cs, err := c.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		AddTool(s, &Tool{Name: "greet"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{}, nil, nil
+		})
+		if got := <-listed; got != 1 {
+			t.Errorf("ListTools inside ToolListChangedHandler returned %d tools, want 1", got)
+		}
+	})
 }
