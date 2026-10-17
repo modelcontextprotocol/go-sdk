@@ -211,7 +211,9 @@ func DecodeMessage(data []byte) (Message, error) {
 	if len(msg.Method) > 0 {
 		// The "method" key was present. Decode its value (including "").
 		var method string
-		if err := internaljson.Unmarshal(msg.Method, &method); err != nil {
+		// The envelope is already depth-checked and field names matched exactly.
+		// A scalar needs no streaming decoder and its 32 KiB buffer.
+		if err := json.Unmarshal(msg.Method, &method); err != nil {
 			return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 		}
 		return &Request{
