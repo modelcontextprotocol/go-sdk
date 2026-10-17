@@ -437,7 +437,7 @@ type clientReplayTest struct {
 }
 
 func testClientReplay(t *testing.T, test clientReplayTest) {
-	notifications := make(chan string)
+	notifications := make(chan string, 4)
 	// Configure the real MCP server.
 	server := NewServer(testImpl, nil)
 
