@@ -5,6 +5,8 @@
 package mcp
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -55,10 +57,23 @@ func extractName(method string, params json.RawMessage) (string, bool) {
 }
 
 // headerSchemaProperty captures the fields needed for x-mcp-header processing.
+// Type stays raw because it can also be an array, such as the
+// ["null", "string"] that jsonschema.For infers for a pointer field.
 type headerSchemaProperty struct {
-	Type       string                          `json:"type"`
+	Type       json.RawMessage                 `json:"type,omitempty"`
 	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
 	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+}
+
+// UnmarshalJSON accepts the boolean schemas true and false, which carry no
+// annotations, so that they do not fail decoding of the enclosing schema.
+func (p *headerSchemaProperty) UnmarshalJSON(data []byte) error {
+	if s := string(bytes.TrimSpace(data)); s == "true" || s == "false" {
+		*p = headerSchemaProperty{}
+		return nil
+	}
+	type plain headerSchemaProperty
+	return internaljson.Unmarshal(data, (*plain)(p))
 }
 
 // unmarshalSchemaProperties normalizes any InputSchema type
@@ -301,8 +316,10 @@ func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string
 			path = prefix + "." + propName
 		}
 		if prop.XMCPHeader != nil {
-			if prop.Type != "string" && prop.Type != "integer" && prop.Type != "boolean" {
-				return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types (integer, string, boolean), got %q", path, prop.Type)
+			var typ string
+			_ = json.Unmarshal(prop.Type, &typ)
+			if typ != "string" && typ != "integer" && typ != "boolean" {
+				return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types (integer, string, boolean), got %s", path, cmp.Or(string(prop.Type), `""`))
 			}
 			var headerName string
 			if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
