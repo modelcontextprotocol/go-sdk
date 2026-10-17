@@ -85,11 +85,24 @@ type inFlightState struct {
 
 	incomingByID map[ID]*incomingRequest // calls only
 
-	// handlerQueue stores the backlog of calls and notifications that were not
-	// already handled by a preempter.
-	// The queue does not include the request currently being handled (if any).
-	handlerQueue   []*incomingRequest
+	// handlerQueue stores the backlog of requests and responses that must be
+	// delivered sequentially. Calls and notifications not already handled by a
+	// preempter are queued here, along with responses that arrived while the
+	// handler was busy so that notifications preceding a response on the wire
+	// are handled before the call awaiting that response returns.
+	// The queue does not include the item currently being handled (if any).
+	handlerQueue   []queueItem
 	handlerRunning bool
+	activeReleaser *releaser
+}
+
+// queueItem is an entry in [inFlightState.handlerQueue]: either an incoming
+// request to pass to [Handler.Handle], or a response to deliver to an
+// [AsyncCall].
+type queueItem struct {
+	req  *incomingRequest
+	ac   *AsyncCall
+	resp *Response
 }
 
 // updateInFlight locks the state of the connection's in-flight requests, allows
@@ -338,6 +351,10 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 		if err != nil {
 			return
 		}
+		if r, ok := ctx.Value(asyncKey).(*releaser); ok && r.conn == c && !r.isReleased() {
+			ac.callerReleaser = r
+		}
+		ac.activeAtStart = s.activeSyncReleaser()
 		if s.outgoingCalls == nil {
 			s.outgoingCalls = make(map[ID]*AsyncCall)
 		}
@@ -390,6 +407,7 @@ var asyncKey = asyncKeyType{}
 // request is released when it is allowed to run concurrent with other
 // requests, via a call to [Async].)
 type releaser struct {
+	conn     *Connection
 	mu       sync.Mutex
 	ch       chan struct{}
 	released bool
@@ -411,10 +429,25 @@ func (r *releaser) release(soft bool) {
 	}
 }
 
+func (r *releaser) isReleased() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.released
+}
+
+func (s *inFlightState) activeSyncReleaser() *releaser {
+	if s.activeReleaser != nil && !s.activeReleaser.isReleased() {
+		return s.activeReleaser
+	}
+	return nil
+}
+
 type AsyncCall struct {
-	id       ID
-	ready    chan struct{} // closed after response has been set
-	response *Response
+	id             ID
+	ready          chan struct{} // closed after response has been set
+	response       *Response
+	callerReleaser *releaser
+	activeAtStart  *releaser
 }
 
 // ID used for this call.
@@ -567,7 +600,12 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 			c.updateInFlight(func(s *inFlightState) {
 				if ac, ok := s.outgoingCalls[msg.ID]; ok {
 					delete(s.outgoingCalls, msg.ID)
-					ac.retire(msg)
+					active := s.activeSyncReleaser()
+					if !s.handlerRunning || (active != nil && (ac.callerReleaser == active || (len(s.handlerQueue) == 0 && ac.activeAtStart == active))) {
+						ac.retire(msg)
+					} else {
+						s.handlerQueue = append(s.handlerQueue, queueItem{ac: ac, resp: msg})
+					}
 				} else {
 					// TODO: How should we report unexpected responses?
 				}
@@ -668,7 +706,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		// (because it may be responding to a request issued by, say, an
 		// asynchronous handler), and in order to get to that response we have
 		// to read all of the requests that came in ahead of it.
-		s.handlerQueue = append(s.handlerQueue, req)
+		s.handlerQueue = append(s.handlerQueue, queueItem{req: req})
 		if !s.handlerRunning {
 			// We start the handleAsync goroutine when it has work to do, and let it
 			// exit when the queue empties.
@@ -692,17 +730,31 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 }
 
 // handleAsync invokes the handler on the requests in the handler queue
-// sequentially until the queue is empty.
+// sequentially until the queue is empty, retiring any queued responses in
+// order along the way.
 func (c *Connection) handleAsync() {
 	for {
-		var req *incomingRequest
+		var (
+			item queueItem
+			rel  *releaser
+		)
 		c.updateInFlight(func(s *inFlightState) {
+			s.activeReleaser = nil
 			if len(s.handlerQueue) > 0 {
-				req, s.handlerQueue = s.handlerQueue[0], s.handlerQueue[1:]
+				item, s.handlerQueue = s.handlerQueue[0], s.handlerQueue[1:]
+				if item.req != nil {
+					rel = &releaser{conn: c, ch: make(chan struct{})}
+					s.activeReleaser = rel
+				}
 			} else {
 				s.handlerRunning = false
 			}
 		})
+		if item.ac != nil {
+			item.ac.retire(item.resp)
+			continue
+		}
+		req := item.req
 		if req == nil {
 			return
 		}
@@ -712,6 +764,7 @@ func (c *Connection) handleAsync() {
 		// in-flight request), report that cause rather than the bare
 		// context.Canceled.
 		if err := req.ctx.Err(); err != nil {
+			rel.release(true)
 			if cause := context.Cause(req.ctx); cause != nil {
 				err = cause
 			}
@@ -719,14 +772,13 @@ func (c *Connection) handleAsync() {
 			continue
 		}
 
-		releaser := &releaser{ch: make(chan struct{})}
-		ctx := context.WithValue(req.ctx, asyncKey, releaser)
+		ctx := context.WithValue(req.ctx, asyncKey, rel)
 		go func() {
-			defer releaser.release(true)
+			defer rel.release(true)
 			result, err := c.handler.Handle(ctx, req.Request)
 			c.processResult(c.handler, req, result, err)
 		}()
-		<-releaser.ch
+		<-rel.ch
 	}
 }
 
