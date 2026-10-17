@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -258,4 +259,119 @@ func (w *dropWriter) drops() []ID {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.dropped)
+}
+
+// TestResponseWaitsForPrecedingNotifications verifies that when notifications
+// arrive on the wire ahead of a call's response, all preceding notification
+// handlers complete before AsyncCall.Await returns (go-sdk#1337).
+func TestResponseWaitsForPrecedingNotifications(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const numNotifications = 5
+	r := fakeReader{msgs: make(chan Message, numNotifications+1)}
+	w := fakeWriter{out: make(chan Message, 1)}
+
+	var handled atomic.Int32
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	conn := NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if handled.Add(1) == 1 {
+					close(firstStarted)
+					<-releaseFirst
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
+
+	for range numNotifications {
+		n, err := NewNotification("notify", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.msgs <- n
+	}
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- resp
+
+	// Wait until the first notification handler is running and blocking handleAsync,
+	// then allow it and all remaining notifications to complete.
+	<-firstStarted
+	close(releaseFirst)
+
+	var got string
+	if err := ac.Await(ctx, &got); err != nil {
+		t.Fatalf("Await failed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("Await result = %q, want %q", got, "ok")
+	}
+	if n := handled.Load(); n != numNotifications {
+		t.Errorf("handled %d notifications before Await returned, want %d", n, numNotifications)
+	}
+}
+
+// TestSynchronousHandlerNestedCall verifies that a synchronous handler (one
+// that does not call Async) can make an outgoing Call and await its response
+// without deadlocking on its own handlerQueue slot.
+func TestSynchronousHandlerNestedCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := fakeReader{msgs: make(chan Message, 4)}
+	w := fakeWriter{out: make(chan Message, 4)}
+	done := make(chan string, 1)
+
+	NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(c *Connection) Handler {
+			return HandlerFunc(func(hctx context.Context, req *Request) (any, error) {
+				if req.Method == "trigger" {
+					var res string
+					if err := c.Call(hctx, "nested", nil).Await(hctx, &res); err != nil {
+						t.Errorf("nested Call failed: %v", err)
+					}
+					done <- res
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	trigger, err := NewNotification("trigger", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trailing, err := NewNotification("trailing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- trigger
+	r.msgs <- trailing
+
+	nestedReq := (<-w.out).(*Request)
+	nestedResp, err := NewResponse(nestedReq.ID, "nested-ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- nestedResp
+
+	if got := <-done; got != "nested-ok" {
+		t.Errorf("nested call result = %q, want %q", got, "nested-ok")
+	}
 }
