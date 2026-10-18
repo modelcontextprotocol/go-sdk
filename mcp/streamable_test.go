@@ -4973,3 +4973,25 @@ func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamableGetServerCalledOnceForNewPOST(t *testing.T) {
+	for _, stateless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			var calls atomic.Int32
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+				calls.Add(1)
+				return server
+			}, &StreamableHTTPOptions{Stateless: stateless})
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := calls.Load(); got != 1 {
+				t.Errorf("getServer called %d times, want 1", got)
+			}
+		})
+	}
+}
