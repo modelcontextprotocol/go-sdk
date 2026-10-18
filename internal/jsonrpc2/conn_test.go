@@ -326,52 +326,130 @@ func TestResponseWaitsForPrecedingNotifications(t *testing.T) {
 
 // TestSynchronousHandlerNestedCall verifies that a synchronous handler (one
 // that does not call Async) can make an outgoing Call and await its response
-// without deadlocking on its own handlerQueue slot.
+// without deadlocking on its own handlerQueue slot, whether it passes the
+// handler context or a background context.
 func TestSynchronousHandlerNestedCall(t *testing.T) {
+	for _, useHandlerCtx := range []bool{true, false} {
+		name := "handler_ctx"
+		if !useHandlerCtx {
+			name = "background_ctx"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			r := fakeReader{msgs: make(chan Message, 4)}
+			w := fakeWriter{out: make(chan Message, 4)}
+			done := make(chan string, 1)
+
+			NewConnection(ctx, ConnectionConfig{
+				Reader: r,
+				Writer: w,
+				Closer: nopCloser{},
+				Bind: func(c *Connection) Handler {
+					return HandlerFunc(func(hctx context.Context, req *Request) (any, error) {
+						if req.Method == "trigger" {
+							callCtx := hctx
+							if !useHandlerCtx {
+								callCtx = context.Background()
+							}
+							var res string
+							if err := c.Call(callCtx, "nested", nil).Await(callCtx, &res); err != nil {
+								t.Errorf("nested Call failed: %v", err)
+							}
+							done <- res
+						}
+						return nil, nil
+					})
+				},
+			})
+
+			trigger, err := NewNotification("trigger", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			trailing, err := NewNotification("trailing", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.msgs <- trigger
+			r.msgs <- trailing
+
+			nestedReq := (<-w.out).(*Request)
+			nestedResp, err := NewResponse(nestedReq.ID, "nested-ok", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.msgs <- nestedResp
+
+			if got := <-done; got != "nested-ok" {
+				t.Errorf("nested call result = %q, want %q", got, "nested-ok")
+			}
+		})
+	}
+}
+
+// TestRetireQueuedResponse verifies that Connection.Retire retires an AsyncCall
+// even after its response has been read from the wire and queued behind an
+// in-flight notification handler, without double-retiring when the queue drains.
+func TestRetireQueuedResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r := fakeReader{msgs: make(chan Message, 4)}
+	r := fakeReader{msgs: make(chan Message)}
 	w := fakeWriter{out: make(chan Message, 4)}
-	done := make(chan string, 1)
+	notifyStarted := make(chan struct{})
+	releaseNotify := make(chan struct{})
+	allHandled := make(chan struct{})
+	var count atomic.Int32
 
-	NewConnection(ctx, ConnectionConfig{
+	conn := NewConnection(ctx, ConnectionConfig{
 		Reader: r,
 		Writer: w,
 		Closer: nopCloser{},
-		Bind: func(c *Connection) Handler {
-			return HandlerFunc(func(hctx context.Context, req *Request) (any, error) {
-				if req.Method == "trigger" {
-					var res string
-					if err := c.Call(hctx, "nested", nil).Await(hctx, &res); err != nil {
-						t.Errorf("nested Call failed: %v", err)
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if req.Method == "notify" {
+					if count.Add(1) == 1 {
+						close(notifyStarted)
+						<-releaseNotify
+					} else {
+						close(allHandled)
 					}
-					done <- res
 				}
 				return nil, nil
 			})
 		},
 	})
 
-	trigger, err := NewNotification("trigger", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trailing, err := NewNotification("trailing", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.msgs <- trigger
-	r.msgs <- trailing
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
 
-	nestedReq := (<-w.out).(*Request)
-	nestedResp, err := NewResponse(nestedReq.ID, "nested-ok", nil)
+	n, err := NewNotification("notify", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.msgs <- nestedResp
+	r.msgs <- n
+	<-notifyStarted
 
-	if got := <-done; got != "nested-ok" {
-		t.Errorf("nested call result = %q, want %q", got, "nested-ok")
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	r.msgs <- resp
+	// Because r.msgs is unbuffered, sending a second notification only returns
+	// after readIncoming has finished enqueuing resp into handlerQueue and
+	// advanced to the next Read call.
+	r.msgs <- n
+
+	retireErr := errors.New("caller cancelled")
+	conn.Retire(ac, retireErr)
+
+	var got string
+	if err := ac.Await(ctx, &got); !errors.Is(err, retireErr) {
+		t.Fatalf("Await error = %v, want %v", err, retireErr)
+	}
+
+	close(releaseNotify)
+	<-allHandled
 }
