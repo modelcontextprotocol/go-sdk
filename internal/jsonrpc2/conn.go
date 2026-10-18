@@ -95,6 +95,7 @@ type inFlightState struct {
 	handlerQueue   []queueItem
 	handlerRunning bool
 	activeReleaser *releaser
+	queuedRequests int64
 }
 
 // queueItem is an entry in [inFlightState.handlerQueue]: either an incoming
@@ -362,6 +363,7 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 			ac.callerReleaser = r
 		}
 		ac.activeAtStart = s.activeSyncReleaser()
+		ac.queuedAtStart = s.queuedRequests
 		if s.outgoingCalls == nil {
 			s.outgoingCalls = make(map[ID]*AsyncCall)
 		}
@@ -389,8 +391,14 @@ func (c *Connection) Retire(ac *AsyncCall, err error) {
 		if s.outgoingCalls[ac.id] == ac {
 			delete(s.outgoingCalls, ac.id)
 			ac.retire(&Response{ID: ac.id, Error: err})
-		} else {
-			// ac was already retired elsewhere.
+			return
+		}
+		for i, item := range s.handlerQueue {
+			if item.ac == ac {
+				s.handlerQueue = append(s.handlerQueue[:i], s.handlerQueue[i+1:]...)
+				ac.retire(&Response{ID: ac.id, Error: err})
+				return
+			}
 		}
 	})
 }
@@ -455,6 +463,7 @@ type AsyncCall struct {
 	response       *Response
 	callerReleaser *releaser
 	activeAtStart  *releaser
+	queuedAtStart  int64
 }
 
 // ID used for this call.
@@ -608,7 +617,7 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 				if ac, ok := s.outgoingCalls[msg.ID]; ok {
 					delete(s.outgoingCalls, msg.ID)
 					active := s.activeSyncReleaser()
-					if !s.handlerRunning || (active != nil && (ac.callerReleaser == active || (len(s.handlerQueue) == 0 && ac.activeAtStart == active))) {
+					if !s.handlerRunning || (active != nil && (ac.callerReleaser == active || (s.queuedRequests == ac.queuedAtStart && ac.activeAtStart == active))) {
 						ac.retire(msg)
 					} else {
 						s.handlerQueue = append(s.handlerQueue, queueItem{ac: ac, resp: msg})
@@ -712,6 +721,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		// (because it may be responding to a request issued by, say, an
 		// asynchronous handler), and in order to get to that response we have
 		// to read all of the requests that came in ahead of it.
+		s.queuedRequests++
 		s.handlerQueue = append(s.handlerQueue, queueItem{req: req})
 		if !s.handlerRunning {
 			// We start the handleAsync goroutine when it has work to do, and let it
