@@ -9,6 +9,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -761,6 +762,60 @@ func TestClientConnectDiscover(t *testing.T) {
 				t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// TestClientPingRemovedOnNewProtocol verifies that Ping on a session
+// negotiated at 2026-07-28 returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the ping method, which the
+// 2026-07-28 protocol schema removes. A plain Connect negotiates
+// 2026-07-28 over in-memory transports via server/discover.
+func TestClientPingRemovedOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	var gotPing bool
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	// Registered before Connect: the session caches its sending handler at
+	// connect time. The middleware asserts that no ping request is sent.
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodPing {
+				gotPing = true
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	err = cs.Ping(ctx, nil)
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("Ping on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if got, want := jsonrpcErr.Message, `"ping" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+	if gotPing {
+		t.Error("ping request was sent despite the removed-method guard")
 	}
 }
 
