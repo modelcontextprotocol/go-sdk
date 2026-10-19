@@ -49,7 +49,7 @@ func annotateResultType(res Result) {
 	case multiRoundTripResponse:
 		// These results are complete or input_required, so label them by
 		// whether the handler asked for more client input.
-		if r.inputRequests() != nil {
+		if asksForInput(r) {
 			r.setResultType(resultTypeInputRequired)
 		} else {
 			r.setResultType(resultTypeComplete)
@@ -105,7 +105,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	var rawMap map[string]*raw
+	var rawMap map[string]raw
 	if err := json.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
@@ -1705,12 +1705,17 @@ type ReadResourceResult struct {
 	// resultType records whether the call finished or needs more client input.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
+	// retried records that the client middleware produced this result by
+	// retrying the request with input responses. Such a result depends on
+	// inputs that are not part of the cache key, so it must not be cached.
+	retried bool
 }
 
 func (*ReadResourceResult) isResult()     {}
 func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) markRetried()                { r.retried = true }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
 	if r == nil {

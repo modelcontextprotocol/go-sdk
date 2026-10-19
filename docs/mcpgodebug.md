@@ -42,6 +42,25 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   behavior was changed to reject such messages as invalid requests, as the
   specification lists `params` as required for all three.
 
+- `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
+  has not been initialized refuses a request other than `initialize` or `ping`
+  with JSON-RPC error code `0`, restoring the previous behavior. The default
+  behavior was changed to refuse it with `-32600` (Invalid Request): `0`
+  tells a client nothing and is indistinguishable from an unset code. See
+  issue #1367.
+
+- `nointernalerrorcode` added. If set to `1`, an error returned by a request
+  handler that carries no JSON-RPC error code is sent with code `0`, restoring
+  the previous behavior. The default behavior was changed to send it with
+  `-32603` (Internal error): `0` tells the peer nothing and is
+  indistinguishable from an unset code. The error's message is unchanged.
+  See issue #1394.
+
+- `fatalnewprotocolerrors` added. If set to `1`, a streamable HTTP client
+  permanently fails its connection when an independent `2026-07-28` request
+  fails, restoring the previous behavior. By default, the failure is returned
+  only to the affected call.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

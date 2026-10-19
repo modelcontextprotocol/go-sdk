@@ -100,17 +100,15 @@ func TestServerRunContextCancel(t *testing.T) {
 			onServerExit <- server.Run(ctx, serverTransport)
 		}()
 
-		// send a ping to the server to ensure it's running
+		// Connect to the server to ensure it's running: a successful connect
+		// completes a full handshake (or a discovery round trip on
+		// 2026-07-28 sessions, where the ping method is removed).
 		client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 		session, err := client.Connect(ctx, clientTransport, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { session.Close() })
-
-		if err := session.Ping(context.Background(), nil); err != nil {
-			t.Fatal(err)
-		}
 
 		// cancel the context to stop the server
 		cancel()

@@ -1215,6 +1215,13 @@ func TestInputRequestMapJSON(t *testing.T) {
 			t.Error("expected key r1 in InputRequests")
 		}
 	})
+
+	t.Run("null entry is rejected", func(t *testing.T) {
+		var got CallToolResult
+		if err := json.Unmarshal([]byte(`{"content":[],"inputRequests":{"r1":null}}`), &got); err == nil {
+			t.Error("Unmarshal succeeded, want an error for a null input request")
+		}
+	})
 }
 
 func TestInputResponseMapJSON(t *testing.T) {
