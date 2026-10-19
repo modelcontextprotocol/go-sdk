@@ -495,3 +495,93 @@ func TestMultiRoundTripDeclaredCapabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestMultiRoundTripRootsCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		caps    *ClientCapabilities
+		wantErr bool
+	}{
+		{name: "inferred"},
+		{name: "explicit", caps: &ClientCapabilities{RootsV2: &RootCapabilities{}}},
+		{name: "disabled", caps: &ClientCapabilities{}, wantErr: true},
+	} {
+		for _, conn := range []struct {
+			version string
+			connect func(*testing.T, *Server, *ClientOptions) *ClientSession
+		}{
+			{protocolVersion20260728, mustConnect},
+			{protocolVersion20251125, mustConnectOldProtocol},
+		} {
+			t.Run(tc.name+"/"+conn.version, func(t *testing.T) {
+				var replies atomic.Int32
+				s := NewServer(testImpl, nil)
+				AddTool(s, &Tool{Name: "ask"}, func(_ context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+					if len(req.Params.InputResponses) == 0 {
+						return &CallToolResult{InputRequests: InputRequestMap{"roots": &ListRootsParams{}}}, nil, nil
+					}
+					roots, ok := req.Params.InputResponses["roots"].(*ListRootsResult)
+					if !ok || len(roots.Roots) != 1 || roots.Roots[0].URI != "file:///workspace" || roots.Roots[0].Name != "workspace" {
+						t.Errorf("input response = %+v; want the configured workspace root", req.Params.InputResponses["roots"])
+					}
+					replies.Add(1)
+					return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+				})
+				cs := conn.connect(t, s, &ClientOptions{Capabilities: tc.caps})
+				cs.client.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+				res, err := cs.CallTool(t.Context(), &CallToolParams{Name: "ask"})
+				if tc.wantErr {
+					if err == nil || !strings.Contains(err.Error(), "does not support roots") {
+						t.Fatalf("CallTool = %+v, %v; want an unsupported-roots error", res, err)
+					}
+					if got := replies.Load(); got != 0 {
+						t.Errorf("server received %d input responses, want 0", got)
+					}
+					return
+				}
+				if err != nil || res.IsError {
+					t.Fatalf("CallTool = %+v, %v; want success", res, err)
+				}
+				if got := replies.Load(); got != 1 {
+					t.Errorf("server received %d input responses, want 1", got)
+				}
+			})
+		}
+	}
+}
+
+func TestClientRejectsUndeclaredRoots(t *testing.T) {
+	ctx := t.Context()
+	client := NewClient(testImpl, &ClientOptions{Capabilities: &ClientCapabilities{}})
+	client.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+	ct, st := NewInMemoryTransports()
+	ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	for _, tc := range []struct {
+		name   string
+		params any
+	}{
+		{"absent", nil},
+		{"empty object", json.RawMessage(`{}`)},
+		{"null", json.RawMessage(`null`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var result json.RawMessage
+			err := ss.conn.Call(ctx, methodListRoots, tc.params).Await(ctx, &result)
+			if got := errorCode(err); got != jsonrpc.CodeMethodNotFound {
+				t.Errorf("roots/list error = %v (code %d), want code %d", err, got, jsonrpc.CodeMethodNotFound)
+			}
+			if len(result) != 0 {
+				t.Errorf("roots/list returned %s, want no result", result)
+			}
+		})
+	}
+}

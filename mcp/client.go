@@ -741,6 +741,9 @@ func (c *Client) shouldSendListChangedNotification(notification string) bool {
 }
 
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
+	if c.declaredCapabilities().RootsV2 == nil {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "client does not support roots"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
