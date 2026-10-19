@@ -410,23 +410,23 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
 	req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, protocolVersion))
-	var supportedVersions []string
-	server := h.getServer(req)
+	if h.opts.Stateless {
+		h.serveStateless(w, req)
+	} else {
+		h.serveStateful(w, req)
+	}
+}
+
+func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, protocolVersion string, server *Server) bool {
+	supportedVersions := supportedProtocolVersions
 	if server != nil {
 		supportedVersions = server.protocolVersions
-	} else {
-		supportedVersions = supportedProtocolVersions
 	}
 	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
 		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
-		return
+		return false
 	}
-
-	if h.opts.Stateless {
-		h.serveStateless(w, req, server)
-	} else {
-		h.serveStateful(w, req, server)
-	}
+	return true
 }
 
 // serveStateless handles requests for stateless servers.
@@ -435,7 +435,7 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 //
 // When the allowsessionsinstateless compatibility flag is set, DELETE is also
 // accepted (as a no-op) and session IDs are read from the request header.
-func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.Request, server *Server) {
+func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.Request) {
 	legacySessions := allowsessionsinstateless == "1"
 
 	if req.Method == http.MethodDelete && legacySessions {
@@ -462,6 +462,10 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
+	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
@@ -611,12 +615,12 @@ func (h *StreamableHTTPHandler) newStreamableServerTransport(sessionID string, s
 // serveStateful handles requests for stateful servers.
 // Stateful servers support GET, POST, and DELETE, and maintain persistent
 // sessions keyed by session ID.
-func (h *StreamableHTTPHandler) serveStateful(w http.ResponseWriter, req *http.Request, server *Server) {
+func (h *StreamableHTTPHandler) serveStateful(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
 		h.serveStatefulGET(w, req)
 	case http.MethodPost:
-		h.serveStatefulPOST(w, req, server)
+		h.serveStatefulPOST(w, req)
 	case http.MethodDelete:
 		h.serveStatefulDELETE(w, req)
 	default:
@@ -666,6 +670,9 @@ func (h *StreamableHTTPHandler) serveStatefulGET(w http.ResponseWriter, req *htt
 	if !ok {
 		return
 	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+		return
+	}
 
 	sessInfo.transport.ServeHTTP(w, req)
 }
@@ -683,6 +690,9 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 	if !ok {
 		return
 	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+		return
+	}
 
 	sessInfo.session.Close()
 	w.WriteHeader(http.StatusNoContent)
@@ -692,7 +702,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 // POST may arrive with or without a Mcp-Session-Id header. Without a session
 // ID, a new session is created (this is the normal path for the first
 // initialize request).
-func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *http.Request, server *Server) {
+func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *http.Request) {
 	if baseMediaType(req.Header.Get("Content-Type")) != "application/json" {
 		http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
 		return
@@ -712,6 +722,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		if !ok {
 			return
 		}
+		if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+			return
+		}
 		sessInfo.startPOST()
 		defer sessInfo.endPOST()
 		sessInfo.transport.ServeHTTP(w, req)
@@ -719,6 +732,10 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 	}
 
 	// No session ID: create a new session.
+	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
