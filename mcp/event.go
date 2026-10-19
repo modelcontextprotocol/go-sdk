@@ -158,15 +158,18 @@ func scanEventsLimited(r io.Reader, maxEventSize int) iter.Seq2[Event, error] {
 			if b, a, found := bytes.Cut(line, []byte{':'}); found {
 				before, after = b, a
 			}
+			// A field value is everything after the colon, with at most one
+			// leading U+0020 removed; any other whitespace is part of the value.
+			value := bytes.TrimPrefix(after, []byte{' '})
 			switch {
 			case bytes.Equal(before, eventKey):
-				evt.Name = strings.TrimSpace(string(after))
+				evt.Name = string(value)
 			case bytes.Equal(before, idKey):
-				evt.ID = strings.TrimSpace(string(after))
+				evt.ID = string(value)
 			case bytes.Equal(before, retryKey):
-				evt.Retry = strings.TrimSpace(string(after))
+				evt.Retry = string(value)
 			case bytes.Equal(before, dataKey):
-				data := bytes.TrimSpace(after)
+				data := value
 				if dataBuf == nil {
 					dataBuf = new(bytes.Buffer)
 				} else {
