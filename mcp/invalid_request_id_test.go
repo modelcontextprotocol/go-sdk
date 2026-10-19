@@ -43,7 +43,7 @@ func TestInvalidRequestIDHTTP(t *testing.T) {
 		if err := json.Unmarshal(result.Body.Bytes(), &envelope); err != nil {
 			t.Fatal(err)
 		}
-		if result.Header().Get("Content-Type") != "application/json" || result.Code != 400 || string(envelope.ID) != "null" || envelope.Error.Code != -32600 || calls != 0 {
+		if result.Header().Get("Content-Type") != "application/json" || result.Code != 400 || envelope.ID != nil || envelope.Error.Code != -32600 || calls != 0 {
 			t.Fatalf("status%d calls%d body%s", result.Code, calls, result.Body)
 		}
 	}
@@ -72,14 +72,14 @@ func TestInvalidRequestIDIORecovery(t *testing.T) {
 		if err := decoder.Decode(&envelope); err != nil {
 			t.Fatal(err)
 		}
-		if string(envelope.ID) != "null" || envelope.Error.Code != -32600 {
+		if envelope.ID != nil || envelope.Error.Code != -32600 {
 			t.Fatal("invalid frame error")
 		}
 	}
 }
 
-func TestIONullIDErrorResponse(t *testing.T) {
-	data := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request ID"}}` + "\n" + `{"jsonrpc":"2.0","id":7,"result":{}}` + "\n"
+func TestIOUnknownIDErrorResponse(t *testing.T) {
+	data := `{"jsonrpc":"2.0","error":{"code":-32600,"message":"invalid request ID"}}` + "\n" + `{"jsonrpc":"2.0","id":7,"result":{}}` + "\n"
 	writer := &invalidIDWriter{}
 	conn := newIOConn(rwc{rc: io.NopCloser(strings.NewReader(data)), wc: writer})
 	defer conn.Close()

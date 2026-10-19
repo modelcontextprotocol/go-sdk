@@ -1844,9 +1844,9 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
 	}{
 		{
-			name:             "400 with null-ID JSON-RPC error",
+			name:             "400 with unknown-ID JSON-RPC error",
 			callStatus:       http.StatusBadRequest,
-			callBody:         `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request ID"}}`,
+			callBody:         `{"jsonrpc":"2.0","error":{"code":-32600,"message":"invalid request ID"}}`,
 			wantErrRejected:  true,
 			wantSessionAlive: true,
 		},

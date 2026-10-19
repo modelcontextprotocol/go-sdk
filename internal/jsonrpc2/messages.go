@@ -122,9 +122,6 @@ func NewResponse(id ID, result any, rerr error) (*Response, error) {
 
 func (msg *Response) marshal(to *wireCombined) {
 	to.ID = msg.ID.value
-	if !msg.ID.IsValid() && msg.Error != nil {
-		to.ID = json.RawMessage("null")
-	}
 	to.Error = toWireError(msg.Error)
 	to.Result = msg.Result
 }
@@ -222,14 +219,14 @@ func DecodeMessage(data []byte) (Message, error) {
 			return nil, ErrInvalidRequest
 		}
 		// The interface-valued ID conflates absent and null. Check presence
-		// only on this error path, without adding work to ordinary messages.
+		// only on this error path: MCP permits an absent ID, but not null.
 		var raw struct {
 			ID json.RawMessage `json:"id"`
 		}
 		if err := internaljson.Unmarshal(data, &raw); err != nil {
 			return nil, err
 		}
-		if !bytes.Equal(bytes.TrimSpace(raw.ID), []byte("null")) {
+		if len(raw.ID) != 0 {
 			return nil, ErrInvalidRequest
 		}
 	}

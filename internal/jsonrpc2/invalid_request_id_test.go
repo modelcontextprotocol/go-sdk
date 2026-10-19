@@ -41,12 +41,12 @@ func TestUnknownIDErrorEncoding(t *testing.T) {
 	if err := json.Unmarshal(wire, &fields); err != nil {
 		t.Fatal(err)
 	}
-	if string(fields["id"]) != "null" || fields["error"] == nil || fields["result"] != nil {
+	if fields["id"] != nil || fields["error"] == nil || fields["result"] != nil {
 		t.Fatalf("invalid error response: %s", wire)
 	}
 }
 
-func TestNullIDErrorResponseRoundTrip(t *testing.T) {
+func TestUnknownIDErrorResponseRoundTrip(t *testing.T) {
 	original := &Response{Error: &WireError{Code: -32600, Message: "invalid request ID"}}
 	wire, err := EncodeMessage(original)
 	if err != nil {
@@ -68,11 +68,15 @@ func TestNullIDErrorResponseRoundTrip(t *testing.T) {
 
 func TestInvalidUnknownIDResponse(t *testing.T) {
 	for _, wire := range []string{
-		`{"jsonrpc":"2.0","error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","result":{}}`,
+		`{"jsonrpc":"2.0","error":null}`,
+		`{"jsonrpc":"2.0","result":{},"error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","result":null,"error":{"code":-32600,"message":"bad"}}`,
 		`{"jsonrpc":"2.0","id":null,"result":{}}`,
 		`{"jsonrpc":"2.0","id":null,"error":null}`,
 		`{"jsonrpc":"2.0","id":null,"result":null,"error":{"code":-32600,"message":"bad"}}`,
-		`{"jsonrpc":"2.0","ID":null,"error":{"code":-32600,"message":"bad"}}`,
+		`{"jsonrpc":"2.0","Error":{"code":-32600,"message":"bad"}}`,
 	} {
 		_, err := DecodeMessage([]byte(wire))
 		if !errors.Is(err, ErrInvalidRequest) {
