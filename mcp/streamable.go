@@ -409,23 +409,24 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
-	var supportedVersions []string
-	if server := h.getServer(req); server != nil {
-		supportedVersions = server.protocolVersions
-	} else {
-		supportedVersions = supportedProtocolVersions
-	}
-	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
-		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
-		return
-	}
 	req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, protocolVersion))
-
 	if h.opts.Stateless {
 		h.serveStateless(w, req)
 	} else {
 		h.serveStateful(w, req)
 	}
+}
+
+func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, protocolVersion string, server *Server) bool {
+	supportedVersions := supportedProtocolVersions
+	if server != nil {
+		supportedVersions = server.protocolVersions
+	}
+	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
+		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 // serveStateless handles requests for stateless servers.
@@ -462,6 +463,9 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
@@ -666,6 +670,9 @@ func (h *StreamableHTTPHandler) serveStatefulGET(w http.ResponseWriter, req *htt
 	if !ok {
 		return
 	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+		return
+	}
 
 	sessInfo.transport.ServeHTTP(w, req)
 }
@@ -681,6 +688,9 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 
 	sessInfo, ok := h.lookupSession(w, req, sessionID)
 	if !ok {
+		return
+	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
 		return
 	}
 
@@ -712,6 +722,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		if !ok {
 			return
 		}
+		if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+			return
+		}
 		sessInfo.startPOST()
 		defer sessInfo.endPOST()
 		sessInfo.transport.ServeHTTP(w, req)
@@ -720,6 +733,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 
 	// No session ID: create a new session.
 	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return

@@ -753,7 +753,15 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
 	var ts oauth2.TokenSource
 	if h.config.NewTokenSource == nil {
-		ts = cfg.TokenSource(refreshCtx, token)
+		if token.RefreshToken == "" {
+			// cfg.TokenSource would fail once the access token expires, and the
+			// transport would then give up instead of re-authorizing. Keep
+			// returning the token so that the server's 401 starts a new
+			// authorization.
+			ts = oauth2.StaticTokenSource(token)
+		} else {
+			ts = cfg.TokenSource(refreshCtx, token)
+		}
 	} else {
 		var err error
 		ts, err = h.config.NewTokenSource(refreshCtx, cfg, token)

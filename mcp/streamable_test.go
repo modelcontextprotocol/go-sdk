@@ -4973,3 +4973,65 @@ func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamableGetServerCalledOnceForNewPOST(t *testing.T) {
+	for _, stateless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			var calls atomic.Int32
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+				calls.Add(1)
+				return server
+			}, &StreamableHTTPOptions{Stateless: stateless})
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := calls.Load(); got != 1 {
+				t.Errorf("getServer called %d times, want 1", got)
+			}
+		})
+	}
+
+	t.Run("existing stateful session", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		var calls atomic.Int32
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+			calls.Add(1)
+			return server
+		}, &StreamableHTTPOptions{JSONResponse: true})
+
+		post := func(body string, sessionID string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			if sessionID != "" {
+				req.Header.Set(sessionIDHeader, sessionID)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			return rec
+		}
+
+		initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+		initRec := post(initBody, "")
+		if initRec.Code != http.StatusOK {
+			t.Fatalf("initialize status = %d, want %d: %s", initRec.Code, http.StatusOK, initRec.Body)
+		}
+		sessionID := initRec.Header().Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatal("initialize response missing session ID")
+		}
+
+		pingRec := post(`{"jsonrpc":"2.0","id":2,"method":"ping"}`, sessionID)
+		if pingRec.Code != http.StatusOK {
+			t.Fatalf("ping status = %d, want %d: %s", pingRec.Code, http.StatusOK, pingRec.Body)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Errorf("getServer called %d times, want 1 for new session only", got)
+		}
+		handler.closeAll()
+	})
+}
