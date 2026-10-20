@@ -532,3 +532,26 @@ func TestSSECustomMethod(t *testing.T) {
 		t.Errorf("Ping after custom method: %v", err)
 	}
 }
+
+// TestSSEClientConnectContextCanceled verifies that canceling the context
+// passed to Connect after the handshake does not tear down the event stream.
+func TestSSEClientConnectContextCanceled(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	httpServer := httptest.NewServer(NewSSEHandler(func(*http.Request) *Server { return server }, nil))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cs, err := NewClient(testImpl, nil).Connect(ctx, &SSEClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pingCancel()
+	if err := cs.Ping(pingCtx, nil); err != nil {
+		t.Errorf("Ping after canceling Connect context failed: %v", err)
+	}
+}
