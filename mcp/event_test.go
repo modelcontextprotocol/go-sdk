@@ -134,6 +134,29 @@ func TestScanEvents(t *testing.T) {
 				{Data: []byte("hello\n")},
 			},
 		},
+		{
+			// Per the SSE parsing rules, only a single leading space is
+			// removed from a field value, and no trailing whitespace.
+			name:  "data values keep all but one leading space",
+			input: "data: {\"a\":\ndata:  1}\n\n",
+			want: []Event{
+				{Data: []byte("{\"a\":\n 1}")},
+			},
+		},
+		{
+			name:  "data value keeps trailing whitespace",
+			input: "data: hello  \n\n",
+			want: []Event{
+				{Data: []byte("hello  ")},
+			},
+		},
+		{
+			name:  "field values keep all but one leading space",
+			input: "event:  message\nid: 1 \nretry:  500\ndata: x\n\n",
+			want: []Event{
+				{Name: " message", ID: "1 ", Retry: " 500", Data: []byte("x")},
+			},
+		},
 	}
 
 	for _, tt := range tests {
