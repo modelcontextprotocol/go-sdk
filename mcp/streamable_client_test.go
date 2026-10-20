@@ -21,7 +21,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
 
@@ -1301,6 +1303,98 @@ func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
 	// Expect the connection to fail with the sentinel error, not the RetrieveError.
 	if !errors.Is(err, errTestAuthorizeFailed) {
 		t.Fatalf("client.Connect() error = %v, want %v", err, errTestAuthorizeFailed)
+	}
+}
+
+// TestStreamableClientOAuth_ExpiredTokenWithoutRefreshToken verifies that a
+// session authorized by an [auth.AuthorizationCodeHandler] keeps working after
+// its access token expires when the authorization server issued no refresh
+// token: the server's 401 must lead to a new authorization, as it does after a
+// rejected refresh.
+func TestStreamableClientOAuth_ExpiredTokenWithoutRefreshToken(t *testing.T) {
+	ctx := context.Background()
+
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the access token is
+		// treated as expired as soon as it is issued.
+		AccessTokenTTL: 1,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	// rejectToken makes the server reject the current access token, as it
+	// would once the token has expired. A new authorization clears it.
+	var rejectToken atomic.Bool
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test_access_token" || rejectToken.Load() {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	mux := http.NewServeMux()
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+	mcpURL := httpServer.URL + "/mcp"
+	metadataURL := httpServer.URL + "/.well-known/oauth-protected-resource/mcp"
+	mux.Handle("/.well-known/oauth-protected-resource/mcp", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             mcpURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+	server := NewServer(testImpl, nil)
+	streamHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	mux.Handle("/mcp", auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{ResourceMetadataURL: metadataURL})(streamHandler))
+
+	var authorizations atomic.Int32
+	oauthHandler, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			authorizations.Add(1)
+			rejectToken.Store(false)
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &auth.AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: mcpURL, OAuthHandler: oauthHandler}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	rejectToken.Store(true)
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatalf("ListTools() after the access token expired failed: %v", err)
+	}
+	if got := authorizations.Load(); got < 2 {
+		t.Errorf("got %d authorizations, want a new one after the access token expired", got)
 	}
 }
 
