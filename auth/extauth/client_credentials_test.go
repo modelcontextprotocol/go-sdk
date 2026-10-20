@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -444,6 +445,59 @@ func TestClientCredentialsHandler_TokenAfterContextCancel(t *testing.T) {
 	if _, err := ts.Token(); err != nil {
 		t.Fatalf("token request after Authorize context cancellation failed: %v", err)
 	}
+}
+
+// TestClientCredentialsHandler_ConcurrentAuthorize verifies that Authorize can
+// run while other goroutines call Authorize and TokenSource, as the transport
+// does when concurrent requests fail with 401. It fails under the race
+// detector if the handler's state is not synchronized.
+func TestClientCredentialsHandler_ConcurrentAuthorize(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test-client": {Secret: "test-secret"},
+			},
+		},
+		ClientCredentialsConfig: &oauthtest.ClientCredentialsConfig{
+			Enabled: true,
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			resp := &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+			}
+			req := httptest.NewRequest("GET", resourceURL, nil)
+			if err := handler.Authorize(t.Context(), req, resp); err != nil {
+				t.Errorf("Authorize failed: %v", err)
+			}
+		})
+		wg.Go(func() {
+			if _, err := handler.TokenSource(t.Context()); err != nil {
+				t.Errorf("TokenSource failed: %v", err)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestSelectTokenAuthMethod(t *testing.T) {

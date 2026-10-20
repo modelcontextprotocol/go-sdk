@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
@@ -46,7 +47,11 @@ type ClientCredentialsHandlerConfig struct {
 // Resource Metadata (RFC 9728) and Authorization Server Metadata (RFC 8414),
 // following the ext-auth specification SEP-1046.
 type ClientCredentialsHandler struct {
-	config      *ClientCredentialsHandlerConfig
+	config *ClientCredentialsHandlerConfig
+
+	// mu protects tokenSource and grantedScopes. Authorize can run for one
+	// request while the transport reads the token source for another.
+	mu          sync.RWMutex
 	tokenSource oauth2.TokenSource
 
 	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
@@ -80,6 +85,8 @@ func NewClientCredentialsHandler(config *ClientCredentialsHandlerConfig) (*Clien
 // TokenSource returns the token source for outgoing requests.
 // Returns nil if authorization has not been performed yet.
 func (h *ClientCredentialsHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.tokenSource, nil
 }
 
@@ -142,7 +149,10 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	h.mu.RLock()
+	granted := h.grantedScopes[asm.Issuer]
+	h.mu.RUnlock()
+	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	cfg := &clientcredentials.Config{
@@ -156,7 +166,9 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	tok, err := cfg.Token(ctxWithClient)
 	if err != nil {
+		h.mu.Lock()
 		h.tokenSource = nil
+		h.mu.Unlock()
 		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
 	// The token source outlives this authorization request: the transport uses
@@ -166,12 +178,14 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// "context canceled". Use a background context that still carries the HTTP
 	// client, as AuthorizationCodeHandler does.
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.tokenSource = oauth2.ReuseTokenSource(tok, cfg.TokenSource(refreshCtx))
-
 	h.updateGrantedScopes(asm.Issuer, requestedScopes, tok)
 	return nil
 }
 
+// updateGrantedScopes must be called with h.mu held.
 func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string, tok *oauth2.Token) {
 	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes

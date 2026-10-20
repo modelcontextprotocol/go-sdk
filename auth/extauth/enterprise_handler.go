@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -88,6 +89,9 @@ type EnterpriseHandlerConfig struct {
 type EnterpriseHandler struct {
 	config *EnterpriseHandlerConfig
 
+	// mu protects tokenSource. Authorize can run for one request while the
+	// transport reads the token source for another.
+	mu sync.RWMutex
 	// tokenSource is the token source obtained after authorization.
 	tokenSource oauth2.TokenSource
 }
@@ -131,6 +135,8 @@ func NewEnterpriseHandler(config *EnterpriseHandlerConfig) (*EnterpriseHandler, 
 // TokenSource returns the token source for outgoing requests.
 // Returns nil if authorization has not been performed yet.
 func (h *EnterpriseHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.tokenSource, nil
 }
 
@@ -210,7 +216,9 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 
 	// Store the token source for subsequent requests
+	h.mu.Lock()
 	h.tokenSource = oauth2.StaticTokenSource(accessToken)
+	h.mu.Unlock()
 	return nil
 }
 
