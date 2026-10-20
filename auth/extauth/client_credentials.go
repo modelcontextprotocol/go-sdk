@@ -154,26 +154,30 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	}
 
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
-	h.tokenSource = cfg.TokenSource(ctxWithClient)
-
-	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
-}
-
-func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
-	if h.tokenSource == nil {
-		return nil
-	}
-	tok, err := h.tokenSource.Token()
+	tok, err := cfg.Token(ctxWithClient)
 	if err != nil {
 		h.tokenSource = nil
 		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
+	// The token source outlives this authorization request: the transport uses
+	// it for the lifetime of the connection, and clientcredentials reuses the
+	// context passed to TokenSource for every later token request. Binding it to
+	// ctx would make every request after the first token expires fail with
+	// "context canceled". Use a background context that still carries the HTTP
+	// client, as AuthorizationCodeHandler does.
+	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	h.tokenSource = oauth2.ReuseTokenSource(tok, cfg.TokenSource(refreshCtx))
+
+	h.updateGrantedScopes(asm.Issuer, requestedScopes, tok)
+	return nil
+}
+
+func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string, tok *oauth2.Token) {
 	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
 	}
-	return nil
 }
 
 // getProtectedResourceMetadata discovers Protected Resource Metadata (RFC 9728)
