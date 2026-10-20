@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -207,6 +208,89 @@ func TestAuthorize_RefreshAfterContextCancel(t *testing.T) {
 	}
 	if token.AccessToken != "test_access_token_refreshed" {
 		t.Errorf("expected refreshed access token %q, got %q", "test_access_token_refreshed", token.AccessToken)
+	}
+}
+
+// TestAuthorize_ExpiredTokenWithoutRefreshToken verifies that the token source
+// built by Authorize keeps returning the access token after it expires when the
+// authorization server issued no refresh token. Failing instead left the
+// streamable transport unable to send any request, so the server's 401 never
+// reached Authorize.
+func TestAuthorize_ExpiredTokenWithoutRefreshToken(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the access token is
+		// treated as expired immediately.
+		AccessTokenTTL: 1,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+
+	tokenSource, err := handler.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("Token() on an expired token without a refresh token failed: %v", err)
+	}
+	if token.AccessToken != "test_access_token" {
+		t.Errorf("expected access token %q, got %q", "test_access_token", token.AccessToken)
 	}
 }
 
@@ -958,6 +1042,161 @@ func TestDynamicRegistration(t *testing.T) {
 	}
 	if got.authStyle != oauth2.AuthStyleInHeader {
 		t.Errorf("handleRegistration() authStyle = %v, want %v", got.authStyle, oauth2.AuthStyleInHeader)
+	}
+}
+
+// dcrTestEnv is a handler that registers its client dynamically with a fake
+// authorization server, for a resource whose metadata points to that server.
+type dcrTestEnv struct {
+	handler     *AuthorizationCodeHandler
+	issuer      string
+	resourceURL string
+	metadataURL string
+	// clientIDs holds the client_id of each authorization request, in order.
+	clientIDs []string
+}
+
+func newDCRTestEnv(t *testing.T) *dcrTestEnv {
+	t.Helper()
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{DynamicClientRegistrationEnabled: true},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	e := &dcrTestEnv{
+		issuer:      authServer.URL(),
+		resourceURL: resourceServer.URL + "/resource",
+		metadataURL: resourceServer.URL + "/.well-known/oauth-protected-resource/resource",
+	}
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             e.resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	noRedirectClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		DynamicClientRegistrationConfig: &DynamicClientRegistrationConfig{
+			Metadata: &oauthex.ClientRegistrationMetadata{
+				RedirectURIs: []string{"http://localhost:12345/callback"},
+			},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			u, err := url.Parse(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			e.clientIDs = append(e.clientIDs, u.Query().Get("client_id"))
+			resp, err := noRedirectClient.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			loc, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &AuthorizationResult{
+				Code:  loc.Query().Get("code"),
+				State: loc.Query().Get("state"),
+				Iss:   loc.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+	e.handler = handler
+	return e
+}
+
+// authorize calls Authorize for a response with the given status and Bearer
+// challenge parameters.
+func (e *dcrTestEnv) authorize(status int, params string) error {
+	req := httptest.NewRequest(http.MethodGet, e.resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer %s, resource_metadata="%s"`, params, e.metadataURL))
+	return e.handler.Authorize(context.Background(), req, resp)
+}
+
+func TestAuthorize_ReusesDynamicRegistration(t *testing.T) {
+	e := newDCRTestEnv(t)
+	if err := e.authorize(http.StatusUnauthorized, `scope="read"`); err != nil {
+		t.Fatalf("first Authorize failed: %v", err)
+	}
+	// Step-up authorization with the same authorization server.
+	if err := e.authorize(http.StatusForbidden, `error="insufficient_scope", scope="admin"`); err != nil {
+		t.Fatalf("second Authorize failed: %v", err)
+	}
+	if len(e.clientIDs) != 2 {
+		t.Fatalf("got %d authorization requests, want 2", len(e.clientIDs))
+	}
+	if e.clientIDs[0] != e.clientIDs[1] {
+		t.Errorf("step-up authorization used client_id %q, want the registered %q", e.clientIDs[1], e.clientIDs[0])
+	}
+}
+
+func TestAuthorize_ForgetsDynamicRegistrationAfterFailure(t *testing.T) {
+	e := newDCRTestEnv(t)
+	// A client that the authorization server no longer knows, for example
+	// because it was deleted after an earlier authorization registered it.
+	e.handler.registrations[e.issuer] = &resolvedClientConfig{
+		registrationType: registrationTypeDynamic,
+		clientID:         "deleted_client_id",
+		clientSecret:     "deleted_client_secret",
+	}
+	if err := e.authorize(http.StatusUnauthorized, `scope="read"`); err == nil {
+		t.Fatal("Authorize with a deleted client succeeded, want an error")
+	}
+	if err := e.authorize(http.StatusUnauthorized, `scope="read"`); err != nil {
+		t.Fatalf("Authorize after a failed attempt failed: %v", err)
+	}
+	if len(e.clientIDs) != 2 {
+		t.Fatalf("got %d authorization requests, want 2", len(e.clientIDs))
+	}
+	if e.clientIDs[1] == "deleted_client_id" {
+		t.Error("Authorize reused the client of the failed attempt, want a new registration")
+	}
+}
+
+func TestHandleRegistration_StoredDynamicRegistration(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		secretExpiresAt time.Time
+		wantReuse       bool
+	}{
+		{"secret never expires", time.Time{}, true},
+		{"secret not expired", time.Now().Add(time.Hour), true},
+		{"secret expired", time.Now().Add(-time.Hour), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newDCRTestEnv(t)
+			stored := &resolvedClientConfig{
+				registrationType: registrationTypeDynamic,
+				clientID:         "stored_client_id",
+				clientSecret:     "stored_client_secret",
+				secretExpiresAt:  tt.secretExpiresAt,
+			}
+			e.handler.registrations[e.issuer] = stored
+			asm, err := GetAuthServerMetadata(t.Context(), e.issuer, http.DefaultClient)
+			if err != nil {
+				t.Fatalf("GetAuthServerMetadata() unexpected error = %v", err)
+			}
+			got, err := e.handler.handleRegistration(t.Context(), asm)
+			if err != nil {
+				t.Fatalf("handleRegistration() error = %v, want nil", err)
+			}
+			if reused := got.clientID == stored.clientID; reused != tt.wantReuse {
+				t.Errorf("handleRegistration() clientID = %q, reused = %v, want reused = %v", got.clientID, reused, tt.wantReuse)
+			}
+		})
 	}
 }
 

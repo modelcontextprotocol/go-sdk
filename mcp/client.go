@@ -752,7 +752,11 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
 	if c.opts.CreateMessageWithToolsHandler != nil {
-		return c.opts.CreateMessageWithToolsHandler(ctx, req)
+		res, err := c.opts.CreateMessageWithToolsHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageWithToolsHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	}
 	if c.opts.CreateMessageHandler != nil {
 		// Downconvert the request for the basic handler.
@@ -767,6 +771,9 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
 		if err != nil {
 			return nil, err
+		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		return res.toWithTools(), nil
 	}
@@ -901,6 +908,9 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if err != nil {
 			return nil, err
 		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
 		// Validate elicitation result content against requested schema.
 		if res.Action == "accept" && schema != nil && res.Content != nil {
 			resolved, err := schema.Resolve(nil)
@@ -923,8 +933,12 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if req.Params.URL == "" {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must be set for URL elicitation"}
 		}
-		// No schema validation for URL mode, just pass through to handler.
-		return c.opts.ElicitationHandler(ctx, req)
+		// No schema validation for URL mode.
+		res, err := c.opts.ElicitationHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	default:
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unsupported elicitation mode: %q", mode)}
 	}
@@ -1262,7 +1276,17 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 }
 
 // Ping makes an MCP "ping" request to the server.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
+	if cs.usesNewProtocol() {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err
 }

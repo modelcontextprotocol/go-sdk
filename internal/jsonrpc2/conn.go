@@ -747,6 +747,10 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		}
 
 		response, respErr := NewResponse(req.ID, result, err)
+		if respErr != nil {
+			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+			response, _ = NewResponse(req.ID, nil, err)
+		}
 
 		// The caller could theoretically reuse the request's ID as soon as we've
 		// sent the response, so ensure that it is removed from the incoming map
@@ -754,13 +758,9 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		c.updateInFlight(func(s *inFlightState) {
 			delete(s.incomingByID, req.ID)
 		})
-		if respErr == nil {
-			writeErr := c.write(notDone{req.ctx}, response)
-			if err == nil {
-				err = writeErr
-			}
-		} else {
-			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+		writeErr := c.write(notDone{req.ctx}, response)
+		if err == nil {
+			err = writeErr
 		}
 	} else { // req is a notification
 		if result != nil {

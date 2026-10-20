@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
@@ -34,6 +35,11 @@ type ClientIDMetadataDocumentConfig struct {
 
 // DynamicClientRegistrationConfig is used to configure dynamic client registration per
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration.
+//
+// The client registered with an authorization server is reused by later
+// authorizations with that server, for the lifetime of the
+// [AuthorizationCodeHandler]. It is registered again if its client secret has
+// expired, or if an authorization that used it fails.
 type DynamicClientRegistrationConfig struct {
 	// Metadata to be used in dynamic client registration request as per
 	// https://datatracker.ietf.org/doc/html/rfc7591#section-2.
@@ -166,7 +172,7 @@ type AuthorizationCodeHandlerConfig struct {
 type AuthorizationCodeHandler struct {
 	config *AuthorizationCodeHandlerConfig
 
-	// mu protects concurrent access to tokenSource and grantedScopes.
+	// mu protects concurrent access to tokenSource, grantedScopes and registrations.
 	mu sync.RWMutex
 
 	// tokenSource is the token source to use for authorization.
@@ -174,6 +180,10 @@ type AuthorizationCodeHandler struct {
 
 	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
 	grantedScopes map[string][]string
+
+	// registrations maps authorization server issuer to the client registered
+	// with it through dynamic client registration.
+	registrations map[string]*resolvedClientConfig
 }
 
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
@@ -241,6 +251,7 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 		config:        config,
 		tokenSource:   config.InitialTokenSource,
 		grantedScopes: make(map[string][]string),
+		registrations: make(map[string]*resolvedClientConfig),
 	}, nil
 }
 
@@ -300,7 +311,7 @@ func inferApplicationType(redirectURIs []string) string {
 // Authorize performs the authorization flow.
 // It is designed to perform the whole Authorization Code Grant flow.
 // On success, [AuthorizationCodeHandler.TokenSource] will return a token source with the fetched token.
-func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) (err error) {
 	defer resp.Body.Close()
 	defer io.Copy(io.Discard, resp.Body)
 
@@ -342,6 +353,16 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	resolvedClientConfig, err := h.handleRegistration(ctx, asm)
 	if err != nil {
 		return err
+	}
+	if resolvedClientConfig.registrationType == registrationTypeDynamic {
+		// The registered client may be why this attempt failed, for example
+		// because the authorization server has deleted it since. Forget it, so
+		// that the next attempt registers a new one.
+		defer func() {
+			if err != nil {
+				h.forgetDynamicRegistration(asm.Issuer, resolvedClientConfig)
+			}
+		}()
 	}
 
 	requestedScopes := scopesFromChallenges(wwwChallenges)
@@ -530,6 +551,9 @@ type resolvedClientConfig struct {
 	clientID         string
 	clientSecret     string
 	authStyle        oauth2.AuthStyle
+	// secretExpiresAt is when clientSecret expires, or zero if it does not.
+	// It is only set for dynamic client registration.
+	secretExpiresAt time.Time
 }
 
 func selectTokenAuthMethod(supported []string) oauth2.AuthStyle {
@@ -599,6 +623,9 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 	// 3. Attempt to use dynamic client registration.
 	dcrCfg := h.config.DynamicClientRegistrationConfig
 	if dcrCfg != nil && asm.RegistrationEndpoint != "" {
+		if cfg := h.dynamicRegistration(asm.Issuer); cfg != nil {
+			return cfg, nil
+		}
 		regResp, err := oauthex.RegisterClient(ctx, asm.RegistrationEndpoint, dcrCfg.Metadata, h.config.Client)
 		if err != nil {
 			return nil, fmt.Errorf("failed to register client: %w", err)
@@ -608,10 +635,36 @@ func (h *AuthorizationCodeHandler) handleRegistration(ctx context.Context, asm *
 			clientID:         regResp.ClientID,
 			clientSecret:     regResp.ClientSecret,
 			authStyle:        authMethodToStyle(regResp.TokenEndpointAuthMethod),
+			secretExpiresAt:  regResp.ClientSecretExpiresAt,
 		}
+		h.mu.Lock()
+		h.registrations[asm.Issuer] = cfg
+		h.mu.Unlock()
 		return cfg, nil
 	}
 	return nil, fmt.Errorf("no configured client registration methods are supported by the authorization server")
+}
+
+// dynamicRegistration returns the client registered with issuer by an earlier
+// authorization, or nil if there is none or its client secret has expired.
+func (h *AuthorizationCodeHandler) dynamicRegistration(issuer string) *resolvedClientConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	cfg := h.registrations[issuer]
+	if cfg == nil || (!cfg.secretExpiresAt.IsZero() && !time.Now().Before(cfg.secretExpiresAt)) {
+		return nil
+	}
+	return cfg
+}
+
+// forgetDynamicRegistration drops the client registered with issuer, unless
+// another authorization has replaced it since cfg was returned.
+func (h *AuthorizationCodeHandler) forgetDynamicRegistration(issuer string, cfg *resolvedClientConfig) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.registrations[issuer] == cfg {
+		delete(h.registrations, issuer)
+	}
 }
 
 type authResult struct {
@@ -700,7 +753,15 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
 	var ts oauth2.TokenSource
 	if h.config.NewTokenSource == nil {
-		ts = cfg.TokenSource(refreshCtx, token)
+		if token.RefreshToken == "" {
+			// cfg.TokenSource would fail once the access token expires, and the
+			// transport would then give up instead of re-authorizing. Keep
+			// returning the token so that the server's 401 starts a new
+			// authorization.
+			ts = oauth2.StaticTokenSource(token)
+		} else {
+			ts = cfg.TokenSource(refreshCtx, token)
+		}
 	} else {
 		var err error
 		ts, err = h.config.NewTokenSource(refreshCtx, cfg, token)

@@ -48,6 +48,18 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   tells a client nothing and is indistinguishable from an unset code. See
   issue #1367.
 
+- `nointernalerrorcode` added. If set to `1`, an error returned by a request
+  handler that carries no JSON-RPC error code is sent with code `0`, restoring
+  the previous behavior. The default behavior was changed to send it with
+  `-32603` (Internal error): `0` tells the peer nothing and is
+  indistinguishable from an unset code. The error's message is unchanged.
+  See issue #1394.
+
+- `fatalnewprotocolerrors` added. If set to `1`, a streamable HTTP client
+  permanently fails its connection when an independent `2026-07-28` request
+  fails, restoring the previous behavior. By default, the failure is returned
+  only to the affected call.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
