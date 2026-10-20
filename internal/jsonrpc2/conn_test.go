@@ -9,10 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
-	"sync"
 	"math"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
