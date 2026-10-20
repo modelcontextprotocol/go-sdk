@@ -246,7 +246,7 @@ import "github.com/rs/cors"
 
 c := cors.New(cors.Options{
     AllowedOrigins: []string{"https://example.com"},
-    AllowedMethods: []string{"GET", "OPTIONS"},
+    AllowedMethods: []string{"GET"},
 })
 http.Handle("/.well-known/oauth-protected-resource",
     c.Handler(auth.ProtectedResourceMetadataHandler(metadata)))
@@ -258,7 +258,7 @@ import "github.com/jub0bs/cors"
 
 corsMiddleware, err := cors.NewMiddleware(cors.Config{
     Origins: []string{"https://example.com"},
-    Methods: []string{"GET", "OPTIONS"},
+    Methods: []string{"GET"},
 })
 http.Handle("/.well-known/oauth-protected-resource",
     corsMiddleware.Wrap(auth.ProtectedResourceMetadataHandler(metadata)))
