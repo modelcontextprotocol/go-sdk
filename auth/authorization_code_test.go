@@ -210,6 +210,89 @@ func TestAuthorize_RefreshAfterContextCancel(t *testing.T) {
 	}
 }
 
+// TestAuthorize_ExpiredTokenWithoutRefreshToken verifies that the token source
+// built by Authorize keeps returning the access token after it expires when the
+// authorization server issued no refresh token. Failing instead left the
+// streamable transport unable to send any request, so the server's 401 never
+// reached Authorize.
+func TestAuthorize_ExpiredTokenWithoutRefreshToken(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the access token is
+		// treated as expired immediately.
+		AccessTokenTTL: 1,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to visit auth URL: %v", err)
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get location header: %v", err)
+			}
+			return &AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+
+	tokenSource, err := handler.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get token source: %v", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("Token() on an expired token without a refresh token failed: %v", err)
+	}
+	if token.AccessToken != "test_access_token" {
+		t.Errorf("expected access token %q, got %q", "test_access_token", token.AccessToken)
+	}
+}
+
 func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
 		RegistrationConfig: &oauthtest.RegistrationConfig{
