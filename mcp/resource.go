@@ -58,10 +58,13 @@ func init() {
 // MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
 // error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
 func ResourceNotFoundError(uri string) error {
+	data, _ := json.Marshal(struct {
+		URI string `json:"uri"`
+	}{uri})
 	return &jsonrpc.Error{
 		Code:    CodeResourceNotFound,
 		Message: "Resource not found",
-		Data:    json.RawMessage(fmt.Sprintf(`{"uri":%q}`, uri)),
+		Data:    json.RawMessage(data),
 	}
 }
 
