@@ -2604,7 +2604,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			// Wrap the authorization error as well for client inspection.
-			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+			return fmt.Errorf("%s: %w: %w: %w", requestSummary, jsonrpc2.ErrRejected, errAuthorizationFailed, err)
 		}
 		// Retry the request after successful authorization.
 		_, resp, err = doRequest()
@@ -2614,6 +2614,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	}
 
 	if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil {
+			err = fmt.Errorf("%w: %w", err, errAuthorizationFailed)
+		}
 		if (requestMethod == methodDiscover || requestMethod == methodSubscriptionsListen) && !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Wrap the discover or subscriptions/listen failure with ErrRejected so
 			// the jsonrpc2 layer doesn't set writeErr, which would break the connection
@@ -2835,6 +2838,11 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 		}
 	}
 }
+
+// errAuthorizationFailed marks a request that is still unauthorized after the
+// OAuthHandler ran, either because Authorize failed or because the server
+// rejected the resulting credentials.
+var errAuthorizationFailed = errors.New("authorization failed")
 
 // checkResponse checks the status code of the provided response, and
 // translates it into an error if the request was unsuccessful.
