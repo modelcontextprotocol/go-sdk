@@ -38,6 +38,116 @@ func TestClientRegistrationMetadataParse(t *testing.T) {
 	}
 }
 
+func TestClientRegistrationMetadataJWKS(t *testing.T) {
+	decodeTests := []struct {
+		name     string
+		jwks     string
+		wantJWKS string
+	}{
+		{"empty object", `{}`, `{}`},
+		{"key set", `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"abc"}]}`, `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"abc"}]}`},
+		{"string", `"{\"keys\":[]}"`, `{"keys":[]}`},
+		{"null", `null`, ``},
+	}
+	for _, tc := range decodeTests {
+		t.Run("decode "+tc.name, func(t *testing.T) {
+			data := `{"redirect_uris":["http://localhost/cb"],"client_name":"app","jwks":` + tc.jwks + `}`
+			var meta ClientRegistrationMetadata
+			if err := json.Unmarshal([]byte(data), &meta); err != nil {
+				t.Fatalf("ClientRegistrationMetadata: %v", err)
+			}
+			if meta.JWKS != tc.wantJWKS || meta.ClientName != "app" {
+				t.Errorf("ClientRegistrationMetadata: got JWKS %q, ClientName %q; want %q, %q", meta.JWKS, meta.ClientName, tc.wantJWKS, "app")
+			}
+
+			data = `{"client_id":"id","client_name":"app","jwks":` + tc.jwks + `}`
+			var resp ClientRegistrationResponse
+			if err := json.Unmarshal([]byte(data), &resp); err != nil {
+				t.Fatalf("ClientRegistrationResponse: %v", err)
+			}
+			if resp.JWKS != tc.wantJWKS || resp.ClientID != "id" || resp.ClientName != "app" {
+				t.Errorf("ClientRegistrationResponse: got JWKS %q, ClientID %q, ClientName %q; want %q, %q, %q", resp.JWKS, resp.ClientID, resp.ClientName, tc.wantJWKS, "id", "app")
+			}
+		})
+	}
+
+	t.Run("decode non-object", func(t *testing.T) {
+		var meta ClientRegistrationMetadata
+		if err := json.Unmarshal([]byte(`{"jwks":[1]}`), &meta); err == nil {
+			t.Error("ClientRegistrationMetadata: got nil error, want error")
+		}
+		var resp ClientRegistrationResponse
+		if err := json.Unmarshal([]byte(`{"client_id":"id","jwks":42}`), &resp); err == nil {
+			t.Error("ClientRegistrationResponse: got nil error, want error")
+		}
+	})
+
+	encodeTests := []struct {
+		name     string
+		jwks     string
+		wantJWKS any
+	}{
+		{"object", `{"keys":[]}`, map[string]any{"keys": []any{}}},
+		{"object with spaces", " {\"keys\": []}\n", map[string]any{"keys": []any{}}},
+		{"not an object", `not json`, "not json"},
+		{"empty", ``, nil},
+	}
+	for _, tc := range encodeTests {
+		t.Run("encode "+tc.name, func(t *testing.T) {
+			for _, v := range []any{
+				&ClientRegistrationMetadata{ClientName: "app", JWKS: tc.jwks},
+				&ClientRegistrationResponse{ClientID: "id", ClientRegistrationMetadata: ClientRegistrationMetadata{ClientName: "app", JWKS: tc.jwks}},
+			} {
+				b, err := json.Marshal(v)
+				if err != nil {
+					t.Fatalf("%T: %v", v, err)
+				}
+				var got map[string]any
+				if err := json.Unmarshal(b, &got); err != nil {
+					t.Fatal(err)
+				}
+				if diff := cmp.Diff(tc.wantJWKS, got["jwks"]); diff != "" {
+					t.Errorf("%T jwks mismatch (-want +got):\n%s", v, diff)
+				}
+				if got["client_name"] != "app" {
+					t.Errorf("%T: got client_name %v, want %q in %s", v, got["client_name"], "app", b)
+				}
+			}
+		})
+	}
+}
+
+func TestRegisterClientJWKSObject(t *testing.T) {
+	// The registration request and response carry "jwks" as a JSON object, as
+	// RFC 7591 specifies and as Ory Hydra returns it.
+	const jwks = `{"keys":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding request: %v", err)
+		}
+		if got := string(req["jwks"]); got != jwks {
+			t.Errorf("request jwks = %s, want %s", got, jwks)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"client_id":"example-client-id","redirect_uris":["http://127.0.0.1:7777/callback"],"token_endpoint_auth_method":"none","jwks":{}}`))
+	}))
+	defer server.Close()
+
+	res, err := RegisterClient(context.Background(), server.URL, &ClientRegistrationMetadata{
+		ClientName:   "repro",
+		RedirectURIs: []string{"http://127.0.0.1:7777/callback"},
+		JWKS:         jwks,
+	}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ClientID != "example-client-id" || res.JWKS != "{}" || res.TokenEndpointAuthMethod != "none" {
+		t.Errorf("got ClientID %q, JWKS %q, TokenEndpointAuthMethod %q", res.ClientID, res.JWKS, res.TokenEndpointAuthMethod)
+	}
+}
+
 func TestRegisterClient(t *testing.T) {
 	testCases := []struct {
 		name         string
