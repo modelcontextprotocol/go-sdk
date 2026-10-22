@@ -2268,7 +2268,6 @@ func TestStreamableClientLoggingTransport(t *testing.T) {
 			name = "logging"
 		}
 		t.Run(name, func(t *testing.T) {
-			getKey := streamableRequestKey{"GET", "123", "", ""}
 			fake := &fakeStreamableServer{
 				t: t,
 				responses: fakeResponses{
@@ -2288,7 +2287,7 @@ func TestStreamableClientLoggingTransport(t *testing.T) {
 						body:                jsonBody(t, resp(2, &emptyResult{}, nil)),
 						wantProtocolVersion: protocolVersion20251125,
 					},
-					getKey: {
+					{"GET", "123", "", ""}: {
 						header:              header{"Content-Type": "text/event-stream"},
 						wantProtocolVersion: protocolVersion20251125,
 					},

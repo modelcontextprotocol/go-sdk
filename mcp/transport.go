@@ -449,9 +449,10 @@ func (s *loggingConn) Close() error {
 // the connection, so without them wrapping a transport in a LoggingTransport
 // would silently change its behavior.
 var (
-	_ clientConnection       = (*loggingConn)(nil)
-	_ serverConnection       = (*loggingConn)(nil)
-	_ cancellationPropagator = (*loggingConn)(nil)
+	_ clientConnection         = (*loggingConn)(nil)
+	_ serverConnection         = (*loggingConn)(nil)
+	_ cancellationPropagator   = (*loggingConn)(nil)
+	_ jsonrpc2.ResponseDropper = (*loggingConn)(nil)
 )
 
 func (s *loggingConn) clientSessionUpdated(state clientSessionState) {
