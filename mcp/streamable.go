@@ -23,6 +23,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -2274,10 +2275,11 @@ func init() {
 // When closed, the connection issues a DELETE request to terminate the
 // session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
+	baseURL, err := url.Parse(t.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endpoint URL: %w", err)
 	}
+	client := transportHTTPClient(t.HTTPClient, baseURL)
 	maxRetries := t.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = 5
