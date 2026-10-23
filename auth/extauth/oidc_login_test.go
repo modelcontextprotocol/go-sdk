@@ -261,3 +261,96 @@ func TestPerformOIDCLogin_ValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestPerformOIDCLogin_Issuer checks the iss parameter of the authorization
+// response (RFC 9207), the mitigation for mix-up attacks.
+func TestPerformOIDCLogin_Issuer(t *testing.T) {
+	const otherIssuer = "https://attacker.example.com"
+	tests := []struct {
+		name       string
+		advertised bool
+		// iss returns the iss the fetcher reports, given the one in the
+		// IdP's redirect and the IdP's issuer.
+		iss     func(fromRedirect, issuer string) string
+		wantErr string
+	}{
+		{
+			name:       "advertised, iss from the IdP",
+			advertised: true,
+			iss:        func(fromRedirect, _ string) string { return fromRedirect },
+		},
+		{
+			name:       "advertised, iss missing",
+			advertised: true,
+			iss:        func(string, string) string { return "" },
+			wantErr:    "none was received",
+		},
+		{
+			name:       "advertised, other issuer",
+			advertised: true,
+			iss:        func(string, string) string { return otherIssuer },
+			wantErr:    "does not match expected issuer",
+		},
+		{
+			name: "not advertised, iss missing",
+			iss:  func(string, string) string { return "" },
+		},
+		{
+			name: "not advertised, matching iss",
+			iss:  func(_, issuer string) string { return issuer },
+		},
+		{
+			name:    "not advertised, other issuer",
+			iss:     func(string, string) string { return otherIssuer },
+			wantErr: "does not match expected issuer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idpServer := oauthtest.NewFakeIdPServer(oauthtest.IdPConfig{
+				PreregisteredClients: map[string]oauthtest.ClientInfo{
+					"test-client": {
+						Secret:       "test-secret",
+						RedirectURIs: []string{testRedirectURL},
+					},
+				},
+				IssParameterSupported: tt.advertised,
+			})
+			idpServer.Start(t)
+
+			fetch := func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+				client := &http.Client{
+					CheckRedirect: func(*http.Request, []*http.Request) error {
+						return http.ErrUseLastResponse
+					},
+				}
+				resp, err := client.Get(args.URL)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+				loc, err := resp.Location()
+				if err != nil {
+					return nil, err
+				}
+				q := loc.Query()
+				return &auth.AuthorizationResult{
+					Code:  q.Get("code"),
+					State: q.Get("state"),
+					Iss:   tt.iss(q.Get("iss"), idpServer.URL()),
+				}, nil
+			}
+
+			_, err := PerformOIDCLogin(context.Background(), validOIDCLoginConfig(idpServer.URL()), fetch)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("PerformOIDCLogin() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PerformOIDCLogin() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
