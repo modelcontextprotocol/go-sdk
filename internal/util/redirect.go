@@ -62,6 +62,9 @@ func checkRedirectWithinOrigin(req *http.Request, via []*http.Request) error {
 	if req.Method != via[0].Method {
 		return fmt.Errorf("redirect not followed: it changes the method from %s to %s", via[0].Method, req.Method)
 	}
+	if req.URL.User != nil && req.URL.User.String() != via[len(via)-1].URL.User.String() {
+		return fmt.Errorf("redirect not followed: target adds or changes userinfo")
+	}
 	return nil
 }
 
