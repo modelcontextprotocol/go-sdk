@@ -258,7 +258,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes: []string{"admin"},
 			},
 			authHeader: "Bearer valid", // Has "read", needs "admin" -> 403
-			wantHeader: "Bearer scope=\"admin\"",
+			wantHeader: "Bearer error=\"insufficient_scope\", scope=\"admin\"",
 			wantStatus: http.StatusForbidden,
 		},
 		{
