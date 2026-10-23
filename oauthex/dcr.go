@@ -77,6 +77,11 @@ type ClientRegistrationMetadata struct {
 
 	// JWKS is an OPTIONAL client's JSON Web Key Set [JWK] document, passed by value.
 	// This is an alternative to providing a JWKSURI.
+	//
+	// JWKS holds the JWK Set as JSON text, such as `{"keys":[...]}`, and is
+	// encoded as a JSON object (RFC 7591, Section 2). For compatibility, a value
+	// that is not a JSON object is encoded as a JSON string, and a JSON string
+	// received from a server is decoded to its contents.
 	JWKS string `json:"jwks,omitempty"`
 
 	// SoftwareID is an OPTIONAL unique identifier string for the client software,
@@ -94,6 +99,72 @@ type ClientRegistrationMetadata struct {
 	// Valid values are "native" and "web".
 	// If omitted, OIDC-compliant authorization servers default to "web".
 	ApplicationType string `json:"application_type,omitempty"`
+}
+
+// clientRegistrationMetadata has the fields of ClientRegistrationMetadata
+// without its JSON methods. Embedding it, with a shadowing "jwks" field, lets
+// ClientRegistrationMetadata and ClientRegistrationResponse use the default
+// encoding for every other field.
+type clientRegistrationMetadata ClientRegistrationMetadata
+
+func (m *ClientRegistrationMetadata) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&struct {
+		*clientRegistrationMetadata
+		JWKS json.RawMessage `json:"jwks,omitempty"`
+	}{
+		clientRegistrationMetadata: (*clientRegistrationMetadata)(m),
+		JWKS:                       encodeJWKS(m.JWKS),
+	})
+}
+
+func (m *ClientRegistrationMetadata) UnmarshalJSON(data []byte) error {
+	aux := &struct {
+		*clientRegistrationMetadata
+		JWKS json.RawMessage `json:"jwks,omitempty"`
+	}{
+		clientRegistrationMetadata: (*clientRegistrationMetadata)(m),
+	}
+	if err := internaljson.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	jwks, err := decodeJWKS(aux.JWKS)
+	if err != nil {
+		return err
+	}
+	m.JWKS = jwks
+	return nil
+}
+
+// encodeJWKS returns the JSON encoding of a JWKS field value: the value itself
+// if it is a JSON object, and a JSON string otherwise.
+func encodeJWKS(jwks string) json.RawMessage {
+	if jwks == "" {
+		return nil
+	}
+	if b := bytes.TrimSpace([]byte(jwks)); len(b) > 0 && b[0] == '{' && json.Valid(b) {
+		return b
+	}
+	b, _ := json.Marshal(jwks)
+	return b
+}
+
+// decodeJWKS returns the JWKS field value for the raw JSON of a "jwks" member.
+func decodeJWKS(raw json.RawMessage) (string, error) {
+	b := bytes.TrimSpace(raw)
+	switch {
+	case len(b) == 0 || string(b) == "null":
+		return "", nil
+	case b[0] == '"':
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return "", fmt.Errorf("jwks: %w", err)
+		}
+		return s, nil
+	case b[0] == '{':
+		return string(b), nil
+	default:
+		return "", fmt.Errorf("jwks: want a JSON object, got %.20s", b)
+	}
 }
 
 // ClientRegistrationResponse represents the fields returned by the Authorization Server
@@ -117,41 +188,49 @@ type ClientRegistrationResponse struct {
 	ClientSecretExpiresAt time.Time `json:"client_secret_expires_at,omitempty"`
 }
 
-func (r *ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
-	type alias ClientRegistrationResponse
-	var clientIDIssuedAt int64
-	var clientSecretExpiresAt int64
+// clientRegistrationResponseJSON is the wire form of ClientRegistrationResponse.
+// It lists the response fields instead of embedding an alias of
+// ClientRegistrationResponse, whose promoted ClientRegistrationMetadata
+// methods would otherwise encode only the metadata.
+type clientRegistrationResponseJSON struct {
+	*clientRegistrationMetadata
+	JWKS                  json.RawMessage `json:"jwks,omitempty"`
+	ClientID              string          `json:"client_id"`
+	ClientSecret          string          `json:"client_secret,omitempty"`
+	ClientIDIssuedAt      int64           `json:"client_id_issued_at,omitempty"`
+	ClientSecretExpiresAt int64           `json:"client_secret_expires_at,omitempty"`
+}
 
+func (r *ClientRegistrationResponse) MarshalJSON() ([]byte, error) {
+	aux := &clientRegistrationResponseJSON{
+		clientRegistrationMetadata: (*clientRegistrationMetadata)(&r.ClientRegistrationMetadata),
+		JWKS:                       encodeJWKS(r.JWKS),
+		ClientID:                   r.ClientID,
+		ClientSecret:               r.ClientSecret,
+	}
 	if !r.ClientIDIssuedAt.IsZero() {
-		clientIDIssuedAt = r.ClientIDIssuedAt.Unix()
+		aux.ClientIDIssuedAt = r.ClientIDIssuedAt.Unix()
 	}
 	if !r.ClientSecretExpiresAt.IsZero() {
-		clientSecretExpiresAt = r.ClientSecretExpiresAt.Unix()
+		aux.ClientSecretExpiresAt = r.ClientSecretExpiresAt.Unix()
 	}
-
-	return json.Marshal(&struct {
-		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
-		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
-		*alias
-	}{
-		ClientIDIssuedAt:      clientIDIssuedAt,
-		ClientSecretExpiresAt: clientSecretExpiresAt,
-		alias:                 (*alias)(r),
-	})
+	return json.Marshal(aux)
 }
 
 func (r *ClientRegistrationResponse) UnmarshalJSON(data []byte) error {
-	type alias ClientRegistrationResponse
-	aux := &struct {
-		ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
-		ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
-		*alias
-	}{
-		alias: (*alias)(r),
+	aux := &clientRegistrationResponseJSON{
+		clientRegistrationMetadata: (*clientRegistrationMetadata)(&r.ClientRegistrationMetadata),
 	}
-	if err := internaljson.Unmarshal(data, &aux); err != nil {
+	if err := internaljson.Unmarshal(data, aux); err != nil {
 		return err
 	}
+	jwks, err := decodeJWKS(aux.JWKS)
+	if err != nil {
+		return err
+	}
+	r.JWKS = jwks
+	r.ClientID = aux.ClientID
+	r.ClientSecret = aux.ClientSecret
 	if aux.ClientIDIssuedAt != 0 {
 		r.ClientIDIssuedAt = time.Unix(aux.ClientIDIssuedAt, 0)
 	}

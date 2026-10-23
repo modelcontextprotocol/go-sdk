@@ -1275,6 +1275,25 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 	return &ClientRequest[P]{Session: cs, Params: params}
 }
 
+// Discover makes an MCP "server/discover" request to the server and returns
+// its result unchanged, including the cache hints and the serverInfo carried
+// in the result's _meta.
+// It does not update [ClientSession.InitializeResult].
+//
+// On sessions negotiated below protocol version 2026-07-28, Discover returns
+// a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a round
+// trip: server/discover was introduced in 2026-07-28.
+func (cs *ClientSession) Discover(ctx context.Context, params *DiscoverParams) (*DiscoverResult, error) {
+	if !cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is only supported in protocol version >= %s", methodDiscover, protocolVersion20260728),
+		}
+	}
+	params = injectRequestMeta(cs, params)
+	return handleSend[*DiscoverResult](ctx, methodDiscover, newClientRequest(cs, orZero[Params](params)))
+}
+
 // Ping makes an MCP "ping" request to the server.
 //
 // On sessions negotiated at protocol version 2026-07-28 or later, Ping

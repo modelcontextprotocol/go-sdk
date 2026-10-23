@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -890,6 +891,101 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 	}
 	if _, ok := caps["sampling"]; !ok {
 		t.Errorf("clientCapabilities.sampling missing (CreateMessageHandler was set); got %v", caps)
+	}
+}
+
+// TestClientSessionDiscover verifies that ClientSession.Discover on a
+// 2026-07-28 session sends server/discover with the SEP-2575 _meta triple on
+// every call, even when the server returns a ttlMs, and returns the server's
+// DiscoverResult unchanged.
+func TestClientSessionDiscover(t *testing.T) {
+	ctx := context.Background()
+	const ttl = 60_000
+
+	var discovers atomic.Int32
+	var lastParams atomic.Pointer[DiscoverParams]
+	s := NewServer(testImpl, &ServerOptions{
+		Instructions: "discover instructions",
+		SetCacheable: func(_ context.Context, req Request, c *Cacheable) {
+			if _, ok := req.(*ServerRequest[*DiscoverParams]); ok {
+				c.TTLMs = ttl
+			}
+		},
+	})
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodDiscover {
+				discovers.Add(1)
+				lastParams.Store(req.(*ServerRequest[*DiscoverParams]).Params)
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	clientImpl := &Implementation{Name: "discover-client", Version: "v1.2.3"}
+	cs, err := NewClient(clientImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+	afterConnect := discovers.Load()
+
+	for i := range 2 {
+		res, err := cs.Discover(ctx, nil)
+		if err != nil {
+			t.Fatalf("Discover #%d: %v", i, err)
+		}
+		if got, want := discovers.Load()-afterConnect, int32(i+1); got != want {
+			t.Errorf("after Discover #%d, server received %d server/discover requests, want %d", i, got, want)
+		}
+		if !slices.Contains(res.SupportedVersions, ir.ProtocolVersion) {
+			t.Errorf("SupportedVersions = %v, want it to contain %q", res.SupportedVersions, ir.ProtocolVersion)
+		}
+		if res.Capabilities == nil {
+			t.Error("Capabilities is nil")
+		}
+		if got, want := res.Instructions, "discover instructions"; got != want {
+			t.Errorf("Instructions = %q, want %q", got, want)
+		}
+		if got, want := res.TTLMs, ttl; got != want {
+			t.Errorf("TTLMs = %d, want %d", got, want)
+		}
+		if got, want := res.CacheScope, "public"; got != want {
+			t.Errorf("CacheScope = %q, want %q", got, want)
+		}
+		serverInfo, ok := decodeMetaValue[*Implementation](res.GetMeta(), MetaKeyServerInfo)
+		if !ok || serverInfo == nil || serverInfo.Name != testImpl.Name {
+			t.Errorf("_meta[%s] = %+v, want server info named %q", MetaKeyServerInfo, serverInfo, testImpl.Name)
+		}
+	}
+
+	params := lastParams.Load()
+	if params == nil {
+		t.Fatal("server did not receive server/discover params")
+	}
+	meta := params.GetMeta()
+	if v, _ := meta[MetaKeyProtocolVersion].(string); v != ir.ProtocolVersion {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, ir.ProtocolVersion)
+	}
+	if info, _ := meta[MetaKeyClientInfo].(map[string]any); info["name"] != clientImpl.Name {
+		t.Errorf("_meta[%s] = %v, want clientInfo named %q", MetaKeyClientInfo, meta[MetaKeyClientInfo], clientImpl.Name)
+	}
+	if _, ok := meta[MetaKeyClientCapabilities].(map[string]any); !ok {
+		t.Errorf("_meta[%s] = %T, want map[string]any", MetaKeyClientCapabilities, meta[MetaKeyClientCapabilities])
+	}
+	if cs.InitializeResult() != ir {
+		t.Error("Discover replaced the session's InitializeResult")
 	}
 }
 
