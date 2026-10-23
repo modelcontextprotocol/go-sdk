@@ -107,7 +107,7 @@ The client handles both response formats:
 
 # Standalone SSE Stream
 
-After initialization, [streamableClientConn.sessionUpdated] triggers
+After initialization, [streamableClientConn.clientSessionUpdated] triggers
 [streamableClientConn.connectStandaloneSSE] to open a GET request for
 server-initiated messages:
 
