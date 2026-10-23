@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
@@ -49,6 +50,8 @@ type OIDCLoginConfig struct {
 	LoginHint string
 	// HTTPClient is the HTTP client for making requests.
 	// If nil, http.DefaultClient is used.
+	// Unless HTTPClient sets CheckRedirect, token requests follow a redirect
+	// only within the origin of the request and only if it keeps the method.
 	// OPTIONAL.
 	HTTPClient *http.Client
 }
@@ -196,11 +199,7 @@ func completeOIDCLogin(
 		return nil, fmt.Errorf("codeVerifier is required")
 	}
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, util.RestrictRedirects(config.HTTPClient))
 
 	oauth2Token, err := oauth2Config.Exchange(
 		ctxWithClient,

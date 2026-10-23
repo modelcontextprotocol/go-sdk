@@ -2193,7 +2193,14 @@ func (c *streamableServerConn) Close() error {
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
 type StreamableClientTransport struct {
-	Endpoint   string
+	Endpoint string
+	// HTTPClient is the client to use for making HTTP requests. If nil,
+	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
@@ -2274,10 +2281,7 @@ func init() {
 // When closed, the connection issues a DELETE request to terminate the
 // session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := util.RestrictRedirects(t.HTTPClient)
 	maxRetries := t.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = 5

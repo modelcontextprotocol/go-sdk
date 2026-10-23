@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -260,6 +261,29 @@ func TestRegisterClient(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Cross-Origin Redirect", func(t *testing.T) {
+		var registered atomic.Bool
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			registered.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"client_id":"test-client-id"}`))
+		}))
+		defer target.Close()
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+		}))
+		defer redirector.Close()
+
+		_, err := RegisterClient(context.Background(), redirector.URL, &ClientRegistrationMetadata{RedirectURIs: []string{"http://localhost/cb"}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "outside the origin") {
+			t.Errorf("RegisterClient() error = %v, want redirect not followed", err)
+		}
+		if registered.Load() {
+			t.Error("registration request was sent to the redirect target")
+		}
+	})
 
 	t.Run("No Endpoint", func(t *testing.T) {
 		_, err := RegisterClient(context.Background(), "", &ClientRegistrationMetadata{}, nil)

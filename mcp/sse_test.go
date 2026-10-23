@@ -600,3 +600,48 @@ func TestSSEClientConnectContextCanceled(t *testing.T) {
 		t.Errorf("Ping after canceling Connect context failed: %v", err)
 	}
 }
+
+// TestSSEClientTransportCrossOriginRedirect verifies that a POST redirected to
+// another origin is not followed. See #1429.
+func TestSSEClientTransportCrossOriginRedirect(t *testing.T) {
+	ctx := context.Background()
+
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		http.Error(w, "redirect target", http.StatusInternalServerError)
+	}))
+	defer target.Close()
+
+	server := NewServer(testImpl, nil)
+	sseHandler := NewSSEHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if bytes.Contains(body, []byte(`"method":"ping"`)) {
+				http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		sseHandler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	session, err := NewClient(testImpl, nil).Connect(ctx, &SSEClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Ping(ctx, nil); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("Ping() error = %v, want redirect not followed", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
+	}
+}
