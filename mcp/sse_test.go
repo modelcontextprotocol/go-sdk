@@ -482,6 +482,51 @@ func TestSSEClientTransportBufferedEvents(t *testing.T) {
 	}
 }
 
+// TestSSEClientTransportSkipsNonMessageEvents verifies that the SSE client
+// delivers "message" events, including events without a name, and skips other
+// events, such as keep-alive pings, and events without data. Decoding those as
+// JSON-RPC messages failed the read, which ended the session.
+func TestSSEClientTransportSkipsNonMessageEvents(t *testing.T) {
+	const stream = "event: endpoint\ndata: /messages\n\n" +
+		"event: ping\ndata: ping\n\n" +
+		"event: ping\n\n" +
+		"id: 1\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n" +
+		"event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\"}\n\n"
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	transport := &SSEClientTransport{
+		Endpoint: "http://example.com/sse",
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"text/event-stream"}},
+				Body: struct {
+					io.Reader
+					io.Closer
+				}{io.MultiReader(strings.NewReader(stream), reader), reader},
+			}, nil
+		})},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := transport.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, want := range []string{"notifications/tools/list_changed", "notifications/prompts/list_changed"} {
+		msg, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if req, ok := msg.(*jsonrpc.Request); !ok || req.Method != want {
+			t.Fatalf("Read = %v, want %s notification", msg, want)
+		}
+	}
+}
+
 // TestSSECustomMethod verifies that a custom method registered with
 // [AddReceivingCustomMethod] is accepted over the SSE transport. The POST
 // handler pre-validates the method name against the server's method set, and
