@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -35,6 +36,10 @@ type IdPConfig struct {
 	// TokenExchangeConfig enables RFC 8693 token exchange at the /token endpoint.
 	// If non-nil, the server accepts grant_type=urn:ietf:params:oauth:grant-type:token-exchange.
 	TokenExchangeConfig *TokenExchangeConfig
+
+	// IssParameterSupported advertises authorization_response_iss_parameter_supported
+	// and adds the iss parameter to authorization responses (RFC 9207).
+	IssParameterSupported bool
 }
 
 // FakeIdPServer is a fake OIDC Identity Provider for testing.
@@ -89,8 +94,7 @@ func (s *FakeIdPServer) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	if s.config.TokenExchangeConfig != nil {
 		grantTypes = append(grantTypes, oauthex.GrantTypeTokenExchange)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	meta := map[string]any{
 		"issuer":                           s.URL(),
 		"authorization_endpoint":           s.URL() + "/authorize",
 		"token_endpoint":                   s.URL() + "/token",
@@ -98,7 +102,12 @@ func (s *FakeIdPServer) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		"response_types_supported":         []string{"code"},
 		"code_challenge_methods_supported": []string{"S256"},
 		"grant_types_supported":            grantTypes,
-	})
+	}
+	if s.config.IssParameterSupported {
+		meta["authorization_response_iss_parameter_supported"] = true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(meta)
 }
 
 func (s *FakeIdPServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +139,9 @@ func (s *FakeIdPServer) handleAuthorize(w http.ResponseWriter, r *http.Request) 
 	s.codes[code] = codeInfo{CodeChallenge: codeChallenge}
 	state := r.URL.Query().Get("state")
 	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, code, state)
+	if s.config.IssParameterSupported {
+		redirectURL += "&iss=" + url.QueryEscape(s.URL())
+	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
