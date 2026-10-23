@@ -6,10 +6,12 @@ package extauth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -498,6 +500,45 @@ func TestClientCredentialsHandler_ConcurrentAuthorize(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestClientCredentialsHandler_TokenRedirectToOtherOrigin(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+	}))
+	t.Cleanup(target.Close)
+
+	// Without protected resource metadata, the resource server is also its
+	// own authorization server.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		issuer := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer": %q, "token_endpoint": %q, "code_challenge_methods_supported": ["S256"]}`, issuer, issuer+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+		Body:       http.NoBody,
+	}
+	req := httptest.NewRequest("GET", server.URL+"/resource", nil)
+	if err := handler.Authorize(t.Context(), req, resp); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("Authorize() error = %v, want redirect not followed", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
+	}
 }
 
 func TestSelectTokenAuthMethod(t *testing.T) {

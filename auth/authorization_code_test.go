@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1811,6 +1812,61 @@ func TestNewTokenSource(t *testing.T) {
 	}
 	if !called {
 		t.Error("expected NewTokenSource to be called")
+	}
+}
+
+func TestExchangeAuthorizationCode_CrossOriginRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		if r.Form.Get("grant_type") == "refresh_token" || r.Form.Get("code") == "redirect" {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		// expires_in is below oauth2's expiry delta, so the first Token call refreshes.
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token": "a", "token_type": "bearer", "refresh_token": "r", "expires_in": 1}`))
+	}))
+	defer tokenServer.Close()
+
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &oauth2.Config{
+		ClientID: "test_client",
+		Endpoint: oauth2.Endpoint{TokenURL: tokenServer.URL, AuthStyle: oauth2.AuthStyleInParams},
+	}
+	exchange := func(code string) error {
+		return handler.exchangeAuthorizationCode(t.Context(), cfg, &authResult{
+			AuthorizationResult: &AuthorizationResult{Code: code},
+			usedCodeVerifier:    "verifier",
+		}, "https://example.com/resource")
+	}
+
+	if err := exchange("redirect"); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("code exchange error = %v, want redirect not followed", err)
+	}
+
+	if err := exchange("ok"); err != nil {
+		t.Fatalf("code exchange failed: %v", err)
+	}
+	ts, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Token(); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("token refresh error = %v, want redirect not followed", err)
+	}
+
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
 	}
 }
 
