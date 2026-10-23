@@ -506,6 +506,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 			if err != nil {
 				return
 			}
+			// Server messages are "message" events, which is also the type of an
+			// event without a name. Other events, such as keep-alive pings, and
+			// events without data carry no JSON-RPC message: decoding them would
+			// fail the read and end the session.
+			if len(evt.Data) == 0 || (evt.Name != "" && evt.Name != "message") {
+				continue
+			}
 			select {
 			case s.incoming <- evt.Data:
 			case <-s.done:
