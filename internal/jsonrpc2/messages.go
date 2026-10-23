@@ -194,6 +194,9 @@ type wireDecode struct {
 	Error      *WireError      `json:"error,omitempty"`
 }
 
+// ErrInvalidRequestID identifies a request whose ID cannot be decoded.
+var ErrInvalidRequestID = fmt.Errorf("%w: invalid request ID", ErrParse)
+
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireDecode{}
 	// UseNumber keeps a numeric ID exact (see MakeID). The other fields are
@@ -206,6 +209,9 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	id, err := MakeID(msg.ID)
 	if err != nil {
+		if len(msg.Method) > 0 {
+			return nil, ErrInvalidRequestID
+		}
 		return nil, err
 	}
 	if len(msg.Method) > 0 {
@@ -222,7 +228,20 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	// no method key, should be a response
 	if !id.IsValid() {
-		return nil, ErrInvalidRequest
+		if msg.Error == nil || len(msg.Result) != 0 {
+			return nil, ErrInvalidRequest
+		}
+		// The interface-valued ID conflates absent and null. Check presence
+		// only on this error path: MCP permits an absent ID, but not null.
+		var raw struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := internaljson.Unmarshal(data, &raw); err != nil {
+			return nil, err
+		}
+		if len(raw.ID) != 0 {
+			return nil, ErrInvalidRequest
+		}
 	}
 	resp := &Response{
 		ID:     id,
