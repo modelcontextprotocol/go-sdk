@@ -8,10 +8,13 @@ package json
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 
-	"github.com/segmentio/encoding/json"
+	jsonv2 "github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
+	jsonv1 "github.com/go-json-experiment/json/v1"
 )
 
 // defaultMaxDepth is the maximum JSON nesting depth accepted by [Unmarshal].
@@ -23,18 +26,22 @@ const defaultMaxDepth = 1000
 // errMaxDepthExceeded is returned by [Unmarshal] when the input nests deeper than [defaultMaxDepth].
 var errMaxDepthExceeded = fmt.Errorf("json: exceeded maximum nesting depth of %d", defaultMaxDepth)
 
+var caseSensitiveV1 = jsonv2.JoinOptions(
+	jsonv1.DefaultOptionsV1(),
+	jsonv2.MatchCaseInsensitiveNames(false),
+)
+
 type Decoder struct {
-	dec *json.Decoder
+	dec *jsontext.Decoder
 }
 
 func NewDecoder(r io.Reader) *Decoder {
-	dec := json.NewDecoder(r)
-	dec.DontMatchCaseInsensitiveStructFields()
+	dec := jsontext.NewDecoder(r, caseSensitiveV1)
 	return &Decoder{dec: dec}
 }
 
 func (d *Decoder) Decode(v any) error {
-	return d.dec.Decode(v)
+	return jsonv2.UnmarshalDecode(d.dec, v, caseSensitiveV1)
 }
 
 func Unmarshal(data []byte, v any) error {
@@ -48,8 +55,8 @@ func UnmarshalUseNumber(data []byte, v any) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
 	}
-	dec := NewDecoder(bytes.NewReader(data))
-	dec.dec.UseNumber()
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	return dec.Decode(v)
 }
 
