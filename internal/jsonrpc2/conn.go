@@ -33,6 +33,23 @@ import (
 // to use it.
 var nomethodnotfoundcodeinerror = mcpgodebug.Value("nomethodnotfoundcodeinerror")
 
+// immediateresponseretire is a compatibility parameter that restores the
+// previous behavior of retiring a call's response as soon as the read loop sees
+// it, instead of delivering it after the notifications that precede it on the
+// wire. The default behavior keeps the promise made by the Concurrency section
+// of the protocol documentation: a notification is handled before the call
+// awaiting a response that followed it returns.
+//
+// The default is incompatible with a notification handler that waits on the
+// return of the call it is notifying about (for example a progress handler that
+// sends on an unbuffered channel drained after Call returns): the handler is
+// running while the response waits in the queue, so the call cannot return
+// until the handler completes.
+//
+// To restore the previous behavior, set MCPGODEBUG=immediateresponseretire=1.
+// This option will be removed in a future SDK version.
+var immediateresponseretire = mcpgodebug.Value("immediateresponseretire")
+
 // Connection manages the jsonrpc2 protocol, connecting responses back to their
 // calls. Connection is bidirectional; it does not have a designated server or
 // client end.
@@ -610,7 +627,7 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 				if ac, ok := s.outgoingCalls[msg.ID]; ok {
 					delete(s.outgoingCalls, msg.ID)
 					active := s.activeSyncReleaser()
-					if !s.handlerRunning || (active != nil && (ac.callerReleaser == active || (s.queuedRequests == ac.queuedAtStart && ac.activeAtStart == active))) {
+					if immediateresponseretire == "1" || !s.handlerRunning || (active != nil && (ac.callerReleaser == active || (s.queuedRequests == ac.queuedAtStart && ac.activeAtStart == active))) {
 						ac.retire(msg)
 					} else {
 						s.handlerQueue = append(s.handlerQueue, queueItem{ac: ac, resp: msg})

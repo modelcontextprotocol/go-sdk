@@ -69,6 +69,15 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   upgrade from `http` to `https` on the same host with default ports is
   allowed) and keeps the method.
 
+- `immediateresponseretire` added. If set to `1`, the response to a call is
+  retired as soon as it is read, restoring the previous behavior. The default
+  behavior was changed to deliver the response after the notifications that
+  precede it on the wire have been handled, so that a notification is observed
+  before the call it precedes returns. The previous timing is incompatible
+  with a notification handler that waits on the return of the call it notifies
+  about, such as a progress handler sending on an unbuffered channel drained
+  after `Call` returns.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
