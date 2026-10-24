@@ -437,6 +437,11 @@ implements the following heuristics:
   client goroutine.
 - Calls (such as `tools/call`) are handled asynchronously with respect to
   each other.
+- Notifications that precede a call's response on the wire are handled before
+  the call returns. A notification handler therefore must not wait on the
+  return of the call it is notifying about; set
+  `MCPGODEBUG=immediateresponseretire=1` to restore the previous timing, where
+  the call could return while its notification handler was still running.
 
 See
 [modelcontextprotocol/go-sdk#26](https://github.com/modelcontextprotocol/go-sdk/issues/26)
