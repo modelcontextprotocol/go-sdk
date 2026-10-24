@@ -235,3 +235,43 @@ that optional capabilities outside the core protocol can be declared on the
 wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
 are per-extension settings objects.
 
+Use `AddExtension` to declare one and `HasExtension` to test for one:
+
+```go
+caps := &mcp.ClientCapabilities{}
+caps.AddExtension("io.example/my-extension", nil)
+client := mcp.NewClient(impl, &mcp.ClientOptions{Capabilities: caps})
+
+cs, err := client.Connect(ctx, transport, nil)
+...
+if cs.InitializeResult().Capabilities.HasExtension("io.example/my-extension") {
+    // The server declared it too.
+}
+```
+
+#### Tasks
+
+[SEP-2663](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2663-tasks-extension.md)
+moved tasks out of the core protocol and into the
+[tasks extension](https://github.com/modelcontextprotocol/ext-tasks/blob/main/specification/draft/tasks.md),
+identified by the `mcp.ExtensionTasks` constant. A server that has negotiated
+it may answer a request with a durable task handle instead of the result that
+was asked for, which the client then polls to completion.
+
+**The SDK does not implement task execution**, and does not declare the
+extension by default. Declaring it is a promise to the peer: a client that
+declares it must be prepared for any eligible request to return a task handle
+instead of a result. Only declare it if you implement that polling flow
+yourself.
+
+If a server returns a task handle anyway, decoding fails with
+`*mcp.UnsupportedTaskResultError`, which carries the task ID:
+
+```go
+res, err := cs.CallTool(ctx, params)
+var terr *mcp.UnsupportedTaskResultError
+if errors.As(err, &terr) {
+    log.Printf("server created task %s, which this SDK cannot resolve", terr.TaskID)
+}
+```
+
