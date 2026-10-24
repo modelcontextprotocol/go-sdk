@@ -13,7 +13,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type fakeReader struct {
@@ -216,4 +218,260 @@ func (w *dropWriter) drops() []ID {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.dropped)
+}
+
+// TestResponseWaitsForPrecedingNotifications verifies that when notifications
+// arrive on the wire ahead of a call's response, all preceding notification
+// handlers complete before AsyncCall.Await returns (go-sdk#1337).
+func TestResponseWaitsForPrecedingNotifications(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const numNotifications = 5
+	r := fakeReader{msgs: make(chan Message, numNotifications+1)}
+	w := fakeWriter{out: make(chan Message, 1)}
+
+	var handled atomic.Int32
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	conn := NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if handled.Add(1) == 1 {
+					close(firstStarted)
+					<-releaseFirst
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
+
+	for range numNotifications {
+		n, err := NewNotification("notify", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.msgs <- n
+	}
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- resp
+
+	// Wait until the first notification handler is running and blocking handleAsync,
+	// then allow it and all remaining notifications to complete.
+	<-firstStarted
+	close(releaseFirst)
+
+	var got string
+	if err := ac.Await(ctx, &got); err != nil {
+		t.Fatalf("Await failed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("Await result = %q, want %q", got, "ok")
+	}
+	if n := handled.Load(); n != numNotifications {
+		t.Errorf("handled %d notifications before Await returned, want %d", n, numNotifications)
+	}
+}
+
+// TestImmediateResponseRetireGODEBUG verifies that
+// MCPGODEBUG=immediateresponseretire=1 restores the previous response timing: a
+// notification handler that waits on the return of the call it notifies about
+// does not deadlock the call.
+func TestImmediateResponseRetireGODEBUG(t *testing.T) {
+	defer func(prev string) { immediateresponseretire = prev }(immediateresponseretire)
+	immediateresponseretire = "1"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := fakeReader{msgs: make(chan Message, 2)}
+	w := fakeWriter{out: make(chan Message, 1)}
+
+	callReturned := make(chan struct{})
+	handlerDone := make(chan struct{})
+
+	conn := NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if req.Method == "notify" {
+					defer close(handlerDone)
+					select {
+					case <-callReturned:
+					case <-time.After(5 * time.Second):
+						t.Error("notification handler: the call did not return while the handler was running")
+					}
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
+
+	n, err := NewNotification("notify", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- n
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- resp
+
+	awaitCtx, cancelAwait := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelAwait()
+	var got string
+	if err := ac.Await(awaitCtx, &got); err != nil {
+		t.Fatalf("Await failed with a notification handler running: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("Await result = %q, want %q", got, "ok")
+	}
+	close(callReturned)
+	<-handlerDone
+}
+
+// TestSynchronousHandlerNestedCall verifies that a synchronous handler (one
+// that does not call Async) can make an outgoing Call and await its response
+// without deadlocking on its own handlerQueue slot, whether it passes the
+// handler context or a background context.
+func TestSynchronousHandlerNestedCall(t *testing.T) {
+	for _, useHandlerCtx := range []bool{true, false} {
+		name := "handler_ctx"
+		if !useHandlerCtx {
+			name = "background_ctx"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			r := fakeReader{msgs: make(chan Message, 4)}
+			w := fakeWriter{out: make(chan Message, 4)}
+			done := make(chan string, 1)
+
+			NewConnection(ctx, ConnectionConfig{
+				Reader: r,
+				Writer: w,
+				Closer: nopCloser{},
+				Bind: func(c *Connection) Handler {
+					return HandlerFunc(func(hctx context.Context, req *Request) (any, error) {
+						if req.Method == "trigger" {
+							callCtx := hctx
+							if !useHandlerCtx {
+								callCtx = context.Background()
+							}
+							var res string
+							if err := c.Call(callCtx, "nested", nil).Await(callCtx, &res); err != nil {
+								t.Errorf("nested Call failed: %v", err)
+							}
+							done <- res
+						}
+						return nil, nil
+					})
+				},
+			})
+
+			trigger, err := NewNotification("trigger", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			trailing, err := NewNotification("trailing", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.msgs <- trigger
+			r.msgs <- trailing
+
+			nestedReq := (<-w.out).(*Request)
+			nestedResp, err := NewResponse(nestedReq.ID, "nested-ok", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.msgs <- nestedResp
+
+			if got := <-done; got != "nested-ok" {
+				t.Errorf("nested call result = %q, want %q", got, "nested-ok")
+			}
+		})
+	}
+}
+
+// TestRetireQueuedResponse verifies that Connection.Retire retires an AsyncCall
+// even after its response has been read from the wire and queued behind an
+// in-flight notification handler, without double-retiring when the queue drains.
+func TestRetireQueuedResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := fakeReader{msgs: make(chan Message)}
+	w := fakeWriter{out: make(chan Message, 4)}
+	notifyStarted := make(chan struct{})
+	releaseNotify := make(chan struct{})
+	allHandled := make(chan struct{})
+	var count atomic.Int32
+
+	conn := NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if req.Method == "notify" {
+					if count.Add(1) == 1 {
+						close(notifyStarted)
+						<-releaseNotify
+					} else {
+						close(allHandled)
+					}
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
+
+	n, err := NewNotification("notify", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- n
+	<-notifyStarted
+
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- resp
+	// Because r.msgs is unbuffered, sending a second notification only returns
+	// after readIncoming has finished enqueuing resp into handlerQueue and
+	// advanced to the next Read call.
+	r.msgs <- n
+
+	retireErr := errors.New("caller cancelled")
+	conn.Retire(ac, retireErr)
+
+	var got string
+	if err := ac.Await(ctx, &got); !errors.Is(err, retireErr) {
+		t.Fatalf("Await error = %v, want %v", err, retireErr)
+	}
+
+	close(releaseNotify)
+	<-allHandled
 }
