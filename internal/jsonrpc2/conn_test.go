@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type fakeReader struct {
@@ -322,6 +323,69 @@ func TestResponseWaitsForPrecedingNotifications(t *testing.T) {
 	if n := handled.Load(); n != numNotifications {
 		t.Errorf("handled %d notifications before Await returned, want %d", n, numNotifications)
 	}
+}
+
+// TestImmediateResponseRetireGODEBUG verifies that
+// MCPGODEBUG=immediateresponseretire=1 restores the previous response timing: a
+// notification handler that waits on the return of the call it notifies about
+// does not deadlock the call.
+func TestImmediateResponseRetireGODEBUG(t *testing.T) {
+	defer func(prev string) { immediateresponseretire = prev }(immediateresponseretire)
+	immediateresponseretire = "1"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := fakeReader{msgs: make(chan Message, 2)}
+	w := fakeWriter{out: make(chan Message, 1)}
+
+	callReturned := make(chan struct{})
+	handlerDone := make(chan struct{})
+
+	conn := NewConnection(ctx, ConnectionConfig{
+		Reader: r,
+		Writer: w,
+		Closer: nopCloser{},
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(_ context.Context, req *Request) (any, error) {
+				if req.Method == "notify" {
+					defer close(handlerDone)
+					select {
+					case <-callReturned:
+					case <-time.After(5 * time.Second):
+						t.Error("notification handler: the call did not return while the handler was running")
+					}
+				}
+				return nil, nil
+			})
+		},
+	})
+
+	ac := conn.Call(ctx, "work", nil)
+	sent := (<-w.out).(*Request)
+
+	n, err := NewNotification("notify", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- n
+	resp, err := NewResponse(sent.ID, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.msgs <- resp
+
+	awaitCtx, cancelAwait := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelAwait()
+	var got string
+	if err := ac.Await(awaitCtx, &got); err != nil {
+		t.Fatalf("Await failed with a notification handler running: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("Await result = %q, want %q", got, "ok")
+	}
+	close(callReturned)
+	<-handlerDone
 }
 
 // TestSynchronousHandlerNestedCall verifies that a synchronous handler (one
