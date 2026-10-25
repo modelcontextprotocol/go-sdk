@@ -160,7 +160,11 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	}
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
-		return nil, req.GetSession().getConn().Notify(ctx, method, params)
+		err := req.GetSession().getConn().Notify(ctx, method, params)
+		if errors.Is(err, jsonrpc2.ErrClientClosing) || errors.Is(err, jsonrpc2.ErrServerClosing) {
+			err = fmt.Errorf("%w: %w", ErrConnectionClosed, err)
+		}
+		return nil, err
 	}
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.

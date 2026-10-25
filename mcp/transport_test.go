@@ -19,6 +19,92 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
+func TestCallErrorsDoNotWrapConnectionClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		rpcError error
+		result   Result
+		cancel   bool
+		want     error
+	}{
+		{name: "context cancellation", cancel: true, want: context.Canceled},
+		{name: "JSON-RPC error", rpcError: jsonrpc2.ErrInvalidParams, want: jsonrpc2.ErrInvalidParams},
+		{name: "decoding EOF", result: &unmarshalErrorResult{err: io.EOF}, want: io.EOF},
+		{name: "decoding unexpected EOF", result: &unmarshalErrorResult{err: io.ErrUnexpectedEOF}, want: io.ErrUnexpectedEOF},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn, peer := newTestJSONRPCConnection(t)
+			done := make(chan error, 1)
+			go func() {
+				done <- call(ctx, conn, "test", nil, test.result)
+			}()
+			msg, err := peer.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.cancel {
+				cancel()
+			} else {
+				resp := &jsonrpc.Response{
+					ID:     msg.(*jsonrpc.Request).ID,
+					Result: []byte("{}"),
+					Error:  test.rpcError,
+				}
+				if err := peer.Write(ctx, resp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = <-done
+			if !errors.Is(err, test.want) {
+				t.Errorf("call() = %v, want an error wrapping %v", err, test.want)
+			}
+			if errors.Is(err, ErrConnectionClosed) {
+				t.Errorf("call() = %v, must not wrap ErrConnectionClosed", err)
+			}
+		})
+	}
+}
+
+type unmarshalErrorResult struct {
+	ResultBase
+	err error
+}
+
+func (r *unmarshalErrorResult) UnmarshalJSON([]byte) error { return r.err }
+
+func newTestJSONRPCConnection(t *testing.T) (*jsonrpc2.Connection, Connection) {
+	t.Helper()
+	ctx := context.Background()
+	clientT, serverT := NewInMemoryTransports()
+	peer, err := serverT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := clientT.Connect(ctx)
+	if err != nil {
+		peer.Close()
+		t.Fatal(err)
+	}
+	conn := jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
+		Reader: client,
+		Writer: client,
+		Closer: client,
+		Bind: func(*jsonrpc2.Connection) jsonrpc2.Handler {
+			return jsonrpc2.HandlerFunc(func(context.Context, *jsonrpc2.Request) (any, error) {
+				return nil, jsonrpc2.ErrNotHandled
+			})
+		},
+	})
+	t.Cleanup(func() {
+		peer.Close()
+		conn.Close()
+	})
+	return conn, peer
+}
+
 func TestBatchFraming(t *testing.T) {
 	// This test checks that the ndjsonFramer can read and write JSON batches.
 	//

@@ -9,12 +9,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+func TestNotifyAfterServerClose(t *testing.T) {
+	cs, ss, cleanup := basicConnection(t, nil)
+	defer cleanup()
+	if err := ss.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cs.NotifyProgress(context.Background(), &ProgressNotificationParams{ProgressToken: "test"})
+	for _, want := range []error{ErrConnectionClosed, io.EOF} {
+		if !errors.Is(err, want) {
+			t.Errorf("NotifyProgress() = %v, want an error wrapping %v", err, want)
+		}
+	}
+}
 
 func TestValidateRequestMeta(t *testing.T) {
 	tests := []struct {
