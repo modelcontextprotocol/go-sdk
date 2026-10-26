@@ -1199,13 +1199,19 @@ func TestClientConnectDiscover_SilentStdioServerShortDeadline(t *testing.T) {
 	}
 }
 
-// TestClientConnectDiscover_ExplicitTimeout verifies that an explicit
-// DiscoverTimeout also applies to connections the default doesn't recognize.
-func TestClientConnectDiscover_ExplicitTimeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// TestClientConnectDiscover_TimeoutOnlyOnStreamConnections verifies that
+// DiscoverTimeout isn't applied to connections that aren't stdio-style, so
+// Connect waits for the caller's deadline.
+func TestClientConnectDiscover_TimeoutOnlyOnStreamConnections(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
+	client := NewClient(&Implementation{Name: "client", Version: "v1"}, nil)
 	tr := connWrappingTransport{silentStdioTransport()}
-	connectWithFallback(t, ctx, tr, &ClientSessionOptions{DiscoverTimeout: 50 * time.Millisecond})
+	cs, err := client.Connect(ctx, tr, &ClientSessionOptions{DiscoverTimeout: 50 * time.Millisecond})
+	if err == nil {
+		cs.Close()
+		t.Fatal("client.Connect succeeded, want an error from the caller's deadline")
+	}
 }
 
 // TestClientConnectDiscover_NegativeTimeout verifies that a negative

@@ -256,10 +256,9 @@ type ClientSessionOptions struct {
 	// response before falling back to the initialize handshake, since an
 	// older stdio server may silently ignore discover.
 	//
-	// If zero, a 3s bound applies on stdio, IO and in-memory transports, and
-	// discover is not bounded on other transports. A positive value applies
-	// on all transports, and a negative value disables the bound. The bound
-	// never exceeds half of the remaining Connect deadline.
+	// The bound applies only on stdio, IO and in-memory transports. If zero,
+	// it defaults to 10s, and a negative value disables it. The bound never
+	// exceeds half of the remaining Connect deadline.
 	DiscoverTimeout time.Duration
 }
 
@@ -429,19 +428,19 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	return cs, nil
 }
 
-const defaultDiscoverTimeout = 3 * time.Second
+const defaultDiscoverTimeout = 10 * time.Second
 
 // discoverProbeContext bounds the server/discover probe as described by
-// [ClientSessionOptions.DiscoverTimeout]. The default applies to
-// newline-delimited stream connections (including custom transports that
-// return one), where a handshake-era server may silently ignore requests it
-// doesn't recognize before initialize. Half of any remaining deadline is kept
-// for the initialize fallback.
+// [ClientSessionOptions.DiscoverTimeout]. It only applies to newline-delimited
+// stream connections (including custom transports that return one), where a
+// handshake-era server may silently ignore requests it doesn't recognize
+// before initialize. Half of any remaining deadline is kept for the initialize
+// fallback.
 func discoverProbeContext(ctx context.Context, conn Connection, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout == 0 && isStreamConn(conn) {
+	if timeout == 0 {
 		timeout = defaultDiscoverTimeout
 	}
-	if timeout <= 0 {
+	if timeout <= 0 || !isStreamConn(conn) {
 		return ctx, func() {}
 	}
 	if deadline, ok := ctx.Deadline(); ok {

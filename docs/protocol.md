@@ -128,9 +128,9 @@ request. Servers implementing `2026-07-28` MUST implement it.
   fails or the server does not support the latest version, the client falls back to the
   legacy `initialize` handshake. On stdio transports, where an older server may
   silently ignore requests before `initialize`, the client also falls back if
-  discovery goes unanswered for a few seconds. Set
+  discovery goes unanswered for 10 seconds. Set
   [`ClientSessionOptions.DiscoverTimeout`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSessionOptions)
-  to change that bound or apply it to other transports.
+  to change or disable that bound.
 
 A server advertises and negotiates every protocol version the SDK supports;
 set [`ServerOptions.SupportedProtocolVersions`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions)
