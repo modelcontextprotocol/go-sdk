@@ -1124,6 +1124,9 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry == nil {
+		return fmt.Errorf("titled enum entries must be objects")
+	}
 	if entry.Const == nil {
 		return fmt.Errorf("const is required for titled enum entries")
 	}
