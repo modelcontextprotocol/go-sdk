@@ -60,6 +60,15 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   fails, restoring the previous behavior. By default, the failure is returned
   only to the affected call.
 
+- `followallredirects` added. If set to `1`, the requests of
+  `StreamableClientTransport` and `SSEClientTransport`, and the OAuth token and
+  dynamic client registration requests, follow redirects as before: to any
+  origin, and changing the method as `net/http` does. The default behavior was
+  changed so that, unless the `http.Client` in use sets `CheckRedirect`, a
+  redirect is followed only if it stays within the origin of the request (an
+  upgrade from `http` to `https` on the same host with default ports is
+  allowed) and keeps the method.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.
