@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -30,6 +31,8 @@ type ClientCredentialsHandlerConfig struct {
 
 	// HTTPClient is an optional HTTP client for customization.
 	// If nil, http.DefaultClient is used.
+	// Unless HTTPClient sets CheckRedirect, token requests follow a redirect
+	// only within the origin of the request and only if it keeps the method.
 	// OPTIONAL.
 	HTTPClient *http.Client
 }
@@ -163,7 +166,8 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		AuthStyle:    selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
 	}
 
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	client := util.RestrictRedirects(httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, client)
 	tok, err := cfg.Token(ctxWithClient)
 	if err != nil {
 		h.mu.Lock()
@@ -177,7 +181,7 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// ctx would make every request after the first token expires fail with
 	// "context canceled". Use a background context that still carries the HTTP
 	// client, as AuthorizationCodeHandler does.
-	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.tokenSource = oauth2.ReuseTokenSource(tok, cfg.TokenSource(refreshCtx))

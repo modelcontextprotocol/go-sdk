@@ -412,6 +412,11 @@ type SSEClientTransport struct {
 
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
 
 	// MaxEventSize bounds the number of bytes buffered while reading a single
@@ -440,10 +445,7 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := util.RestrictRedirects(c.HTTPClient)
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := httpClient.Do(req)
 	if err != nil {

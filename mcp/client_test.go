@@ -1341,3 +1341,58 @@ func TestClientAllowMissingParamsCompat(t *testing.T) {
 		t.Errorf("handler called with nil params %d times, want 1", got.Load())
 	}
 }
+
+func TestListRootsCapabilityDisabled(t *testing.T) {
+	ctx := context.Background()
+	roots := []*Root{{URI: "file:///secret", Name: "secret"}}
+
+	tests := []struct {
+		name    string
+		caps    *ClientCapabilities
+		wantErr bool
+	}{
+		{"default", nil, false},
+		{"RootsV2 set", &ClientCapabilities{RootsV2: &RootCapabilities{}}, false},
+		{"disabled", &ClientCapabilities{}, true},
+		{"only deprecated Roots set", &ClientCapabilities{Roots: struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{ListChanged: true}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+
+			c := NewClient(testImpl, &ClientOptions{Capabilities: tc.caps})
+			c.AddRoots(roots...)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			res, err := ss.ListRoots(ctx, nil)
+			if tc.wantErr {
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) || jerr.Code != codeUnsupportedMethod {
+					t.Fatalf("ListRoots error = %v, want code %d", err, codeUnsupportedMethod)
+				}
+				if res != nil {
+					t.Errorf("ListRoots returned roots %v despite disabled capability", res.Roots)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(roots, res.Roots); diff != "" {
+				t.Errorf("roots mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

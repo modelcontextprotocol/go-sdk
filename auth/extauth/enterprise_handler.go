@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
@@ -75,6 +76,8 @@ type EnterpriseHandlerConfig struct {
 
 	// HTTPClient is an optional HTTP client for customization.
 	// If nil, http.DefaultClient is used.
+	// Unless HTTPClient sets CheckRedirect, token requests follow a redirect
+	// only within the origin of the request and only if it keeps the method.
 	// OPTIONAL.
 	HTTPClient *http.Client
 }
@@ -250,10 +253,7 @@ func exchangeJWTBearer(
 		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
 	}
 
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, util.RestrictRedirects(httpClient))
 
 	token, err := cfg.Exchange(
 		ctxWithClient,
