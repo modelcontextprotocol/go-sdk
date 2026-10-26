@@ -585,7 +585,7 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Retire any outgoing requests that were still in flight: with the Reader no
 		// longer being processed, they necessarily cannot receive a response.
 		for id, ac := range s.outgoingCalls {
-			ac.retire(&Response{ID: id, Error: err})
+			ac.retire(&Response{ID: id, Error: fmt.Errorf("%w: %w", ErrClientClosing, err)})
 		}
 		s.outgoingCalls = nil
 
