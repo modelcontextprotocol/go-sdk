@@ -311,7 +311,10 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		// only for requests believed to still be in progress.
 		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+		if cause := withoutClosingErrors(err); cause != nil {
+			return fmt.Errorf("%w: calling %q: %w", ErrConnectionClosed, method, cause)
+		}
+		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
 		// The notifications/cancelled message is best-effort. Retire the call
 		// immediately (so an unresponsive peer cannot delay the eager
@@ -339,6 +342,29 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		return fmt.Errorf("calling %q: %w", method, err)
 	}
 	return nil
+}
+
+// withoutClosingErrors returns err with jsonrpc2.ErrClientClosing and
+// jsonrpc2.ErrServerClosing removed from its tree, or nil if nothing else is
+// left. Those errors are internal: wrapping them would expose their codes.
+func withoutClosingErrors(err error) error {
+	if !errors.Is(err, jsonrpc2.ErrClientClosing) && !errors.Is(err, jsonrpc2.ErrServerClosing) {
+		return err
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() []error }:
+		var causes []error
+		for _, child := range err.Unwrap() {
+			if cause := withoutClosingErrors(child); cause != nil {
+				causes = append(causes, cause)
+			}
+		}
+		return errors.Join(causes...)
+	case interface{ Unwrap() error }:
+		return withoutClosingErrors(err.Unwrap())
+	default:
+		return nil
+	}
 }
 
 // cancelCall sends a "notifications/cancelled" notification for call and eagerly

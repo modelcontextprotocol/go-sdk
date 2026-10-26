@@ -26,6 +26,10 @@ type TokenExchangeConfig struct {
 	// IDJAGToken is the ID-JAG value returned from token exchange.
 	// Defaults to "test-id-jag-token" if empty.
 	IDJAGToken string
+
+	// IssuedTokenType is the issued_token_type returned from token exchange.
+	// Defaults to oauthex.TokenTypeIDJAG if empty.
+	IssuedTokenType string
 }
 
 // IdPConfig holds configuration for [FakeIdPServer].
@@ -230,11 +234,15 @@ func (s *FakeIdPServer) handleTokenExchangeGrant(w http.ResponseWriter, r *http.
 	if idJAG == "" {
 		idJAG = "test-id-jag-token"
 	}
+	issuedTokenType := s.config.TokenExchangeConfig.IssuedTokenType
+	if issuedTokenType == "" {
+		issuedTokenType = oauthex.TokenTypeIDJAG
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"access_token":      idJAG,
-		"issued_token_type": oauthex.TokenTypeIDJAG,
+		"issued_token_type": issuedTokenType,
 		"token_type":        "N_A",
 		"expires_in":        300,
 	})
