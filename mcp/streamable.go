@@ -2288,6 +2288,10 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 	} else if maxRetries < 0 {
 		maxRetries = 0
 	}
+	maxEventSize := t.MaxEventSize
+	if maxEventSize == 0 {
+		maxEventSize = DefaultMaxEventSize
+	}
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
 	// cancelling its blocking network operations, which prevents hangs on exit.
@@ -2318,7 +2322,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
 		oauthHandler:         t.OAuthHandler,
-		maxEventSize:         t.MaxEventSize,
+		maxEventSize:         maxEventSize,
 	}
 	return conn, nil
 }

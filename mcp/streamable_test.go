@@ -3084,6 +3084,36 @@ func TestProcessStreamMaxEventSize(t *testing.T) {
 	}
 }
 
+// TestStreamableClientDefaultMaxEventSize verifies that a zero
+// StreamableClientTransport.MaxEventSize applies DefaultMaxEventSize rather
+// than disabling the cap.
+func TestStreamableClientDefaultMaxEventSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Mcp-Session-Id", "session")
+		io.WriteString(w, "event: message\ndata: ")
+		chunk := strings.Repeat("A", 1<<20)
+		for range 2 * DefaultMaxEventSize / len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: srv.URL, DisableStandaloneSSE: true}
+	_, err := client.Connect(t.Context(), transport, nil)
+	want := fmt.Sprintf("SSE event exceeded %d bytes", DefaultMaxEventSize)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Connect() error = %v, want an error containing %q", err, want)
+	}
+}
+
 // TestScanEventsPingFiltering is a unit test for the low-level event scanning
 // with ping events to verify scanEvents properly parses all event types.
 func TestScanEventsPingFiltering(t *testing.T) {
