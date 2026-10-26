@@ -1731,3 +1731,174 @@ func TestMcpNameHeaderEncodingRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestParamHeaderAnnotationsWithNonStringTypes verifies that a type array or a
+// boolean schema elsewhere in the input schema does not cause x-mcp-header
+// annotations to be ignored.
+func TestParamHeaderAnnotationsWithNonStringTypes(t *testing.T) {
+	type typedInput struct {
+		Region string  `json:"region"`
+		Note   *string `json:"note,omitempty"`
+	}
+	typed, err := jsonschema.For[typedInput](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed.Properties["region"].Extra = map[string]any{"x-mcp-header": "Region"}
+
+	tests := []struct {
+		name   string
+		schema any
+	}{
+		{"jsonschema.For with pointer field", typed},
+		{
+			"type array on sibling property",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+					"note":   map[string]any{"type": []any{"null", "string"}},
+				},
+			},
+		},
+		{
+			"type array on parent object",
+			json.RawMessage(`{"type":["object","null"],"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`),
+		},
+		{
+			"boolean schema on sibling property",
+			json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"any":true,"none":false}}`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := &Tool{Name: "query", InputSchema: tt.schema}
+			if err := validateParamHeaderAnnotations(tool); err != nil {
+				t.Fatalf("validateParamHeaderAnnotations() = %v, want nil", err)
+			}
+			got := extractParamHeaderAnnotations(tool)
+			if len(got) != 1 || strings.Join(got[0].Path, ".") != "region" || got[0].Header != "Region" {
+				t.Fatalf("extractParamHeaderAnnotations() = %v, want [{[region] Region}]", got)
+			}
+
+			params := mustMarshal(&CallToolParams{Name: "query", Arguments: map[string]any{"region": "us-west1"}})
+			if got := generateParamHeaders(tool, params); got[paramHeaderPrefix+"Region"] != "us-west1" {
+				t.Errorf("generateParamHeaders() = %v, want Mcp-Param-Region: us-west1", got)
+			}
+
+			msg := &jsonrpc.Request{Method: "tools/call", Params: params}
+			mismatch := http.Header{}
+			mismatch.Set(paramHeaderPrefix+"Region", "eu-west1")
+			if err := validateParamHeaders(mismatch, msg, tool); err == nil {
+				t.Error("validateParamHeaders() with mismatched header = nil, want error")
+			}
+			if err := validateParamHeaders(http.Header{}, msg, tool); err == nil {
+				t.Error("validateParamHeaders() with missing header = nil, want error")
+			}
+		})
+	}
+}
+
+func TestValidateParamHeaderAnnotationsTypeArray(t *testing.T) {
+	tests := []struct {
+		name       string
+		schema     string
+		wantErrSub string
+	}{
+		{
+			name:       "type array on annotated property",
+			schema:     `{"type":"object","properties":{"region":{"type":["null","string"],"x-mcp-header":"Region"}}}`,
+			wantErrSub: `got ["null","string"]`,
+		},
+		{
+			name:       "missing type on annotated property",
+			schema:     `{"type":"object","properties":{"region":{"x-mcp-header":"Region"}}}`,
+			wantErrSub: `got ""`,
+		},
+		{
+			name:       "invalid annotation next to type array",
+			schema:     `{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"My Region"},"note":{"type":["null","string"]}}}`,
+			wantErrSub: "invalid character",
+		},
+		{
+			name:       "invalid annotation next to boolean schema",
+			schema:     `{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"My Region"},"any":true}}`,
+			wantErrSub: "invalid character",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateParamHeaderAnnotations(&Tool{Name: "query", InputSchema: json.RawMessage(tt.schema)})
+			if err == nil {
+				t.Fatalf("validateParamHeaderAnnotations() = nil, want error containing %q", tt.wantErrSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Errorf("validateParamHeaderAnnotations() = %q, want substring %q", err, tt.wantErrSub)
+			}
+		})
+	}
+}
+
+// TestValidateMcpHeadersRepeated verifies that the headers mirrored for
+// intermediaries are rejected when sent more than once, regardless of which
+// copy matches the body.
+func TestValidateMcpHeadersRepeated(t *testing.T) {
+	tool := &Tool{
+		Name: "query",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	lookup := func(name string) (*serverTool, bool) {
+		if name == tool.Name {
+			return &serverTool{tool: tool}, true
+		}
+		return nil, false
+	}
+	msg := &jsonrpc.Request{
+		Method: "tools/call",
+		Params: mustMarshal(&CallToolParams{Name: "query", Arguments: map[string]any{"region": "us-west1"}}),
+	}
+	validHeader := func() http.Header {
+		h := http.Header{}
+		h.Set(protocolVersionHeader, minVersionForStandardHeaders)
+		h.Set(methodHeader, "tools/call")
+		h.Set(nameHeader, "query")
+		h.Set(paramHeaderPrefix+"Region", "us-west1")
+		return h
+	}
+	if err := validateMcpHeaders(validHeader(), msg, lookup); err != nil {
+		t.Fatalf("validateMcpHeaders() with single headers = %v, want nil", err)
+	}
+
+	tests := []struct {
+		header string
+		extra  []string
+	}{
+		{protocolVersionHeader, []string{minVersionForStandardHeaders}},
+		{protocolVersionHeader, []string{protocolVersion20251125}},
+		{methodHeader, []string{"tools/call"}},
+		{nameHeader, []string{"query"}},
+		{nameHeader, []string{"other-tool"}},
+		{paramHeaderPrefix + "Region", []string{"us-west1"}},
+		{paramHeaderPrefix + "Region", []string{"eu-west1"}},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s=%v", tt.header, tt.extra), func(t *testing.T) {
+			h := validHeader()
+			for _, v := range tt.extra {
+				h.Add(tt.header, v)
+			}
+			err := validateMcpHeaders(h, msg, lookup)
+			if err == nil {
+				t.Fatal("validateMcpHeaders() = nil, want error for repeated header")
+			}
+			if want := "must not be repeated"; !strings.Contains(err.Error(), want) {
+				t.Errorf("validateMcpHeaders() = %q, want substring %q", err, want)
+			}
+		})
+	}
+}
