@@ -105,6 +105,7 @@ func verifyJWT(ctx context.Context, tokenString string, _ *http.Request) (*auth.
 		return &auth.TokenInfo{
 			Scopes:     claims.Scopes,         // User permissions
 			Expiration: claims.ExpiresAt.Time, // Token expiration time
+			UserID:     claims.UserID,         // Binds the session to this user
 		}, nil
 	}
 
@@ -125,6 +126,7 @@ func verifyAPIKey(ctx context.Context, apiKey string, _ *http.Request) (*auth.To
 	return &auth.TokenInfo{
 		Scopes:     key.Scopes,                     // User permissions
 		Expiration: time.Now().Add(24 * time.Hour), // 24 hour expiration
+		UserID:     key.UserID,                     // Binds the session to this user
 	}, nil
 }
 

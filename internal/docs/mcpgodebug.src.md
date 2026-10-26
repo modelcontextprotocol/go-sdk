@@ -27,6 +27,48 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   that large integers and other exact JSON values do not silently lose
   precision.
 
+- `disablepromptargsvalidation` added. If set to `1`, `Server.getPrompt` will
+  call the prompt handler even when a required argument of the prompt is
+  missing from the request, restoring the previous behavior. The default
+  behavior was changed to reject such requests with `-32602` (Invalid Params),
+  as the specification asks.
+
+- `allowmissingclientparams` added. If set to `1`, a `Client` accepts
+  `elicitation/create`, `notifications/elicitation/complete` and
+  `notifications/resources/updated` messages whose `params` member is missing
+  or `null`, restoring the previous behavior (the handler then observes nil
+  params, which crashed the built-in elicitation handlers). The default
+  behavior was changed to reject such messages as invalid requests, as the
+  specification lists `params` as required for all three.
+
+- `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
+  has not been initialized refuses a request other than `initialize` or `ping`
+  with JSON-RPC error code `0`, restoring the previous behavior. The default
+  behavior was changed to refuse it with `-32600` (Invalid Request): `0`
+  tells a client nothing and is indistinguishable from an unset code. See
+  issue #1367.
+
+- `nointernalerrorcode` added. If set to `1`, an error returned by a request
+  handler that carries no JSON-RPC error code is sent with code `0`, restoring
+  the previous behavior. The default behavior was changed to send it with
+  `-32603` (Internal error): `0` tells the peer nothing and is
+  indistinguishable from an unset code. The error's message is unchanged.
+  See issue #1394.
+
+- `fatalnewprotocolerrors` added. If set to `1`, a streamable HTTP client
+  permanently fails its connection when an independent `2026-07-28` request
+  fails, restoring the previous behavior. By default, the failure is returned
+  only to the affected call.
+
+- `followallredirects` added. If set to `1`, the requests of
+  `StreamableClientTransport` and `SSEClientTransport`, and the OAuth token and
+  dynamic client registration requests, follow redirects as before: to any
+  origin, and changing the method as `net/http` does. The default behavior was
+  changed so that, unless the `http.Client` in use sets `CheckRedirect`, a
+  redirect is followed only if it stays within the origin of the request (an
+  upgrade from `http` to `https` on the same host with default ports is
+  allowed) and keeps the method.
+
 ### 1.8.0
 
 Options listed below were added and will be removed in the 1.9.0 version of the SDK.

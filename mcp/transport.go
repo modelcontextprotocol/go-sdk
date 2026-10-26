@@ -250,7 +250,9 @@ type cancellationPropagator interface {
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
-// cancelled notifications.
+// cancelled notifications. A connection that implements
+// [jsonrpc2.ResponseDropper] can then drop the cancelled request's response,
+// as the spec requires.
 type canceller struct {
 	conn   *jsonrpc2.Connection
 	logger *slog.Logger
@@ -260,7 +262,8 @@ type canceller struct {
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
+		// UseNumber keeps a numeric requestId exact, as in jsonrpc2.DecodeMessage.
+		if err := internaljson.UnmarshalUseNumber(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)
@@ -272,7 +275,7 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		// travels as the cause of the request's context rather than being
 		// dropped here.
 		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
-		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
+		c.conn.CancelFromPeer(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
@@ -294,24 +297,6 @@ func (e *peerCancelledError) Error() string {
 
 func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
-//
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
-	call := conn.Call(ctx, method, params)
-
-	go func() {
-		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
-	}()
-}
-
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
@@ -319,6 +304,12 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
+	case err == nil:
+		// The response arrived and decoded. It is returned even if ctx has
+		// been cancelled in the meantime: the request is complete, so there
+		// is nothing to cancel, and the spec permits notifications/cancelled
+		// only for requests believed to still be in progress.
+		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
 		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
 	case ctx.Err() != nil:
@@ -440,6 +431,24 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	return err
 }
 
+// DropResponse implements [jsonrpc2.ResponseDropper] by forwarding to the
+// delegate: the connection asks its writer for the interface, so a wrapper
+// without it would keep the delegate from learning that a call was cancelled.
+func (s *loggingConn) DropResponse(id jsonrpc.ID) {
+	if dropper, ok := s.delegate.(jsonrpc2.ResponseDropper); ok {
+		dropper.DropResponse(id)
+	}
+}
+
+// sessionUpdated implements [serverConnection] by forwarding to the delegate,
+// whose behavior may depend on the negotiated protocol version (see
+// [ioConn.DropResponse]).
+func (s *loggingConn) sessionUpdated(state ServerSessionState) {
+	if c, ok := s.delegate.(serverConnection); ok {
+		c.sessionUpdated(state)
+	}
+}
+
 func (s *loggingConn) Close() error {
 	return s.delegate.Close()
 }
@@ -481,8 +490,12 @@ type ioConn struct {
 	// protocolVersion is the negotiated version of the protocol,
 	// set during session initialization.
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
+	//
+	// dropped holds the incoming calls the peer cancelled, whose responses
+	// Write discards (see [ioConn.DropResponse]). It is guarded by sessionMu too.
 	sessionMu       sync.Mutex
 	protocolVersion string
+	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
 	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
 	rwc     io.ReadWriteCloser // the underlying stream
@@ -644,6 +657,31 @@ func (t *ioConn) addBatch(batch *msgBatch) error {
 	return nil
 }
 
+// DropResponse implements [jsonrpc2.ResponseDropper]: on a session using
+// protocol version 2026-07-28 or later, Write discards the response to the
+// cancelled call. Sessions on earlier versions keep answering it.
+func (t *ioConn) DropResponse(id jsonrpc.ID) {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	if t.protocolVersion < protocolVersion20260728 {
+		return
+	}
+	if t.dropped == nil {
+		t.dropped = make(map[jsonrpc2.ID]bool)
+	}
+	t.dropped[id] = true
+}
+
+// takeDropped reports whether the response to the call with the given ID is
+// to be discarded (see [ioConn.DropResponse]), and forgets the call.
+func (t *ioConn) takeDropped(id jsonrpc.ID) bool {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	dropped := t.dropped[id]
+	delete(t.dropped, id)
+	return dropped
+}
+
 // updateBatch records a response in the message batch tracking the
 // corresponding incoming call, if any.
 //
@@ -796,6 +834,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// want to collect it into a batch before sending, if we're configured to use
 	// outgoing batches.
 	if resp, ok := msg.(*jsonrpc.Response); ok {
+		if t.takeDropped(resp.ID) {
+			return nil
+		}
 		if batch, ok := t.updateBatch(resp); ok {
 			if len(batch) > 0 {
 				data, err := marshalMessages(batch)

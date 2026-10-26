@@ -915,13 +915,21 @@ func TestNoJSONNull(t *testing.T) {
 	// Handlers with nothing to suggest or show still answer with empty
 	// arrays: completion values and prompt messages are required.
 	s := NewServer(testImpl, &ServerOptions{
-		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
+		CompletionHandler: func(_ context.Context, req *CompleteRequest) (*CompleteResult, error) {
+			if req.Params.Ref.Name == "nil" {
+				return nil, nil
+			}
 			return &CompleteResult{}, nil
 		},
 	})
 	s.AddPrompt(&Prompt{Name: "empty"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
 		return &GetPromptResult{}, nil
 	})
+	// Handlers that return no result at all still answer with an object.
+	s.AddPrompt(&Prompt{Name: "nil"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return nil, nil
+	})
+	s.AddTool(&Tool{Name: "nil", InputSchema: &jsonschema.Schema{Type: "object"}}, nopHandler)
 	ss, err := s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -954,6 +962,18 @@ func TestNoJSONNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "nil"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Complete(ctx, &CompleteParams{
+		Ref:      &CompleteReference{Type: "ref/prompt", Name: "nil"},
+		Argument: CompleteParamsArgument{Name: "arg"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1331,6 +1351,30 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "multi select titled enum with string items type",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type: "string",
+							AnyOf: []*jsonschema.Schema{
+								{
+									Const: anyPtr("high"),
+									Title: "High Priority",
+								},
+								{
+									Const: anyPtr("low"),
+									Title: "Low Priority",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range validSchemas {
@@ -1412,6 +1456,22 @@ func TestElicitationSchemaValidation(t *testing.T) {
 				},
 			},
 			expectedError: "elicit schema property \"items\" items must specify enum for untitled enums",
+		},
+		{
+			name: "array of strings with titled entry missing title",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							Type:  "string",
+							AnyOf: []*jsonschema.Schema{{Const: anyPtr("high")}},
+						},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priority\" items has invalid entry: title is required for titled enum entries",
 		},
 		{
 			name: "unsupported string format",
@@ -2389,6 +2449,51 @@ func TestComplete(t *testing.T) {
 
 	if diff := cmp.Diff(completionValues, result.Completion.Values); diff != "" {
 		t.Errorf("Complete() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestGetPromptRequiresDeclaredArguments verifies that prompts/get answers
+// -32602 when an argument the prompt declares as required is missing, as the
+// spec asks, and still calls the handler when only optional ones are missing.
+func TestGetPromptRequiresDeclaredArguments(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	server.AddPrompt(&Prompt{Name: "review", Arguments: []*PromptArgument{
+		{Name: "code", Required: true},
+		{Name: "style"},
+		nil, // tolerated, as before
+	}}, func(_ context.Context, req *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{Messages: []*PromptMessage{
+			{Role: "user", Content: &TextContent{Text: req.Params.Arguments["code"]}},
+		}}, nil
+	})
+	cs, _, cleanup := basicClientServerConnection(t, nil, server, nil)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review", Arguments: map[string]string{"style": "terse"}})
+	var werr *jsonrpc.Error
+	if !errors.As(err, &werr) || werr.Code != jsonrpc.CodeInvalidParams {
+		t.Fatalf("GetPrompt without a required argument = %v, want a %d error", err, jsonrpc.CodeInvalidParams)
+	}
+	if !strings.Contains(werr.Message, `"code"`) {
+		t.Errorf("error %q does not name the missing argument", werr.Message)
+	}
+
+	for _, args := range []map[string]string{
+		{"code": "x"},
+		{"code": ""}, // present, if empty
+		{"code": "x", "style": "terse"},
+	} {
+		if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review", Arguments: args}); err != nil {
+			t.Errorf("GetPrompt(%v) = %v, want success", args, err)
+		}
+	}
+
+	// MCPGODEBUG=disablepromptargsvalidation=1 restores the old behavior.
+	defer func(old string) { disablepromptargsvalidation = old }(disablepromptargsvalidation)
+	disablepromptargsvalidation = "1"
+	if _, err := cs.GetPrompt(ctx, &GetPromptParams{Name: "review"}); err != nil {
+		t.Errorf("GetPrompt without a required argument, validation disabled = %v, want success", err)
 	}
 }
 
@@ -3497,11 +3602,9 @@ func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
 
 	listenCtx, cancelListen := context.WithCancel(context.Background())
 	defer cancelListen()
-	if err := cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	go cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{ToolsListChanged: true, PromptsListChanged: true},
-	}); err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	})
 	waitSubListenEvent(t, events, "ack")
 
 	server.mu.Lock()
@@ -3520,6 +3623,197 @@ func TestSubscriptionsListen_TeardownRetiresOwnRegistration(t *testing.T) {
 		_, inPrompt := server.promptChangeSubscriptions[ss]
 		return !inTool && !inPrompt
 	})
+}
+
+// waitListens waits until the server session has exactly n listens in
+// flight, which is how a test knows that a cancelled listen has finished
+// unwinding.
+func waitListens(t *testing.T, ss *ServerSession, n int, what string) {
+	t.Helper()
+	waitUntil(t, 5*time.Second, what, func() bool { return listenIDsCount(ss) == n })
+}
+
+// TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown verifies that a
+// Subscribe right after Unsubscribe survives the first listen's teardown,
+// which the UnsubscribeHandler holds until the second listen is acknowledged.
+func TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown(t *testing.T) {
+	const uri = "file:///r1"
+	release := make(chan struct{})
+	releaseTeardown := sync.OnceFunc(func() { close(release) })
+	var unsubscribes atomic.Int32
+	server := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler: func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
+			if unsubscribes.Add(1) == 1 {
+				<-release
+			}
+			return nil
+		},
+	})
+	server.AddResource(&Resource{Name: "r1", URI: uri}, nil)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	events := make(chan subListenEvent, 16)
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+	// Deferred last so that it runs first: closing the session waits for the
+	// held teardown.
+	defer releaseTeardown()
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	first := waitSubListenEvent(t, events, "ack")
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("second Subscribe: %v", err)
+	}
+	second := waitSubListenEvent(t, events, "ack")
+	if second.id == first.id {
+		t.Fatalf("second listen reused subscription ID %s", first.id)
+	}
+
+	// Only now does the first listen finish unwinding.
+	releaseTeardown()
+	waitListens(t, ss, 1, "the first listen to unwind")
+
+	if err := server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: uri}); err != nil {
+		t.Fatalf("ResourceUpdated: %v", err)
+	}
+	if got := waitSubListenEvent(t, events, "updated"); got.id != second.id {
+		t.Errorf("update carried subscription ID %s, want the second listen's %s", got.id, second.id)
+	}
+
+	// The second listen still retires the subscription when it ends.
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("second Unsubscribe: %v", err)
+	}
+	waitUntil(t, 5*time.Second, "the subscription to be retired", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		_, ok := server.resourceSubscriptions[uri]
+		return !ok
+	})
+}
+
+// TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown verifies that the
+// auto-listen's teardown leaves in place a second listen's registration for
+// the same list-changed notification.
+func TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		kind   string
+		filter NotificationSubscriptions
+		change func(*Server)
+	}{
+		{
+			kind:   "tool",
+			filter: NotificationSubscriptions{ToolsListChanged: true},
+			change: func(s *Server) { AddTool(s, &Tool{Name: "t2"}, sayHi) },
+		},
+		{
+			kind:   "prompt",
+			filter: NotificationSubscriptions{PromptsListChanged: true},
+			change: func(s *Server) { s.AddPrompt(&Prompt{Name: "p2"}, nil) },
+		},
+		{
+			kind:   "resource",
+			filter: NotificationSubscriptions{ResourcesListChanged: true},
+			change: func(s *Server) { s.AddResource(&Resource{Name: "r2", URI: "file:///r2"}, nil) },
+		},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			server := newSubListenServer()
+			server.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
+
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(context.Background(), st, nil)
+			if err != nil {
+				t.Fatalf("server connect: %v", err)
+			}
+			defer ss.Close()
+
+			// A client with all three handlers, so that the auto-listen opened
+			// by Connect asks for every list-changed notification.
+			events := make(chan subListenEvent, 16)
+			notified := func(kind string, meta Meta) {
+				events <- subListenEvent{kind, fmt.Sprint(meta[MetaKeySubscriptionID])}
+			}
+			c := NewClient(testImpl, &ClientOptions{
+				ToolListChangedHandler: func(_ context.Context, req *ToolListChangedRequest) {
+					notified("tool", req.Params.Meta)
+				},
+				PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
+					notified("prompt", req.Params.Meta)
+				},
+				ResourceListChangedHandler: func(_ context.Context, req *ResourceListChangedRequest) {
+					notified("resource", req.Params.Meta)
+				},
+			})
+			c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == notificationSubscriptionsAck {
+						if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+							notified("ack", cr.Params.Meta)
+						}
+					}
+					return next(ctx, method, req)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatalf("client connect: %v", err)
+			}
+			defer cs.Close()
+			autoListen := waitSubListenEvent(t, events, "ack")
+
+			listenCtx, cancelListen := context.WithCancel(context.Background())
+			defer cancelListen()
+			go cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{Notifications: &tc.filter})
+			second := waitSubListenEvent(t, events, "ack")
+			if second.id == autoListen.id {
+				t.Fatalf("second listen reused subscription ID %s", autoListen.id)
+			}
+
+			// End the auto-listen.
+			cs.listenCancel()
+			waitListens(t, ss, 1, "the auto-listen to unwind")
+
+			tc.change(server)
+			if got := waitSubListenEvent(t, events, tc.kind); got.id != second.id {
+				t.Errorf("%s notification carried subscription ID %s, want the second listen's %s", tc.kind, got.id, second.id)
+			}
+		})
+	}
 }
 
 // waitUntil polls cond until it reports true, failing the test after timeout.
@@ -3967,4 +4261,206 @@ func newProtocolMeta(logLevel LoggingLevel) Meta {
 		m[MetaKeyLogLevel] = logLevel
 	}
 	return m
+}
+
+// listenDropServer wraps a streamable backend handler. While armed, the first
+// subscriptions/listen POST whose resource subscription list contains uri is
+// served by the wrapper itself rather than the backend, then the wrapper
+// disarms — so a later re-Subscribe proxies through to the real backend and
+// re-fires its SubscribeHandler. An abrupt listen closes its SSE stream with
+// no JSON-RPC response (the client then synthesizes a "terminated" error); a
+// graceful listen writes an empty result before closing.
+type listenDropServer struct {
+	backend  http.Handler
+	uri      string
+	mu       sync.Mutex
+	armed    bool
+	graceful bool
+}
+
+func (d *listenDropServer) arm(graceful bool) {
+	d.mu.Lock()
+	d.armed = true
+	d.graceful = graceful
+	d.mu.Unlock()
+}
+
+func (d *listenDropServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		body, err := io.ReadAll(r.Body)
+		r.Body.Close()
+		if err == nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if id, graceful, ok := d.matchArmed(body); ok {
+				serveControlledListen(w, id, graceful)
+				return
+			}
+		}
+	}
+	d.backend.ServeHTTP(w, r)
+}
+
+func (d *listenDropServer) matchArmed(body []byte) (id json.RawMessage, graceful, ok bool) {
+	var env struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+		Params struct {
+			Notifications struct {
+				ResourceSubscriptions []string `json:"resourceSubscriptions"`
+			} `json:"notifications"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return nil, false, false
+	}
+	if env.Method != methodSubscriptionsListen || len(env.ID) == 0 {
+		return nil, false, false
+	}
+	if !slices.Contains(env.Params.Notifications.ResourceSubscriptions, d.uri) {
+		return nil, false, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.armed {
+		return nil, false, false
+	}
+	d.armed = false
+	return env.ID, d.graceful, true
+}
+
+func serveControlledListen(w http.ResponseWriter, id json.RawMessage, graceful bool) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	if graceful {
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{}}\n\n", id)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// Returning closes the stream. With no response written (abrupt), the
+	// client synthesizes a "request terminated without response" error for the
+	// listen call.
+}
+
+func newListenDropServer(t *testing.T, uri string, srv *Server) *listenDropServer {
+	t.Helper()
+	return &listenDropServer{
+		backend: mustNotPanic(t, NewStreamableHTTPHandler(
+			func(*http.Request) *Server { return srv },
+			&StreamableHTTPOptions{Stateless: true},
+		)),
+		uri: uri,
+	}
+}
+
+// hasResourceSub reports whether the session still tracks a listen for uri.
+func hasResourceSub(cs *ClientSession, uri string) bool {
+	cs.resourceSubsMu.Lock()
+	defer cs.resourceSubsMu.Unlock()
+	_, ok := cs.resourceSubs[uri]
+	return ok
+}
+
+// testResourceListenDropReopens drives the shared body for the abrupt and
+// graceful cases: the first listen ends without a client Unsubscribe, the SDK
+// clears the subscription entry, and a bare re-Subscribe re-opens the stream,
+// re-firing the server's SubscribeHandler.
+func testResourceListenDropReopens(t *testing.T, graceful bool) {
+	t.Helper()
+	subCh := make(chan string, 8)
+	unsubCh := make(chan string, 8)
+	server := resourceSubServer(t, subCh, unsubCh)
+	drop := newListenDropServer(t, "file:///r1", server)
+	drop.arm(graceful)
+	httpServer := httptest.NewServer(drop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	c := NewClient(testImpl, &ClientOptions{})
+	cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL, DisableStandaloneSSE: true},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() {
+		cs.Close()
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
+
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// The listen ends without a client Unsubscribe; the SDK must clear the
+	// entry so the URI is no longer considered subscribed.
+	waitUntil(t, 10*time.Second, "resource subscription entry to clear", func() bool {
+		return !hasResourceSub(cs, "file:///r1")
+	})
+
+	// No SubscribeHandler yet: the first listen never reached the backend.
+	// A bare re-Subscribe re-opens the stream and re-fires SubscribeHandler.
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: "file:///r1"}); err != nil {
+		t.Fatalf("re-subscribe: %v", err)
+	}
+	select {
+	case got := <-subCh:
+		if got != "file:///r1" {
+			t.Fatalf("SubscribeHandler URI = %q, want file:///r1", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for re-subscribe SubscribeHandler")
+	}
+}
+
+// TestResourceSubscriptions_AbruptDropReopens verifies that when a resource
+// subscription's listen stream drops abruptly (no client Unsubscribe), the SDK
+// clears the subscription so a bare re-Subscribe re-opens the stream instead of
+// no-oping, and does not auto-resubscribe on its own.
+func TestResourceSubscriptions_AbruptDropReopens(t *testing.T) {
+	testResourceListenDropReopens(t, false)
+}
+
+// TestResourceSubscriptions_GracefulEndReopens mirrors the abrupt case for a
+// listen that ends with a normal result.
+func TestResourceSubscriptions_GracefulEndReopens(t *testing.T) {
+	testResourceListenDropReopens(t, true)
+}
+
+// TestResourceSubscriptions_GenGuard deterministically exercises the
+// generation guard that protects an Unsubscribe→Subscribe race (and a
+// re-subscribe from inside a completing listen): a stale listen goroutine
+// (generation 1) that completes after a newer Subscribe has installed its own
+// entry (generation 2) must not clear that newer entry.
+func TestResourceSubscriptions_GenGuard(t *testing.T) {
+	cs := &ClientSession{
+		resourceSubs: map[string]*resourceSub{
+			"file:///r1": {cancel: func() {}, gen: 2},
+		},
+	}
+
+	if cs.clearResourceSubIfGen("file:///r1", 1) {
+		t.Fatal("stale generation cleared a newer subscription entry")
+	}
+	if _, ok := cs.resourceSubs["file:///r1"]; !ok {
+		t.Fatal("newer subscription entry was removed by a stale generation")
+	}
+
+	if !cs.clearResourceSubIfGen("file:///r1", 2) {
+		t.Fatal("owning generation failed to clear its entry")
+	}
+	if _, ok := cs.resourceSubs["file:///r1"]; ok {
+		t.Fatal("entry not removed by owning generation")
+	}
+
+	// Clearing an absent URI is a no-op, not a panic.
+	if cs.clearResourceSubIfGen("file:///gone", 1) {
+		t.Fatal("clearing an absent URI reported a deletion")
+	}
 }

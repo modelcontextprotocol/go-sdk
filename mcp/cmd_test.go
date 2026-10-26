@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -55,6 +56,7 @@ func TestMain(m *testing.M) {
 var serverFuncs = map[string]func(){
 	"default":       runServer,
 	"cancelContext": runCancelContextServer,
+	"largeFrame":    runLargeFrameServer,
 }
 
 func runServer() {
@@ -65,6 +67,11 @@ func runServer() {
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runLargeFrameServer() {
+	_, _ = os.Stdout.WriteString("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"pad\":\"" +
+		strings.Repeat("A", 128<<10) + "\"}}\n")
 }
 
 func runCancelContextServer() {
@@ -93,17 +100,15 @@ func TestServerRunContextCancel(t *testing.T) {
 			onServerExit <- server.Run(ctx, serverTransport)
 		}()
 
-		// send a ping to the server to ensure it's running
+		// Connect to the server to ensure it's running: a successful connect
+		// completes a full handshake (or a discovery round trip on
+		// 2026-07-28 sessions, where the ping method is removed).
 		client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 		session, err := client.Connect(ctx, clientTransport, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { session.Close() })
-
-		if err := session.Ping(context.Background(), nil); err != nil {
-			t.Fatal(err)
-		}
 
 		// cancel the context to stop the server
 		cancel()
@@ -226,6 +231,31 @@ func TestCmdTransport(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("closing server: %v", err)
+	}
+}
+
+func TestCommandTransportMaxLineLength(t *testing.T) {
+	requireExec(t)
+
+	transport := &mcp.CommandTransport{
+		Command:       createServerCommand(t, "largeFrame"),
+		MaxLineLength: 64 << 10,
+	}
+	conn, err := transport.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if transport.Command.Process != nil {
+			_ = transport.Command.Process.Kill()
+		}
+		_ = conn.Close()
+	})
+
+	_, err = conn.Read(t.Context())
+	const want = "inbound JSON-RPC frame exceeded the configured maximum line length"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Read() error = %v, want error containing %q", err, want)
 	}
 }
 
