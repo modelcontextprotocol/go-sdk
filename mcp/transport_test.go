@@ -36,7 +36,7 @@ func TestCallErrorsDoNotWrapConnectionClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			conn, peer := newTestJSONRPCConnection(t)
+			conn, peer := newTestJSONRPCConnection(t, nil)
 			done := make(chan error, 1)
 			go func() {
 				done <- call(ctx, conn, "test", nil, test.result)
@@ -68,6 +68,88 @@ func TestCallErrorsDoNotWrapConnectionClosed(t *testing.T) {
 	}
 }
 
+func TestCallConnectionClosed(t *testing.T) {
+	for _, test := range connectionClosedTests() {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn, peer := newTestJSONRPCConnection(t, test.readErr)
+			if test.close {
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				done := make(chan error, 1)
+				go func() { done <- call(ctx, conn, "test", nil, nil) }()
+				if _, err := peer.Read(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err := peer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				checkConnectionClosedError(t, <-done, test.causes...)
+				_ = conn.Wait()
+			}
+			err := call(ctx, conn, "test", nil, nil)
+			checkConnectionClosedError(t, err, test.causes...)
+			if err != nil && !strings.Contains(err.Error(), `calling "test"`) {
+				t.Errorf("call() = %v, want the method name in the error", err)
+			}
+		})
+	}
+}
+
+type connectionClosedTest struct {
+	name    string
+	readErr error
+	causes  []error
+	close   bool
+}
+
+func connectionClosedTests() []connectionClosedTest {
+	readErr := errors.New("read failed")
+	wrappedReadErr := fmt.Errorf("reading: %w", readErr)
+	sameMessageErr := errors.New("client is closing")
+	return []connectionClosedTest{
+		{name: "local close", close: true},
+		{name: "EOF", readErr: io.EOF, causes: []error{io.EOF}},
+		{name: "unexpected EOF", readErr: io.ErrUnexpectedEOF, causes: []error{io.ErrUnexpectedEOF}},
+		{name: "read error", readErr: readErr, causes: []error{readErr}},
+		{name: "wrapped read error", readErr: wrappedReadErr, causes: []error{wrappedReadErr, readErr}},
+		{name: "client closing", readErr: jsonrpc2.NewError(-32003, "client is closing")},
+		{name: "server closing", readErr: jsonrpc2.NewError(-32004, "server is closing")},
+		{
+			name:    "wrapped closing error",
+			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrServerClosing, wrappedReadErr)),
+			causes:  []error{wrappedReadErr, readErr},
+		},
+		{
+			name:    "joined closing errors",
+			readErr: errors.Join(jsonrpc2.ErrClientClosing, errors.Join(jsonrpc2.ErrServerClosing, readErr), io.ErrUnexpectedEOF),
+			causes:  []error{readErr, io.ErrUnexpectedEOF},
+		},
+		{name: "wire error cause", readErr: jsonrpc2.ErrInvalidParams, causes: []error{jsonrpc2.ErrInvalidParams}},
+		{name: "same message cause", readErr: sameMessageErr, causes: []error{sameMessageErr}},
+	}
+}
+
+func checkConnectionClosedError(t *testing.T, err error, causes ...error) {
+	t.Helper()
+	for _, want := range append([]error{ErrConnectionClosed}, causes...) {
+		if !errors.Is(err, want) {
+			t.Errorf("error = %v, want an error wrapping %v", err, want)
+		}
+	}
+	for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
+		if errors.Is(err, closing) {
+			t.Errorf("error = %v, must not wrap %v", err, closing)
+		}
+	}
+	var wireErr *jsonrpc2.WireError
+	if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+		t.Errorf("error = %v, exposes internal closing code %d", err, wireErr.Code)
+	}
+}
+
 type unmarshalErrorResult struct {
 	ResultBase
 	err error
@@ -75,7 +157,7 @@ type unmarshalErrorResult struct {
 
 func (r *unmarshalErrorResult) UnmarshalJSON([]byte) error { return r.err }
 
-func newTestJSONRPCConnection(t *testing.T) (*jsonrpc2.Connection, Connection) {
+func newTestJSONRPCConnection(t *testing.T, readErr error) (*jsonrpc2.Connection, Connection) {
 	t.Helper()
 	ctx := context.Background()
 	clientT, serverT := NewInMemoryTransports()
@@ -87,6 +169,9 @@ func newTestJSONRPCConnection(t *testing.T) (*jsonrpc2.Connection, Connection) {
 	if err != nil {
 		peer.Close()
 		t.Fatal(err)
+	}
+	if readErr != nil {
+		client = &readErrorConnection{Connection: client, err: readErr}
 	}
 	conn := jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
 		Reader: client,
@@ -103,6 +188,19 @@ func newTestJSONRPCConnection(t *testing.T) (*jsonrpc2.Connection, Connection) {
 		conn.Close()
 	})
 	return conn, peer
+}
+
+type readErrorConnection struct {
+	Connection
+	err error
+}
+
+func (c *readErrorConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
+	msg, err := c.Connection.Read(ctx)
+	if err != nil {
+		return nil, c.err
+	}
+	return msg, nil
 }
 
 func TestBatchFraming(t *testing.T) {

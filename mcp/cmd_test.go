@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -92,6 +93,15 @@ func TestStdioCallInterruptedByPeerExit(t *testing.T) {
 			if !errors.Is(err, want) {
 				t.Errorf("%s = %v, want an error wrapping %v", name, err, want)
 			}
+		}
+		for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
+			if errors.Is(err, closing) {
+				t.Errorf("%s = %v, must not wrap %v", name, err, closing)
+			}
+		}
+		var wireErr *jsonrpc2.WireError
+		if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+			t.Errorf("%s = %v, exposes internal closing code %d", name, err, wireErr.Code)
 		}
 	}
 }
