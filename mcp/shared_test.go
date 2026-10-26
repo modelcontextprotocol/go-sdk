@@ -9,12 +9,48 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+func TestNotifyAfterServerClose(t *testing.T) {
+	cs, ss, cleanup := basicConnection(t, nil)
+	defer cleanup()
+	if err := ss.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cs.NotifyProgress(context.Background(), &ProgressNotificationParams{ProgressToken: "test"})
+	checkConnectionClosedError(t, err, io.EOF)
+}
+
+func TestNotifyConnectionClosed(t *testing.T) {
+	for _, test := range connectionClosedTests() {
+		t.Run(test.name, func(t *testing.T) {
+			conn, peer := newTestJSONRPCConnection(t, test.readErr)
+			if test.close {
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := peer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Wait()
+			}
+			cs := &ClientSession{client: NewClient(testImpl, nil), conn: conn}
+			err := cs.NotifyProgress(context.Background(), &ProgressNotificationParams{ProgressToken: "test"})
+			checkConnectionClosedError(t, err, test.causes...)
+		})
+	}
+}
 
 func TestValidateRequestMeta(t *testing.T) {
 	tests := []struct {

@@ -2262,6 +2262,78 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	}
 }
 
+// TestStreamableParamHeaderWithPointerField verifies that Mcp-Param-* headers
+// are mirrored and validated for a typed tool whose input struct has a pointer
+// field, for which jsonschema.For emits a type array.
+func TestStreamableParamHeaderWithPointerField(t *testing.T) {
+	type input struct {
+		Region string  `json:"region"`
+		Note   *string `json:"note,omitempty"`
+	}
+	schema, err := jsonschema.For[input](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema.Properties["region"].Extra = map[string]any{"x-mcp-header": "Region"}
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	var handlerCalled atomic.Bool
+	AddTool(server, &Tool{Name: "query", InputSchema: schema},
+		func(ctx context.Context, req *CallToolRequest, in input) (*CallToolResult, any, error) {
+			handlerCalled.Store(true)
+			return &CallToolResult{}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var sentRegion string
+	var status int
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				sentRegion = req.Header.Get(paramHeaderPrefix + "Region")
+				req.Header.Set(paramHeaderPrefix+"Region", "eu-west1")
+			}
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && req.Header.Get(methodHeader) == "tools/call" {
+				status = resp.StatusCode
+			}
+			return resp, err
+		}),
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: customClient},
+		&ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "query", Arguments: map[string]any{"region": "us-west1"}}); err == nil {
+		t.Error("CallTool succeeded with mismatched Mcp-Param-Region header")
+	}
+	if sentRegion != "us-west1" {
+		t.Errorf("client sent Mcp-Param-Region %q, want %q", sentRegion, "us-west1")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", status, http.StatusBadRequest)
+	}
+	if handlerCalled.Load() {
+		t.Error("tool handler ran despite mismatched Mcp-Param-Region header")
+	}
+}
+
 // TestStreamableMcpHeaderVersionGating verifies that header validation
 // is skipped for protocol versions older than minVersionForStandardHeaders.
 func TestStreamableMcpHeaderVersionGating(t *testing.T) {
@@ -3009,6 +3081,36 @@ func TestProcessStreamMaxEventSize(t *testing.T) {
 				t.Fatalf("failure() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestStreamableClientDefaultMaxEventSize verifies that a zero
+// StreamableClientTransport.MaxEventSize applies DefaultMaxEventSize rather
+// than disabling the cap.
+func TestStreamableClientDefaultMaxEventSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Mcp-Session-Id", "session")
+		io.WriteString(w, "event: message\ndata: ")
+		chunk := strings.Repeat("A", 1<<20)
+		for range 2 * DefaultMaxEventSize / len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: srv.URL, DisableStandaloneSSE: true}
+	_, err := client.Connect(t.Context(), transport, nil)
+	want := fmt.Sprintf("SSE event exceeded %d bytes", DefaultMaxEventSize)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Connect() error = %v, want an error containing %q", err, want)
 	}
 }
 
