@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -893,6 +894,101 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 	}
 }
 
+// TestClientSessionDiscover verifies that ClientSession.Discover on a
+// 2026-07-28 session sends server/discover with the SEP-2575 _meta triple on
+// every call, even when the server returns a ttlMs, and returns the server's
+// DiscoverResult unchanged.
+func TestClientSessionDiscover(t *testing.T) {
+	ctx := context.Background()
+	const ttl = 60_000
+
+	var discovers atomic.Int32
+	var lastParams atomic.Pointer[DiscoverParams]
+	s := NewServer(testImpl, &ServerOptions{
+		Instructions: "discover instructions",
+		SetCacheable: func(_ context.Context, req Request, c *Cacheable) {
+			if _, ok := req.(*ServerRequest[*DiscoverParams]); ok {
+				c.TTLMs = ttl
+			}
+		},
+	})
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodDiscover {
+				discovers.Add(1)
+				lastParams.Store(req.(*ServerRequest[*DiscoverParams]).Params)
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	clientImpl := &Implementation{Name: "discover-client", Version: "v1.2.3"}
+	cs, err := NewClient(clientImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+	afterConnect := discovers.Load()
+
+	for i := range 2 {
+		res, err := cs.Discover(ctx, nil)
+		if err != nil {
+			t.Fatalf("Discover #%d: %v", i, err)
+		}
+		if got, want := discovers.Load()-afterConnect, int32(i+1); got != want {
+			t.Errorf("after Discover #%d, server received %d server/discover requests, want %d", i, got, want)
+		}
+		if !slices.Contains(res.SupportedVersions, ir.ProtocolVersion) {
+			t.Errorf("SupportedVersions = %v, want it to contain %q", res.SupportedVersions, ir.ProtocolVersion)
+		}
+		if res.Capabilities == nil {
+			t.Error("Capabilities is nil")
+		}
+		if got, want := res.Instructions, "discover instructions"; got != want {
+			t.Errorf("Instructions = %q, want %q", got, want)
+		}
+		if got, want := res.TTLMs, ttl; got != want {
+			t.Errorf("TTLMs = %d, want %d", got, want)
+		}
+		if got, want := res.CacheScope, "public"; got != want {
+			t.Errorf("CacheScope = %q, want %q", got, want)
+		}
+		serverInfo, ok := decodeMetaValue[*Implementation](res.GetMeta(), MetaKeyServerInfo)
+		if !ok || serverInfo == nil || serverInfo.Name != testImpl.Name {
+			t.Errorf("_meta[%s] = %+v, want server info named %q", MetaKeyServerInfo, serverInfo, testImpl.Name)
+		}
+	}
+
+	params := lastParams.Load()
+	if params == nil {
+		t.Fatal("server did not receive server/discover params")
+	}
+	meta := params.GetMeta()
+	if v, _ := meta[MetaKeyProtocolVersion].(string); v != ir.ProtocolVersion {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, ir.ProtocolVersion)
+	}
+	if info, _ := meta[MetaKeyClientInfo].(map[string]any); info["name"] != clientImpl.Name {
+		t.Errorf("_meta[%s] = %v, want clientInfo named %q", MetaKeyClientInfo, meta[MetaKeyClientInfo], clientImpl.Name)
+	}
+	if _, ok := meta[MetaKeyClientCapabilities].(map[string]any); !ok {
+		t.Errorf("_meta[%s] = %T, want map[string]any", MetaKeyClientCapabilities, meta[MetaKeyClientCapabilities])
+	}
+	if cs.InitializeResult() != ir {
+		t.Error("Discover replaced the session's InitializeResult")
+	}
+}
+
 // TestInMemory_E2E_DiscoverSuccess is a full end-to-end smoke test for
 // SEP-2575 over a non-HTTP transport.
 func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
@@ -1243,5 +1339,60 @@ func TestClientAllowMissingParamsCompat(t *testing.T) {
 	}
 	if got.Load() != 1 {
 		t.Errorf("handler called with nil params %d times, want 1", got.Load())
+	}
+}
+
+func TestListRootsCapabilityDisabled(t *testing.T) {
+	ctx := context.Background()
+	roots := []*Root{{URI: "file:///secret", Name: "secret"}}
+
+	tests := []struct {
+		name    string
+		caps    *ClientCapabilities
+		wantErr bool
+	}{
+		{"default", nil, false},
+		{"RootsV2 set", &ClientCapabilities{RootsV2: &RootCapabilities{}}, false},
+		{"disabled", &ClientCapabilities{}, true},
+		{"only deprecated Roots set", &ClientCapabilities{Roots: struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{ListChanged: true}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+
+			c := NewClient(testImpl, &ClientOptions{Capabilities: tc.caps})
+			c.AddRoots(roots...)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			res, err := ss.ListRoots(ctx, nil)
+			if tc.wantErr {
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) || jerr.Code != codeUnsupportedMethod {
+					t.Fatalf("ListRoots error = %v, want code %d", err, codeUnsupportedMethod)
+				}
+				if res != nil {
+					t.Errorf("ListRoots returned roots %v despite disabled capability", res.Roots)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(roots, res.Roots); diff != "" {
+				t.Errorf("roots mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

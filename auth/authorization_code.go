@@ -146,6 +146,9 @@ type AuthorizationCodeHandlerConfig struct {
 	// such as SSRF protections, see
 	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
 	// If not provided, http.DefaultClient will be used.
+	// Unless Client sets CheckRedirect, the registration and token requests
+	// follow a redirect only within the origin of the request and only if it
+	// keeps the method.
 	Client *http.Client
 
 	// NewTokenSource is an optional function that can be set to construct the
@@ -736,7 +739,8 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		oauth2.VerifierOption(authResult.usedCodeVerifier),
 		oauth2.SetAuthURLParam("resource", resourceURL),
 	}
-	clientCtx := context.WithValue(ctx, oauth2.HTTPClient, h.config.Client)
+	client := util.RestrictRedirects(h.config.Client)
+	clientCtx := context.WithValue(ctx, oauth2.HTTPClient, client)
 	token, err := cfg.Exchange(clientCtx, authResult.Code, opts...)
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
@@ -750,7 +754,7 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	// once that request (or the connect operation that triggered authorization)
 	// completes. Use a background context that still carries the configured HTTP
 	// client so refreshes keep working for the life of the token source.
-	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, h.config.Client)
+	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
 	var ts oauth2.TokenSource
 	if h.config.NewTokenSource == nil {
 		if token.RefreshToken == "" {

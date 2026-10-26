@@ -727,18 +727,23 @@ func (c *Client) shouldSendListChangedNotification(notification string) bool {
 		if caps == nil {
 			return true
 		}
-		// Check RootsV2 first (preferred), then fall back to Roots.
-		if caps.RootsV2 != nil {
-			return caps.RootsV2.ListChanged
-		}
-		return caps.Roots.ListChanged
+		// Capabilities.Roots is ignored (#607); only RootsV2 is advertised.
+		return caps.RootsV2 != nil && caps.RootsV2.ListChanged
 	default:
 		// Unknown notification, allow by default.
 		return true
 	}
 }
 
+// rootsEnabled reports whether the client advertises the roots capability.
+func (c *Client) rootsEnabled() bool {
+	return c.opts.Capabilities == nil || c.opts.Capabilities.RootsV2 != nil
+}
+
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
+	if !c.rootsEnabled() {
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support roots"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -1273,6 +1278,25 @@ func (*ClientSession) cancel(context.Context, *CancelledParams) (Result, error) 
 
 func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 	return &ClientRequest[P]{Session: cs, Params: params}
+}
+
+// Discover makes an MCP "server/discover" request to the server and returns
+// its result unchanged, including the cache hints and the serverInfo carried
+// in the result's _meta.
+// It does not update [ClientSession.InitializeResult].
+//
+// On sessions negotiated below protocol version 2026-07-28, Discover returns
+// a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a round
+// trip: server/discover was introduced in 2026-07-28.
+func (cs *ClientSession) Discover(ctx context.Context, params *DiscoverParams) (*DiscoverResult, error) {
+	if !cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is only supported in protocol version >= %s", methodDiscover, protocolVersion20260728),
+		}
+	}
+	params = injectRequestMeta(cs, params)
+	return handleSend[*DiscoverResult](ctx, methodDiscover, newClientRequest(cs, orZero[Params](params)))
 }
 
 // Ping makes an MCP "ping" request to the server.

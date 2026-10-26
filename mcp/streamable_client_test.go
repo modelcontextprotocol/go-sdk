@@ -2250,3 +2250,54 @@ func TestStreamableClientConnect_ColonlessSSELine(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamableClientRedirects verifies that the client follows a redirect
+// within the origin of the endpoint, and that a redirect to another origin is
+// not followed and fails only the redirected request. See #1429.
+func TestStreamableClientRedirects(t *testing.T) {
+	ctx := context.Background()
+
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		http.Error(w, "redirect target", http.StatusInternalServerError)
+	}))
+	defer target.Close()
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/mcp", http.StatusPermanentRedirect)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.Contains(string(body), `"method":"ping"`) {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	session, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL + "/old"}, nil)
+	if err != nil {
+		t.Fatalf("Connect through a same-origin redirect: %v", err)
+	}
+	defer session.Close()
+
+	if err := session.Ping(ctx, nil); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("Ping() error = %v, want redirect not followed", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
+	}
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools() after the unfollowed redirect: %v", err)
+	}
+}
