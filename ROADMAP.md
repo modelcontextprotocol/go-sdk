@@ -2,7 +2,11 @@
 
 ## Current focus
 
-The following items are planned for the next release (v1.4.0):
+The items previously planned for v1.4.0 have shipped (latest release: v1.8.0).
+A new short-term focus list will be drafted by maintainers. See [Future work](#future-work)
+and the open issues tracker in the meantime.
+
+## Completed
 
 - **SEP-1730: Tier 1 SDK support** (https://github.com/modelcontextprotocol/go-sdk/issues/675)
   - Description: We aim to be rated as Tier 1 SDK.

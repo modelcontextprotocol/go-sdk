@@ -21,7 +21,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/oauthtest"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
 
@@ -278,6 +280,48 @@ func TestStreamableClientRedundantDelete(t *testing.T) {
 	_ = session.Wait() // must not hang
 	if missing := fake.missingRequests(); len(missing) > 0 {
 		t.Errorf("did not receive expected requests: %v", missing)
+	}
+}
+
+// TestStreamableClientCloseUnresponsiveDelete checks that Close stays bounded
+// when the peer accepts the session-termination DELETE but never answers it.
+func TestStreamableClientCloseUnresponsiveDelete(t *testing.T) {
+	base := NewStreamableHTTPHandler(func(*http.Request) *Server {
+		return NewServer(testImpl, nil)
+	}, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			<-r.Context().Done()
+			return
+		}
+		base.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		// The DELETE handler only returns once its request is cancelled, so
+		// drop the connections before waiting for outstanding requests.
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(context.Background(),
+		&StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	if session.ID() == "" {
+		t.Fatal("empty session ID: Close would not send DELETE")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeDeleteTimeout + 5*time.Second):
+		t.Fatal("Close() blocked on an unanswered DELETE")
 	}
 }
 
@@ -1262,6 +1306,98 @@ func TestStreamableClientOAuth_RetrieveError(t *testing.T) {
 	}
 }
 
+// TestStreamableClientOAuth_ExpiredTokenWithoutRefreshToken verifies that a
+// session authorized by an [auth.AuthorizationCodeHandler] keeps working after
+// its access token expires when the authorization server issued no refresh
+// token: the server's 401 must lead to a new authorization, as it does after a
+// rejected refresh.
+func TestStreamableClientOAuth_ExpiredTokenWithoutRefreshToken(t *testing.T) {
+	ctx := context.Background()
+
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		// expires_in below oauth2's 10s expiry delta, so the access token is
+		// treated as expired as soon as it is issued.
+		AccessTokenTTL: 1,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	// rejectToken makes the server reject the current access token, as it
+	// would once the token has expired. A new authorization clears it.
+	var rejectToken atomic.Bool
+	verifier := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		if token != "test_access_token" || rejectToken.Load() {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	mux := http.NewServeMux()
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+	mcpURL := httpServer.URL + "/mcp"
+	metadataURL := httpServer.URL + "/.well-known/oauth-protected-resource/mcp"
+	mux.Handle("/.well-known/oauth-protected-resource/mcp", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             mcpURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+	server := NewServer(testImpl, nil)
+	streamHandler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	mux.Handle("/mcp", auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{ResourceMetadataURL: metadataURL})(streamHandler))
+
+	var authorizations atomic.Int32
+	oauthHandler, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			authorizations.Add(1)
+			rejectToken.Store(false)
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			resp, err := client.Get(args.URL)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			location, err := resp.Location()
+			if err != nil {
+				return nil, err
+			}
+			return &auth.AuthorizationResult{
+				Code:  location.Query().Get("code"),
+				State: location.Query().Get("state"),
+				Iss:   location.Query().Get("iss"),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: mcpURL, OAuthHandler: oauthHandler}, nil)
+	if err != nil {
+		t.Fatalf("client.Connect() failed: %v", err)
+	}
+	defer session.Close()
+
+	rejectToken.Store(true)
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatalf("ListTools() after the access token expired failed: %v", err)
+	}
+	if got := authorizations.Load(); got < 2 {
+		t.Errorf("got %d authorizations, want a new one after the access token expired", got)
+	}
+}
+
 // discoverResult is the canned successful DiscoverResult returned by
 // fakeStreamableServer setups in the tests below.
 var discoverResult = &DiscoverResult{
@@ -1368,7 +1504,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 // streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
 // header value.
 //
-// Ordinarily initializedResult is populated by sessionUpdated, called
+// Ordinarily initializedResult is populated by clientSessionUpdated, called
 // through a type assertion to the unexported clientConnection interface
 // (see Client.Connect). That assertion silently fails, leaving
 // initializedResult nil for the life of the session, whenever the
@@ -1798,6 +1934,8 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		callStatus        int    // HTTP status returned for the tools/call
 		callBody          string // response body for the tools/call ("" for empty; may be a JSON-RPC error)
 		disableBodyDecode bool   // if true, sets noprotocolerrorbody="1" for the duration of the test
+		fatalNewErrors    bool   // if true, sets fatalnewprotocolerrors="1" for the duration of the test
+		protocolVersion   string // defaults to protocolVersion20260728
 		wantErrRejected   bool   // whether the returned error should match errors.Is(err, jsonrpc2.ErrRejected)
 		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
 	}{
@@ -1811,25 +1949,52 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			wantSessionAlive: true,
 		},
 		{
+			// Plain-text 400 with no JSON-RPC body: without a session,
+			// only the call fails.
+			name:             "400 with plain-text body",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "400 with plain-text body (legacy protocol)",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			protocolVersion:  protocolVersion20251125,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
+			name:             "400 with plain-text body (fatalnewprotocolerrors=1)",
+			callStatus:       http.StatusBadRequest,
+			callBody:         "Bad Request",
+			fatalNewErrors:   true,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
 			// Same server response, but the user opted out via
-			// MCPGODEBUG=noprotocolerrorbody=1. Pre-fix behavior: the
-			// session is torn down.
+			// MCPGODEBUG=noprotocolerrorbody=1. The body is ignored, but
+			// without a session the failure still fails only the call.
 			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1)",
 			callStatus:        http.StatusBadRequest,
 			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
 			disableBodyDecode: true,
-			wantErrRejected:   false,
-			wantSessionAlive:  false,
+			wantErrRejected:   true,
+			wantSessionAlive:  true,
 		},
 		{
-			// Legacy server returns plain-text 400 with no JSON-RPC
-			// body: cannot be classified as a per-call rejection, so the
-			// session is still torn down.
-			name:             "400 with plain-text body",
-			callStatus:       http.StatusBadRequest,
-			callBody:         "Bad Request",
-			wantErrRejected:  false,
-			wantSessionAlive: false,
+			// Same server response, but the user opted out via
+			// MCPGODEBUG=noprotocolerrorbody=1 and fatalnewprotocolerrors=1.
+			// Pre-fix behavior: the session is torn down.
+			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1, fatalnewprotocolerrors=1)",
+			callStatus:        http.StatusBadRequest,
+			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
+			disableBodyDecode: true,
+			fatalNewErrors:    true,
+			wantErrRejected:   false,
+			wantSessionAlive:  false,
 		},
 		{
 			// SEP-2575: server returns -32601 for an unimplemented
@@ -1844,9 +2009,34 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 		{
 			// A bare 404 with no JSON-RPC body means the session has
 			// been terminated. Session must not survive.
-			name:             "404 with empty body (terminated session)",
+			name:             "404 with empty body (terminated session, fatalnewprotocolerrors=1)",
 			callStatus:       http.StatusNotFound,
 			callBody:         "",
+			fatalNewErrors:   true,
+			wantErrRejected:  false,
+			wantSessionAlive: false,
+		},
+		{
+			// A bare 404 with no JSON-RPC body: there is no session to
+			// terminate, so only the call fails.
+			name:             "404 with empty body",
+			callStatus:       http.StatusNotFound,
+			callBody:         "",
+			wantErrRejected:  true,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "200 with invalid JSON body",
+			callStatus:       http.StatusOK,
+			callBody:         "not JSON",
+			wantErrRejected:  false,
+			wantSessionAlive: true,
+		},
+		{
+			name:             "200 with invalid JSON body (fatalnewprotocolerrors=1)",
+			callStatus:       http.StatusOK,
+			callBody:         "not JSON",
+			fatalNewErrors:   true,
 			wantErrRejected:  false,
 			wantSessionAlive: false,
 		},
@@ -1854,12 +2044,20 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			protocolVersion := test.protocolVersion
+			if protocolVersion == "" {
+				protocolVersion = protocolVersion20260728
+			}
 			if test.disableBodyDecode {
 				prev := noprotocolerrorbody
 				noprotocolerrorbody = "1"
 				t.Cleanup(func() { noprotocolerrorbody = prev })
 			}
-
+			if test.fatalNewErrors {
+				prev := fatalnewprotocolerrors
+				fatalnewprotocolerrors = "1"
+				t.Cleanup(func() { fatalnewprotocolerrors = prev })
+			}
 			// Track how many tools/call requests we've served: first
 			// returns the error under test, subsequent calls succeed so
 			// we can observe whether the session is still alive.
@@ -1875,6 +2073,18 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 						responseFunc: func(r *jsonrpc.Request) (string, int) {
 							return jsonBody(t, resp(r.ID.Raw().(int64), discoverResult, nil)), http.StatusOK
 						},
+					},
+					{"POST", "", methodInitialize, ""}: {
+						header: header{"Content-Type": "application/json"},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(initResult)}), http.StatusOK
+						},
+						optional: true,
+					},
+					{"POST", "", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+						optional:            true,
 					},
 					{"POST", "", "tools/call", ""}: {
 						header: header{"Content-Type": "application/json"},
@@ -1892,9 +2102,12 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			httpServer := httptest.NewServer(fake)
 			defer httpServer.Close()
 
-			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			transport := &StreamableClientTransport{
+				Endpoint:             httpServer.URL,
+				DisableStandaloneSSE: protocolVersion < protocolVersion20260728,
+			}
 			client := NewClient(testImpl, nil)
-			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion})
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
@@ -1921,5 +2134,246 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStreamableClient_StatelessSubscriptionsListen404 verifies that in stateless mode
+// (protocol 2026-07-28), when a server rejects subscriptions/listen with 404 (e.g. Copilot MCP server),
+// the client connection survives and subsequent RPCs (such as tools/list) succeed.
+func TestStreamableClient_StatelessSubscriptionsListen404(t *testing.T) {
+	ctx := t.Context()
+
+	var listenServed atomic.Bool
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodDiscover, ""}: {
+				header: header{
+					"Content-Type": "application/json",
+				},
+				wantProtocolVersion: protocolVersion20260728,
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, resp(r.ID.Raw().(int64), discoverResult, nil)), http.StatusOK
+				},
+			},
+			{"POST", "", methodSubscriptionsListen, ""}: {
+				header: header{"Content-Type": "text/plain"},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					listenServed.Store(true)
+					return "404 Not Found", http.StatusNotFound
+				},
+				optional: true,
+			},
+			{"POST", "", methodListTools, ""}: {
+				header: header{"Content-Type": "application/json"},
+				responseFunc: func(r *jsonrpc.Request) (string, int) {
+					return jsonBody(t, resp(r.ID.Raw().(int64), &ListToolsResult{Tools: []*Tool{}}, nil)), http.StatusOK
+				},
+				optional: true,
+			},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+	client := NewClient(testImpl, &ClientOptions{
+		ToolListChangedHandler: func(ctx context.Context, req *ToolListChangedRequest) {},
+	})
+
+	session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer session.Close()
+
+	// tools/list must succeed even though subscriptions/listen returned 404.
+	res, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+	if res == nil {
+		t.Fatal("ListTools result is nil")
+	}
+	waitUntil(t, 5*time.Second, "subscriptions/listen to be called", listenServed.Load)
+}
+
+// TestStreamableClientConnect_ColonlessSSELine verifies that a line without a
+// colon in an SSE response does not tear down the session. The SSE parsing
+// rules define such a line as a field name with an empty value, so an unknown
+// field is ignored and a bare "data" line contributes an empty data line.
+func TestStreamableClientConnect_ColonlessSSELine(t *testing.T) {
+	ctx := context.Background()
+
+	for _, extra := range []string{"heartbeat\n", "data\n", ": keepalive\n"} {
+		t.Run(strings.TrimRight(extra, "\n"), func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "text/event-stream",
+							sessionIDHeader: "test-session",
+						},
+						body: extra + "data: " + jsonBody(t, initResp) + "\n\n",
+					},
+					{"POST", "test-session", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"GET", "test-session", "", ""}: {
+						// Disable the standalone SSE stream to simplify the test.
+						status: http.StatusMethodNotAllowed,
+					},
+					{"DELETE", "test-session", "", ""}: {optional: true},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			session, err := NewClient(testImpl, nil).Connect(ctx,
+				&StreamableClientTransport{Endpoint: httpServer.URL},
+				&ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatalf("Connect with a %q line: %v", extra, err)
+			}
+			defer session.Close()
+
+			if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+				t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, protocolVersion20251125)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("missing requests: %v", missing)
+			}
+		})
+	}
+}
+
+// TestStreamableClientLoggingTransport verifies that wrapping a
+// StreamableClientTransport in a LoggingTransport (documented as a decorator
+// for any Transport) does not change the session's behavior:
+// once initialize completes, the client must still send the negotiated
+// Mcp-Protocol-Version header on every subsequent request (2025-06-18 §
+// Protocol Version Header: "the client MUST include the MCP-Protocol-Version
+// header on all subsequent requests") and still open the standalone SSE GET
+// stream, exactly as it does when the transport is not wrapped.
+func TestStreamableClientLoggingTransport(t *testing.T) {
+	ctx := context.Background()
+
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"POST", "123", methodPing, ""}: {
+						header:              header{"Content-Type": "application/json"},
+						body:                jsonBody(t, resp(2, &emptyResult{}, nil)),
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"GET", "123", "", ""}: {
+						header:              header{"Content-Type": "text/event-stream"},
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			var transport Transport = &StreamableClientTransport{Endpoint: httpServer.URL}
+			if wrap {
+				transport = &LoggingTransport{Transport: transport, Writer: io.Discard}
+			}
+			client := NewClient(testImpl, nil)
+			// Pin to 2025-11-25: the canned initialize response has id=1, and
+			// the standalone GET stream only exists before 2026-07-28.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			if err := session.Ping(ctx, nil); err != nil {
+				t.Fatalf("Ping() failed: %v", err)
+			}
+
+			// Give the standalone SSE GET a moment to be issued.
+			time.Sleep(100 * time.Millisecond)
+
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests: %v", missing)
+			}
+		})
+	}
+}
+
+// TestStreamableClientRedirects verifies that the client follows a redirect
+// within the origin of the endpoint, and that a redirect to another origin is
+// not followed and fails only the redirected request. See #1429.
+func TestStreamableClientRedirects(t *testing.T) {
+	ctx := context.Background()
+
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		http.Error(w, "redirect target", http.StatusInternalServerError)
+	}))
+	defer target.Close()
+
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/mcp", http.StatusPermanentRedirect)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.Contains(string(body), `"method":"ping"`) {
+			http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	session, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL + "/old"}, nil)
+	if err != nil {
+		t.Fatalf("Connect through a same-origin redirect: %v", err)
+	}
+	defer session.Close()
+
+	if err := session.Ping(ctx, nil); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("Ping() error = %v, want redirect not followed", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
+	}
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Errorf("ListTools() after the unfollowed redirect: %v", err)
 	}
 }

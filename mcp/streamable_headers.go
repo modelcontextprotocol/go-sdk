@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -56,9 +57,31 @@ func extractName(method string, params json.RawMessage) (string, bool) {
 
 // headerSchemaProperty captures the fields needed for x-mcp-header processing.
 type headerSchemaProperty struct {
-	Type       string                          `json:"type"`
+	// Type is raw JSON because it may be a list like ["null", "string"] or a primitive.
+	Type       json.RawMessage                 `json:"type,omitempty"`
 	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
 	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+}
+
+// UnmarshalJSON treats a boolean schema as a schema without annotations.
+// A field can be encoded as "region": {"type": "string", "x-mcp-header": "Region"},
+// but also simply as "extra": true.
+func (p *headerSchemaProperty) UnmarshalJSON(data []byte) error {
+	switch string(bytes.TrimSpace(data)) {
+	case "true", "false":
+		*p = headerSchemaProperty{}
+		return nil
+	}
+	type plain headerSchemaProperty
+	return internaljson.Unmarshal(data, (*plain)(p))
+}
+
+func (p headerSchemaProperty) primitiveType() bool {
+	var t string
+	if err := json.Unmarshal(p.Type, &t); err != nil {
+		return false
+	}
+	return t == "string" || t == "integer" || t == "boolean"
 }
 
 // unmarshalSchemaProperties normalizes any InputSchema type
@@ -207,7 +230,12 @@ func setStandardHeaders(ctx context.Context, header http.Header, msg jsonrpc.Mes
 	case *jsonrpc.Request:
 		header.Set(methodHeader, msg.Method)
 		if name, ok := extractName(msg.Method, msg.Params); ok {
-			header.Set(nameHeader, name)
+			// Names are only SHOULD-constrained to header-safe characters, so a
+			// name outside the safe set is Base64-wrapped with the =?base64?...?=
+			// sentinel, the same rule applied to Mcp-Param-* values.
+			if encoded, ok := encodeHeaderValue(name); ok {
+				header.Set(nameHeader, encoded)
+			}
 		}
 		if msg.Method == "tools/call" {
 			if tool, ok := ctx.Value(toolContextKey).(*Tool); ok && tool != nil {
@@ -296,8 +324,12 @@ func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string
 			path = prefix + "." + propName
 		}
 		if prop.XMCPHeader != nil {
-			if prop.Type != "string" && prop.Type != "integer" && prop.Type != "boolean" {
-				return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types (integer, string, boolean), got %q", path, prop.Type)
+			if !prop.primitiveType() {
+				got := string(prop.Type)
+				if got == "" {
+					got = `""`
+				}
+				return fmt.Errorf("property %q: x-mcp-header can only be applied to primitive types (integer, string, boolean), got %s", path, got)
 			}
 			var headerName string
 			if err := json.Unmarshal(prop.XMCPHeader, &headerName); err != nil || headerName == "" {
@@ -356,15 +388,35 @@ func isTChar(c rune) bool {
 	return false
 }
 
+// singletonHeader returns the value of a header that must appear at most once,
+// and reports whether it was present. Repeated field lines are rejected.
+func singletonHeader(header http.Header, name string) (string, bool, error) {
+	values := header.Values(name)
+	switch len(values) {
+	case 0:
+		return "", false, nil
+	case 1:
+		return values[0], true, nil
+	default:
+		return "", false, fmt.Errorf("header mismatch: %s header must not be repeated", name)
+	}
+}
+
 func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func(string) (*serverTool, bool)) error {
-	protocolVersion := header.Get(protocolVersionHeader)
+	protocolVersion, _, err := singletonHeader(header, protocolVersionHeader)
+	if err != nil {
+		return err
+	}
 	if protocolVersion == "" || protocolVersion < minVersionForStandardHeaders {
 		return nil
 	}
 
 	switch msg := msg.(type) {
 	case *jsonrpc.Request:
-		methodInHeader := header.Get(methodHeader)
+		methodInHeader, _, err := singletonHeader(header, methodHeader)
+		if err != nil {
+			return err
+		}
 		if methodInHeader == "" {
 			return errors.New("missing required Mcp-Method header")
 		}
@@ -374,17 +426,26 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func
 
 		var nameInBody string
 		if msg.Method == "tools/call" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
-			nameInHeader := header.Get(nameHeader)
-			if nameInHeader == "" {
+			// A name can be empty, which is sent as a present, empty header.
+			nameInHeader, present, err := singletonHeader(header, nameHeader)
+			if err != nil {
+				return err
+			}
+			if !present {
 				return fmt.Errorf("missing required Mcp-Name header for method %q", msg.Method)
 			}
-			var ok bool
+			// A name that is not header-safe may be Base64-wrapped by the client
+			// (=?base64?...?=), so decode before comparing, as with Mcp-Param-*.
+			decodedName, ok := decodeHeaderValue(nameInHeader)
+			if !ok {
+				return errors.New("header mismatch: Mcp-Name header contains invalid Base64 encoding")
+			}
 			nameInBody, ok = extractName(msg.Method, msg.Params)
 			if !ok {
 				return fmt.Errorf("failed to extract name from parameters for method %q", msg.Method)
 			}
-			if nameInHeader != nameInBody {
-				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", nameInHeader, nameInBody)
+			if decodedName != nameInBody {
+				return fmt.Errorf("header mismatch: Mcp-Name header value '%s' does not match body value '%s'", decodedName, nameInBody)
 			}
 		}
 
@@ -414,17 +475,22 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 
 	for _, b := range paramHeaders {
 		fullHeader := paramHeaderPrefix + b.Header
-		headerVal := header.Get(fullHeader)
+		// An empty string argument is mirrored as a present, empty header, so
+		// presence is decided by the header being sent, not by its value.
+		headerVal, headerPresent, err := singletonHeader(header, fullHeader)
+		if err != nil {
+			return err
+		}
 		argRaw, argExists := lookupArgument(raw.Arguments, b.Path)
 
 		if !argExists || string(argRaw) == "null" {
-			if headerVal != "" {
+			if headerPresent {
 				return fmt.Errorf("header mismatch: unexpected %s header for absent or null parameter %q", fullHeader, strings.Join(b.Path, "."))
 			}
 			continue
 		}
 
-		if headerVal == "" {
+		if !headerPresent {
 			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, strings.Join(b.Path, "."))
 		}
 
