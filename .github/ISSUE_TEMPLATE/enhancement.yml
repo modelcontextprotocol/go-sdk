@@ -1,0 +1,50 @@
+name: Enhancement
+description: Suggest an improvement to the Go MCP SDK
+type: Enhancement
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement. Keep it short: what you're trying to do, what's stopping you, and what would help.
+
+        Issues from outside the maintainer team are **closed automatically** unless every required box below is ticked; see [CONTRIBUTING.md](https://github.com/modelcontextprotocol/go-sdk/blob/main/CONTRIBUTING.md#how-issues-get-in). Changes to the exported API go through the [proposal process](https://github.com/modelcontextprotocol/go-sdk/blob/main/CONTRIBUTING.md#proposals). Open-ended ideas belong in [Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions).
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Only tick a box if it's true; the production one is optional. False statements may get you blocked from the repository.
+      options:
+        - label: "I searched the existing issues, and this has not been reported before."
+          required: true
+        - label: "This is a real problem that I ran into myself, using the latest release of the SDK."
+          required: true
+        - label: "I ran into it in a production system, not in a toy example, a benchmark, or an automated or AI-driven scan of the code."
+          required: false
+        - label: "I (a human) examined the relevant SDK code, and wrote or reviewed every line of this report. It is not unreviewed AI output."
+          required: true
+        - label: "This report is brief and concise, and sticks to the facts needed to understand the problem."
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: What you're trying to do, and what in the SDK is stopping you.
+    validations:
+      required: true
+
+  - type: input
+    id: production
+    attributes:
+      label: Where did you hit this?
+      description: One line on the system you hit it in, and how it uses the SDK.
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would help?
+      description: The change you'd like, and any alternatives you considered.
