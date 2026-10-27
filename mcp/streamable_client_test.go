@@ -2324,6 +2324,8 @@ func TestStreamableClientLoggingTransport(t *testing.T) {
 				t.Errorf("did not receive expected requests: %v", missing)
 			}
 		})
+	}
+}
 
 // TestStreamableClientRedirects verifies that the client follows a redirect
 // within the origin of the endpoint, and that a redirect to another origin is
