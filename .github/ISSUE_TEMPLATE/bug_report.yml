@@ -8,24 +8,24 @@ body:
       value: |
         Thanks for taking the time to report a bug. Keep it short: what happened, what you expected, and how to reproduce it.
 
-        Issues from outside the maintainer team are **closed automatically** unless every required box below is ticked; see [CONTRIBUTING.md](https://github.com/modelcontextprotocol/go-sdk/blob/main/CONTRIBUTING.md#how-issues-get-in). Questions belong in [Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions), and security vulnerabilities must be [reported privately](https://github.com/modelcontextprotocol/go-sdk/blob/main/SECURITY.md).
+        Every box in the checklist below should be ticked; see [CONTRIBUTING.md](https://github.com/modelcontextprotocol/go-sdk/blob/main/CONTRIBUTING.md#how-issues-get-in). Questions belong in [Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions), and security vulnerabilities must be [reported privately](https://github.com/modelcontextprotocol/go-sdk/blob/main/SECURITY.md).
 
   - type: checkboxes
     id: checklist
     attributes:
       label: Checklist
-      description: Only tick a box if it's true; the production one is optional. False statements may get you blocked from the repository.
+      description: Only tick a box if it's true; false statements may get you blocked from the repository.
       options:
         - label: "I searched the existing issues, and this has not been reported before."
-          required: true
+          required: false
         - label: "This is a real problem that I ran into myself, using the latest release of the SDK."
-          required: true
+          required: false
         - label: "I ran into it in a production system, not in a toy example, a benchmark, or an automated or AI-driven scan of the code."
           required: false
         - label: "I (a human) examined the relevant SDK code, and wrote or reviewed every line of this report. It is not unreviewed AI output."
-          required: true
+          required: false
         - label: "This report is brief and concise, and sticks to the facts needed to understand the problem."
-          required: true
+          required: false
 
   - type: textarea
     id: description

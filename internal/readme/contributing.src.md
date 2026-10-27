@@ -17,9 +17,9 @@ transparently, while adhering to these goals.
 ## Before you start
 
 > [!IMPORTANT]
-> **The most useful contribution is a good issue.** Issues and pull requests
-> from outside the maintainer team must meet the requirements below. Those that
-> don't are closed automatically.
+> **The most useful contribution is a good issue.** Pull requests from outside
+> the maintainer team are closed automatically unless they link an issue
+> assigned to their author, and issues should meet the checklist below.
 
 ### Why issues rather than pull requests
 
@@ -39,28 +39,20 @@ That is what a good issue carries, so that is what we ask for first.
 
 Bugs and enhancement requests are filed with the [issue
 forms](https://github.com/modelcontextprotocol/go-sdk/issues/new/choose); blank
-issues are disabled. Each form starts with a checklist, and an issue from
-outside the maintainer team stays open only when every required box is ticked.
-By ticking them, you confirm that:
+issues are disabled. Each form starts with a checklist, and an issue with every
+box ticked is much more likely to be accepted. By ticking them, you confirm
+that:
 
 - you searched the existing issues, and this one is not a duplicate;
 - the problem is real, and you ran into it yourself with the latest release;
+- you ran into it in a production system, not in a toy example, a benchmark, or
+  an automated or AI-driven scan of the code;
 - you, a human, examined the relevant SDK code, and wrote or reviewed the whole
   report;
 - the report is brief and concise.
 
-The checklist also asks whether you ran into the problem in a production
-system. That box is optional; tick it only if it's true, since it tells us how
-the problem affects real deployments.
-
-Otherwise a bot labels the issue `missing-checklist`, leaves a comment listing
-the missing items, and closes it. Issues filed from the command line or the API
-skip the forms, so they are checked the same way; the bot's comment has the
-checklist to paste into the description. Editing the description to tick the
-boxes reopens the issue automatically, so there's no need to file a new one.
-
-Only tick a box if it's true. If a required one doesn't apply, the report
-probably belongs somewhere else: questions and open-ended ideas go to [GitHub
+Only tick a box if it's true. If one doesn't apply, the report may belong
+somewhere else: questions and open-ended ideas go to [GitHub
 Discussions](https://github.com/modelcontextprotocol/go-sdk/discussions), and
 security vulnerabilities must be reported privately as described in
 [SECURITY.md](SECURITY.md).
@@ -93,9 +85,8 @@ confirming the reproduction, asking about the intended behavior, or briefly
 describing the approach you'd take. If you reported the issue and would like to
 fix it yourself, say so in the issue.
 
-Maintainers can override either check by reopening the issue or PR, by removing
-its `missing-checklist` or `missing-issue-link` label, or by adding
-`bypass-checklist` or `bypass-issue-check`.
+Maintainers can override the check by reopening the PR, by removing its
+`missing-issue-link` label, or by adding `bypass-issue-check`.
 
 ### AI-assisted contributions
 
