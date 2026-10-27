@@ -99,6 +99,11 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
 		}
+		// Unmarshalling JSON null leaves v as a nil map. Treat null arguments
+		// like missing ones, so that the defaults are still applied.
+		if v == nil {
+			v = make(map[string]any)
+		}
 		unmarshaled = v
 	} else {
 		if len(data) > 0 {

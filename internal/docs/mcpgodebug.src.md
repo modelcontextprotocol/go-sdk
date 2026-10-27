@@ -50,6 +50,33 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   options on this page this one is opt-in: the default keeps emitting the
   records at info, because demoting them changes log output existing users may
   rely on.
+- `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
+  has not been initialized refuses a request other than `initialize` or `ping`
+  with JSON-RPC error code `0`, restoring the previous behavior. The default
+  behavior was changed to refuse it with `-32600` (Invalid Request): `0`
+  tells a client nothing and is indistinguishable from an unset code. See
+  issue #1367.
+
+- `nointernalerrorcode` added. If set to `1`, an error returned by a request
+  handler that carries no JSON-RPC error code is sent with code `0`, restoring
+  the previous behavior. The default behavior was changed to send it with
+  `-32603` (Internal error): `0` tells the peer nothing and is
+  indistinguishable from an unset code. The error's message is unchanged.
+  See issue #1394.
+
+- `fatalnewprotocolerrors` added. If set to `1`, a streamable HTTP client
+  permanently fails its connection when an independent `2026-07-28` request
+  fails, restoring the previous behavior. By default, the failure is returned
+  only to the affected call.
+
+- `followallredirects` added. If set to `1`, the requests of
+  `StreamableClientTransport` and `SSEClientTransport`, and the OAuth token and
+  dynamic client registration requests, follow redirects as before: to any
+  origin, and changing the method as `net/http` does. The default behavior was
+  changed so that, unless the `http.Client` in use sets `CheckRedirect`, a
+  redirect is followed only if it stays within the origin of the request (an
+  upgrade from `http` to `https` on the same host with default ports is
+  allowed) and keeps the method.
 
 ### 1.8.0
 

@@ -12,9 +12,11 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -29,6 +31,8 @@ type ClientCredentialsHandlerConfig struct {
 
 	// HTTPClient is an optional HTTP client for customization.
 	// If nil, http.DefaultClient is used.
+	// Unless HTTPClient sets CheckRedirect, token requests follow a redirect
+	// only within the origin of the request and only if it keeps the method.
 	// OPTIONAL.
 	HTTPClient *http.Client
 }
@@ -46,7 +50,11 @@ type ClientCredentialsHandlerConfig struct {
 // Resource Metadata (RFC 9728) and Authorization Server Metadata (RFC 8414),
 // following the ext-auth specification SEP-1046.
 type ClientCredentialsHandler struct {
-	config      *ClientCredentialsHandlerConfig
+	config *ClientCredentialsHandlerConfig
+
+	// mu protects tokenSource and grantedScopes. Authorize can run for one
+	// request while the transport reads the token source for another.
+	mu          sync.RWMutex
 	tokenSource oauth2.TokenSource
 
 	// grantedScopes maps authorization server issuer to the list of scopes granted by that issuer.
@@ -80,6 +88,8 @@ func NewClientCredentialsHandler(config *ClientCredentialsHandlerConfig) (*Clien
 // TokenSource returns the token source for outgoing requests.
 // Returns nil if authorization has not been performed yet.
 func (h *ClientCredentialsHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.tokenSource, nil
 }
 
@@ -142,7 +152,10 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 	// Accumulate scopes: union previously granted scopes with the newly
 	// challenged scopes so that step-up authorization does not lose
 	// permissions granted in earlier rounds (SEP-2350).
-	requestedScopes = authutil.UnionScopes(h.grantedScopes[asm.Issuer], requestedScopes)
+	h.mu.RLock()
+	granted := h.grantedScopes[asm.Issuer]
+	h.mu.RUnlock()
+	requestedScopes = authutil.UnionScopes(granted, requestedScopes)
 
 	// Step 3: Exchange client credentials for an access token.
 	cfg := &clientcredentials.Config{
@@ -153,27 +166,36 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 		AuthStyle:    selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
 	}
 
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
-	h.tokenSource = cfg.TokenSource(ctxWithClient)
-
-	return h.updateGrantedScopes(asm.Issuer, requestedScopes)
-}
-
-func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string) error {
-	if h.tokenSource == nil {
-		return nil
-	}
-	tok, err := h.tokenSource.Token()
+	client := util.RestrictRedirects(httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, client)
+	tok, err := cfg.Token(ctxWithClient)
 	if err != nil {
+		h.mu.Lock()
 		h.tokenSource = nil
+		h.mu.Unlock()
 		return fmt.Errorf("client credentials token request failed: %w", err)
 	}
+	// The token source outlives this authorization request: the transport uses
+	// it for the lifetime of the connection, and clientcredentials reuses the
+	// context passed to TokenSource for every later token request. Binding it to
+	// ctx would make every request after the first token expires fail with
+	// "context canceled". Use a background context that still carries the HTTP
+	// client, as AuthorizationCodeHandler does.
+	refreshCtx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.tokenSource = oauth2.ReuseTokenSource(tok, cfg.TokenSource(refreshCtx))
+	h.updateGrantedScopes(asm.Issuer, requestedScopes, tok)
+	return nil
+}
+
+// updateGrantedScopes must be called with h.mu held.
+func (h *ClientCredentialsHandler) updateGrantedScopes(issuer string, requestedScopes []string, tok *oauth2.Token) {
 	if tokenScopes := authutil.ScopesFromToken(tok); tokenScopes == nil {
 		h.grantedScopes[issuer] = requestedScopes
 	} else {
 		h.grantedScopes[issuer] = tokenScopes
 	}
-	return nil
 }
 
 // getProtectedResourceMetadata discovers Protected Resource Metadata (RFC 9728)
@@ -236,14 +258,24 @@ func protectedResourceMetadataURLs(metadataURL, resourceURL string) []prmURL {
 }
 
 // resourceMetadataURLFromChallenges returns a resource metadata URL from
-// WWW-Authenticate challenges, or the empty string if there is none.
+// WWW-Authenticate challenges, preferring a Bearer challenge and otherwise the
+// first other scheme that carries one. It returns the empty string if there is
+// none.
 func resourceMetadataURLFromChallenges(cs []oauthex.Challenge) string {
+	var fallback string
 	for _, c := range cs {
-		if u := c.Params["resource_metadata"]; u != "" {
+		u := c.Params["resource_metadata"]
+		if u == "" {
+			continue
+		}
+		if strings.EqualFold(c.Scheme, "Bearer") {
 			return u
 		}
+		if fallback == "" {
+			fallback = u
+		}
 	}
-	return ""
+	return fallback
 }
 
 // scopesFromChallenges returns scopes from WWW-Authenticate challenges.

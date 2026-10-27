@@ -125,7 +125,7 @@ type ClientOptions struct {
 	// Setting ElicitationHandler to a non-nil value automatically causes the
 	// client to advertise the elicitation capability, with default value
 	// &ElicitationCapabilities{}. If [ClientOptions.Capabilities] is set and has
-	// a non nil value for [ClientCapabilities.ELicitattion], that value
+	// a non nil value for [ClientCapabilities.Elicitation], that value
 	// overrides the inferred capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
 	// Capabilities optionally configures the client's default capabilities,
@@ -330,7 +330,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if err == nil {
 				cs.state.InitializeResult = discRes
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
-					hc.sessionUpdated(cs.state)
+					hc.clientSessionUpdated(cs.state)
 				}
 				subscribeParams := &SubscriptionsListenParams{
 					Notifications: &NotificationSubscriptions{},
@@ -354,10 +354,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					// ClientSession.Close cancels the listenCtx context to send notifications/cancelled.
 					listenCtx, cancelListen := context.WithCancel(context.Background())
 					cs.listenCancel = cancelListen
-					if err := cs.subscriptionsListen(listenCtx, subscribeParams); err != nil {
-						cancelListen()
-						return nil, fmt.Errorf("opening subscriptions/listen: %w", err)
-					}
+					go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, nil)
 				}
 				return cs, nil
 			}
@@ -399,7 +396,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 	cs.state.InitializeResult = res
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
-		hc.sessionUpdated(cs.state)
+		hc.clientSessionUpdated(cs.state)
 	}
 	req2 := &initializedClientRequest{Session: cs, Params: &InitializedParams{}}
 	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
@@ -496,14 +493,28 @@ type ClientSession struct {
 	pendingElicitationsMu sync.Mutex
 	pendingElicitations   map[string]chan struct{}
 
-	// resourceSubsMu guards resourceSubs.
+	// resourceSubsMu guards resourceSubs and nextResourceSubGen.
 	resourceSubsMu sync.Mutex
-	// resourceSubs maps a subscribed resource URI to the cancel func of the
+	// resourceSubs maps a subscribed resource URI to the state of the
 	// goroutine running its dedicated subscriptions/listen stream. Populated
 	// only under SEP-2575; the legacy protocol routes Subscribe and
 	// Unsubscribe straight to the resources/subscribe and resources/unsubscribe
 	// RPCs and leaves this map untouched.
-	resourceSubs map[string]context.CancelFunc
+	resourceSubs map[string]*resourceSub
+	// nextResourceSubGen assigns a monotonically increasing generation to each
+	// resourceSubs entry, so a listen goroutine only clears the entry it
+	// created and not one installed by a later Subscribe for the same URI.
+	nextResourceSubGen uint64
+}
+
+// resourceSub is the per-URI state of a SEP-2575 resource subscription: the
+// cancel func for its subscriptions/listen stream, and the generation that
+// lets a completing listen goroutine tell its own entry from one a racing
+// Unsubscribe→Subscribe (or a re-subscribe inside the callback) has since
+// installed for the same URI.
+type resourceSub struct {
+	cancel context.CancelFunc
+	gen    uint64
 }
 
 type clientSessionState struct {
@@ -716,18 +727,23 @@ func (c *Client) shouldSendListChangedNotification(notification string) bool {
 		if caps == nil {
 			return true
 		}
-		// Check RootsV2 first (preferred), then fall back to Roots.
-		if caps.RootsV2 != nil {
-			return caps.RootsV2.ListChanged
-		}
-		return caps.Roots.ListChanged
+		// Capabilities.Roots is ignored (#607); only RootsV2 is advertised.
+		return caps.RootsV2 != nil && caps.RootsV2.ListChanged
 	default:
 		// Unknown notification, allow by default.
 		return true
 	}
 }
 
+// rootsEnabled reports whether the client advertises the roots capability.
+func (c *Client) rootsEnabled() bool {
+	return c.opts.Capabilities == nil || c.opts.Capabilities.RootsV2 != nil
+}
+
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
+	if !c.rootsEnabled() {
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support roots"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -741,7 +757,11 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
 	if c.opts.CreateMessageWithToolsHandler != nil {
-		return c.opts.CreateMessageWithToolsHandler(ctx, req)
+		res, err := c.opts.CreateMessageWithToolsHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageWithToolsHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	}
 	if c.opts.CreateMessageHandler != nil {
 		// Downconvert the request for the basic handler.
@@ -756,6 +776,9 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 		res, err := c.opts.CreateMessageHandler(ctx, baseReq)
 		if err != nil {
 			return nil, err
+		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
 		return res.toWithTools(), nil
 	}
@@ -890,6 +913,9 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if err != nil {
 			return nil, err
 		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
 		// Validate elicitation result content against requested schema.
 		if res.Action == "accept" && schema != nil && res.Content != nil {
 			resolved, err := schema.Resolve(nil)
@@ -912,8 +938,12 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if req.Params.URL == "" {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must be set for URL elicitation"}
 		}
-		// No schema validation for URL mode, just pass through to handler.
-		return c.opts.ElicitationHandler(ctx, req)
+		// No schema validation for URL mode.
+		res, err := c.opts.ElicitationHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	default:
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unsupported elicitation mode: %q", mode)}
 	}
@@ -1094,6 +1124,9 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry == nil {
+		return fmt.Errorf("titled enum entries must be objects")
+	}
 	if entry.Const == nil {
 		return fmt.Errorf("const is required for titled enum entries")
 	}
@@ -1250,8 +1283,37 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 	return &ClientRequest[P]{Session: cs, Params: params}
 }
 
+// Discover makes an MCP "server/discover" request to the server and returns
+// its result unchanged, including the cache hints and the serverInfo carried
+// in the result's _meta.
+// It does not update [ClientSession.InitializeResult].
+//
+// On sessions negotiated below protocol version 2026-07-28, Discover returns
+// a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a round
+// trip: server/discover was introduced in 2026-07-28.
+func (cs *ClientSession) Discover(ctx context.Context, params *DiscoverParams) (*DiscoverResult, error) {
+	if !cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is only supported in protocol version >= %s", methodDiscover, protocolVersion20260728),
+		}
+	}
+	params = injectRequestMeta(cs, params)
+	return handleSend[*DiscoverResult](ctx, methodDiscover, newClientRequest(cs, orZero[Params](params)))
+}
+
 // Ping makes an MCP "ping" request to the server.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
+	if cs.usesNewProtocol() {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
@@ -1375,7 +1437,13 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	if cs.usesNewProtocol() {
+	// The cache is keyed by URI alone. A request that carries input responses
+	// or request state is a multi round-trip retry whose result depends on
+	// those inputs, so the caching specification keeps it out of the cache in
+	// both directions: it is not served from the cache and its result is not
+	// stored (2026-07-28, Caching, "Cache Key").
+	useCache := cs.usesNewProtocol() && !isMultiRoundTripRetry(params)
+	if useCache {
 		var uri string
 		if params != nil {
 			uri = params.URI
@@ -1383,16 +1451,27 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 		if result, ok := cs.readResourceCache.get(uri); ok {
 			return result, nil
 		}
+	}
+	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	if cs.usesNewProtocol() {
+	// A result the middleware obtained by retrying is excluded for the same
+	// reason, and an input-required result is an interim one that the
+	// specification declares not cacheable.
+	if useCache && !result.retried && !result.NeedsInput() {
 		cs.readResourceCache.put(params.URI, result)
 	}
 	return result, nil
+}
+
+// isMultiRoundTripRetry reports whether params carry the input responses or
+// request state of a multi round-trip retry. A nil params is a plain read.
+func isMultiRoundTripRetry(params *ReadResourceParams) bool {
+	return params != nil && (params.InputResponses != nil || params.RequestState != "")
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
@@ -1414,27 +1493,73 @@ func (cs *ClientSession) Subscribe(ctx context.Context, params *SubscribeParams)
 	}
 	uri := params.URI
 
-	var listenCtx context.Context
 	cs.resourceSubsMu.Lock()
-	if _, exists := cs.resourceSubs[uri]; !exists {
-		var cancel context.CancelFunc
-		listenCtx, cancel = context.WithCancel(context.Background())
-		if cs.resourceSubs == nil {
-			cs.resourceSubs = make(map[string]context.CancelFunc)
-		}
-		cs.resourceSubs[uri] = cancel
-	}
-	cs.resourceSubsMu.Unlock()
-	if listenCtx == nil {
-		// Already subscribed to this URI
+	if _, exists := cs.resourceSubs[uri]; exists {
+		// Already subscribed to this URI.
+		cs.resourceSubsMu.Unlock()
 		return nil
 	}
+	if cs.resourceSubs == nil {
+		cs.resourceSubs = make(map[string]*resourceSub)
+	}
+	listenCtx, cancel := context.WithCancel(context.Background())
+	cs.nextResourceSubGen++
+	gen := cs.nextResourceSubGen
+	cs.resourceSubs[uri] = &resourceSub{cancel: cancel, gen: gen}
+	cs.resourceSubsMu.Unlock()
 
-	return cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+	// Subscribe stays non-blocking: the listen stream is awaited on its own
+	// goroutine so that its completion clears the subscription.
+	subscribeParams := &SubscriptionsListenParams{
 		Notifications: &NotificationSubscriptions{
 			ResourceSubscriptions: []string{uri},
 		},
-	})
+	}
+	go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, &gen)
+	return nil
+}
+
+// awaitSubscriptionsListen runs a subscriptions/listen stream to completion. Connect and
+// Subscribe start it on its own goroutine, so they return without waiting for
+// the server to acknowledge the listen.
+//
+// When the stream ends for a reason other than a client-initiated Unsubscribe
+// or session Close — a graceful listen result, a synthetic transport
+// "terminated" error, or any jsonrpc error, all while listenCtx is not
+// cancelled — the resourceSubs entries for the stream's resource URIs are
+// cleared so that a later bare Subscribe re-opens the stream instead of
+// no-oping. An entry is only removed if it still carries generation gen, which
+// guards an Unsubscribe→Subscribe race and a re-subscribe from inside a
+// callback. The SDK does not auto-resubscribe: a revoked URI would hot-loop, so
+// reopening is left to the application calling Subscribe again. Connect passes
+// a nil gen for its list-changed listen, which owns no resource entries, so
+// its end clears nothing.
+func (cs *ClientSession) awaitSubscriptionsListen(listenCtx context.Context, params *SubscriptionsListenParams, gen *uint64) {
+	_ = cs.subscriptionsListen(listenCtx, params)
+	if listenCtx.Err() != nil {
+		// Client-initiated teardown: Unsubscribe already removed the entry (and
+		// cancelAllResourceSubscriptions nils the whole map on Close), so there
+		// is nothing to clear.
+		return
+	}
+	if gen == nil || params.Notifications == nil {
+		return
+	}
+	for _, uri := range params.Notifications.ResourceSubscriptions {
+		cs.clearResourceSubIfGen(uri, *gen)
+	}
+}
+
+// clearResourceSubIfGen deletes the resourceSubs entry for uri only if it is
+// still present and carries the given generation, reporting whether it did.
+func (cs *ClientSession) clearResourceSubIfGen(uri string, gen uint64) bool {
+	cs.resourceSubsMu.Lock()
+	defer cs.resourceSubsMu.Unlock()
+	if sub, ok := cs.resourceSubs[uri]; ok && sub.gen == gen {
+		delete(cs.resourceSubs, uri)
+		return true
+	}
+	return false
 }
 
 // Unsubscribe cancels a previous [ClientSession.Subscribe] for params.URI.
@@ -1453,11 +1578,11 @@ func (cs *ClientSession) Unsubscribe(ctx context.Context, params *UnsubscribePar
 		return fmt.Errorf("Unsubscribe: missing URI")
 	}
 	cs.resourceSubsMu.Lock()
-	cancel, ok := cs.resourceSubs[params.URI]
+	sub, ok := cs.resourceSubs[params.URI]
 	delete(cs.resourceSubs, params.URI)
 	cs.resourceSubsMu.Unlock()
 	if ok {
-		cancel()
+		sub.cancel()
 	}
 	return nil
 }
@@ -1470,8 +1595,8 @@ func (cs *ClientSession) cancelAllResourceSubscriptions() {
 	subs := cs.resourceSubs
 	cs.resourceSubs = nil
 	cs.resourceSubsMu.Unlock()
-	for _, cancel := range subs {
-		cancel()
+	for _, sub := range subs {
+		sub.cancel()
 	}
 }
 

@@ -102,8 +102,8 @@ type Connection interface {
 type clientConnection interface {
 	Connection
 
-	// sessionUpdated is called whenever the client session state changes.
-	sessionUpdated(clientSessionState)
+	// clientSessionUpdated is called whenever the client session state changes.
+	clientSessionUpdated(clientSessionState)
 }
 
 // A serverConnection is a Connection that is specific to the MCP server.
@@ -115,8 +115,8 @@ type clientConnection interface {
 type serverConnection interface {
 	Connection
 
-	// sessionUpdated is called whenever the server session state changes.
-	sessionUpdated(ServerSessionState)
+	// serverSessionUpdated is called whenever the server session state changes.
+	serverSessionUpdated(ServerSessionState)
 }
 
 // DefaultMaxLineLength is the default maximum number of bytes buffered while
@@ -250,7 +250,9 @@ type cancellationPropagator interface {
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
-// cancelled notifications.
+// cancelled notifications. A connection that implements
+// [jsonrpc2.ResponseDropper] can then drop the cancelled request's response,
+// as the spec requires.
 type canceller struct {
 	conn   *jsonrpc2.Connection
 	logger *slog.Logger
@@ -260,7 +262,8 @@ type canceller struct {
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
+		// UseNumber keeps a numeric requestId exact, as in jsonrpc2.DecodeMessage.
+		if err := internaljson.UnmarshalUseNumber(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)
@@ -272,7 +275,7 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 		// travels as the cause of the request's context rather than being
 		// dropped here.
 		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
-		go c.conn.CancelCause(id, &peerCancelledError{reason: params.Reason})
+		c.conn.CancelFromPeer(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
@@ -294,24 +297,6 @@ func (e *peerCancelledError) Error() string {
 
 func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
-//
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
-	call := conn.Call(ctx, method, params)
-
-	go func() {
-		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
-	}()
-}
-
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
@@ -319,8 +304,17 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
+	case err == nil:
+		// The response arrived and decoded. It is returned even if ctx has
+		// been cancelled in the meantime: the request is complete, so there
+		// is nothing to cancel, and the spec permits notifications/cancelled
+		// only for requests believed to still be in progress.
+		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+		if cause := withoutClosingErrors(err); cause != nil {
+			return fmt.Errorf("%w: calling %q: %w", ErrConnectionClosed, method, cause)
+		}
+		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
 		// The notifications/cancelled message is best-effort. Retire the call
 		// immediately (so an unresponsive peer cannot delay the eager
@@ -348,6 +342,29 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		return fmt.Errorf("calling %q: %w", method, err)
 	}
 	return nil
+}
+
+// withoutClosingErrors returns err with jsonrpc2.ErrClientClosing and
+// jsonrpc2.ErrServerClosing removed from its tree, or nil if nothing else is
+// left. Those errors are internal: wrapping them would expose their codes.
+func withoutClosingErrors(err error) error {
+	if !errors.Is(err, jsonrpc2.ErrClientClosing) && !errors.Is(err, jsonrpc2.ErrServerClosing) {
+		return err
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() []error }:
+		var causes []error
+		for _, child := range err.Unwrap() {
+			if cause := withoutClosingErrors(child); cause != nil {
+				causes = append(causes, cause)
+			}
+		}
+		return errors.Join(causes...)
+	case interface{ Unwrap() error }:
+		return withoutClosingErrors(err.Unwrap())
+	default:
+		return nil
+	}
 }
 
 // cancelCall sends a "notifications/cancelled" notification for call and eagerly
@@ -440,8 +457,47 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	return err
 }
 
+// DropResponse implements [jsonrpc2.ResponseDropper] by forwarding to the
+// delegate: the connection asks its writer for the interface, so a wrapper
+// without it would keep the delegate from learning that a call was cancelled.
+func (s *loggingConn) DropResponse(id jsonrpc.ID) {
+	if dropper, ok := s.delegate.(jsonrpc2.ResponseDropper); ok {
+		dropper.DropResponse(id)
+	}
+}
+
 func (s *loggingConn) Close() error {
 	return s.delegate.Close()
+}
+
+// The methods below forward the optional connection interfaces to the
+// delegate. Client and server sessions look these up with a type assertion on
+// the connection, so without them wrapping a transport in a LoggingTransport
+// would silently change its behavior.
+var (
+	_ clientConnection         = (*loggingConn)(nil)
+	_ serverConnection         = (*loggingConn)(nil)
+	_ cancellationPropagator   = (*loggingConn)(nil)
+	_ jsonrpc2.ResponseDropper = (*loggingConn)(nil)
+)
+
+func (s *loggingConn) clientSessionUpdated(state clientSessionState) {
+	if c, ok := s.delegate.(clientConnection); ok {
+		c.clientSessionUpdated(state)
+	}
+}
+
+// serverSessionUpdated forwards to the delegate, whose behavior may depend on
+// the negotiated protocol version (see [ioConn.DropResponse]).
+func (s *loggingConn) serverSessionUpdated(state ServerSessionState) {
+	if c, ok := s.delegate.(serverConnection); ok {
+		c.serverSessionUpdated(state)
+	}
+}
+
+func (s *loggingConn) propagateCancellation() bool {
+	cp, ok := s.delegate.(cancellationPropagator)
+	return ok && cp.propagateCancellation()
 }
 
 // A rwc binds an io.ReadCloser and io.WriteCloser together to create an
@@ -481,8 +537,12 @@ type ioConn struct {
 	// protocolVersion is the negotiated version of the protocol,
 	// set during session initialization.
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
+	//
+	// dropped holds the incoming calls the peer cancelled, whose responses
+	// Write discards (see [ioConn.DropResponse]). It is guarded by sessionMu too.
 	sessionMu       sync.Mutex
 	protocolVersion string
+	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
 	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
 	rwc     io.ReadWriteCloser // the underlying stream
@@ -610,7 +670,7 @@ func (r *frameLimitReader) resetFrame() { r.count = 0 }
 
 func (c *ioConn) SessionID() string { return "" }
 
-func (c *ioConn) sessionUpdated(state ServerSessionState) {
+func (c *ioConn) serverSessionUpdated(state ServerSessionState) {
 	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
@@ -642,6 +702,31 @@ func (t *ioConn) addBatch(batch *msgBatch) error {
 		t.batches[id] = batch
 	}
 	return nil
+}
+
+// DropResponse implements [jsonrpc2.ResponseDropper]: on a session using
+// protocol version 2026-07-28 or later, Write discards the response to the
+// cancelled call. Sessions on earlier versions keep answering it.
+func (t *ioConn) DropResponse(id jsonrpc.ID) {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	if t.protocolVersion < protocolVersion20260728 {
+		return
+	}
+	if t.dropped == nil {
+		t.dropped = make(map[jsonrpc2.ID]bool)
+	}
+	t.dropped[id] = true
+}
+
+// takeDropped reports whether the response to the call with the given ID is
+// to be discarded (see [ioConn.DropResponse]), and forgets the call.
+func (t *ioConn) takeDropped(id jsonrpc.ID) bool {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	dropped := t.dropped[id]
+	delete(t.dropped, id)
+	return dropped
 }
 
 // updateBatch records a response in the message batch tracking the
@@ -796,6 +881,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// want to collect it into a batch before sending, if we're configured to use
 	// outgoing batches.
 	if resp, ok := msg.(*jsonrpc.Response); ok {
+		if t.takeDropped(resp.ID) {
+			return nil
+		}
 		if batch, ok := t.updateBatch(resp); ok {
 			if len(batch) > 0 {
 				data, err := marshalMessages(batch)

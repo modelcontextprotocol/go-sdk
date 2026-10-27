@@ -7,17 +7,20 @@ package mcp_test
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -53,8 +56,54 @@ func TestMain(m *testing.M) {
 // serverFuncs defines server functions that may be run as subprocesses via
 // [TestMain].
 var serverFuncs = map[string]func(){
-	"default":       runServer,
-	"cancelContext": runCancelContextServer,
+	"default":        runServer,
+	"cancelContext":  runCancelContextServer,
+	"largeFrame":     runLargeFrameServer,
+	"exitDuringCall": runExitDuringCallServer,
+}
+
+func runExitDuringCallServer() {
+	server := mcp.NewServer(testImpl, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "exit"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		os.Exit(3)
+		return nil, nil, nil
+	})
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func TestStdioCallInterruptedByPeerExit(t *testing.T) {
+	requireExec(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(testImpl, nil)
+	cs, err := client.Connect(ctx, &mcp.CommandTransport{Command: createServerCommand(t, "exitDuringCall")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	for _, name := range []string{"interrupted call", "next call"} {
+		_, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exit"})
+		if ctx.Err() != nil {
+			t.Fatalf("%s returned after context cancellation: %v", name, err)
+		}
+		for _, want := range []error{mcp.ErrConnectionClosed, io.EOF} {
+			if !errors.Is(err, want) {
+				t.Errorf("%s = %v, want an error wrapping %v", name, err, want)
+			}
+		}
+		for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
+			if errors.Is(err, closing) {
+				t.Errorf("%s = %v, must not wrap %v", name, err, closing)
+			}
+		}
+		var wireErr *jsonrpc2.WireError
+		if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+			t.Errorf("%s = %v, exposes internal closing code %d", name, err, wireErr.Code)
+		}
+	}
 }
 
 func runServer() {
@@ -65,6 +114,11 @@ func runServer() {
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runLargeFrameServer() {
+	_, _ = os.Stdout.WriteString("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"pad\":\"" +
+		strings.Repeat("A", 128<<10) + "\"}}\n")
 }
 
 func runCancelContextServer() {
@@ -93,17 +147,15 @@ func TestServerRunContextCancel(t *testing.T) {
 			onServerExit <- server.Run(ctx, serverTransport)
 		}()
 
-		// send a ping to the server to ensure it's running
+		// Connect to the server to ensure it's running: a successful connect
+		// completes a full handshake (or a discovery round trip on
+		// 2026-07-28 sessions, where the ping method is removed).
 		client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
 		session, err := client.Connect(ctx, clientTransport, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { session.Close() })
-
-		if err := session.Ping(context.Background(), nil); err != nil {
-			t.Fatal(err)
-		}
 
 		// cancel the context to stop the server
 		cancel()
@@ -226,6 +278,31 @@ func TestCmdTransport(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("closing server: %v", err)
+	}
+}
+
+func TestCommandTransportMaxLineLength(t *testing.T) {
+	requireExec(t)
+
+	transport := &mcp.CommandTransport{
+		Command:       createServerCommand(t, "largeFrame"),
+		MaxLineLength: 64 << 10,
+	}
+	conn, err := transport.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if transport.Command.Process != nil {
+			_ = transport.Command.Process.Kill()
+		}
+		_ = conn.Close()
+	})
+
+	_, err = conn.Read(t.Context())
+	const want = "inbound JSON-RPC frame exceeded the configured maximum line length"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Read() error = %v, want error containing %q", err, want)
 	}
 }
 

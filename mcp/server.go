@@ -461,10 +461,12 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		}
 
 		// Marshal the output and put the RawMessage in the StructuredContent field.
-		// Skip when the handler returned input requests (multi round-trip): content and
-		// inputRequests are mutually exclusive on the wire.
+		// Skip when the handler asked for input (multi round-trip): content and
+		// an input-required result are mutually exclusive on the wire.
+		// Skip for an error result too: out is not a tool result then, and
+		// its zero value may not satisfy the output schema.
 		var outval any = out
-		if res.InputRequests != nil {
+		if asksForInput(res) || res.IsError {
 			outval = nil
 		} else if elemZero != nil {
 			// Avoid typed nil, which will serialize as JSON null.
@@ -977,7 +979,7 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Messages == nil && res.InputRequests == nil {
+		if res.Messages == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Messages = []*PromptMessage{} // avoid "null"
 			res = &res2
@@ -1085,7 +1087,7 @@ func (s *Server) callTool(ctx context.Context, req *CallToolRequest) (*CallToolR
 		if err := validateMultiRoundTripResult(s.opts.Logger, res); err != nil {
 			return nil, err
 		}
-		if res.Content == nil && res.InputRequests == nil {
+		if res.Content == nil && !asksForInput(res) {
 			res2 := *res
 			res2.Content = []Content{} // avoid "null"
 			res = &res2
@@ -1154,7 +1156,7 @@ func (s *Server) readResource(ctx context.Context, req *ReadResourceRequest) (*R
 		return nil, err
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
-	if res.InputRequests != nil {
+	if asksForInput(res) {
 		return res, nil
 	}
 	if res.Contents == nil {
@@ -1302,6 +1304,14 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 }
 
 func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emptyResult, error) {
+	return s.endSubscription(ctx, req, jsonrpc.ID{})
+}
+
+// endSubscription ends the session's subscription to req.Params.URI. A zero
+// listenID removes the entry whichever request made it; a valid one removes it
+// only while the entry still records that listen, since a later listen on the
+// session may have replaced it. The UnsubscribeHandler is called either way.
+func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, listenID jsonrpc.ID) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -1313,7 +1323,9 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		delete(subscribedSessions, req.Session)
+		if !listenID.IsValid() || subscribedSessions[req.Session] == listenID {
+			delete(subscribedSessions, req.Session)
+		}
 		if len(subscribedSessions) == 0 {
 			delete(s.resourceSubscriptions, req.Params.URI)
 		}
@@ -1350,13 +1362,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		// several listens at once, and deleting by session alone retires a
 		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		if allowed.ToolsListChanged {
+		if allowed.ToolsListChanged && s.toolChangeSubscriptions[req.Session] == requestID {
 			delete(s.toolChangeSubscriptions, req.Session)
 		}
-		if allowed.PromptsListChanged {
+		if allowed.PromptsListChanged && s.promptChangeSubscriptions[req.Session] == requestID {
 			delete(s.promptChangeSubscriptions, req.Session)
 		}
-		if allowed.ResourcesListChanged {
+		if allowed.ResourcesListChanged && s.resourceChangeSubscriptions[req.Session] == requestID {
 			delete(s.resourceChangeSubscriptions, req.Session)
 		}
 		s.mu.Unlock()
@@ -1373,13 +1385,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		if err != nil {
 			return nil, err
 		}
-		defer s.unsubscribe(ctx, &UnsubscribeRequest{
+		defer s.endSubscription(ctx, &UnsubscribeRequest{
 			Session: req.Session,
 			Params: &UnsubscribeParams{
 				URI:  uri,
 				Meta: req.Params.GetMeta(),
 			},
-		})
+		}, requestID)
 	}
 
 	ackParams := &SubscriptionsAcknowledgedParams{
@@ -1651,7 +1663,7 @@ func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	copy := ss.state
 	ss.mu.Unlock()
 	if c, ok := ss.mcpConn.(serverConnection); ok {
-		c.sessionUpdated(copy)
+		c.serverSessionUpdated(copy)
 	}
 }
 
@@ -2020,6 +2032,14 @@ func (ss *ServerSession) receivingMethodHandler() MethodHandler {
 // getConn implements [session.getConn].
 func (ss *ServerSession) getConn() *jsonrpc2.Connection { return ss.conn }
 
+// nopreinitinvalidrequest is a compatibility parameter that restores the
+// previous behavior of a legacy server session that has not been initialized,
+// where a request other than initialize or ping was refused with JSON-RPC
+// error code 0 instead of -32600 (Invalid Request). See the documentation for
+// the mcpgodebug package for instructions how to enable it. The option will be
+// removed in a future version of the SDK.
+var nopreinitinvalidrequest = mcpgodebug.Value("nopreinitinvalidrequest")
+
 // handle invokes the method described by the given JSON RPC request.
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
@@ -2044,6 +2064,22 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 		return nil, &jsonrpc.Error{
 			Code:    CodeUnsupportedProtocolVersion,
 			Message: "unsupported protocol version",
+			Data:    data,
+		}
+	}
+
+	// A server that supports only 2026-07-28 and later serves no legacy call,
+	// initialize included.
+	if !validatedMeta.usesNewProtocol && req.IsCall() &&
+		!slices.ContainsFunc(ss.server.protocolVersions, func(v string) bool {
+			return v < protocolVersion20260728
+		}) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: ss.server.protocolVersions,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "legacy protocol version requests are not supported by this server",
 			Data:    data,
 		}
 	}
@@ -2086,7 +2122,11 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	if !initialized && !validatedMeta.usesNewProtocol && req.IsCall() &&
 		req.Method != methodInitialize && req.Method != methodPing {
 		ss.server.opts.Logger.Error("method invalid during initialization", "method", req.Method)
-		return nil, fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		err := fmt.Errorf("method %q is invalid during session initialization", req.Method)
+		if nopreinitinvalidrequest == "1" {
+			return nil, err
+		}
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: err.Error()}
 	}
 
 	// modelcontextprotocol/go-sdk#26: handle calls asynchronously, and
