@@ -90,13 +90,19 @@ type Config struct {
 	// request and returns the scope string to include in the token response.
 	TokenScopeFunc func(requestedScope string) string
 	// AccessTokenTTL, if non-zero, is the expires_in (in seconds) returned by the
-	// /token endpoint for both the authorization_code and refresh_token grants.
-	// When zero a default of 3600 is used. Set it small to force a client's reuse
-	// token source to treat the access token as expired and refresh it.
+	// /token endpoint for the authorization_code, refresh_token and
+	// client_credentials grants. When zero a default of 3600 is used. Set it
+	// small to force a client's reuse token source to treat the access token as
+	// expired and refresh it.
 	AccessTokenTTL int
 	// IssueRefreshToken, if true, includes a refresh_token in token responses and
 	// enables grant_type=refresh_token at the /token endpoint.
 	IssueRefreshToken bool
+	// UnadvertiseIssParameter, if true, omits
+	// authorization_response_iss_parameter_supported from metadata while the
+	// authorize endpoint still includes iss. Used to test local policy for
+	// unadvertised RFC 9207 iss.
+	UnadvertiseIssParameter bool
 }
 
 // testRefreshToken is the refresh token issued and accepted by the fake server
@@ -199,8 +205,9 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClientIDMetadataDocumentSupported: cimdSupported,
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "client_secret_basic"},
-		// Advertise RFC 9207 support: the authorize endpoint includes "iss" in responses.
-		AuthorizationResponseIssParameterSupported: true,
+		// Advertise RFC 9207 support unless UnadvertiseIssParameter is set:
+		// the authorize endpoint still includes "iss" in responses either way.
+		AuthorizationResponseIssParameterSupported: !s.config.UnadvertiseIssParameter,
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -419,7 +426,7 @@ func (s *FakeAuthorizationServer) handleClientCredentialsGrant(w http.ResponseWr
 	resp := map[string]any{
 		"access_token": "test_access_token",
 		"token_type":   "Bearer",
-		"expires_in":   3600,
+		"expires_in":   s.accessTokenExpiresIn(),
 	}
 	if s.config.TokenScopeFunc != nil {
 		if scope := s.config.TokenScopeFunc(r.Form.Get("scope")); scope != "" {

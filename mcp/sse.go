@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -65,6 +66,12 @@ type SSEOptions struct {
 	// Only disable this if you understand the security implications.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 	DisableLocalhostProtection bool
+
+	// MaxRequestBodyBytes limits the number of bytes read from an incoming
+	// POST body before the server responds with 413 Request Entity Too Large.
+	// It matches [StreamableHTTPOptions.MaxRequestBodyBytes]: if zero,
+	// [DefaultMaxRequestBodyBytes] is used; a negative value disables the limit.
+	MaxRequestBodyBytes int64
 }
 
 // NewSSEHandler returns a new [SSEHandler] that creates and manages MCP
@@ -122,6 +129,18 @@ type SSEServerTransport struct {
 	// Response is the hanging response body to the incoming GET request.
 	Response http.ResponseWriter
 
+	// MaxRequestBodyBytes limits the number of bytes read from a POSTed
+	// message body before [SSEServerTransport.ServeHTTP] responds with 413
+	// Request Entity Too Large. If zero, [DefaultMaxRequestBodyBytes] is used;
+	// a negative value disables the limit. See [SSEOptions.MaxRequestBodyBytes].
+	MaxRequestBodyBytes int64
+
+	// server is the server this transport is connected to, if known. It is
+	// set by [SSEHandler] so that [SSEServerTransport.ServeHTTP] can
+	// recognize custom methods registered via [AddReceivingCustomMethod]
+	// in addition to the standard methods.
+	server *Server
+
 	// incoming is the queue of incoming messages.
 	// It is never closed, and by convention, incoming is non-nil if and only if
 	// the transport is connected.
@@ -143,9 +162,22 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	limit := t.MaxRequestBodyBytes
+	if limit == 0 {
+		limit = DefaultMaxRequestBodyBytes
+	}
+	if limit > 0 && req.Body != nil {
+		req.Body = http.MaxBytesReader(w, req.Body, limit)
+	}
+
 	// Read and parse the message.
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", mbe.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -158,7 +190,15 @@ func (t *SSEServerTransport) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	if req, ok := msg.(*jsonrpc.Request); ok {
-		if _, err := checkRequest(req, serverMethodInfos); err != nil {
+		// Use the server's receiving method infos (which include any custom
+		// methods registered via AddReceivingCustomMethod) when available;
+		// fall back to the standard methods otherwise, e.g. for an
+		// SSEServerTransport that was constructed directly.
+		methodInfos := serverMethodInfos
+		if t.server != nil {
+			methodInfos = t.server.receivingMethodInfos()
+		}
+		if _, err := checkRequest(req, methodInfos); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -199,7 +239,7 @@ func (t *SSEServerTransport) SupportsProtocolVersion(version string) bool {
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// DNS rebinding protection: auto-enabled for localhost servers.
 	// See: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
-	if !h.opts.DisableLocalhostProtection && disablelocalhostprotection != "1" {
+	if !h.opts.DisableLocalhostProtection {
 		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
 			if util.IsLoopback(localAddr.String()) && !util.IsLoopback(req.Host) {
 				http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q", req.Host), http.StatusForbidden)
@@ -209,7 +249,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate 'Content-Type' header.
-	if disablecontenttypecheck != "1" && req.Method == http.MethodPost {
+	if req.Method == http.MethodPost {
 		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 		if err != nil || mediaType != "application/json" {
 			http.Error(w, "Content-Type must be 'application/json'", http.StatusUnsupportedMediaType)
@@ -260,7 +300,19 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	transport := &SSEServerTransport{Endpoint: endpoint.RequestURI(), Response: w}
+	server := h.getServer(req)
+	if server == nil {
+		// The getServer argument to NewSSEHandler returned nil.
+		http.Error(w, "no server available", http.StatusBadRequest)
+		return
+	}
+
+	transport := &SSEServerTransport{
+		Endpoint:            endpoint.RequestURI(),
+		Response:            w,
+		MaxRequestBodyBytes: h.opts.MaxRequestBodyBytes,
+		server:              server,
+	}
 
 	// The session is terminated when the request exits.
 	h.mu.Lock()
@@ -272,12 +324,6 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.mu.Unlock()
 	}()
 
-	server := h.getServer(req)
-	if server == nil {
-		// The getServer argument to NewSSEHandler returned nil.
-		http.Error(w, "no server available", http.StatusBadRequest)
-		return
-	}
 	ss, err := server.Connect(req.Context(), transport, nil)
 	if err != nil {
 		http.Error(w, "connection failed", http.StatusInternalServerError)
@@ -366,7 +412,17 @@ type SSEClientTransport struct {
 
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
+
+	// MaxEventSize bounds the number of bytes buffered while reading a single
+	// server-sent event. A value of 0 selects [DefaultMaxEventSize], a negative
+	// value disables the cap.
+	MaxEventSize int
 }
 
 // Connect connects through the client endpoint.
@@ -375,14 +431,21 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %v", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.Endpoint, nil)
+	// The event stream outlives ctx; ctx only bounds the handshake.
+	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatch := context.AfterFunc(ctx, cancel)
+	connected := false
+	defer func() {
+		if !connected {
+			stopWatch()
+			cancel()
+		}
+	}()
+	req, err := http.NewRequestWithContext(streamCtx, "GET", c.Endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := util.RestrictRedirects(c.HTTPClient)
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -397,9 +460,16 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		return nil, fmt.Errorf("failed to connect: %s", http.StatusText(resp.StatusCode))
 	}
 
+	maxEventSize := c.MaxEventSize
+	if maxEventSize == 0 {
+		maxEventSize = DefaultMaxEventSize
+	}
+
+	// Reuse the scanner so events buffered after the endpoint are not lost.
+	events := scanEventsLimited(resp.Body, maxEventSize)
 	msgEndpoint, err := func() (*url.URL, error) {
 		var evt Event
-		for evt, err = range scanEvents(resp.Body) {
+		for evt, err = range events {
 			break
 		}
 		if err != nil {
@@ -417,7 +487,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	}
 
 	// From here on, the stream takes ownership of resp.Body.
+	if !stopWatch() {
+		resp.Body.Close()
+		return nil, ctx.Err()
+	}
+	connected = true
 	s := &sseClientConn{
+		cancel:      cancel,
 		client:      httpClient,
 		msgEndpoint: msgEndpoint,
 		incoming:    make(chan []byte, 100),
@@ -428,9 +504,16 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	go func() {
 		defer s.Close() // close the transport when the GET exits
 
-		for evt, err := range scanEvents(resp.Body) {
+		for evt, err := range events {
 			if err != nil {
 				return
+			}
+			// Server messages are "message" events, which is also the type of an
+			// event without a name. Other events, such as keep-alive pings, and
+			// events without data carry no JSON-RPC message: decoding them would
+			// fail the read and end the session.
+			if len(evt.Data) == 0 || (evt.Name != "" && evt.Name != "message") {
+				continue
 			}
 			select {
 			case s.incoming <- evt.Data:
@@ -452,6 +535,7 @@ type sseClientConn struct {
 	client      *http.Client // HTTP client to use for requests
 	msgEndpoint *url.URL     // session endpoint for POSTs
 	incoming    chan []byte  // queue of incoming messages
+	cancel      context.CancelFunc
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -518,6 +602,7 @@ func (c *sseClientConn) Close() error {
 	defer c.mu.Unlock()
 	if !c.closed {
 		c.closed = true
+		c.cancel()
 		_ = c.body.Close()
 		close(c.done)
 	}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -124,6 +125,84 @@ func TestResourceNotFoundErrorCode(t *testing.T) {
 	}
 	if CodeResourceNotFound != jsonrpc.CodeInvalidParams {
 		t.Errorf("CodeResourceNotFound = %d, want %d", CodeResourceNotFound, jsonrpc.CodeInvalidParams)
+	}
+}
+
+// Go's %q escapes some characters (such as DEL or the tag characters in flag
+// emoji) using sequences that are not valid JSON.
+var unusualResourceURIs = []string{
+	"file:///del\x7f.txt",
+	"file:///\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F.txt",
+}
+
+func TestResourceNotFoundErrorData(t *testing.T) {
+	for _, uri := range unusualResourceURIs {
+		err := ResourceNotFoundError(uri)
+		var rpcErr *jsonrpc.Error
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("ResourceNotFoundError(%q): got error type %T, want *jsonrpc.Error", uri, err)
+		}
+		var data struct {
+			URI string `json:"uri"`
+		}
+		if err := json.Unmarshal(rpcErr.Data, &data); err != nil {
+			t.Fatalf("ResourceNotFoundError(%q): unmarshaling data %s: %v", uri, rpcErr.Data, err)
+		}
+		if data.URI != uri {
+			t.Errorf("ResourceNotFoundError(%q): got data URI %q", uri, data.URI)
+		}
+	}
+}
+
+func TestReadUnregisteredResourceKeepsSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
+		s.AddResource(
+			&Resource{URI: "file:///test.txt", Name: "test", MIMEType: "text/plain"},
+			func(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+				return &ReadResourceResult{}, nil
+			},
+		)
+	})
+	defer cleanup()
+
+	for _, uri := range unusualResourceURIs {
+		_, err := cs.ReadResource(ctx, &ReadResourceParams{URI: uri})
+		var rpcErr *jsonrpc.Error
+		if !errors.As(err, &rpcErr) || rpcErr.Code != CodeResourceNotFound {
+			t.Fatalf("ReadResource(%q): got error %v, want resource not found", uri, err)
+		}
+		if _, err := cs.ListResources(ctx, nil); err != nil {
+			t.Fatalf("ListResources after ReadResource(%q) failed: %v", uri, err)
+		}
+	}
+}
+
+// TestReadResourceNilResult verifies that a resource handler returning
+// (nil, nil) yields a clean error to the client instead of a nil pointer
+// panic that crashes the server. The sibling handlers callTool and getPrompt
+// already tolerate a (nil, nil) return; readResource must do the same.
+func TestReadResourceNilResult(t *testing.T) {
+	ctx := context.Background()
+
+	cs, _, cleanup := basicConnection(t, func(s *Server) {
+		s.AddResource(
+			&Resource{URI: "file:///nil.txt", Name: "nil", MIMEType: "text/plain"},
+			func(ctx context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+				return nil, nil
+			},
+		)
+	})
+	defer cleanup()
+
+	_, err := cs.ReadResource(ctx, &ReadResourceParams{URI: "file:///nil.txt"})
+	if err == nil {
+		t.Fatal("got nil error, want non-nil error for nil resource result")
+	}
+	if !strings.Contains(err.Error(), "nil information") {
+		t.Errorf("got error %q, want it to mention 'nil information'", err.Error())
 	}
 }
 
@@ -274,10 +353,9 @@ func TestURLElicitationRequired(t *testing.T) {
 				// In a real scenario, this would happen out-of-band after the user
 				// completes the form submission.
 				go func() {
-					err := handleNotify(ctx, notificationElicitationComplete,
-						newServerRequest(ss, &ElicitationCompleteParams{
-							ElicitationID: elicitID,
-						}))
+					err := ss.NotifyElicitationComplete(ctx, &ElicitationCompleteParams{
+						ElicitationID: elicitID,
+					})
 					if err != nil {
 						t.Errorf("failed to send elicitation complete notification: %v", err)
 					}

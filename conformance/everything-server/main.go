@@ -555,7 +555,6 @@ func testElicitationEnumsHandler(ctx context.Context, req *mcp.CallToolRequest, 
 					"minItems": 1,
 					"maxItems": 3,
 					"items": map[string]any{
-						"type": "string",
 						"anyOf": []map[string]any{
 							{"const": "value1", "title": "First Option"},
 							{"const": "value2", "title": "Second Option"},
