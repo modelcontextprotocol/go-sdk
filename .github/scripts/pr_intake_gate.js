@@ -213,7 +213,7 @@ module.exports = async function run({ github, context, core }) {
   function linkedRefs(body) {
     const repoRef = `${owner}/${repo}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(
-      `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|updates?|for)\\s*:?\\s*(?:${repoRef}#|#|https?://github\\.com/${repoRef}/issues/)(\\d+)`,
+      `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|updates?)\\s*:?\\s*(?:${repoRef}#|#|https?://github\\.com/${repoRef}/issues/)(\\d+)`,
       'gi',
     );
     return [...new Set([...(body || '').matchAll(re)].map((m) => parseInt(m[1], 10)))];
