@@ -1643,7 +1643,7 @@ func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	copy := ss.state
 	ss.mu.Unlock()
 	if c, ok := ss.mcpConn.(serverConnection); ok {
-		c.sessionUpdated(copy)
+		c.serverSessionUpdated(copy)
 	}
 }
 
