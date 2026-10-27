@@ -325,7 +325,7 @@ func TestIOConnRead(t *testing.T) {
 				if requested == "" {
 					requested = tt.protocolVersion
 				}
-				tr.sessionUpdated(ServerSessionState{
+				tr.serverSessionUpdated(ServerSessionState{
 					InitializeParams: &InitializeParams{
 						ProtocolVersion: requested,
 					},
@@ -573,7 +573,7 @@ func TestIOConnDropResponse(t *testing.T) {
 				wc: nopCloserWriter{&out},
 			})
 			t.Cleanup(func() { tr.Close() })
-			tr.sessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
+			tr.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
 
 			if test.drop {
 				tr.DropResponse(jsonrpc2.Int64ID(1))
@@ -597,6 +597,73 @@ func TestIOConnDropResponse(t *testing.T) {
 			}
 			if len(tr.dropped) != 0 {
 				t.Errorf("after the responses were written, %d dropped IDs are still recorded", len(tr.dropped))
+			}
+		})
+	}
+}
+
+// TestLoggingTransportServerBatchRejection verifies that wrapping a stdio-style
+// transport in a LoggingTransport (as examples/server/{everything,memory,
+// sequentialthinking} do) does not change what the server accepts: once a
+// session has negotiated 2025-06-18 or later, a JSON-RPC batch must be rejected
+// (see TestIOConnRead "batching new protocol") whether or not the connection
+// is wrapped.
+func TestLoggingTransportServerBatchRejection(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			inR, inW := io.Pipe()   // test -> server stdin
+			outR, outW := io.Pipe() // server stdout -> test
+			var tr Transport = &IOTransport{Reader: inR, Writer: outW}
+			if wrap {
+				tr = &LoggingTransport{Transport: tr, Writer: io.Discard}
+			}
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, tr, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			lines := bufio.NewScanner(outR)
+			send := func(msg string) {
+				t.Helper()
+				if _, err := io.WriteString(inW, msg+"\n"); err != nil {
+					t.Fatalf("write %q: %v", msg, err)
+				}
+			}
+			recv := func() (string, bool) {
+				ch := make(chan string, 1)
+				go func() {
+					if lines.Scan() {
+						ch <- lines.Text()
+					}
+					close(ch)
+				}()
+				select {
+				case line, ok := <-ch:
+					return line, ok
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out waiting for the server to respond")
+					return "", false
+				}
+			}
+
+			send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+			if line, ok := recv(); !ok || !strings.Contains(line, `"protocolVersion":"2025-11-25"`) {
+				t.Fatalf("initialize: got %q, want a 2025-11-25 InitializeResult", line)
+			}
+			send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+
+			// A batch is not supported at 2025-06-18 or later: the server must
+			// not answer it.
+			send(`[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","id":3,"method":"ping"}]`)
+			if line, ok := recv(); ok {
+				t.Errorf("server answered a JSON-RPC batch on a 2025-11-25 session: %q", line)
 			}
 		})
 	}
@@ -738,4 +805,43 @@ func TestLoggingConnDropResponse(t *testing.T) {
 		conn := &loggingConn{delegate: plainConn{}, w: io.Discard}
 		conn.DropResponse(jsonrpc.ID{})
 	})
+}
+
+// optionalConn is a Connection implementing every optional connection
+// interface, recording the calls it receives.
+type optionalConn struct {
+	Connection
+	clientState *clientSessionState
+	serverState *ServerSessionState
+}
+
+func (c *optionalConn) clientSessionUpdated(s clientSessionState) { c.clientState = &s }
+func (c *optionalConn) serverSessionUpdated(s ServerSessionState) { c.serverState = &s }
+func (c *optionalConn) propagateCancellation() bool               { return true }
+
+// TestLoggingConnForwardsOptionalInterfaces verifies that loggingConn forwards
+// the optional connection interfaces to its delegate, and is a no-op for a
+// delegate that implements none of them.
+func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
+	delegate := &optionalConn{}
+	lc := &loggingConn{delegate: delegate, w: io.Discard}
+
+	lc.clientSessionUpdated(clientSessionState{InitializeResult: &InitializeResult{ProtocolVersion: protocolVersion20251125}})
+	if delegate.clientState == nil || delegate.clientState.InitializeResult.ProtocolVersion != protocolVersion20251125 {
+		t.Errorf("clientSessionUpdated was not forwarded: got %+v", delegate.clientState)
+	}
+	lc.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: protocolVersion20251125})
+	if delegate.serverState == nil || delegate.serverState.NegotiatedProtocolVersion != protocolVersion20251125 {
+		t.Errorf("serverSessionUpdated was not forwarded: got %+v", delegate.serverState)
+	}
+	if !lc.propagateCancellation() {
+		t.Error("propagateCancellation() = false, want the delegate's true")
+	}
+
+	plain := &loggingConn{delegate: struct{ Connection }{}, w: io.Discard}
+	plain.clientSessionUpdated(clientSessionState{})
+	plain.serverSessionUpdated(ServerSessionState{})
+	if plain.propagateCancellation() {
+		t.Error("propagateCancellation() = true for a delegate without the interface, want false")
+	}
 }
