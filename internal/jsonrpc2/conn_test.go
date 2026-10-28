@@ -108,6 +108,48 @@ func TestShuttingDownWrapsReadError(t *testing.T) {
 	}
 }
 
+func TestReadErrorRetiresCalls(t *testing.T) {
+	for _, readErr := range []error{io.EOF, io.ErrUnexpectedEOF, errors.New("read failed")} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			ctx := context.Background()
+			failed := make(chan struct{})
+			fail := sync.OnceFunc(func() { close(failed) })
+			w := fakeWriter{out: make(chan Message, 1)}
+			conn := NewConnection(ctx, ConnectionConfig{
+				Reader: readerFunc(func(context.Context) (Message, error) {
+					<-failed
+					return nil, readErr
+				}),
+				Writer: w,
+				Closer: nopCloser{},
+				Bind: func(*Connection) Handler {
+					return HandlerFunc(func(context.Context, *Request) (any, error) {
+						return nil, ErrNotHandled
+					})
+				},
+			})
+			t.Cleanup(func() {
+				fail()
+				conn.Close()
+			})
+
+			call := conn.Call(ctx, "test", nil)
+			<-w.out
+			fail()
+			err := call.Await(ctx, nil)
+			for _, want := range []error{ErrClientClosing, readErr} {
+				if !errors.Is(err, want) {
+					t.Errorf("Await() = %v, want an error wrapping %v", err, want)
+				}
+			}
+		})
+	}
+}
+
+type readerFunc func(context.Context) (Message, error)
+
+func (f readerFunc) Read(ctx context.Context) (Message, error) { return f(ctx) }
+
 // TestCancelFromPeer verifies that CancelFromPeer tells a [ResponseDropper]
 // writer about the call before the handler's context is cancelled, that a
 // local Cancel and a cancellation arriving after the response do not, and that

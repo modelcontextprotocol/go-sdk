@@ -147,6 +147,14 @@ func (s *fakeStreamableServer) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	if v := req.Header.Get(protocolVersionHeader); v != resp.wantProtocolVersion && resp.wantProtocolVersion != "" {
 		s.t.Errorf("%v: bad protocol version header: got %q, want %q", key, v, resp.wantProtocolVersion)
 	}
+	// On initialize no version has been negotiated yet, so the request has none of
+	// its own to state and must not inherit the caller's. Checked for every
+	// initialize rather than per-response, since it holds unconditionally.
+	if key.jsonrpcMethod == methodInitialize {
+		if got := req.Header.Get(protocolVersionHeader); got != "" {
+			s.t.Errorf("%v: initialize carried protocol version header %q, want none", key, got)
+		}
+	}
 	w.Write([]byte(body))
 	rc.Flush() // flush response
 
@@ -175,6 +183,52 @@ func jsonBody(t *testing.T, msg jsonrpc2.Message) string {
 		t.Fatalf("encoding failed: %v", err)
 	}
 	return string(data)
+}
+
+// A server transport records its inbound request's version on the context it
+// passes down, so a process that is both a server and a client hands its client
+// leg a context already carrying a version. The initialize that leg sends has no
+// negotiated version of its own, and must not present the inherited one as one.
+func TestStreamableClientConnect_InitializeDoesNotInheritProtocolVersion(t *testing.T) {
+	ctx := context.WithValue(context.Background(), protocolVersionContextKey{}, protocolVersion20260728)
+
+	fake := &fakeStreamableServer{
+		t: t,
+		responses: fakeResponses{
+			{"POST", "", methodInitialize, ""}: {
+				header: header{
+					"Content-Type":  "application/json",
+					sessionIDHeader: "123",
+				},
+				body: jsonBody(t, initResp),
+			},
+			// Requests after negotiation are left unchecked here: which source wins
+			// once initializedResult is set is #1162, not this handshake.
+			{"POST", "123", notificationInitialized, ""}: {status: http.StatusAccepted},
+			{"GET", "123", "", ""}: {
+				header:   header{"Content-Type": "text/event-stream"},
+				optional: true,
+			},
+			{"DELETE", "123", "", ""}: {optional: true},
+		},
+	}
+
+	httpServer := httptest.NewServer(fake)
+	defer httpServer.Close()
+
+	// Pinned so initialize is the first request, matching the fixture's id=1.
+	session, err := NewClient(testImpl, nil).Connect(ctx,
+		&StreamableClientTransport{Endpoint: httpServer.URL},
+		&ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer session.Close()
+
+	// The header on initialize is asserted absent centrally, in ServeHTTP.
+	if got := session.InitializeResult().ProtocolVersion; got != protocolVersion20251125 {
+		t.Errorf("negotiated protocol version = %q, want %q", got, protocolVersion20251125)
+	}
 }
 
 func TestStreamableClientTransportLifecycle(t *testing.T) {
@@ -1504,7 +1558,7 @@ func TestStreamableClientConnect_DiscoverSuccess(t *testing.T) {
 // streamableClientConn.setMCPHeaders' selection of the Mcp-Protocol-Version
 // header value.
 //
-// Ordinarily initializedResult is populated by sessionUpdated, called
+// Ordinarily initializedResult is populated by clientSessionUpdated, called
 // through a type assertion to the unexported clientConnection interface
 // (see Client.Connect). That assertion silently fails, leaving
 // initializedResult nil for the life of the session, whenever the
@@ -2246,6 +2300,82 @@ func TestStreamableClientConnect_ColonlessSSELine(t *testing.T) {
 			}
 			if missing := fake.missingRequests(); len(missing) > 0 {
 				t.Errorf("missing requests: %v", missing)
+			}
+		})
+	}
+}
+
+// TestStreamableClientLoggingTransport verifies that wrapping a
+// StreamableClientTransport in a LoggingTransport (documented as a decorator
+// for any Transport) does not change the session's behavior:
+// once initialize completes, the client must still send the negotiated
+// Mcp-Protocol-Version header on every subsequent request (2025-06-18 §
+// Protocol Version Header: "the client MUST include the MCP-Protocol-Version
+// header on all subsequent requests") and still open the standalone SSE GET
+// stream, exactly as it does when the transport is not wrapped.
+func TestStreamableClientLoggingTransport(t *testing.T) {
+	ctx := context.Background()
+
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "123",
+						},
+						body: jsonBody(t, initResp),
+					},
+					{"POST", "123", notificationInitialized, ""}: {
+						status:              http.StatusAccepted,
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"POST", "123", methodPing, ""}: {
+						header:              header{"Content-Type": "application/json"},
+						body:                jsonBody(t, resp(2, &emptyResult{}, nil)),
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"GET", "123", "", ""}: {
+						header:              header{"Content-Type": "text/event-stream"},
+						wantProtocolVersion: protocolVersion20251125,
+					},
+					{"DELETE", "123", "", ""}: {
+						optional: true,
+					},
+				},
+			}
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			var transport Transport = &StreamableClientTransport{Endpoint: httpServer.URL}
+			if wrap {
+				transport = &LoggingTransport{Transport: transport, Writer: io.Discard}
+			}
+			client := NewClient(testImpl, nil)
+			// Pin to 2025-11-25: the canned initialize response has id=1, and
+			// the standalone GET stream only exists before 2026-07-28.
+			session, err := client.Connect(ctx, transport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatalf("client.Connect() failed: %v", err)
+			}
+			if err := session.Ping(ctx, nil); err != nil {
+				t.Fatalf("Ping() failed: %v", err)
+			}
+
+			// Give the standalone SSE GET a moment to be issued.
+			time.Sleep(100 * time.Millisecond)
+
+			if err := session.Close(); err != nil {
+				t.Errorf("closing session: %v", err)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests: %v", missing)
 			}
 		})
 	}

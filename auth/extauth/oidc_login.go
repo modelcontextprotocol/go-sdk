@@ -88,6 +88,9 @@ func PerformOIDCLogin(
 	if authResult.State != authReq.state {
 		return nil, fmt.Errorf("state mismatch: expected %q, got %q", authReq.state, authResult.State)
 	}
+	if err := checkAuthorizationResponseIssuer(authResult.Iss, authReq.issuer, authReq.issParameterSupported); err != nil {
+		return nil, err
+	}
 
 	tokens, err := completeOIDCLogin(ctx, config, oauth2Config, authResult.Code, authReq.codeVerifier)
 	if err != nil {
@@ -102,6 +105,10 @@ type oidcAuthorizationRequest struct {
 	authURL      string
 	state        string
 	codeVerifier string
+	// issuer and issParameterSupported come from the IdP's metadata, to
+	// validate the iss parameter of the authorization response (RFC 9207).
+	issuer                string
+	issParameterSupported bool
 }
 
 // initiateOIDCLogin initiates an OIDC Authorization Code flow with PKCE.
@@ -177,10 +184,32 @@ func initiateOIDCLogin(
 	authURL := oauth2Config.AuthCodeURL(state, authURLOpts...)
 
 	return &oidcAuthorizationRequest{
-		authURL:      authURL,
-		state:        state,
-		codeVerifier: codeVerifier,
+		authURL:               authURL,
+		state:                 state,
+		codeVerifier:          codeVerifier,
+		issuer:                meta.Issuer,
+		issParameterSupported: meta.AuthorizationResponseIssParameterSupported,
 	}, oauth2Config, nil
+}
+
+// checkAuthorizationResponseIssuer validates the iss parameter of an
+// authorization response, the mitigation for mix-up attacks in [RFC 9207].
+// If the IdP advertises authorization_response_iss_parameter_supported, iss
+// is required. A present iss must equal the issuer from the IdP's metadata,
+// whether or not support is advertised (RFC 9207, section 2.4).
+//
+// [RFC 9207]: https://www.rfc-editor.org/rfc/rfc9207
+func checkAuthorizationResponseIssuer(iss, issuer string, issParameterSupported bool) error {
+	if iss == "" {
+		if issParameterSupported {
+			return fmt.Errorf("IdP advertises RFC 9207 iss parameter support but none was received in the authorization response")
+		}
+		return nil
+	}
+	if iss != issuer {
+		return fmt.Errorf("authorization response issuer %q does not match expected issuer %q", iss, issuer)
+	}
+	return nil
 }
 
 // completeOIDCLogin completes the OIDC Authorization Code flow by exchanging

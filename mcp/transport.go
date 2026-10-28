@@ -102,8 +102,8 @@ type Connection interface {
 type clientConnection interface {
 	Connection
 
-	// sessionUpdated is called whenever the client session state changes.
-	sessionUpdated(clientSessionState)
+	// clientSessionUpdated is called whenever the client session state changes.
+	clientSessionUpdated(clientSessionState)
 }
 
 // A serverConnection is a Connection that is specific to the MCP server.
@@ -115,8 +115,8 @@ type clientConnection interface {
 type serverConnection interface {
 	Connection
 
-	// sessionUpdated is called whenever the server session state changes.
-	sessionUpdated(ServerSessionState)
+	// serverSessionUpdated is called whenever the server session state changes.
+	serverSessionUpdated(ServerSessionState)
 }
 
 // DefaultMaxLineLength is the default maximum number of bytes buffered while
@@ -311,7 +311,10 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		// only for requests believed to still be in progress.
 		return nil
 	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+		if cause := withoutClosingErrors(err); cause != nil {
+			return fmt.Errorf("%w: calling %q: %w", ErrConnectionClosed, method, cause)
+		}
+		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
 		// The notifications/cancelled message is best-effort. Retire the call
 		// immediately (so an unresponsive peer cannot delay the eager
@@ -339,6 +342,29 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		return fmt.Errorf("calling %q: %w", method, err)
 	}
 	return nil
+}
+
+// withoutClosingErrors returns err with jsonrpc2.ErrClientClosing and
+// jsonrpc2.ErrServerClosing removed from its tree, or nil if nothing else is
+// left. Those errors are internal: wrapping them would expose their codes.
+func withoutClosingErrors(err error) error {
+	if !errors.Is(err, jsonrpc2.ErrClientClosing) && !errors.Is(err, jsonrpc2.ErrServerClosing) {
+		return err
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() []error }:
+		var causes []error
+		for _, child := range err.Unwrap() {
+			if cause := withoutClosingErrors(child); cause != nil {
+				causes = append(causes, cause)
+			}
+		}
+		return errors.Join(causes...)
+	case interface{ Unwrap() error }:
+		return withoutClosingErrors(err.Unwrap())
+	default:
+		return nil
+	}
 }
 
 // cancelCall sends a "notifications/cancelled" notification for call and eagerly
@@ -440,17 +466,38 @@ func (s *loggingConn) DropResponse(id jsonrpc.ID) {
 	}
 }
 
-// sessionUpdated implements [serverConnection] by forwarding to the delegate,
-// whose behavior may depend on the negotiated protocol version (see
-// [ioConn.DropResponse]).
-func (s *loggingConn) sessionUpdated(state ServerSessionState) {
-	if c, ok := s.delegate.(serverConnection); ok {
-		c.sessionUpdated(state)
+func (s *loggingConn) Close() error {
+	return s.delegate.Close()
+}
+
+// The methods below forward the optional connection interfaces to the
+// delegate. Client and server sessions look these up with a type assertion on
+// the connection, so without them wrapping a transport in a LoggingTransport
+// would silently change its behavior.
+var (
+	_ clientConnection         = (*loggingConn)(nil)
+	_ serverConnection         = (*loggingConn)(nil)
+	_ cancellationPropagator   = (*loggingConn)(nil)
+	_ jsonrpc2.ResponseDropper = (*loggingConn)(nil)
+)
+
+func (s *loggingConn) clientSessionUpdated(state clientSessionState) {
+	if c, ok := s.delegate.(clientConnection); ok {
+		c.clientSessionUpdated(state)
 	}
 }
 
-func (s *loggingConn) Close() error {
-	return s.delegate.Close()
+// serverSessionUpdated forwards to the delegate, whose behavior may depend on
+// the negotiated protocol version (see [ioConn.DropResponse]).
+func (s *loggingConn) serverSessionUpdated(state ServerSessionState) {
+	if c, ok := s.delegate.(serverConnection); ok {
+		c.serverSessionUpdated(state)
+	}
+}
+
+func (s *loggingConn) propagateCancellation() bool {
+	cp, ok := s.delegate.(cancellationPropagator)
+	return ok && cp.propagateCancellation()
 }
 
 // A rwc binds an io.ReadCloser and io.WriteCloser together to create an
@@ -623,7 +670,7 @@ func (r *frameLimitReader) resetFrame() { r.count = 0 }
 
 func (c *ioConn) SessionID() string { return "" }
 
-func (c *ioConn) sessionUpdated(state ServerSessionState) {
+func (c *ioConn) serverSessionUpdated(state ServerSessionState) {
 	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version

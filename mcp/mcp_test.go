@@ -1651,6 +1651,34 @@ func TestElicitationSchemaValidation(t *testing.T) {
 			expectedError: "elicit schema property \"priority\" oneOf has invalid entry: const is required for titled enum entries",
 		},
 		{
+			name: "titled enum with null oneOf entry",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priority": {
+						Type:  "string",
+						OneOf: []*jsonschema.Schema{nil},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priority\" oneOf has invalid entry: titled enum entries must be objects",
+		},
+		{
+			name: "multi select titled enum with null anyOf entry",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"priorities": {
+						Type: "array",
+						Items: &jsonschema.Schema{
+							AnyOf: []*jsonschema.Schema{nil},
+						},
+					},
+				},
+			},
+			expectedError: "elicit schema property \"priorities\" items has invalid entry: titled enum entries must be objects",
+		},
+		{
 			name: "untyped property",
 			schema: &jsonschema.Schema{
 				Type: "object",

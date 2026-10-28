@@ -19,6 +19,190 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
+func TestCallErrorsDoNotWrapConnectionClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		rpcError error
+		result   Result
+		cancel   bool
+		want     error
+	}{
+		{name: "context cancellation", cancel: true, want: context.Canceled},
+		{name: "JSON-RPC error", rpcError: jsonrpc2.ErrInvalidParams, want: jsonrpc2.ErrInvalidParams},
+		{name: "decoding EOF", result: &unmarshalErrorResult{err: io.EOF}, want: io.EOF},
+		{name: "decoding unexpected EOF", result: &unmarshalErrorResult{err: io.ErrUnexpectedEOF}, want: io.ErrUnexpectedEOF},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn, peer := newTestJSONRPCConnection(t, nil)
+			done := make(chan error, 1)
+			go func() {
+				done <- call(ctx, conn, "test", nil, test.result)
+			}()
+			msg, err := peer.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.cancel {
+				cancel()
+			} else {
+				resp := &jsonrpc.Response{
+					ID:     msg.(*jsonrpc.Request).ID,
+					Result: []byte("{}"),
+					Error:  test.rpcError,
+				}
+				if err := peer.Write(ctx, resp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = <-done
+			if !errors.Is(err, test.want) {
+				t.Errorf("call() = %v, want an error wrapping %v", err, test.want)
+			}
+			if errors.Is(err, ErrConnectionClosed) {
+				t.Errorf("call() = %v, must not wrap ErrConnectionClosed", err)
+			}
+		})
+	}
+}
+
+func TestCallConnectionClosed(t *testing.T) {
+	for _, test := range connectionClosedTests() {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn, peer := newTestJSONRPCConnection(t, test.readErr)
+			if test.close {
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				done := make(chan error, 1)
+				go func() { done <- call(ctx, conn, "test", nil, nil) }()
+				if _, err := peer.Read(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err := peer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				checkConnectionClosedError(t, <-done, test.causes...)
+				_ = conn.Wait()
+			}
+			err := call(ctx, conn, "test", nil, nil)
+			checkConnectionClosedError(t, err, test.causes...)
+			if err != nil && !strings.Contains(err.Error(), `calling "test"`) {
+				t.Errorf("call() = %v, want the method name in the error", err)
+			}
+		})
+	}
+}
+
+type connectionClosedTest struct {
+	name    string
+	readErr error
+	causes  []error
+	close   bool
+}
+
+func connectionClosedTests() []connectionClosedTest {
+	readErr := errors.New("read failed")
+	wrappedReadErr := fmt.Errorf("reading: %w", readErr)
+	sameMessageErr := errors.New("client is closing")
+	return []connectionClosedTest{
+		{name: "local close", close: true},
+		{name: "EOF", readErr: io.EOF, causes: []error{io.EOF}},
+		{name: "unexpected EOF", readErr: io.ErrUnexpectedEOF, causes: []error{io.ErrUnexpectedEOF}},
+		{name: "read error", readErr: readErr, causes: []error{readErr}},
+		{name: "wrapped read error", readErr: wrappedReadErr, causes: []error{wrappedReadErr, readErr}},
+		{name: "client closing", readErr: jsonrpc2.NewError(-32003, "client is closing")},
+		{name: "server closing", readErr: jsonrpc2.NewError(-32004, "server is closing")},
+		{
+			name:    "wrapped closing error",
+			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrServerClosing, wrappedReadErr)),
+			causes:  []error{wrappedReadErr, readErr},
+		},
+		{
+			name:    "joined closing errors",
+			readErr: errors.Join(jsonrpc2.ErrClientClosing, errors.Join(jsonrpc2.ErrServerClosing, readErr), io.ErrUnexpectedEOF),
+			causes:  []error{readErr, io.ErrUnexpectedEOF},
+		},
+		{name: "wire error cause", readErr: jsonrpc2.ErrInvalidParams, causes: []error{jsonrpc2.ErrInvalidParams}},
+		{name: "same message cause", readErr: sameMessageErr, causes: []error{sameMessageErr}},
+	}
+}
+
+func checkConnectionClosedError(t *testing.T, err error, causes ...error) {
+	t.Helper()
+	for _, want := range append([]error{ErrConnectionClosed}, causes...) {
+		if !errors.Is(err, want) {
+			t.Errorf("error = %v, want an error wrapping %v", err, want)
+		}
+	}
+	for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
+		if errors.Is(err, closing) {
+			t.Errorf("error = %v, must not wrap %v", err, closing)
+		}
+	}
+	var wireErr *jsonrpc2.WireError
+	if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+		t.Errorf("error = %v, exposes internal closing code %d", err, wireErr.Code)
+	}
+}
+
+type unmarshalErrorResult struct {
+	ResultBase
+	err error
+}
+
+func (r *unmarshalErrorResult) UnmarshalJSON([]byte) error { return r.err }
+
+func newTestJSONRPCConnection(t *testing.T, readErr error) (*jsonrpc2.Connection, Connection) {
+	t.Helper()
+	ctx := context.Background()
+	clientT, serverT := NewInMemoryTransports()
+	peer, err := serverT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := clientT.Connect(ctx)
+	if err != nil {
+		peer.Close()
+		t.Fatal(err)
+	}
+	if readErr != nil {
+		client = &readErrorConnection{Connection: client, err: readErr}
+	}
+	conn := jsonrpc2.NewConnection(ctx, jsonrpc2.ConnectionConfig{
+		Reader: client,
+		Writer: client,
+		Closer: client,
+		Bind: func(*jsonrpc2.Connection) jsonrpc2.Handler {
+			return jsonrpc2.HandlerFunc(func(context.Context, *jsonrpc2.Request) (any, error) {
+				return nil, jsonrpc2.ErrNotHandled
+			})
+		},
+	})
+	t.Cleanup(func() {
+		peer.Close()
+		conn.Close()
+	})
+	return conn, peer
+}
+
+type readErrorConnection struct {
+	Connection
+	err error
+}
+
+func (c *readErrorConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
+	msg, err := c.Connection.Read(ctx)
+	if err != nil {
+		return nil, c.err
+	}
+	return msg, nil
+}
+
 func TestBatchFraming(t *testing.T) {
 	// This test checks that the ndjsonFramer can read and write JSON batches.
 	//
@@ -141,7 +325,7 @@ func TestIOConnRead(t *testing.T) {
 				if requested == "" {
 					requested = tt.protocolVersion
 				}
-				tr.sessionUpdated(ServerSessionState{
+				tr.serverSessionUpdated(ServerSessionState{
 					InitializeParams: &InitializeParams{
 						ProtocolVersion: requested,
 					},
@@ -389,7 +573,7 @@ func TestIOConnDropResponse(t *testing.T) {
 				wc: nopCloserWriter{&out},
 			})
 			t.Cleanup(func() { tr.Close() })
-			tr.sessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
+			tr.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
 
 			if test.drop {
 				tr.DropResponse(jsonrpc2.Int64ID(1))
@@ -413,6 +597,73 @@ func TestIOConnDropResponse(t *testing.T) {
 			}
 			if len(tr.dropped) != 0 {
 				t.Errorf("after the responses were written, %d dropped IDs are still recorded", len(tr.dropped))
+			}
+		})
+	}
+}
+
+// TestLoggingTransportServerBatchRejection verifies that wrapping a stdio-style
+// transport in a LoggingTransport (as examples/server/{everything,memory,
+// sequentialthinking} do) does not change what the server accepts: once a
+// session has negotiated 2025-06-18 or later, a JSON-RPC batch must be rejected
+// (see TestIOConnRead "batching new protocol") whether or not the connection
+// is wrapped.
+func TestLoggingTransportServerBatchRejection(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			inR, inW := io.Pipe()   // test -> server stdin
+			outR, outW := io.Pipe() // server stdout -> test
+			var tr Transport = &IOTransport{Reader: inR, Writer: outW}
+			if wrap {
+				tr = &LoggingTransport{Transport: tr, Writer: io.Discard}
+			}
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, tr, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			lines := bufio.NewScanner(outR)
+			send := func(msg string) {
+				t.Helper()
+				if _, err := io.WriteString(inW, msg+"\n"); err != nil {
+					t.Fatalf("write %q: %v", msg, err)
+				}
+			}
+			recv := func() (string, bool) {
+				ch := make(chan string, 1)
+				go func() {
+					if lines.Scan() {
+						ch <- lines.Text()
+					}
+					close(ch)
+				}()
+				select {
+				case line, ok := <-ch:
+					return line, ok
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out waiting for the server to respond")
+					return "", false
+				}
+			}
+
+			send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+			if line, ok := recv(); !ok || !strings.Contains(line, `"protocolVersion":"2025-11-25"`) {
+				t.Fatalf("initialize: got %q, want a 2025-11-25 InitializeResult", line)
+			}
+			send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+
+			// A batch is not supported at 2025-06-18 or later: the server must
+			// not answer it.
+			send(`[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","id":3,"method":"ping"}]`)
+			if line, ok := recv(); ok {
+				t.Errorf("server answered a JSON-RPC batch on a 2025-11-25 session: %q", line)
 			}
 		})
 	}
@@ -554,4 +805,43 @@ func TestLoggingConnDropResponse(t *testing.T) {
 		conn := &loggingConn{delegate: plainConn{}, w: io.Discard}
 		conn.DropResponse(jsonrpc.ID{})
 	})
+}
+
+// optionalConn is a Connection implementing every optional connection
+// interface, recording the calls it receives.
+type optionalConn struct {
+	Connection
+	clientState *clientSessionState
+	serverState *ServerSessionState
+}
+
+func (c *optionalConn) clientSessionUpdated(s clientSessionState) { c.clientState = &s }
+func (c *optionalConn) serverSessionUpdated(s ServerSessionState) { c.serverState = &s }
+func (c *optionalConn) propagateCancellation() bool               { return true }
+
+// TestLoggingConnForwardsOptionalInterfaces verifies that loggingConn forwards
+// the optional connection interfaces to its delegate, and is a no-op for a
+// delegate that implements none of them.
+func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
+	delegate := &optionalConn{}
+	lc := &loggingConn{delegate: delegate, w: io.Discard}
+
+	lc.clientSessionUpdated(clientSessionState{InitializeResult: &InitializeResult{ProtocolVersion: protocolVersion20251125}})
+	if delegate.clientState == nil || delegate.clientState.InitializeResult.ProtocolVersion != protocolVersion20251125 {
+		t.Errorf("clientSessionUpdated was not forwarded: got %+v", delegate.clientState)
+	}
+	lc.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: protocolVersion20251125})
+	if delegate.serverState == nil || delegate.serverState.NegotiatedProtocolVersion != protocolVersion20251125 {
+		t.Errorf("serverSessionUpdated was not forwarded: got %+v", delegate.serverState)
+	}
+	if !lc.propagateCancellation() {
+		t.Error("propagateCancellation() = false, want the delegate's true")
+	}
+
+	plain := &loggingConn{delegate: struct{ Connection }{}, w: io.Discard}
+	plain.clientSessionUpdated(clientSessionState{})
+	plain.serverSessionUpdated(ServerSessionState{})
+	if plain.propagateCancellation() {
+		t.Error("propagateCancellation() = true for a delegate without the interface, want false")
+	}
 }

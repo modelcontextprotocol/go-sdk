@@ -330,7 +330,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if err == nil {
 				cs.state.InitializeResult = discRes
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
-					hc.sessionUpdated(cs.state)
+					hc.clientSessionUpdated(cs.state)
 				}
 				subscribeParams := &SubscriptionsListenParams{
 					Notifications: &NotificationSubscriptions{},
@@ -385,7 +385,12 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		Capabilities:    c.capabilities(protocolVersion),
 	}
 	req := &InitializeRequest{Session: cs, Params: params}
-	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
+	// No version is negotiated yet, so this request has no version of its own to
+	// state; a caller's value must not stand in for one. Cleared rather than sent,
+	// since a header a peer does not support fails the handshake the body would
+	// have negotiated down.
+	initializeCtx := context.WithValue(ctx, protocolVersionContextKey{}, "")
+	res, err := handleSend[*InitializeResult](initializeCtx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
@@ -396,7 +401,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 	cs.state.InitializeResult = res
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
-		hc.sessionUpdated(cs.state)
+		hc.clientSessionUpdated(cs.state)
 	}
 	req2 := &initializedClientRequest{Session: cs, Params: &InitializedParams{}}
 	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
@@ -727,18 +732,23 @@ func (c *Client) shouldSendListChangedNotification(notification string) bool {
 		if caps == nil {
 			return true
 		}
-		// Check RootsV2 first (preferred), then fall back to Roots.
-		if caps.RootsV2 != nil {
-			return caps.RootsV2.ListChanged
-		}
-		return caps.Roots.ListChanged
+		// Capabilities.Roots is ignored (#607); only RootsV2 is advertised.
+		return caps.RootsV2 != nil && caps.RootsV2.ListChanged
 	default:
 		// Unknown notification, allow by default.
 		return true
 	}
 }
 
+// rootsEnabled reports whether the client advertises the roots capability.
+func (c *Client) rootsEnabled() bool {
+	return c.opts.Capabilities == nil || c.opts.Capabilities.RootsV2 != nil
+}
+
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
+	if !c.rootsEnabled() {
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support roots"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -1119,6 +1129,9 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry == nil {
+		return fmt.Errorf("titled enum entries must be objects")
+	}
 	if entry.Const == nil {
 		return fmt.Errorf("const is required for titled enum entries")
 	}
