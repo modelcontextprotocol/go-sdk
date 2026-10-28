@@ -281,12 +281,14 @@ func setMultiRoundTripRetryParams(method string, req Request, responses InputRes
 	}
 	switch s := req.GetSession().(type) {
 	case *ClientSession:
-		return newClientRequest(s, retryParams), nil
+		r := newClientRequest(s, retryParams)
+		r.ID = req.GetID()
+		return r, nil
 	case *ServerSession:
 		// Rebuild with the same constructor handleReceive uses: the
 		// receiving dispatch type-asserts on the request's concrete
-		// *ServerRequest[P] type, and Extra must carry over.
-		return s.receivingMethodInfos()[method].newRequest(s, retryParams, req.GetExtra()), nil
+		// *ServerRequest[P] type, and Extra and the request ID must carry over.
+		return s.receivingMethodInfos()[method].newRequest(s, retryParams, req.GetExtra(), req.GetID()), nil
 	default:
 		return nil, fmt.Errorf("multi-round-trip: unsupported session type %T", s)
 	}
