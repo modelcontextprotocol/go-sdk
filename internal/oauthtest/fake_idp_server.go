@@ -44,6 +44,9 @@ type IdPConfig struct {
 	// IssParameterSupported advertises authorization_response_iss_parameter_supported
 	// and adds the iss parameter to authorization responses (RFC 9207).
 	IssParameterSupported bool
+
+	// OmitPKCEMethods omits code_challenge_methods_supported from the metadata.
+	OmitPKCEMethods bool
 }
 
 // FakeIdPServer is a fake OIDC Identity Provider for testing.
@@ -109,6 +112,9 @@ func (s *FakeIdPServer) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.config.IssParameterSupported {
 		meta["authorization_response_iss_parameter_supported"] = true
+	}
+	if s.config.OmitPKCEMethods {
+		delete(meta, "code_challenge_methods_supported")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(meta)

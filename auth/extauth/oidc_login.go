@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -156,6 +157,9 @@ func initiateOIDCLogin(
 	}
 	if meta.AuthorizationEndpoint == "" {
 		return nil, nil, fmt.Errorf("authorization_endpoint not found in OIDC metadata")
+	}
+	if err := authutil.CheckPKCESupport(meta.CodeChallengeMethodsSupported, config.IssuerURL); err != nil {
+		return nil, nil, fmt.Errorf("failed to discover OIDC metadata: %w", err)
 	}
 
 	codeVerifier := oauth2.GenerateVerifier()
