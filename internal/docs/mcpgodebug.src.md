@@ -82,7 +82,7 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   retired as soon as it is read, restoring the previous behavior. The default
   behavior was changed to deliver the response after the notifications that
   precede it on the wire have been handled, so that a notification is observed
-  before the call it precedes returns. The previous timing is incompatible
+  before the call it precedes returns. The new timing is incompatible
   with a notification handler that waits on the return of the call it notifies
   about, such as a progress handler sending on an unbuffered channel drained
   after `Call` returns.
