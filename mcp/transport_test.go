@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -129,6 +131,46 @@ func connectionClosedTests() []connectionClosedTest {
 		},
 		{name: "wire error cause", readErr: jsonrpc2.ErrInvalidParams, causes: []error{jsonrpc2.ErrInvalidParams}},
 		{name: "same message cause", readErr: sameMessageErr, causes: []error{sameMessageErr}},
+	}
+}
+
+// TestServerLogsUndeliveredResponse is a regression test for #1147: when the
+// client goes away before a tool handler finishes, the server logs that the
+// response could not be delivered instead of dropping it silently.
+func TestServerLogsUndeliveredResponse(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	server := NewServer(testImpl, &ServerOptions{
+		Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+	started := make(chan struct{})
+	server.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, _ *CallToolRequest) (*CallToolResult, error) {
+			close(started)
+			<-ctx.Done() // cancelled once the client's connection is gone
+			return &CallToolResult{}, nil
+		})
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	ss, err := server.Connect(ctx, &IOTransport{Reader: serverIn, Writer: serverOut}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := NewClient(testImpl, nil).Connect(ctx, &IOTransport{Reader: clientIn, Writer: clientOut}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+	<-started
+	// The client goes away abruptly, as one that gives up on a slow call does.
+	clientOut.Close()
+	clientIn.Close()
+	ss.Wait()
+
+	got := buf.String()
+	if !strings.Contains(got, `level=WARN msg="failed to write response" method=tools/call id=`) {
+		t.Errorf("server log does not report the undelivered response:\n%s", got)
 	}
 }
 
