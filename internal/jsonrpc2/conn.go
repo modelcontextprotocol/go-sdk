@@ -54,8 +54,9 @@ type Connection struct {
 	writer  Writer
 	handler Handler
 
-	onInternalError func(error)
-	onDone          func()
+	onInternalError      func(error)
+	onResponseWriteError func(*Request, error)
+	onDone               func()
 }
 
 // inFlightState records the state of the incoming and outgoing calls on a
@@ -219,6 +220,11 @@ type ConnectionConfig struct {
 	OnDone          func()                    // optional
 	OnInternalError func(error)               // optional
 
+	// OnResponseWriteError, if set, is called when the response to an incoming
+	// call could not be written, for example because the peer went away before
+	// the handler finished. The response is lost: the peer never receives it.
+	OnResponseWriteError func(*Request, error) // optional
+
 	// PropagateCancellation controls whether cancellation of the context
 	// passed to [NewConnection] is observable by request handlers.
 	//
@@ -244,11 +250,12 @@ func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
 	}
 
 	c := &Connection{
-		state:           inFlightState{closer: cfg.Closer},
-		done:            make(chan struct{}),
-		writer:          cfg.Writer,
-		onDone:          cfg.OnDone,
-		onInternalError: cfg.OnInternalError,
+		state:                inFlightState{closer: cfg.Closer},
+		done:                 make(chan struct{}),
+		writer:               cfg.Writer,
+		onDone:               cfg.OnDone,
+		onInternalError:      cfg.OnInternalError,
+		onResponseWriteError: cfg.OnResponseWriteError,
 	}
 	c.handler = cfg.Bind(c)
 	c.start(ctx, cfg.Reader, cfg.Preempter)
@@ -758,6 +765,9 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 			delete(s.incomingByID, req.ID)
 		})
 		writeErr := c.write(notDone{req.ctx}, response)
+		if writeErr != nil && c.onResponseWriteError != nil {
+			c.onResponseWriteError(req.Request, writeErr)
+		}
 		if err == nil {
 			err = writeErr
 		}
