@@ -303,9 +303,6 @@ func TestEnterpriseHandler_ConcurrentAuthorize(t *testing.T) {
 	wg.Wait()
 }
 
-// TestEnterpriseHandler_Authorize_NotIDJAG checks that a token the IdP did not
-// issue as an ID-JAG is not sent on to the MCP Server's authorization server,
-// even one that would accept it.
 // TestEnterpriseHandler_ServerWithoutPKCE verifies that the flow works when
 // neither the IdP nor the MCP authorization server advertises PKCE: token
 // exchange and the JWT bearer grant do not use it.
@@ -362,6 +359,9 @@ func TestEnterpriseHandler_ServerWithoutPKCE(t *testing.T) {
 	}
 }
 
+// TestEnterpriseHandler_Authorize_NotIDJAG checks that a token the IdP did not
+// issue as an ID-JAG is not sent on to the MCP Server's authorization server,
+// even one that would accept it.
 func TestEnterpriseHandler_Authorize_NotIDJAG(t *testing.T) {
 	const idpAccessToken = "idp-access-token"
 
