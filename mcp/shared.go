@@ -227,7 +227,7 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 
 	mh := session.receivingMethodHandler()
 	re, _ := jreq.Extra.(*RequestExtra)
-	req := info.newRequest(session, params, re)
+	req := info.newRequest(session, params, re, jreq.ID)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
@@ -293,7 +293,7 @@ type methodInfo struct {
 	// Unmarshal params from the wire into a Params struct.
 	// Used on the receive side.
 	unmarshalParams func(json.RawMessage) (Params, error)
-	newRequest      func(Session, Params, *RequestExtra) Request
+	newRequest      func(Session, Params, *RequestExtra, jsonrpc.ID) Request
 	// Run the code when a call to the method is received.
 	// Used on the receive side.
 	handleMethod MethodHandler
@@ -328,8 +328,8 @@ const (
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, _ *RequestExtra) Request {
-		r := &ClientRequest[P]{Session: s.(*ClientSession)}
+	mi.newRequest = func(s Session, p Params, _ *RequestExtra, id jsonrpc.ID) Request {
+		r := &ClientRequest[P]{Session: s.(*ClientSession), ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -343,8 +343,8 @@ func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHan
 
 func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, re *RequestExtra) Request {
-		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re}
+	mi.newRequest = func(s Session, p Params, re *RequestExtra, id jsonrpc.ID) Request {
+		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re, ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -677,12 +677,18 @@ type Request interface {
 	GetParams() Params
 	// GetExtra returns the Extra field for ServerRequests, and nil for ClientRequests.
 	GetExtra() *RequestExtra
+	// GetID returns the JSON-RPC id of the message being handled, or the zero ID
+	// for a notification and for a request the SDK itself originates. Use
+	// [jsonrpc.ID.IsValid] to tell those apart and [jsonrpc.ID.Raw] to read the
+	// underlying string or int64.
+	GetID() jsonrpc.ID
 }
 
 // A ClientRequest is a request to a client.
 type ClientRequest[P Params] struct {
 	Session *ClientSession
 	Params  P
+	ID      jsonrpc.ID
 }
 
 // A ServerRequest is a request to a server.
@@ -690,6 +696,7 @@ type ServerRequest[P Params] struct {
 	Session *ServerSession
 	Params  P
 	Extra   *RequestExtra
+	ID      jsonrpc.ID
 }
 
 // RequestExtra is extra information included in requests, typically from
@@ -730,6 +737,9 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
+
+func (r *ClientRequest[P]) GetID() jsonrpc.ID { return r.ID }
+func (r *ServerRequest[P]) GetID() jsonrpc.ID { return r.ID }
 
 // HasParams reports whether req carries params.
 //

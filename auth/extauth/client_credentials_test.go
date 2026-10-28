@@ -541,6 +541,37 @@ func TestClientCredentialsHandler_TokenRedirectToOtherOrigin(t *testing.T) {
 	}
 }
 
+// TestClientCredentialsHandler_TokenRequestIncludesResource verifies that the
+// token request carries the resource parameter (RFC 8707).
+func TestClientCredentialsHandler_TokenRequestIncludesResource(t *testing.T) {
+	// Without protected resource metadata, the resource server is also its
+	// own authorization server.
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	resourceURL := server.URL + "/resource"
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer": %q, "token_endpoint": %q, "code_challenge_methods_supported": ["S256"]}`, server.URL, server.URL+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.PostFormValue("resource"); got != resourceURL {
+			t.Errorf("token request resource = %q, want %q", got, resourceURL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token": "token", "token_type": "Bearer"}`)
+	})
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}, Body: http.NoBody}
+	if err := handler.Authorize(t.Context(), httptest.NewRequest("GET", resourceURL, nil), resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+}
+
 // TestClientCredentialsHandler_ServerWithoutPKCE verifies that the client
 // credentials grant works with an authorization server that does not advertise
 // PKCE, which the grant does not use.
