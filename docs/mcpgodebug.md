@@ -51,7 +51,6 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   options on this page this one is opt-in: the default keeps emitting the
   records at info, because demoting them changes log output existing users may
   rely on.
-  
 - `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
   has not been initialized refuses a request other than `initialize` or `ping`
   with JSON-RPC error code `0`, restoring the previous behavior. The default
