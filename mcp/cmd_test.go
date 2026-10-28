@@ -94,13 +94,11 @@ func TestStdioCallInterruptedByPeerExit(t *testing.T) {
 				t.Errorf("%s = %v, want an error wrapping %v", name, err, want)
 			}
 		}
-		for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
-			if errors.Is(err, closing) {
-				t.Errorf("%s = %v, must not wrap %v", name, err, closing)
-			}
+		if errors.Is(err, jsonrpc2.ErrConnClosing) {
+			t.Errorf("%s = %v, must not wrap %v", name, err, jsonrpc2.ErrConnClosing)
 		}
 		var wireErr *jsonrpc2.WireError
-		if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+		if errors.As(err, &wireErr) && wireErr.Code == -32004 {
 			t.Errorf("%s = %v, exposes internal closing code %d", name, err, wireErr.Code)
 		}
 	}

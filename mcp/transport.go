@@ -310,7 +310,7 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		// is nothing to cancel, and the spec permits notifications/cancelled
 		// only for requests believed to still be in progress.
 		return nil
-	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
+	case errors.Is(err, jsonrpc2.ErrConnClosing):
 		if cause := withoutClosingErrors(err); cause != nil {
 			return fmt.Errorf("%w: calling %q: %w", ErrConnectionClosed, method, cause)
 		}
@@ -344,11 +344,11 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	return nil
 }
 
-// withoutClosingErrors returns err with jsonrpc2.ErrClientClosing and
-// jsonrpc2.ErrServerClosing removed from its tree, or nil if nothing else is
-// left. Those errors are internal: wrapping them would expose their codes.
+// withoutClosingErrors returns err with jsonrpc2.ErrConnClosing removed from
+// its tree, or nil if nothing else is left. That error is internal: wrapping it
+// would expose its code.
 func withoutClosingErrors(err error) error {
-	if !errors.Is(err, jsonrpc2.ErrClientClosing) && !errors.Is(err, jsonrpc2.ErrServerClosing) {
+	if !errors.Is(err, jsonrpc2.ErrConnClosing) {
 		return err
 	}
 	switch err := err.(type) {
