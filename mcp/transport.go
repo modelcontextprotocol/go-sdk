@@ -233,6 +233,9 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnInternalError: func(err error) {
 			logger.Error("jsonrpc2 internal error", "error", err)
 		},
+		OnResponseWriteError: func(req *jsonrpc2.Request, err error) {
+			logger.Warn("failed to write response", "method", req.Method, "id", req.ID.Raw(), "error", err)
+		},
 		PropagateCancellation: propagateCancellation,
 	})
 	assert(preempter.conn != nil, "unbound preempter")
