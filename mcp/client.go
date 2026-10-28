@@ -311,6 +311,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	if err != nil {
 		return nil, err
 	}
+	// Authorize at most once per handshake: a fallback initialize reuses the
+	// credentials acquired for server/discover (#1423).
+	ctx = context.WithValue(ctx, authorizedContextKey{}, new(atomic.Bool))
 
 	protocolVersion := latestProtocolVersion
 	if opts != nil && opts.ProtocolVersion != "" {
@@ -357,6 +360,14 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					go cs.awaitSubscriptionsListen(listenCtx, subscribeParams, nil)
 				}
 				return cs, nil
+			}
+
+			// A failed authorization says nothing about the server's protocol
+			// version, and the fallback initialize would only run the
+			// authorization flow again (#1423).
+			if errors.Is(err, errAuthorize) {
+				_ = cs.Close()
+				return nil, err
 			}
 
 			// Try to negotiate a mutually supported version if the server

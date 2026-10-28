@@ -2532,6 +2532,17 @@ func (c *streamableClientConn) Read(ctx context.Context) (jsonrpc.Message, error
 	}
 }
 
+// errAuthorize marks an error returned by [auth.OAuthHandler.Authorize], so
+// that [Client.Connect] can tell a failed authorization apart from a server
+// that doesn't support server/discover (#1423).
+var errAuthorize = errors.New("authorization failed")
+
+// authorizedContextKey holds an *atomic.Bool shared by the requests of one
+// [Client.Connect] handshake. Write sets it after Authorize succeeds, and
+// doesn't call Authorize again while it is set, so that the fallback initialize
+// reuses the credentials acquired for server/discover (#1423).
+type authorizedContextKey struct{}
+
 // Write implements the [Connection] interface.
 func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if err := c.failure(); err != nil {
@@ -2591,7 +2602,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil {
+	authorized, _ := ctx.Value(authorizedContextKey{}).(*atomic.Bool)
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.oauthHandler != nil &&
+		(authorized == nil || !authorized.Load()) {
 		if err := c.oauthHandler.Authorize(ctx, req, resp); err != nil {
 			// If the caller's context was cancelled while we were running the
 			// authorization flow, treat the connection as failed so subsequent
@@ -2612,7 +2625,10 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
 			// Wrap the authorization error as well for client inspection.
-			return fmt.Errorf("%s: %w: %w", requestSummary, jsonrpc2.ErrRejected, err)
+			return fmt.Errorf("%s: %w: %w: %w", requestSummary, jsonrpc2.ErrRejected, errAuthorize, err)
+		}
+		if authorized != nil {
+			authorized.Store(true)
 		}
 		// Retry the request after successful authorization.
 		_, resp, err = doRequest()

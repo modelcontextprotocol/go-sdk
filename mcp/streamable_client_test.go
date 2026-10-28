@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1059,12 +1061,16 @@ func TestStreamableClientDisableStandaloneSSE(t *testing.T) {
 }
 
 type mockOAuthHandler struct {
-	token           *oauth2.Token
-	authorizeErr    error
-	authorizeCalled bool
+	mu             sync.Mutex
+	token          *oauth2.Token
+	grant          *oauth2.Token // if set, replaces token when Authorize succeeds
+	authorizeErr   error
+	authorizeCalls atomic.Int32
 }
 
 func (h *mockOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.token == nil {
 		return nil, nil
 	}
@@ -1072,7 +1078,12 @@ func (h *mockOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource,
 }
 
 func (h *mockOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
-	h.authorizeCalled = true
+	h.authorizeCalls.Add(1)
+	if h.authorizeErr == nil && h.grant != nil {
+		h.mu.Lock()
+		h.token = h.grant
+		h.mu.Unlock()
+	}
 	return h.authorizeErr
 }
 
@@ -1160,8 +1171,127 @@ func TestStreamableClientOAuth_401(t *testing.T) {
 		t.Fatalf("client.Connect() error does not contain 'Unauthorized': %v", err)
 	}
 
-	if !oauthHandler.authorizeCalled {
+	if oauthHandler.authorizeCalls.Load() == 0 {
 		t.Errorf("expected Authorize to be called")
+	}
+}
+
+// oauthTestServer serves a real MCP server behind bearer authorization that
+// accepts only "good-token", and records the JSON-RPC methods it receives. If
+// discoverStatus is non-zero, an authorized server/discover gets that status
+// instead of reaching the MCP server.
+func oauthTestServer(t *testing.T, discoverStatus int) (url string, methods func() []string) {
+	t.Helper()
+	server := NewServer(testImpl, nil)
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil)
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var method string
+		if msg, err := jsonrpc.DecodeMessage(body); err == nil {
+			if req, ok := msg.(*jsonrpc.Request); ok {
+				method = req.Method
+				mu.Lock()
+				seen = append(seen, method)
+				mu.Unlock()
+			}
+		}
+		if r.Header.Get("Authorization") != "Bearer good-token" {
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if method == methodDiscover && discoverStatus != 0 {
+			w.WriteHeader(discoverStatus)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+	return httpServer.URL, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(seen)
+	}
+}
+
+// TestStreamableClientOAuth_AuthorizeOncePerConnect is a regression test for
+// #1423: Connect must not run the authorization flow a second time when it
+// falls back from server/discover to initialize.
+func TestStreamableClientOAuth_AuthorizeOncePerConnect(t *testing.T) {
+	tests := []struct {
+		name           string
+		authorizeErr   error
+		grant          string // token a successful Authorize hands out
+		discoverStatus int    // status for an authorized server/discover
+		wantErr        string // if empty, Connect succeeds
+		wantInitialize bool
+	}{
+		{
+			// The user declines consent: falling back would only prompt again.
+			name:         "Authorize fails",
+			authorizeErr: errors.New("access_denied: user declined consent"),
+			wantErr:      "access_denied",
+		},
+		{
+			// The fallback initialize reuses the granted token, and fails
+			// without authorizing again.
+			name:           "granted token rejected",
+			grant:          "bad-token",
+			wantErr:        "Unauthorized",
+			wantInitialize: true,
+		},
+		{
+			// A server may authorize per method, so the fallback is still tried.
+			name:           "discover forbidden, initialize allowed",
+			grant:          "good-token",
+			discoverStatus: http.StatusForbidden,
+			wantInitialize: true,
+		},
+		{
+			name:           "legacy server",
+			grant:          "good-token",
+			discoverStatus: http.StatusBadRequest,
+			wantInitialize: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			url, methods := oauthTestServer(t, test.discoverStatus)
+			oauthHandler := &mockOAuthHandler{authorizeErr: test.authorizeErr}
+			if test.grant != "" {
+				oauthHandler.grant = &oauth2.Token{AccessToken: test.grant}
+			}
+			transport := &StreamableClientTransport{Endpoint: url, OAuthHandler: oauthHandler}
+			session, err := NewClient(testImpl, nil).Connect(context.Background(), transport, nil)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Connect() failed: %v", err)
+				}
+				session.Close()
+			} else {
+				if err == nil {
+					session.Close()
+					t.Fatalf("Connect() succeeded, want error containing %q", test.wantErr)
+				}
+				if !strings.Contains(err.Error(), test.wantErr) {
+					t.Errorf("Connect() error = %v, want it to contain %q", err, test.wantErr)
+				}
+				if test.authorizeErr != nil && !errors.Is(err, test.authorizeErr) {
+					t.Errorf("Connect() error = %v, want it to wrap %v", err, test.authorizeErr)
+				}
+			}
+			if got := oauthHandler.authorizeCalls.Load(); got != 1 {
+				t.Errorf("Authorize called %d times, want 1", got)
+			}
+			if got := slices.Contains(methods(), methodInitialize); got != test.wantInitialize {
+				t.Errorf("server received initialize = %t, want %t (methods: %v)", got, test.wantInitialize, methods())
+			}
+		})
 	}
 }
 
