@@ -138,6 +138,64 @@ func TestApplySchemaOutput(t *testing.T) {
 	}
 }
 
+func TestApplySchemaNumberPrecision(t *testing.T) {
+	// Numbers must come out of applySchema exactly as they went in,
+	// and be validated exactly.
+	maxSafe := float64(1 << 53)
+	schema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"i":    {Type: "integer"},
+			"n":    {Type: "number"},
+			"max":  {Type: "integer", Maximum: &maxSafe},
+			"enum": {Enum: []any{int64(1<<53 + 1)}},
+			"list": {Type: "array", Items: &jsonschema.Schema{Type: "integer"}},
+			"d":    {Type: "integer", Default: json.RawMessage("3")},
+		},
+	}
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		data    string
+		want    string // the "d" default is always added
+		wantErr string
+	}{
+		{name: "above 2^53", data: `{"i":9007199254740993}`, want: `{"d":3,"i":9007199254740993}`},
+		{name: "min int64", data: `{"i":-9223372036854775808}`, want: `{"d":3,"i":-9223372036854775808}`},
+		{name: "max uint64", data: `{"i":18446744073709551615}`, want: `{"d":3,"i":18446744073709551615}`},
+		{name: "long decimal", data: `{"n":0.1000000000000000000001}`, want: `{"d":3,"n":0.1000000000000000000001}`},
+		{name: "array elements", data: `{"list":[9007199254740993,1]}`, want: `{"d":3,"list":[9007199254740993,1]}`},
+		{name: "maximum is exact", data: `{"max":9007199254740993}`, wantErr: "maximum"},
+		{name: "maximum boundary", data: `{"max":9007199254740992}`, want: `{"d":3,"max":9007199254740992}`},
+		{name: "enum is exact", data: `{"enum":9007199254740993}`, want: `{"d":3,"enum":9007199254740993}`},
+		{name: "enum rejects neighbor", data: `{"enum":9007199254740992}`, wantErr: "enum"},
+		{name: "integer rejects fraction", data: `{"i":1.5}`, wantErr: `"integer"`},
+		{name: "integer rejects string", data: `{"i":"9007199254740993"}`, wantErr: `"integer"`},
+		{name: "float64 overflow", data: `{"n":1e400}`, wantErr: "1e400"},
+	} {
+		for _, forOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/forOutput=%t", tc.name, forOutput), func(t *testing.T) {
+				got, err := applySchema(json.RawMessage(tc.data), resolved, forOutput)
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Fatalf("got %s, %v; want error containing %q", got, err, tc.wantErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Errorf("got %s, want %s", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestToolErrorHandling(t *testing.T) {
 	// Construct server and add both tools at the top level
 	server := NewServer(testImpl, nil)
