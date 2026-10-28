@@ -143,27 +143,20 @@ module.exports = async function run({ github, context, core }) {
     const rule = `${opener}This repo only keeps pull requests open when they come from a maintainer, or from a contributor a maintainer has assigned to the linked issue`;
     const situation = linkedIssues.length
       ? [
-          `${rule}, and you aren't currently assigned to ${issues}.`,
-          '',
-          `If a maintainer assigns you to ${issues}, this PR reopens on its own and there's nothing more you need to do here. Assignment is a maintainer call based on capacity; comments that only ask to be assigned don't factor in. What does help is engaging on the issue itself by confirming the repro, explaining why it matters for your use case, or describing the approach you'd take.`,
-        ]
+        `${rule}, and you aren't currently assigned to ${issues}.`,
+      ]
       : [
-          `${rule}, and this PR doesn't link an open issue yet.`,
-          '',
-          "- **If you're already assigned to an issue for this**, add `Fixes #<n>` (or `Updates #<n>` for a partial fix) to the description and the PR will reopen on its own.",
-          `- **If there's no issue yet**, please [open one](https://github.com/${owner}/${repo}/issues/new/choose) instead: what you ran into, where you hit it, and a minimal reproduction. That context is what we use to decide what to prioritize.`,
-          "- **If there's an issue but you're not assigned**, add `Fixes #<n>` anyway so they're linked, then engage on the issue itself by confirming the repro or describing the approach you'd take. Assignment is a maintainer call based on capacity; comments that only ask to be assigned don't factor in. If you are assigned, this PR reopens automatically.",
-        ];
+        `${rule}, and this PR doesn't link an open issue yet.`,
+        '',
+        "- **If you're already assigned to an issue for this**, add `Fixes #<n>` (or `Updates #<n>` for a partial fix) to the description and the PR will reopen on its own.",
+        `- **If there's no issue yet**, please [open one](https://github.com/${owner}/${repo}/issues/new/choose) instead: what you ran into, where you hit it, and a minimal reproduction. That context is what we use to decide what to prioritize.`,
+        "- **If there's an issue but you're not assigned**, add `Fixes #<n>` anyway so they're linked, then engage on the issue itself by confirming the repro or describing the approach you'd take. Assignment is a maintainer call based on capacity. If you are assigned, this PR reopens automatically.",
+      ];
     return [
       MARKER,
       ...situation,
       '',
       "You're welcome to keep pushing commits here (just avoid force-pushing, since GitHub can't reopen a rewritten branch), but that on its own won't get the PR reviewed or the issue assigned. There's no need to open a new PR either way.",
-      '',
-      `[CONTRIBUTING.md](${contributingUrl}) has the full reasoning, but in short:`,
-      '',
-      "- We're a small team with limited capacity to review community PRs.",
-      '- Many recent PRs are AI-generated with little human review, and reviewing one carefully still costs a maintainer as much time as it ever did. A well-described issue is usually more useful to us than the code.',
       '',
       `*Maintainers: reopen, remove \`${LABEL}\`, or add \`${BYPASS_LABEL}\` to override.*`,
     ].join('\n');
