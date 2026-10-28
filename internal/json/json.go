@@ -8,10 +8,15 @@ package json
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"reflect"
 
-	"github.com/segmentio/encoding/json"
+	jsonv2 "github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
+	jsonv1 "github.com/go-json-experiment/json/v1"
 )
 
 // defaultMaxDepth is the maximum JSON nesting depth accepted by [Unmarshal].
@@ -23,18 +28,42 @@ const defaultMaxDepth = 1000
 // errMaxDepthExceeded is returned by [Unmarshal] when the input nests deeper than [defaultMaxDepth].
 var errMaxDepthExceeded = fmt.Errorf("json: exceeded maximum nesting depth of %d", defaultMaxDepth)
 
+var caseSensitiveV1 = jsonv2.JoinOptions(
+	jsonv1.DefaultOptionsV1(),
+	jsonv2.MatchCaseInsensitiveNames(false),
+)
+
+// caseSensitiveV1UseNumber adds UseNumber, which v2 has no option for: a JSON
+// number decoded into an any becomes a json.Number, so large IDs stay exact.
+var caseSensitiveV1UseNumber = jsonv2.JoinOptions(
+	caseSensitiveV1,
+	jsonv2.WithUnmarshalers(jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, v *any) error {
+		if dec.PeekKind() != '0' {
+			return errors.ErrUnsupported
+		}
+		if p := reflect.ValueOf(*v); p.Kind() == reflect.Pointer && !p.IsNil() {
+			return errors.ErrUnsupported
+		}
+		val, err := dec.ReadValue()
+		if err != nil {
+			return err
+		}
+		*v = json.Number(string(val))
+		return nil
+	})),
+)
+
 type Decoder struct {
-	dec *json.Decoder
+	dec  *jsontext.Decoder
+	opts jsonv2.Options
 }
 
 func NewDecoder(r io.Reader) *Decoder {
-	dec := json.NewDecoder(r)
-	dec.DontMatchCaseInsensitiveStructFields()
-	return &Decoder{dec: dec}
+	return &Decoder{dec: jsontext.NewDecoder(r), opts: caseSensitiveV1}
 }
 
 func (d *Decoder) Decode(v any) error {
-	return d.dec.Decode(v)
+	return jsonv2.UnmarshalDecode(d.dec, v, d.opts)
 }
 
 func Unmarshal(data []byte, v any) error {
@@ -44,12 +73,14 @@ func Unmarshal(data []byte, v any) error {
 	return NewDecoder(bytes.NewReader(data)).Decode(v)
 }
 
+func (d *Decoder) UseNumber() { d.opts = caseSensitiveV1UseNumber }
+
 func UnmarshalUseNumber(data []byte, v any) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
 	}
 	dec := NewDecoder(bytes.NewReader(data))
-	dec.dec.UseNumber()
+	dec.UseNumber()
 	return dec.Decode(v)
 }
 
