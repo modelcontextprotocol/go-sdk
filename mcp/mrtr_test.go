@@ -1192,7 +1192,8 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 
 	t.Run("server callTool", func(t *testing.T) {
 		orig := &CallToolParamsRaw{Name: "act"}
-		req, err := setMultiRoundTripRetryParams(methodCallTool, &ServerRequest[*CallToolParamsRaw]{Session: ss, Params: orig, Extra: extra}, responses, "s1")
+		id := jsonrpc2.StringID("mrtr-id")
+		req, err := setMultiRoundTripRetryParams(methodCallTool, &ServerRequest[*CallToolParamsRaw]{Session: ss, Params: orig, Extra: extra, ID: id}, responses, "s1")
 		if err != nil {
 			t.Fatalf("setMultiRoundTripRetryParams() error = %v", err)
 		}
@@ -1202,6 +1203,9 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 		}
 		if got.Extra != extra {
 			t.Error("retry request lost Extra")
+		}
+		if got.GetID() != id {
+			t.Errorf("retry request id = %v, want %v", got.GetID().Raw(), id.Raw())
 		}
 		checkRetry(t, orig, got.Params)
 	})
@@ -1239,18 +1243,24 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 	})
 
 	t.Run("client params", func(t *testing.T) {
+		id := jsonrpc2.StringID("mrtr-client-id")
 		for _, orig := range []Params{
 			&CallToolParams{Name: "act"},
 			&GetPromptParams{Name: "review"},
 			&ReadResourceParams{URI: "test://data"},
 		} {
-			req, err := setMultiRoundTripRetryParams(methodCallTool, newClientRequest[Params](nil, orig), responses, "s1")
+			creq := newClientRequest[Params](nil, orig)
+			creq.ID = id
+			req, err := setMultiRoundTripRetryParams(methodCallTool, creq, responses, "s1")
 			if err != nil {
 				t.Fatalf("setMultiRoundTripRetryParams(%T) error = %v", orig, err)
 			}
 			got, ok := req.(*ClientRequest[Params])
 			if !ok {
 				t.Fatalf("retry request type = %T, want *ClientRequest[Params]", req)
+			}
+			if got.GetID() != id {
+				t.Errorf("retry request id = %v, want %v", got.GetID().Raw(), id.Raw())
 			}
 			checkRetry(t, orig, got.Params)
 		}

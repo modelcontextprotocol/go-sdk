@@ -23,8 +23,7 @@ transparently, while adhering to these goals.
 
 ### Why issues rather than pull requests
 
-The SDK is maintained by a small team with limited time for review. Coding
-agents can now turn any open issue into a plausible-looking pull request within
+Coding agents can now turn any open issue into a plausible-looking pull request within
 hours, and generate speculative bug reports from a scan of the code, so we
 receive far more issues and PRs than we can read carefully. Reviewing a PR
 properly still takes as long as it always did. When an issue is well described,

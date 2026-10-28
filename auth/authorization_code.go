@@ -338,6 +338,9 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 	}
 
 	asm, err := GetAuthServerMetadata(ctx, prm.AuthorizationServers[0], h.config.Client)
+	if err == nil && asm != nil {
+		err = authutil.CheckPKCESupport(asm.CodeChallengeMethodsSupported, prm.AuthorizationServers[0])
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get authorization server metadata: %w", err)
 	}

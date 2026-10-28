@@ -262,6 +262,22 @@ func TestPerformOIDCLogin_ValidationErrors(t *testing.T) {
 	}
 }
 
+// TestPerformOIDCLogin_RequiresPKCE verifies that the OIDC login refuses an
+// identity provider that does not advertise PKCE, before the user is sent to it.
+func TestPerformOIDCLogin_RequiresPKCE(t *testing.T) {
+	idpServer := oauthtest.NewFakeIdPServer(oauthtest.IdPConfig{OmitPKCEMethods: true})
+	idpServer.Start(t)
+
+	fetcher := func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+		t.Error("authCodeFetcher called for an identity provider without PKCE")
+		return nil, fmt.Errorf("unexpected authorization")
+	}
+	_, err := PerformOIDCLogin(context.Background(), validOIDCLoginConfig(idpServer.URL()), fetcher)
+	if err == nil || !strings.Contains(err.Error(), "does not implement PKCE") {
+		t.Errorf("PerformOIDCLogin() = %v, want an error about missing PKCE support", err)
+	}
+}
+
 // TestPerformOIDCLogin_Issuer checks the iss parameter of the authorization
 // response (RFC 9207), the mitigation for mix-up attacks.
 func TestPerformOIDCLogin_Issuer(t *testing.T) {
