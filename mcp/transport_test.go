@@ -110,23 +110,24 @@ type connectionClosedTest struct {
 func connectionClosedTests() []connectionClosedTest {
 	readErr := errors.New("read failed")
 	wrappedReadErr := fmt.Errorf("reading: %w", readErr)
-	sameMessageErr := errors.New("client is closing")
+	sameMessageErr := errors.New("connection is closing")
 	return []connectionClosedTest{
 		{name: "local close", close: true},
 		{name: "EOF", readErr: io.EOF, causes: []error{io.EOF}},
 		{name: "unexpected EOF", readErr: io.ErrUnexpectedEOF, causes: []error{io.ErrUnexpectedEOF}},
 		{name: "read error", readErr: readErr, causes: []error{readErr}},
 		{name: "wrapped read error", readErr: wrappedReadErr, causes: []error{wrappedReadErr, readErr}},
-		{name: "client closing", readErr: jsonrpc2.NewError(-32003, "client is closing")},
-		{name: "server closing", readErr: jsonrpc2.NewError(-32004, "server is closing")},
+		{name: "closing", readErr: jsonrpc2.NewError(-32004, "connection is closing")},
+		// Older SDK versions send the same code with a different message.
+		{name: "closing, older message", readErr: jsonrpc2.NewError(-32004, "server is closing")},
 		{
 			name:    "wrapped closing error",
-			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrServerClosing, wrappedReadErr)),
+			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrConnClosing, wrappedReadErr)),
 			causes:  []error{wrappedReadErr, readErr},
 		},
 		{
 			name:    "joined closing errors",
-			readErr: errors.Join(jsonrpc2.ErrClientClosing, errors.Join(jsonrpc2.ErrServerClosing, readErr), io.ErrUnexpectedEOF),
+			readErr: errors.Join(jsonrpc2.ErrConnClosing, errors.Join(jsonrpc2.ErrConnClosing, readErr), io.ErrUnexpectedEOF),
 			causes:  []error{readErr, io.ErrUnexpectedEOF},
 		},
 		{name: "wire error cause", readErr: jsonrpc2.ErrInvalidParams, causes: []error{jsonrpc2.ErrInvalidParams}},
@@ -181,13 +182,11 @@ func checkConnectionClosedError(t *testing.T, err error, causes ...error) {
 			t.Errorf("error = %v, want an error wrapping %v", err, want)
 		}
 	}
-	for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
-		if errors.Is(err, closing) {
-			t.Errorf("error = %v, must not wrap %v", err, closing)
-		}
+	if errors.Is(err, jsonrpc2.ErrConnClosing) {
+		t.Errorf("error = %v, must not wrap %v", err, jsonrpc2.ErrConnClosing)
 	}
 	var wireErr *jsonrpc2.WireError
-	if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+	if errors.As(err, &wireErr) && wireErr.Code == -32004 {
 		t.Errorf("error = %v, exposes internal closing code %d", err, wireErr.Code)
 	}
 }

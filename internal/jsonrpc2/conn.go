@@ -297,7 +297,7 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 		// cannot increase once shutdown begins, and allowing outgoing notifications
 		// may permit notifications that will cancel in-flight calls.
 		if len(s.outgoingCalls) == 0 && len(s.incomingByID) == 0 {
-			err = s.shuttingDown(ErrClientClosing)
+			err = s.shuttingDown(ErrConnClosing)
 			if err != nil {
 				return
 			}
@@ -341,7 +341,7 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 	}
 
 	c.updateInFlight(func(s *inFlightState) {
-		err = s.shuttingDown(ErrClientClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -546,7 +546,7 @@ func (c *Connection) wait(fromWait bool) error {
 //
 // After the start of a Close, notification requests (that lack IDs and do not
 // receive responses) will continue to be passed to the Preempter, but calls
-// with IDs will receive immediate responses with ErrServerClosing, and no new
+// with IDs will receive immediate responses with ErrConnClosing, and no new
 // requests (not even notifications!) will be enqueued to the Handler.
 func (c *Connection) Close() error {
 	// Stop handling new requests, and interrupt the reader (by closing the
@@ -592,16 +592,15 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Retire any outgoing requests that were still in flight: with the Reader no
 		// longer being processed, they necessarily cannot receive a response.
 		for id, ac := range s.outgoingCalls {
-			ac.retire(&Response{ID: id, Error: fmt.Errorf("%w: %w", ErrClientClosing, err)})
+			ac.retire(&Response{ID: id, Error: fmt.Errorf("%w: %w", ErrConnClosing, err)})
 		}
 		s.outgoingCalls = nil
 
 		// Cancel any incoming requests still in flight: with the reader gone we
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
-		// The read error (typically io.EOF from the peer disconnecting) is the
-		// cause, rather than a directional ErrServerClosing/ErrClientClosing
-		// sentinel: at this layer the connection has no designated end.
+		// The cause is the read error, typically io.EOF from the peer
+		// disconnecting.
 		for _, r := range s.incomingByID {
 			r.cancel(err)
 		}
@@ -642,7 +641,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 			// theoretically be handled by the preempter. The preempter could return
 			// ErrAsyncResponse, which would increase the amount of work in flight
 			// when we're trying to ensure that it strictly decreases.
-			err = s.shuttingDown(ErrServerClosing)
+			err = s.shuttingDown(ErrConnClosing)
 		}
 	})
 	if err != nil {
@@ -664,7 +663,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		// handler — not even notifications. That ensures that if the handler
 		// continues to make progress, it will eventually become idle and
 		// close the connection.
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -807,7 +806,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
 			return
 		}
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
@@ -828,7 +827,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 			if s.writeErr == nil {
 				s.writeErr = err
 				for _, r := range s.incomingByID {
-					r.cancel(fmt.Errorf("%w: %v", ErrServerClosing, err))
+					r.cancel(fmt.Errorf("%w: %v", ErrConnClosing, err))
 				}
 			}
 		})

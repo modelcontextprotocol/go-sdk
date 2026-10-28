@@ -161,7 +161,7 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
 		err := req.GetSession().getConn().Notify(ctx, method, params)
-		if errors.Is(err, jsonrpc2.ErrClientClosing) || errors.Is(err, jsonrpc2.ErrServerClosing) {
+		if errors.Is(err, jsonrpc2.ErrConnClosing) {
 			if cause := withoutClosingErrors(err); cause != nil {
 				err = fmt.Errorf("%w: %w", ErrConnectionClosed, cause)
 			} else {
