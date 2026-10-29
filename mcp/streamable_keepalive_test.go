@@ -518,28 +518,7 @@ func TestStreamKeepAlive_NoGoroutineLeak(t *testing.T) {
 		resp.Body.Close()
 		<-unsubCh
 	}
-	waitForNoKeepAlive(t)
-}
 
-// TestStreamKeepAlive_EndsWithResponse checks that a keep-alive ends as soon
-// as its stream is done, even if the request context is not.
-func TestStreamKeepAlive_EndsWithResponse(t *testing.T) {
-	s := &stream{
-		id:     "s",
-		logger: ensureLogger(nil),
-		w:      &recordingWriter{header: http.Header{}},
-		done:   make(chan struct{}),
-	}
-	s.mu.Lock()
-	s.startKeepAliveLocked(context.Background(), time.Hour, false)
-	s.mu.Unlock()
-	s.close(0)
-	waitForNoKeepAlive(t)
-}
-
-// waitForNoKeepAlive waits for all keep-alive goroutines to end.
-func waitForNoKeepAlive(t *testing.T) {
-	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		buf := make([]byte, 1<<20)

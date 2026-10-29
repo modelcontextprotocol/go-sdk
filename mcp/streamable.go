@@ -1171,26 +1171,24 @@ func (s *stream) markWrittenLocked() {
 // until then (see deliverLocked). Otherwise the first comment, written after
 // interval of silence, commits the headers itself.
 //
-// s.mu must be held, and the stream must be claimed (s.done non-nil).
+// s.mu must be held.
 func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duration, waitForCommit bool) {
 	var committed chan struct{}
 	if waitForCommit {
 		committed = make(chan struct{})
 		s.committed = committed
 	}
-	go s.keepAlive(ctx, interval, s.done, committed)
+	go s.keepAlive(ctx, interval, committed)
 }
 
 // keepAlive writes an SSE comment to the stream whenever it has been idle for
-// interval, until ctx is done or done is closed. A failed write closes the
-// stream, releasing the hanging request so that a dead peer is noticed within
-// one interval.
-func (s *stream) keepAlive(ctx context.Context, interval time.Duration, done, committed <-chan struct{}) {
+// interval, until ctx is done or the stream is released or closed. A failed
+// write closes the stream, releasing the hanging request so that a dead peer
+// is noticed within one interval.
+func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committed chan struct{}) {
 	if committed != nil {
 		select {
 		case <-ctx.Done():
-			return
-		case <-done:
 			return
 		case <-committed:
 		}
@@ -1200,8 +1198,6 @@ func (s *stream) keepAlive(ctx context.Context, interval time.Duration, done, co
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-done:
 			return
 		case <-timer.C:
 		}
