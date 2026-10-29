@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -1291,6 +1292,7 @@ func TestStreamableServerTransport(t *testing.T) {
 					messages:       []jsonrpc.Message{req(2, "tools/call", &CallToolParams{Name: "tool"})},
 					wantStatusCode: http.StatusOK,
 					wantMessages: []jsonrpc.Message{resp(2, nil, &jsonrpc.Error{
+						Code:    jsonrpc.CodeInvalidRequest,
 						Message: `method "tools/call" is invalid during session initialization`,
 					})},
 				},
@@ -1756,6 +1758,90 @@ func TestStreamableStateless(t *testing.T) {
 	testClientCompatibility(t, statelessHandler)
 }
 
+// TestStreamableUnencodableToolResult verifies that a tool result that cannot
+// be marshaled produces a JSON-RPC error instead of hanging the request.
+func TestStreamableUnencodableToolResult(t *testing.T) {
+	for _, stateless := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "bad"}, func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, any, error) {
+				return &CallToolResult{
+					Content:           []Content{&TextContent{Text: "inf"}},
+					StructuredContent: map[string]any{"value": math.Inf(1)},
+				}, nil, nil
+			})
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+				&StreamableHTTPOptions{Stateless: stateless})
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cs, err := NewClient(testImpl, nil).Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			_, err = cs.CallTool(ctx, &CallToolParams{Name: "bad", Arguments: map[string]any{}})
+			var wireErr *jsonrpc.Error
+			if !errors.As(err, &wireErr) {
+				t.Fatalf("CallTool() error = %v, want a JSON-RPC error", err)
+			}
+			if wireErr.Code != jsonrpc.CodeInternalError {
+				t.Errorf("error code = %d, want %d", wireErr.Code, jsonrpc.CodeInternalError)
+			}
+		})
+	}
+}
+
+// TestStreamableStateless_RejectsLegacyOn2026OnlyServer verifies that a
+// stateless server configured with [ServerOptions.SupportedProtocolVersions]
+// set to only ["2026-07-28"] rejects legacy-format requests (no _meta, no
+// Mcp-Protocol-Version header) with [CodeUnsupportedProtocolVersion].
+func TestStreamableStateless_RejectsLegacyOn2026OnlyServer(t *testing.T) {
+	server := NewServer(testImpl, &ServerOptions{
+		SupportedProtocolVersions: []string{protocolVersion20260728},
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body, _ := jsonrpc2.EncodeMessage(req(1, methodListTools, &ListToolsParams{}))
+	httpReq, err := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	var errResp struct {
+		Error struct {
+			Code int64 `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(got, &errResp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, got)
+	}
+	if errResp.Error.Code != CodeUnsupportedProtocolVersion {
+		t.Errorf("error code = %d, want %d", errResp.Error.Code, CodeUnsupportedProtocolVersion)
+	}
+}
+
 func textContent(t *testing.T, res *CallToolResult) string {
 	t.Helper()
 	if len(res.Content) != 1 {
@@ -2173,6 +2259,78 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	}
 	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
 		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
+	}
+}
+
+// TestStreamableParamHeaderWithPointerField verifies that Mcp-Param-* headers
+// are mirrored and validated for a typed tool whose input struct has a pointer
+// field, for which jsonschema.For emits a type array.
+func TestStreamableParamHeaderWithPointerField(t *testing.T) {
+	type input struct {
+		Region string  `json:"region"`
+		Note   *string `json:"note,omitempty"`
+	}
+	schema, err := jsonschema.For[input](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema.Properties["region"].Extra = map[string]any{"x-mcp-header": "Region"}
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	var handlerCalled atomic.Bool
+	AddTool(server, &Tool{Name: "query", InputSchema: schema},
+		func(ctx context.Context, req *CallToolRequest, in input) (*CallToolResult, any, error) {
+			handlerCalled.Store(true)
+			return &CallToolResult{}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var sentRegion string
+	var status int
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				sentRegion = req.Header.Get(paramHeaderPrefix + "Region")
+				req.Header.Set(paramHeaderPrefix+"Region", "eu-west1")
+			}
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && req.Header.Get(methodHeader) == "tools/call" {
+				status = resp.StatusCode
+			}
+			return resp, err
+		}),
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: customClient},
+		&ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "query", Arguments: map[string]any{"region": "us-west1"}}); err == nil {
+		t.Error("CallTool succeeded with mismatched Mcp-Param-Region header")
+	}
+	if sentRegion != "us-west1" {
+		t.Errorf("client sent Mcp-Param-Region %q, want %q", sentRegion, "us-west1")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", status, http.StatusBadRequest)
+	}
+	if handlerCalled.Load() {
+		t.Error("tool handler ran despite mismatched Mcp-Param-Region header")
 	}
 }
 
@@ -2923,6 +3081,36 @@ func TestProcessStreamMaxEventSize(t *testing.T) {
 				t.Fatalf("failure() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestStreamableClientDefaultMaxEventSize verifies that a zero
+// StreamableClientTransport.MaxEventSize applies DefaultMaxEventSize rather
+// than disabling the cap.
+func TestStreamableClientDefaultMaxEventSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Mcp-Session-Id", "session")
+		io.WriteString(w, "event: message\ndata: ")
+		chunk := strings.Repeat("A", 1<<20)
+		for range 2 * DefaultMaxEventSize / len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: srv.URL, DisableStandaloneSSE: true}
+	_, err := client.Connect(t.Context(), transport, nil)
+	want := fmt.Sprintf("SSE event exceeded %d bytes", DefaultMaxEventSize)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Connect() error = %v, want an error containing %q", err, want)
 	}
 }
 
@@ -4885,5 +5073,67 @@ func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusBadRequest, body)
 		}
+	})
+}
+
+func TestStreamableGetServerCalledOnceForNewPOST(t *testing.T) {
+	for _, stateless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			var calls atomic.Int32
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+				calls.Add(1)
+				return server
+			}, &StreamableHTTPOptions{Stateless: stateless})
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := calls.Load(); got != 1 {
+				t.Errorf("getServer called %d times, want 1", got)
+			}
+		})
+	}
+
+	t.Run("existing stateful session", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		var calls atomic.Int32
+		handler := NewStreamableHTTPHandler(func(*http.Request) *Server {
+			calls.Add(1)
+			return server
+		}, &StreamableHTTPOptions{JSONResponse: true})
+
+		post := func(body string, sessionID string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			if sessionID != "" {
+				req.Header.Set(sessionIDHeader, sessionID)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			return rec
+		}
+
+		initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+		initRec := post(initBody, "")
+		if initRec.Code != http.StatusOK {
+			t.Fatalf("initialize status = %d, want %d: %s", initRec.Code, http.StatusOK, initRec.Body)
+		}
+		sessionID := initRec.Header().Get(sessionIDHeader)
+		if sessionID == "" {
+			t.Fatal("initialize response missing session ID")
+		}
+
+		pingRec := post(`{"jsonrpc":"2.0","id":2,"method":"ping"}`, sessionID)
+		if pingRec.Code != http.StatusOK {
+			t.Fatalf("ping status = %d, want %d: %s", pingRec.Code, http.StatusOK, pingRec.Body)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Errorf("getServer called %d times, want 1 for new session only", got)
+		}
+		handler.closeAll()
 	})
 }

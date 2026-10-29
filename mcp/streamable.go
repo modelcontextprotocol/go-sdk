@@ -347,6 +347,12 @@ var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
 // permanently fails the connection.
 var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
 
+// fatalnewprotocolerrors is a compatibility parameter that restores the
+// previous behavior of permanently failing the connection when an independent
+// new-protocol request fails. The option will be removed in the 1.11.0 version
+// of the SDK.
+var fatalnewprotocolerrors = mcpgodebug.Value("fatalnewprotocolerrors")
+
 // plaintextstatefulrejection is a compatibility parameter that restores the
 // previous behavior of a stateful [StreamableHTTPHandler] when it receives a
 // request carrying SEP-2575 per-request metadata (i.e. an
@@ -403,23 +409,24 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	//
 	// [§2.7]: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
 	protocolVersion := req.Header.Get(protocolVersionHeader)
-	var supportedVersions []string
-	if server := h.getServer(req); server != nil {
-		supportedVersions = server.protocolVersions
-	} else {
-		supportedVersions = supportedProtocolVersions
-	}
-	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
-		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
-		return
-	}
 	req = req.WithContext(context.WithValue(req.Context(), protocolVersionContextKey{}, protocolVersion))
-
 	if h.opts.Stateless {
 		h.serveStateless(w, req)
 	} else {
 		h.serveStateful(w, req)
 	}
+}
+
+func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, protocolVersion string, server *Server) bool {
+	supportedVersions := supportedProtocolVersions
+	if server != nil {
+		supportedVersions = server.protocolVersions
+	}
+	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
+		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 // serveStateless handles requests for stateless servers.
@@ -456,6 +463,9 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
@@ -660,6 +670,9 @@ func (h *StreamableHTTPHandler) serveStatefulGET(w http.ResponseWriter, req *htt
 	if !ok {
 		return
 	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+		return
+	}
 
 	sessInfo.transport.ServeHTTP(w, req)
 }
@@ -675,6 +688,9 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 
 	sessInfo, ok := h.lookupSession(w, req, sessionID)
 	if !ok {
+		return
+	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
 		return
 	}
 
@@ -706,6 +722,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		if !ok {
 			return
 		}
+		if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+			return
+		}
 		sessInfo.startPOST()
 		defer sessInfo.endPOST()
 		sessInfo.transport.ServeHTTP(w, req)
@@ -714,6 +733,9 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 
 	// No session ID: create a new session.
 	server := h.getServer(req)
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+		return
+	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
@@ -1212,10 +1234,10 @@ func (s *stream) keepAlive(ctx context.Context, interval time.Duration, committe
 //   - InvalidParams (-32602), UnsupportedProtocolVersion (-32022) and
 //     CodeMissingRequiredClientCapabilities (-32021) MUST
 //     return HTTP 400.
+//
+// UnsupportedProtocolVersion is the one code mapped for every protocol
+// version.
 func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
-	if protocolVersionFromContext(ctx) < protocolVersion20260728 {
-		return 0
-	}
 	resp, ok := msg.(*jsonrpc.Response)
 	if !ok || resp.Error == nil {
 		return 0
@@ -1224,10 +1246,20 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 	if !errors.As(resp.Error, &jerr) {
 		return 0
 	}
+	// A legacy request gets this code only from a server that supports no
+	// version before 2026-07-28, which rejects it in ServerSession.handle
+	// before any handler runs, so nothing has been written to the response
+	// yet.
+	if jerr.Code == CodeUnsupportedProtocolVersion {
+		return http.StatusBadRequest
+	}
+	if protocolVersionFromContext(ctx) < protocolVersion20260728 {
+		return 0
+	}
 	switch jerr.Code {
 	case jsonrpc.CodeMethodNotFound:
 		return http.StatusNotFound
-	case jsonrpc.CodeInvalidParams, CodeUnsupportedProtocolVersion, CodeMissingRequiredClientCapabilities:
+	case jsonrpc.CodeInvalidParams, CodeMissingRequiredClientCapabilities:
 		return http.StatusBadRequest
 	}
 	return 0
@@ -2161,7 +2193,14 @@ func (c *streamableServerConn) Close() error {
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
 type StreamableClientTransport struct {
-	Endpoint   string
+	Endpoint string
+	// HTTPClient is the client to use for making HTTP requests. If nil,
+	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
@@ -2242,15 +2281,16 @@ func init() {
 // When closed, the connection issues a DELETE request to terminate the
 // session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := util.RestrictRedirects(t.HTTPClient)
 	maxRetries := t.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = 5
 	} else if maxRetries < 0 {
 		maxRetries = 0
+	}
+	maxEventSize := t.MaxEventSize
+	if maxEventSize == 0 {
+		maxEventSize = DefaultMaxEventSize
 	}
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
@@ -2282,7 +2322,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
 		oauthHandler:         t.OAuthHandler,
-		maxEventSize:         t.MaxEventSize,
+		maxEventSize:         maxEventSize,
 	}
 	return conn, nil
 }
@@ -2315,10 +2355,11 @@ type streamableClientConn struct {
 
 	// Logical reads are distributed across multiple http requests. Whenever any
 	// of them fails to process their response, we must break the connection, by
-	// failing the pending Read.
+	// failing the pending Read. An independent new-protocol request only ends
+	// that call instead (see [streamableClientConn.failCall]).
 	//
 	// Achieve this by storing the failure message, and signalling when reads are
-	// broken. See also [streamableClientConn.fail] and
+	// broken. See also [streamableClientConn.failConnection] and
 	// [streamableClientConn.failure].
 	failOnce sync.Once
 	_failure error
@@ -2332,7 +2373,7 @@ type streamableClientConn struct {
 
 var _ clientConnection = (*streamableClientConn)(nil)
 
-func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
+func (c *streamableClientConn) clientSessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()
@@ -2368,7 +2409,7 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 		// If the client didn't cancel the request, and failure breaks the logical
 		// session.
 		if c.ctx.Err() == nil {
-			c.fail(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
+			c.failConnection(fmt.Errorf("standalone SSE request failed (session ID: %v): %v", c.sessionID, err))
 		}
 		return
 	}
@@ -2404,13 +2445,13 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 	}
 	summary := "standalone SSE stream"
 	if err := c.checkResponse(c.ctx, summary, resp); err != nil {
-		c.fail(err)
+		c.failConnection(err)
 		return
 	}
 	go c.handleSSE(c.ctx, summary, resp, nil)
 }
 
-// fail handles an asynchronous error while reading.
+// failConnection handles an asynchronous error while reading.
 //
 // If err is non-nil, it is terminal, and subsequent (or pending) Reads will
 // fail.
@@ -2418,12 +2459,44 @@ func (c *streamableClientConn) connectStandaloneSSE() {
 // If err wraps ErrSessionMissing, the failure indicates that the session is no
 // longer present on the server, and no final DELETE will be performed when
 // closing the connection.
-func (c *streamableClientConn) fail(err error) {
+func (c *streamableClientConn) failConnection(err error) {
 	if err != nil {
 		c.failOnce.Do(func() {
 			c._failure = err
 			close(c.failed)
 		})
+	}
+}
+
+// failCall ends call with err, leaving the connection usable.
+func (c *streamableClientConn) failCall(call *jsonrpc.Request, err error) {
+	select {
+	case c.incoming <- &jsonrpc2.Response{ID: call.ID, Error: err}:
+	case <-c.done:
+	}
+}
+
+// canFailIndependently reports whether msg belongs to a new-protocol
+// interaction and the caller has not opted out of independent failure handling.
+func (c *streamableClientConn) canFailIndependently(msg jsonrpc.Message) bool {
+	if fatalnewprotocolerrors == "1" {
+		return false
+	}
+	if pv := protocolVersionFromMessage(msg); pv != "" {
+		return pv >= protocolVersion20260728
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.initializedResult != nil && c.initializedResult.ProtocolVersion >= protocolVersion20260728
+}
+
+// endCall fails only the call when it can fail independently, or fails the
+// connection otherwise.
+func (c *streamableClientConn) endCall(call *jsonrpc.Request, err error) {
+	if call != nil && c.canFailIndependently(call) {
+		c.failCall(call, err)
+	} else {
+		c.failConnection(err)
 	}
 }
 
@@ -2476,7 +2549,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			requestMethod = msg.Method
 		}
 	case *jsonrpc.Response:
-		requestSummary = fmt.Sprintf("sending jsonrpc response #%d", msg.ID)
+		requestSummary = fmt.Sprintf("sending jsonrpc response #%v", msg.ID.Raw())
 	default:
 		panic("unreachable")
 	}
@@ -2534,7 +2607,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// source for whether the caller abandoned the request.
 			ctxErr := ctx.Err()
 			if errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded) {
-				c.fail(fmt.Errorf("%s: authorization cancelled: %w", requestSummary, err))
+				c.failConnection(fmt.Errorf("%s: authorization cancelled: %w", requestSummary, err))
 			}
 			// Wrap with ErrRejected so the jsonrpc2 connection doesn't set writeErr
 			// and permanently break the connection.
@@ -2558,10 +2631,14 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 			// plain text 404 or 400), which checkResponse cannot classify as a
 			// per-call rejection on its own.
 			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
+		} else if !errors.Is(err, jsonrpc2.ErrRejected) && c.canFailIndependently(msg) {
+			// An independent request failure applies only to that request. Wrap it with
+			// ErrRejected so jsonrpc2 does not treat the connection as broken.
+			err = fmt.Errorf("%w: %w", err, jsonrpc2.ErrRejected)
 		} else if !errors.Is(err, jsonrpc2.ErrRejected) {
 			// Only fail the connection for non-transient errors.
 			// Transient errors (wrapped with ErrRejected) should not break the connection.
-			c.fail(err)
+			c.failConnection(err)
 		}
 		return err
 	}
@@ -2602,7 +2679,7 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	contentType := baseMediaType(resp.Header.Get("Content-Type"))
 	switch contentType {
 	case "application/json":
-		go c.handleJSON(requestSummary, resp)
+		go c.handleJSON(requestSummary, resp, forCall)
 
 	case "text/event-stream":
 		var forCall *jsonrpc.Request
@@ -2683,16 +2760,16 @@ func protocolVersionFromMessage(msg jsonrpc.Message) string {
 	return v
 }
 
-func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response) {
+func (c *streamableClientConn) handleJSON(requestSummary string, resp *http.Response, forCall *jsonrpc.Request) {
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		c.fail(fmt.Errorf("%s: failed to read body: %v", requestSummary, err))
+		c.endCall(forCall, fmt.Errorf("%s: failed to read body: %v", requestSummary, err))
 		return
 	}
 	msg, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
-		c.fail(fmt.Errorf("%s: failed to decode response: %v", requestSummary, err))
+		c.endCall(forCall, fmt.Errorf("%s: failed to decode response: %v", requestSummary, err))
 		return
 	}
 	select {
@@ -2741,7 +2818,7 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 			retriesWithoutProgress++
 			if retriesWithoutProgress > c.maxRetries {
 				if ctx.Err() == nil {
-					c.fail(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
+					c.failConnection(fmt.Errorf("%s: exceeded %d retries without progress (session ID: %v)", requestSummary, c.maxRetries, c.sessionID))
 				}
 				return
 			}
@@ -2754,14 +2831,14 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 			// breaks the logical MCP session.
 			if ctx.Err() == nil {
 				// All reconnection attempts failed: fail the connection.
-				c.fail(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
+				c.failConnection(fmt.Errorf("%s: failed to reconnect (session ID: %v): %v", requestSummary, c.sessionID, err))
 			}
 			return
 		}
 
 		resp = newResp
 		if err := c.checkResponse(ctx, requestSummary, resp); err != nil {
-			c.fail(err)
+			c.failConnection(err)
 			return
 		}
 	}
@@ -2824,9 +2901,9 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 			}
 
 			// Malformed events are hard errors that indicate corrupted data or protocol
-			// violations. These should fail the connection permanently.
+			// violations, so the stream is not resumed.
 			if errors.Is(err, errMalformedEvent) {
-				c.fail(fmt.Errorf("%s: %v", requestSummary, err))
+				c.endCall(forCall, fmt.Errorf("%s: %v", requestSummary, err))
 				return "", 0, true
 			}
 
@@ -2858,7 +2935,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 
 		msg, err := jsonrpc.DecodeMessage(evt.Data)
 		if err != nil {
-			c.fail(fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
+			c.endCall(forCall, fmt.Errorf("%s: failed to decode event: %v", requestSummary, err))
 			return "", 0, true
 		}
 
@@ -2887,14 +2964,7 @@ func (c *streamableClientConn) processStream(ctx context.Context, requestSummary
 	// Note that this is different from the cancellation case above, since the
 	// caller is still waiting for a response that will never come.
 	if lastEventID == "" && forCall != nil {
-		errmsg := &jsonrpc2.Response{
-			ID:    forCall.ID,
-			Error: fmt.Errorf("request terminated without response"),
-		}
-		select {
-		case c.incoming <- errmsg:
-		case <-c.done:
-		}
+		c.failCall(forCall, fmt.Errorf("request terminated without response"))
 	}
 	return lastEventID, reconnectDelay, false
 }

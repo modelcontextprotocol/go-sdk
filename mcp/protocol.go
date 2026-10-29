@@ -49,7 +49,7 @@ func annotateResultType(res Result) {
 	case multiRoundTripResponse:
 		// These results are complete or input_required, so label them by
 		// whether the handler asked for more client input.
-		if r.inputRequests() != nil {
+		if asksForInput(r) {
 			r.setResultType(resultTypeInputRequired)
 		} else {
 			r.setResultType(resultTypeComplete)
@@ -105,8 +105,8 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	var rawMap map[string]*raw
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	var rawMap map[string]raw
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	if rawMap == nil {
@@ -117,19 +117,19 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		switch raw.Method {
 		case methodElicit:
 			var p ElicitParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodCreateMessage:
 			var p CreateMessageWithToolsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodListRoots:
 			var p ListRootsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
@@ -153,7 +153,7 @@ type InputResponseMap map[string]InputResponse
 
 func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
 	var rawMap map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	result := make(InputResponseMap, len(rawMap))
@@ -176,25 +176,25 @@ func unmarshalInputResponse(data json.RawMessage) (InputResponse, error) {
 		Role   json.RawMessage `json:"role"`
 		Roots  json.RawMessage `json:"roots"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := internaljson.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
 	switch {
 	case probe.Roots != nil:
 		var p ListRootsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Action != nil:
 		var p ElicitResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Role != nil:
 		var p CreateMessageWithToolsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
@@ -1705,12 +1705,17 @@ type ReadResourceResult struct {
 	// resultType records whether the call finished or needs more client input.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
+	// retried records that the client middleware produced this result by
+	// retrying the request with input responses. Such a result depends on
+	// inputs that are not part of the cache key, so it must not be cached.
+	retried bool
 }
 
 func (*ReadResourceResult) isResult()     {}
 func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) markRetried()                { r.retried = true }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
 	if r == nil {

@@ -11,6 +11,15 @@ for this repository.
 Please **do not** report security vulnerabilities through public GitHub issues, discussions,
 or pull requests.
 
+## Report as a Regular Issue
+
+Open a public issue, or send a pull request, for:
+
+- Crashes or hangs of a client caused by the server it connected to
+- Spec-compliance gaps, missing validation, and hardening suggestions without a concrete attack
+- Resource exhaustion that requires non-default configuration
+- Static-analysis or other tool findings without a demonstrated impact
+
 ## What to Include
 
 To help us triage and respond quickly, please include:

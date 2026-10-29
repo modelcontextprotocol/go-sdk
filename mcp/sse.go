@@ -412,6 +412,11 @@ type SSEClientTransport struct {
 
 	// HTTPClient is the client to use for making HTTP requests. If nil,
 	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
 
 	// MaxEventSize bounds the number of bytes buffered while reading a single
@@ -426,14 +431,21 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid endpoint: %v", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.Endpoint, nil)
+	// The event stream outlives ctx; ctx only bounds the handshake.
+	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatch := context.AfterFunc(ctx, cancel)
+	connected := false
+	defer func() {
+		if !connected {
+			stopWatch()
+			cancel()
+		}
+	}()
+	req, err := http.NewRequestWithContext(streamCtx, "GET", c.Endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := util.RestrictRedirects(c.HTTPClient)
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -475,7 +487,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 	}
 
 	// From here on, the stream takes ownership of resp.Body.
+	if !stopWatch() {
+		resp.Body.Close()
+		return nil, ctx.Err()
+	}
+	connected = true
 	s := &sseClientConn{
+		cancel:      cancel,
 		client:      httpClient,
 		msgEndpoint: msgEndpoint,
 		incoming:    make(chan []byte, 100),
@@ -489,6 +507,13 @@ func (c *SSEClientTransport) Connect(ctx context.Context) (Connection, error) {
 		for evt, err := range events {
 			if err != nil {
 				return
+			}
+			// Server messages are "message" events, which is also the type of an
+			// event without a name. Other events, such as keep-alive pings, and
+			// events without data carry no JSON-RPC message: decoding them would
+			// fail the read and end the session.
+			if len(evt.Data) == 0 || (evt.Name != "" && evt.Name != "message") {
+				continue
 			}
 			select {
 			case s.incoming <- evt.Data:
@@ -510,6 +535,7 @@ type sseClientConn struct {
 	client      *http.Client // HTTP client to use for requests
 	msgEndpoint *url.URL     // session endpoint for POSTs
 	incoming    chan []byte  // queue of incoming messages
+	cancel      context.CancelFunc
 
 	mu     sync.Mutex
 	body   io.ReadCloser // body of the hanging GET
@@ -576,6 +602,7 @@ func (c *sseClientConn) Close() error {
 	defer c.mu.Unlock()
 	if !c.closed {
 		c.closed = true
+		c.cancel()
 		_ = c.body.Close()
 		close(c.done)
 	}

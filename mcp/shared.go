@@ -42,6 +42,17 @@ import (
 // The option will be removed in a future version of the SDK.
 var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
 
+// nointernalerrorcode is a compatibility parameter that restores the previous
+// behavior of [handleReceive]. When unset (the default), an error returned by
+// a request handler that carries no JSON-RPC error code is sent with code
+// -32603 (Internal error) rather than the zero-value code 0, which tells the
+// peer nothing. The error's message is unchanged. See:
+// https://github.com/modelcontextprotocol/go-sdk/issues/1394.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var nointernalerrorcode = mcpgodebug.Value("nointernalerrorcode")
+
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
 	// the SDK supports.
@@ -89,14 +100,10 @@ func negotiatedVersion(clientVersion string, supported []string) string {
 			return v
 		}
 	}
-	// If the server was enforced to support only protocolVersion20260728 and
-	// later, the initialize function should not be called.
-	// If a client calls the initialize function, return the protocolVersion20251125.
-	// As according to spec (https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation):
-	// "If the server supports the requested protocol version, it MUST respond with the same version."
-	// "Otherwise, the server MUST respond with another protocol version it supports."
-	// "This SHOULD be the latest version supported by the server."
-	return protocolVersion20251125
+	// A server that supports no version before protocolVersion20260728 has
+	// nothing to negotiate. [ServerSession.handle] rejects initialize on such
+	// a server with CodeUnsupportedProtocolVersion before it gets here.
+	return ""
 }
 
 // negotiateMutuallySupportedVersion returns a protocol version that is supported
@@ -153,17 +160,21 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	}
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
-		return nil, req.GetSession().getConn().Notify(ctx, method, params)
+		err := req.GetSession().getConn().Notify(ctx, method, params)
+		if errors.Is(err, jsonrpc2.ErrConnClosing) {
+			if cause := withoutClosingErrors(err); cause != nil {
+				err = fmt.Errorf("%w: %w", ErrConnectionClosed, cause)
+			} else {
+				err = ErrConnectionClosed
+			}
+		}
+		return nil, err
 	}
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
-	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
-	} else {
-		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
-			return nil, err
-		}
+	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
@@ -216,14 +227,33 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 
 	mh := session.receivingMethodHandler()
 	re, _ := jreq.Extra.(*RequestExtra)
-	req := info.newRequest(session, params, re)
+	req := info.newRequest(session, params, re, jreq.ID)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
-		return nil, err
+		return nil, withInternalErrorCode(err)
 	}
 	return res, nil
 }
+
+// withInternalErrorCode gives an error that carries no JSON-RPC error code the
+// code -32603 (Internal error), so that it does not reach the peer as code 0.
+// Errors that already carry a code are returned unchanged, as is
+// [jsonrpc2.ErrNotHandled], which the connection turns into "method not found".
+func withInternalErrorCode(err error) error {
+	var wireErr *jsonrpc.Error
+	if nointernalerrorcode == "1" || errors.As(err, &wireErr) || errors.Is(err, jsonrpc2.ErrNotHandled) {
+		return err
+	}
+	return &internalError{err}
+}
+
+// internalError reports err with the code of [jsonrpc2.ErrInternal]. Its
+// message is err's, and err stays in its chain for [errors.Is] and [errors.As].
+type internalError struct{ err error }
+
+func (e *internalError) Error() string   { return e.err.Error() }
+func (e *internalError) Unwrap() []error { return []error{e.err, jsonrpc2.ErrInternal} }
 
 // checkRequest checks the given request against the provided method info, to
 // ensure it is a valid MCP request.
@@ -263,7 +293,7 @@ type methodInfo struct {
 	// Unmarshal params from the wire into a Params struct.
 	// Used on the receive side.
 	unmarshalParams func(json.RawMessage) (Params, error)
-	newRequest      func(Session, Params, *RequestExtra) Request
+	newRequest      func(Session, Params, *RequestExtra, jsonrpc.ID) Request
 	// Run the code when a call to the method is received.
 	// Used on the receive side.
 	handleMethod MethodHandler
@@ -298,8 +328,8 @@ const (
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, _ *RequestExtra) Request {
-		r := &ClientRequest[P]{Session: s.(*ClientSession)}
+	mi.newRequest = func(s Session, p Params, _ *RequestExtra, id jsonrpc.ID) Request {
+		r := &ClientRequest[P]{Session: s.(*ClientSession), ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -313,8 +343,8 @@ func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHan
 
 func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, re *RequestExtra) Request {
-		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re}
+	mi.newRequest = func(s Session, p Params, re *RequestExtra, id jsonrpc.ID) Request {
+		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re, ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -647,12 +677,18 @@ type Request interface {
 	GetParams() Params
 	// GetExtra returns the Extra field for ServerRequests, and nil for ClientRequests.
 	GetExtra() *RequestExtra
+	// GetID returns the JSON-RPC id of the message being handled, or the zero ID
+	// for a notification and for a request the SDK itself originates. Use
+	// [jsonrpc.ID.IsValid] to tell those apart and [jsonrpc.ID.Raw] to read the
+	// underlying string or int64.
+	GetID() jsonrpc.ID
 }
 
 // A ClientRequest is a request to a client.
 type ClientRequest[P Params] struct {
 	Session *ClientSession
 	Params  P
+	ID      jsonrpc.ID
 }
 
 // A ServerRequest is a request to a server.
@@ -660,6 +696,7 @@ type ServerRequest[P Params] struct {
 	Session *ServerSession
 	Params  P
 	Extra   *RequestExtra
+	ID      jsonrpc.ID
 }
 
 // RequestExtra is extra information included in requests, typically from
@@ -700,6 +737,9 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
+
+func (r *ClientRequest[P]) GetID() jsonrpc.ID { return r.ID }
+func (r *ServerRequest[P]) GetID() jsonrpc.ID { return r.ID }
 
 // HasParams reports whether req carries params.
 //
