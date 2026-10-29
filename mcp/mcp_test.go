@@ -2848,6 +2848,155 @@ func TestSubscriptionsListen_Streamable(t *testing.T) {
 		&StreamableClientTransport{Endpoint: httpServer.URL}, events)
 }
 
+func TestCallCustomMethodSubscriptionsListen(t *testing.T) {
+	for _, transport := range []string{"in-memory", "streamable-json"} {
+		t.Run(transport, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			server := NewServer(testImpl, &ServerOptions{Capabilities: &ServerCapabilities{
+				Tools: &ToolCapabilities{ListChanged: true},
+			}})
+			ended := make(chan struct{})
+			server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					if method == methodSubscriptionsListen {
+						defer close(ended)
+					}
+					return next(ctx, method, req)
+				}
+			})
+			var ct Transport
+			if transport == "in-memory" {
+				var st Transport
+				ct, st = NewInMemoryTransports()
+				ss, err := server.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+			} else {
+				handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server },
+					&StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+				httpServer := httptest.NewServer(handler)
+				t.Cleanup(httpServer.Close)
+				ct = &StreamableClientTransport{Endpoint: httpServer.URL}
+			}
+			// Middleware observes notifications without enabling the auto-listen.
+			client := NewClient(testImpl, nil)
+			events := make(chan subListenEvent, 4)
+			client.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					switch method {
+					case notificationSubscriptionsAck:
+						params := req.GetParams().(*SubscriptionsAcknowledgedParams)
+						if !params.Notifications.ToolsListChanged {
+							t.Error("tools/list_changed was not acknowledged")
+						}
+						events <- subListenEvent{"ack", fmt.Sprint(params.Meta[MetaKeySubscriptionID])}
+					case notificationToolListChanged:
+						events <- subListenEvent{"tool", fmt.Sprint(req.GetParams().GetMeta()[MetaKeySubscriptionID])}
+					}
+					return next(ctx, method, req)
+				}
+			})
+			cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+			listenCtx, endListen := context.WithCancel(ctx)
+			defer endListen()
+			done := make(chan error, 1)
+			go func() {
+				_, err := CallCustomMethod[*SubscriptionsListenParams, *SubscriptionsListenResult](listenCtx, cs,
+					methodSubscriptionsListen, &SubscriptionsListenParams{Notifications: &NotificationSubscriptions{ToolsListChanged: true}})
+				done <- err
+			}()
+			ack := waitSubListenEvent(t, events, "ack")
+			if ack.id == "" || ack.id == "<nil>" {
+				t.Fatal("acknowledgement is missing its subscription ID")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("listen returned after acknowledgement: %v", err)
+			default:
+			}
+			AddTool(server, &Tool{Name: "added"}, sayHi)
+			if notification := waitSubListenEvent(t, events, "tool"); notification.id != ack.id {
+				t.Errorf("notification subscription ID=%s, want %s", notification.id, ack.id)
+			}
+			endListen()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("cancelled listen returned %v, want context.Canceled", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("cancelled listen did not return")
+			}
+			select {
+			case <-ended:
+			case <-ctx.Done():
+				t.Fatal("server did not release the cancelled listen")
+			}
+			tools, err := cs.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatalf("ListTools after cancellation: %v", err)
+			}
+			if len(tools.Tools) != 1 || tools.Tools[0].Name != "added" {
+				t.Fatalf("ListTools after cancellation returned %+v", tools.Tools)
+			}
+		})
+	}
+}
+
+func TestCallCustomMethodSubscriptionsListenResult(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		params *SubscriptionsListenParams
+		code   int64
+	}{
+		{"empty-filters", &SubscriptionsListenParams{Notifications: &NotificationSubscriptions{}}, 0},
+		{"missing-filters", &SubscriptionsListenParams{}, jsonrpc.CodeInvalidParams},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			server := NewServer(testImpl, nil)
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			client := NewClient(testImpl, nil)
+			cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+			result, err := CallCustomMethod[*SubscriptionsListenParams, *SubscriptionsListenResult](ctx, cs,
+				methodSubscriptionsListen, test.params)
+			if test.code != 0 {
+				var rpcErr *jsonrpc.Error
+				if !errors.As(err, &rpcErr) || rpcErr.Code != test.code {
+					t.Fatalf("listen error = %v, want JSON-RPC code %d", err, test.code)
+				}
+				if result != nil {
+					t.Fatalf("failed listen returned result %+v", result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || result.Meta[MetaKeySubscriptionID] == nil {
+				t.Fatalf("listen result is missing its subscription ID: %+v", result)
+			}
+		})
+	}
+}
+
 // TestSubscriptionsListen_NoHandlersNoListen verifies that a new-protocol
 // client without any list-changed handlers registered does not open an
 // auto-listen on connect, and therefore does not receive any acknowledgment

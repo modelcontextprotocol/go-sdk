@@ -1815,11 +1815,19 @@ func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
 	return nil
 }
 
-// CallCustomMethod sends a custom (non-standard) JSON-RPC method to the
-// server and decodes the response into R.
+// CallCustomMethod sends a JSON-RPC request to the server and decodes the response
+// into R. Prefer a dedicated ClientSession method when one is available: it may
+// also provide validation, caching, or subscription management.
 //
-// The method must have been registered on the session's client via
-// [AddSendingCustomMethod].
+// Custom methods must first be registered with [AddSendingCustomMethod]. Standard
+// MCP methods are already registered by the SDK. Use their corresponding SDK
+// parameter and result pointer types; for example, subscriptions/listen uses
+// *[SubscriptionsListenParams] and *[SubscriptionsListenResult]. R must match the
+// registered result type.
+//
+// A subscriptions/listen call requires protocol 2026-07-28 or later and blocks
+// until the stream ends or ctx is cancelled. Receiving middleware can observe
+// its acknowledgement and subsequent notifications.
 func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	ctx context.Context,
 	cs *ClientSession,

@@ -187,6 +187,61 @@ reporting the honored subset, then streams every change notification on
 the same request, and finally closes with a `SubscriptionsListenResult`
 when it tears the subscription down.
 
+To open a stream explicitly, use
+[`CallCustomMethod`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#CallCustomMethod)
+with the SDK's `SubscriptionsListenParams` and `SubscriptionsListenResult` types.
+Despite its name, this helper can call standard methods: the SDK already
+registers them, so do not call `AddSendingCustomMethod` for `subscriptions/listen`.
+Use a session connected with protocol `2026-07-28` or later. The result type must
+match the SDK's registered type; an arbitrary result struct is not supported.
+
+```go
+listenCtx, cancel := context.WithCancel(ctx)
+defer cancel()
+
+done := make(chan error, 1)
+go func() {
+    _, err := mcp.CallCustomMethod[
+        *mcp.SubscriptionsListenParams,
+        *mcp.SubscriptionsListenResult,
+    ](listenCtx, session, "subscriptions/listen", &mcp.SubscriptionsListenParams{
+        Notifications: &mcp.NotificationSubscriptions{
+            ToolsListChanged: true,
+        },
+    })
+    done <- err
+}()
+
+// Later, stop observing notifications without closing the session.
+cancel()
+err := <-done // Normally context.Canceled.
+```
+
+The call waits for the final result or error, or for context cancellation; the
+acknowledgement is a notification, not the result. The server can acknowledge an
+empty subset and finish immediately. Cancellation stops observation, not the
+underlying work being observed. To inspect the accepted filters, install
+receiving middleware on the client before connecting:
+
+```go
+client.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+    return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+        if method == "notifications/subscriptions/acknowledged" {
+            if p, ok := req.GetParams().(*mcp.SubscriptionsAcknowledgedParams); ok && p != nil {
+                log.Printf("Accepted subscriptions: %+v", p.Notifications)
+            }
+        }
+        return next(ctx, method, req)
+    }
+})
+```
+
+Observe subsequent notifications in the same middleware, or use the existing
+`ClientOptions` handlers. Configuring list-change handlers also opens an automatic
+listen when the server supports them; avoid opening another listen for the same
+filters. Prefer `ClientSession.Subscribe` and `Unsubscribe` for resource updates;
+they manage subscription state in addition to sending requests.
+
 ## Transports
 
 A
