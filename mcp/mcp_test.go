@@ -2180,6 +2180,62 @@ func TestStartKeepalive_SuccessResetsFailures(t *testing.T) {
 	})
 }
 
+// blockingKeepaliveSession is a keepaliveSession test double whose Ping
+// blocks until its context is done, like a ping the peer never answers.
+type blockingKeepaliveSession struct {
+	pingsDone  atomic.Int64
+	closeCalls atomic.Int64
+}
+
+func (s *blockingKeepaliveSession) Ping(ctx context.Context, _ *PingParams) error {
+	<-ctx.Done()
+	s.pingsDone.Add(1)
+	return ctx.Err()
+}
+
+func (s *blockingKeepaliveSession) Close() error {
+	s.closeCalls.Add(1)
+	return nil
+}
+
+// TestStartKeepalive_CancelStopsPendingPing verifies that cancelling the
+// keepalive, as closing the session does, ends a pending ping at once rather
+// than after its timeout, and is not reported as a ping failure.
+// Regression test for #1470.
+func TestStartKeepalive_CancelStopsPendingPing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		sess := &blockingKeepaliveSession{}
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+		var cancel context.CancelFunc
+		startKeepalive(sess, interval, 1, &cancel, logger)
+
+		// Let the first ping start; the peer never answers it.
+		time.Sleep(interval + interval/4)
+		synctest.Wait()
+		if got := sess.pingsDone.Load(); got != 0 {
+			t.Fatalf("ping returned before cancel: pingsDone=%d", got)
+		}
+
+		cancel()
+		synctest.Wait()
+		if got := sess.pingsDone.Load(); got != 1 {
+			t.Errorf("pending ping not stopped by cancel: pingsDone=%d", got)
+		}
+
+		// Run past the ping timeout and the next tick: nothing more happens.
+		time.Sleep(2 * interval)
+		synctest.Wait()
+		if got := sess.closeCalls.Load(); got != 0 {
+			t.Errorf("session closed after cancel: closeCalls=%d", got)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("unexpected log output after cancel:\n%s", got)
+		}
+	})
+}
+
 func TestAddTool_DuplicateNoPanicAndNoDuplicate(t *testing.T) {
 	// Adding the same tool pointer twice should not panic and should not
 	// produce duplicates in the server's tool list.
