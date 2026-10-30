@@ -41,6 +41,15 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   behavior was changed to reject such messages as invalid requests, as the
   specification lists `params` as required for all three.
 
+- `demotesessionlifecyclelog` added. If set to `1`, the five routine session
+  bookkeeping records ("server connecting", "server session connected",
+  "server session disconnected", "session initialized", "client log level
+  set") are emitted at debug level instead of info. On a stateless streamable
+  HTTP server a session is minted per request, so these records fire on every
+  request and bury the server's own logs. See issue #1204. Unlike the other
+  options on this page this one is opt-in: the default keeps emitting the
+  records at info, because demoting them changes log output existing users may
+  rely on.
 - `nopreinitinvalidrequest` added. If set to `1`, a legacy server session that
   has not been initialized refuses a request other than `initialize` or `ping`
   with JSON-RPC error code `0`, restoring the previous behavior. The default
@@ -59,6 +68,15 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   permanently fails its connection when an independent `2026-07-28` request
   fails, restoring the previous behavior. By default, the failure is returned
   only to the affected call.
+
+- `followallredirects` added. If set to `1`, the requests of
+  `StreamableClientTransport` and `SSEClientTransport`, and the OAuth token and
+  dynamic client registration requests, follow redirects as before: to any
+  origin, and changing the method as `net/http` does. The default behavior was
+  changed so that, unless the `http.Client` in use sets `CheckRedirect`, a
+  redirect is followed only if it stays within the origin of the request (an
+  upgrade from `http` to `https` on the same host with default ports is
+  allowed) and keeps the method.
 
 ### 1.8.0
 

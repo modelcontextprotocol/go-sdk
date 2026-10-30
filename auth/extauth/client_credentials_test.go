@@ -6,10 +6,12 @@ package extauth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -498,6 +500,128 @@ func TestClientCredentialsHandler_ConcurrentAuthorize(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestClientCredentialsHandler_TokenRedirectToOtherOrigin(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+	}))
+	t.Cleanup(target.Close)
+
+	// Without protected resource metadata, the resource server is also its
+	// own authorization server.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		issuer := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer": %q, "token_endpoint": %q, "code_challenge_methods_supported": ["S256"]}`, issuer, issuer+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+		Body:       http.NoBody,
+	}
+	req := httptest.NewRequest("GET", server.URL+"/resource", nil)
+	if err := handler.Authorize(t.Context(), req, resp); err == nil || !strings.Contains(err.Error(), "outside the origin") {
+		t.Errorf("Authorize() error = %v, want redirect not followed", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0", n)
+	}
+}
+
+// TestClientCredentialsHandler_TokenRequestIncludesResource verifies that the
+// token request carries the resource parameter (RFC 8707).
+func TestClientCredentialsHandler_TokenRequestIncludesResource(t *testing.T) {
+	// Without protected resource metadata, the resource server is also its
+	// own authorization server.
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	resourceURL := server.URL + "/resource"
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer": %q, "token_endpoint": %q, "code_challenge_methods_supported": ["S256"]}`, server.URL, server.URL+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.PostFormValue("resource"); got != resourceURL {
+			t.Errorf("token request resource = %q, want %q", got, resourceURL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token": "token", "token_type": "Bearer"}`)
+	})
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}, Body: http.NoBody}
+	if err := handler.Authorize(t.Context(), httptest.NewRequest("GET", resourceURL, nil), resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+}
+
+// TestClientCredentialsHandler_ServerWithoutPKCE verifies that the client
+// credentials grant works with an authorization server that does not advertise
+// PKCE, which the grant does not use.
+func TestClientCredentialsHandler_ServerWithoutPKCE(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		OmitPKCEMethods: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test-client": {Secret: "test-secret"},
+			},
+		},
+		ClientCredentialsConfig: &oauthtest.ClientCredentialsConfig{
+			Enabled: true,
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewClientCredentialsHandler(validClientCredentialsConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+		Body:       http.NoBody,
+	}
+	req := httptest.NewRequest("GET", resourceURL, nil)
+	if err := handler.Authorize(t.Context(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+	ts, err := handler.TokenSource(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := ts.Token()
+	if err != nil {
+		t.Fatalf("Token() failed: %v", err)
+	}
+	if tok.AccessToken != "test_access_token" {
+		t.Errorf("got access token %q, want %q", tok.AccessToken, "test_access_token")
+	}
 }
 
 func TestSelectTokenAuthMethod(t *testing.T) {

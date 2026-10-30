@@ -254,16 +254,21 @@ type StreamableHTTPOptions struct {
 	// that are rejected before dispatch without exposing their parameters.
 	OnRequestSummary func(context.Context, StreamableHTTPRequestSummary)
 
-	// StreamKeepAlive is how long the response stream of a subscriptions/listen
-	// request may carry no bytes before an SSE comment line is written, so
-	// that idle-timeout intermediaries do not sever the long-lived stream, as
+	// StreamKeepAlive is how long the SSE response stream of a POST request
+	// may carry no bytes before an SSE comment line is written, so that
+	// idle-timeout intermediaries and clients do not sever a long-lived
+	// stream, such as that of subscriptions/listen or of a slow tool call, as
 	// the 2026-07-28 Streamable HTTP specification encourages. SSE clients
-	// ignore comment lines. Other SSE responses are not kept alive.
+	// ignore comment lines. The standalone GET stream and application/json
+	// responses are not kept alive.
 	//
-	// The keep-alive starts only after the listen acknowledgment has
-	// committed the response headers, since until then the HTTP status may
-	// still have to change (see #1229). A write failure ends the stream as a
-	// disconnect.
+	// On a subscriptions/listen stream, the keep-alive starts only after the
+	// listen acknowledgment has committed the response headers, since until
+	// then the HTTP status may still have to change. On other
+	// streams, which may stay silent until their response, the first comment
+	// commits the headers. After that, a protocol-level error is
+	// sent as an SSE event with status 200 rather than with its own HTTP
+	// status. A write failure ends the stream as a disconnect.
 	//
 	// If zero, [DefaultStreamKeepAlive] is used. A negative value disables
 	// the keep-alive.
@@ -1161,12 +1166,18 @@ func (s *stream) markWrittenLocked() {
 // startKeepAliveLocked starts the keep-alive goroutine for the HTTP request
 // currently claiming the stream. ctx is that request's context.
 //
+// If waitForCommit is set, nothing is written until the first event commits
+// the response headers, so that a status override is still possible
+// until then (see deliverLocked). Otherwise the first comment, written after
+// interval of silence, commits the headers itself.
+//
 // s.mu must be held.
-func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duration) {
-	// Nothing has been written yet, so a SEP-2575 status override may still
-	// be needed (see deliverLocked): wait for the first event.
-	committed := make(chan struct{})
-	s.committed = committed
+func (s *stream) startKeepAliveLocked(ctx context.Context, interval time.Duration, waitForCommit bool) {
+	var committed chan struct{}
+	if waitForCommit {
+		committed = make(chan struct{})
+		s.committed = committed
+	}
 	go s.keepAlive(ctx, interval, committed)
 }
 
@@ -1275,7 +1286,9 @@ func extractErrorStatus(ctx context.Context, msg jsonrpc.Message) int {
 // If overrideStatus is non-zero, data is treated as a SEP-2575 protocol-level
 // error response (>= 2026-07-28): it is written as a single raw JSON-RPC
 // response body with Content-Type: application/json and HTTP status
-// overrideStatus.
+// overrideStatus. If an event or keep-alive comment has already committed the
+// headers, the status can no longer change and data is written as an
+// ordinary event instead.
 //
 // Returns true if the stream is now done (all requests have been responded to).
 // The done value is always accurate, even if an error is returned.
@@ -1299,7 +1312,7 @@ func (s *stream) deliverLocked(data []byte, eventID string, responseTo jsonrpc.I
 	// SEP-2575 protocol-level error override: write the error as a raw
 	// JSON-RPC response with the spec-mandated HTTP status, bypassing any
 	// SSE framing.
-	if overrideStatus != 0 {
+	if overrideStatus != 0 && s.lastWrite.IsZero() {
 		s.w.Header().Set("Content-Type", "application/json")
 		s.w.Header().Del("X-Accel-Buffering")
 		s.w.WriteHeader(overrideStatus)
@@ -1957,9 +1970,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				c.logger.Warn(fmt.Sprintf("Writing priming event: %v", err))
 			}
 		}
-		if c.streamKeepAlive > 0 && stream.isListen {
+		if c.streamKeepAlive > 0 {
+			// A listen request is acknowledged at once, so its keep-alive
+			// waits for that event. Other requests, such as a slow tool call,
+			// may write nothing until their response, so the keep-alive must
+			// commit the headers itself.
 			stream.mu.Lock()
-			stream.startKeepAliveLocked(req.Context(), c.streamKeepAlive)
+			stream.startKeepAliveLocked(req.Context(), c.streamKeepAlive, stream.isListen)
 			stream.mu.Unlock()
 		}
 	}
@@ -2193,7 +2210,14 @@ func (c *streamableServerConn) Close() error {
 // endpoint serving the streamable HTTP transport defined by the 2025-03-26
 // version of the spec.
 type StreamableClientTransport struct {
-	Endpoint   string
+	Endpoint string
+	// HTTPClient is the client to use for making HTTP requests. If nil,
+	// http.DefaultClient is used.
+	//
+	// Unless HTTPClient sets CheckRedirect, a redirect is followed only if it
+	// stays within the origin of the request (an upgrade from http to https on
+	// the same host is allowed) and keeps the request method. Set
+	// CheckRedirect to apply another policy.
 	HTTPClient *http.Client
 	// MaxRetries is the maximum number of times to attempt a reconnect before giving up.
 	// It defaults to 5. To disable retries, use a negative number.
@@ -2274,15 +2298,16 @@ func init() {
 // When closed, the connection issues a DELETE request to terminate the
 // session, unless no session was established.
 func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, error) {
-	client := t.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := util.RestrictRedirects(t.HTTPClient)
 	maxRetries := t.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = 5
 	} else if maxRetries < 0 {
 		maxRetries = 0
+	}
+	maxEventSize := t.MaxEventSize
+	if maxEventSize == 0 {
+		maxEventSize = DefaultMaxEventSize
 	}
 	// Create a new cancellable context that will manage the connection's lifecycle.
 	// This is crucial for cleanly shutting down the background SSE listener by
@@ -2314,7 +2339,7 @@ func (t *StreamableClientTransport) Connect(ctx context.Context) (Connection, er
 		failed:               make(chan struct{}),
 		disableStandaloneSSE: t.DisableStandaloneSSE,
 		oauthHandler:         t.OAuthHandler,
-		maxEventSize:         t.MaxEventSize,
+		maxEventSize:         maxEventSize,
 	}
 	return conn, nil
 }
@@ -2365,7 +2390,7 @@ type streamableClientConn struct {
 
 var _ clientConnection = (*streamableClientConn)(nil)
 
-func (c *streamableClientConn) sessionUpdated(state clientSessionState) {
+func (c *streamableClientConn) clientSessionUpdated(state clientSessionState) {
 	c.mu.Lock()
 	c.initializedResult = state.InitializeResult
 	c.mu.Unlock()

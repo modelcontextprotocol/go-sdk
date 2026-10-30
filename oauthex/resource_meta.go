@@ -181,6 +181,11 @@ func splitChallenges(header string) ([]string, error) {
 	inQuotes := false
 	escaped := false
 	start := 0
+	// Every comma in a run of commas and blanks sees the same text after the
+	// run, so the lookahead is computed once per run. Rescanning per comma
+	// makes a long header take quadratic time.
+	runEnd := 0
+	runIsParam := false
 	for i, r := range header {
 		if escaped {
 			// The previous backslash began a quoted-pair, so this character is
@@ -199,20 +204,13 @@ func splitChallenges(header string) ([]string, error) {
 			// This is a potential challenge separator.
 			// A new challenge does not start with `key=value`.
 			// We check if the part after the comma looks like a parameter.
-			lookahead := trimEmptyListElements(header[i+1:])
-			eqPos := strings.Index(lookahead, "=")
-
-			isParam := false
-			if eqPos > 0 {
-				// Check if the part before '=' is a single token (no spaces).
-				// Whitespace between the token and '=' is allowed (BWS, RFC 9110 section 11.2).
-				token := strings.TrimRight(lookahead[:eqPos], " \t")
-				if strings.IndexFunc(token, unicode.IsSpace) == -1 {
-					isParam = true
-				}
+			if i >= runEnd {
+				lookahead := trimEmptyListElements(header[i+1:])
+				runEnd = len(header) - len(lookahead)
+				runIsParam = startsWithAuthParam(lookahead)
 			}
 
-			if !isParam {
+			if !runIsParam {
 				// The part after the comma does not look like a parameter,
 				// so this comma separates challenges.
 				challenges = append(challenges, header[start:i])
@@ -223,6 +221,26 @@ func splitChallenges(header string) ([]string, error) {
 	// Add the last (or only) challenge to the list.
 	challenges = append(challenges, header[start:])
 	return challenges, nil
+}
+
+// startsWithAuthParam reports whether s begins with a token followed by '='.
+// Whitespace between the token and '=' is allowed (BWS, RFC 9110 section 11.2).
+// It reads no further than that token, so its cost does not depend on the
+// length of the rest of the header.
+func startsWithAuthParam(s string) bool {
+	for i, r := range s {
+		switch {
+		case r == '=':
+			return i > 0
+		case r == ',':
+			return false
+		case r == ' ' || r == '\t':
+			return strings.HasPrefix(strings.TrimLeft(s[i:], " \t"), "=")
+		case unicode.IsSpace(r):
+			return false
+		}
+	}
+	return false
 }
 
 // parseSingleChallenge parses a string containing exactly one challenge.

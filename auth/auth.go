@@ -104,6 +104,9 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
 					if opts != nil {
 						var params []string
+						if code == http.StatusForbidden {
+							params = append(params, `error="insufficient_scope"`)
+						}
 						if opts.ResourceMetadataURL != "" {
 							params = append(params, fmt.Sprintf("resource_metadata=%q", opts.ResourceMetadataURL))
 						}
