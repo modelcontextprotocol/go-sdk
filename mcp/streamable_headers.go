@@ -306,9 +306,20 @@ func filterValidTools(logger *slog.Logger, tools []*Tool) []*Tool {
 }
 
 // validateParamHeaderAnnotations checks that a tool's x-mcp-header annotations
-// are valid. Annotations may appear on properties at any nesting
-// depth within the inputSchema and must be unique across all of them.
+// are valid. Annotations may appear on properties at any nesting depth within
+// the inputSchema, as long as they are reached from the root through
+// "properties" keys alone, and must be unique across all of them.
 func validateParamHeaderAnnotations(tool *Tool) error {
+	var schema map[string]any
+	if err := remarshal(tool.InputSchema, &schema); err == nil {
+		// The root is not a property, but its properties are reachable.
+		if _, ok := schema["x-mcp-header"]; ok {
+			return errors.New("x-mcp-header cannot be applied to the schema root")
+		}
+		if err := checkParamHeaderPlacement(schema, true); err != nil {
+			return err
+		}
+	}
 	props := unmarshalSchemaProperties(tool.InputSchema)
 	if len(props) == 0 {
 		return nil
@@ -346,6 +357,65 @@ func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string
 		}
 		if len(prop.Properties) > 0 {
 			if err := validateParamHeadersIn(prop.Properties, path, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// JSON Schema keywords, other than "properties", whose values are subschemas.
+// The 2026-07-28 spec allows x-mcp-header only on a property reached from the
+// schema root through "properties" keys alone, so an annotation found through
+// any of these makes the tool invalid.
+var (
+	// The value is a schema or an array of schemas.
+	subschemaKeywords = []string{
+		"additionalItems", "additionalProperties", "allOf", "anyOf", "contains",
+		"contentSchema", "else", "if", "items", "not", "oneOf", "prefixItems",
+		"propertyNames", "then", "unevaluatedItems", "unevaluatedProperties",
+	}
+	// The value is an object whose values are schemas.
+	subschemaMapKeywords = []string{"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties"}
+)
+
+// checkParamHeaderPlacement reports an x-mcp-header annotation in schema, or
+// in any of its subschemas, that is not on a property reached from the schema
+// root through "properties" keys alone. reachable reports whether schema is the
+// root or such a property; an annotation on the root itself is checked by the
+// caller.
+func checkParamHeaderPlacement(schema any, reachable bool) error {
+	m, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if header, ok := m["x-mcp-header"]; ok && !reachable {
+		return fmt.Errorf("x-mcp-header %q is not on a property reached from the schema root through \"properties\" alone", fmt.Sprint(header))
+	}
+	props, _ := m["properties"].(map[string]any)
+	for _, prop := range props {
+		if err := checkParamHeaderPlacement(prop, reachable); err != nil {
+			return err
+		}
+	}
+	for _, kw := range subschemaKeywords {
+		switch v := m[kw].(type) {
+		case map[string]any:
+			if err := checkParamHeaderPlacement(v, false); err != nil {
+				return err
+			}
+		case []any:
+			for _, sub := range v {
+				if err := checkParamHeaderPlacement(sub, false); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, kw := range subschemaMapKeywords {
+		subs, _ := m[kw].(map[string]any)
+		for _, sub := range subs {
+			if err := checkParamHeaderPlacement(sub, false); err != nil {
 				return err
 			}
 		}

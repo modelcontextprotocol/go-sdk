@@ -232,8 +232,11 @@ tool over HTTP, the SDK serializes the matching argument(s) as
 `Mcp-Param-<HeaderName>` request headers (using `=?base64?...?=` encoding for
 non-ASCII values). On the server, the headers are validated against the body
 and either accepted or rejected with `-32020`. Properties so annotated must
-be typed `string`, `integer`, or `boolean`; tools that fail validation at
-registration time are silently dropped from `tools/list`.
+be typed `string`, `integer`, or `boolean`, and must be reached from the
+schema root through `properties` keys alone (not through `items`, `oneOf`,
+`anyOf`, `allOf`, `not`, `if`/`then`/`else`, `$ref`, or similar keywords);
+tools that fail validation at registration time are silently dropped from
+`tools/list`.
 
 #### Resumability and Redelivery
 
