@@ -549,8 +549,11 @@ func injectRequestMeta[T any, P interface {
 	res := cs.state.InitializeResult
 	if params == nil {
 		params = new(T)
+	} else {
+		copy := *params
+		params = &copy
 	}
-	m := params.GetMeta()
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -1380,6 +1383,8 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 	}
 	if params.Arguments == nil {
 		// Avoid sending nil over the wire.
+		copy := *params
+		params = &copy
 		params.Arguments = map[string]any{}
 	}
 	if tool := cs.lookupTool(params.Name); tool != nil {

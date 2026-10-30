@@ -991,9 +991,12 @@ func startKeepalive(session keepaliveSession, interval time.Duration, failureThr
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
+				pingCtx, pingCancel := context.WithTimeout(ctx, interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
+				if ctx.Err() != nil {
+					return
+				}
 				if err == nil {
 					consecutiveFailures = 0
 					continue
