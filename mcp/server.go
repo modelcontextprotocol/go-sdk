@@ -988,6 +988,43 @@ func (s *Server) getPrompt(ctx context.Context, req *GetPromptRequest) (*GetProm
 	return res, err
 }
 
+// Discover returns the [DiscoverResult] the server would advertise via the
+// SEP-2575 server/discover method.
+//
+// If ss is non-nil, SupportedVersions reflects the protocol versions that
+// session's transport can serve. If ss is nil, SupportedVersions is the list
+// this server advertises: every version from [SupportedProtocolVersions],
+// narrowed by [ServerOptions.SupportedProtocolVersions] when that option is set.
+//
+// Discover is intended for host introspection (for example health checks) and
+// does not mutate session state. It applies only the protocol cache default
+// (cacheScope "public"). Inbound server/discover RPCs still run the internal
+// handler, which may establish session identity from the client request and
+// which settles cache hints via [ServerOptions.SetCacheable].
+//
+// To customize responses to inbound server/discover requests, use
+// [Server.AddReceivingMiddleware].
+func (s *Server) Discover(ss *ServerSession) *DiscoverResult {
+	var versions []string
+	if ss != nil {
+		ss.mu.Lock()
+		versions = ss.supportedVersions
+		ss.mu.Unlock()
+	}
+	if versions == nil {
+		versions = slices.Clone(s.protocolVersions)
+	} else {
+		versions = slices.Clone(versions)
+	}
+	res := &DiscoverResult{
+		SupportedVersions: versions,
+		Capabilities:      s.capabilities(),
+		Instructions:      s.opts.Instructions,
+	}
+	res.normalize()
+	return res
+}
+
 // discover is the server-side handler for the SEP-2575 "server/discover" RPC.
 //
 // It returns the protocol versions supported by the underlying transport,
@@ -1019,11 +1056,10 @@ func (s *Server) discover(ctx context.Context, req *ServerRequest[*DiscoverParam
 			state.NegotiatedProtocolVersion = init.ProtocolVersion
 		})
 	}
-	res := &DiscoverResult{
-		SupportedVersions: versions,
-		Capabilities:      s.capabilities(),
-		Instructions:      s.opts.Instructions,
-	}
+	res := s.Discover(req.Session)
+	// Discover fills the protocol cache default for host callers. Hand
+	// resolveCacheable the unset value so SetCacheable still sees "no opinion".
+	res.Cacheable = Cacheable{}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil
 }
