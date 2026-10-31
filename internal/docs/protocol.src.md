@@ -230,8 +230,10 @@ mismatch between `Mcp-Protocol-Version` and the body's
 `InputSchema` with `x-mcp-header: "<HeaderName>"`. When a client invokes that
 tool over HTTP, the SDK serializes the matching argument(s) as
 `Mcp-Param-<HeaderName>` request headers (using `=?base64?...?=` encoding for
-non-ASCII values). On the server, the headers are validated against the body
-and either accepted or rejected with `-32020`. Properties so annotated must
+non-ASCII values). The client takes the annotations from the tool's
+definition; if the session has not listed that tool yet, `CallTool` pages
+through `tools/list` to find it first. On the server, the headers are
+validated against the body and either accepted or rejected with `-32020`. Properties so annotated must
 be typed `string`, `integer`, or `boolean`; tools that fail validation at
 registration time are silently dropped from `tools/list`.
 

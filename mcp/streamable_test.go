@@ -2485,6 +2485,72 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	}
 }
 
+// TestStreamableParamHeadersWithoutListTools verifies that a tool call made
+// without a prior ListTools still carries the tool's Mcp-Param-* headers, so
+// the server accepts it (#1481). The server sets no ttlMs, so nothing depends
+// on list caching.
+func TestStreamableParamHeadersWithoutListTools(t *testing.T) {
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "get_weather",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region",
+					},
+				},
+			},
+		},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var capturedHeaders http.Header
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				capturedHeaders = req.Header.Clone()
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: customClient,
+	}, &ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &CallToolParams{
+		Name:      "get_weather",
+		Arguments: map[string]any{"region": "us-west1"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool without a prior ListTools: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool returned a tool error: %+v", res.Content)
+	}
+	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
+		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+}
+
 // TestStreamableFilterValidToolsIntegration verifies that AddTool rejects
 // tools with invalid x-mcp-header annotations at registration time, and
 // that valid tools are returned by ListTools.

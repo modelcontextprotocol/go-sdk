@@ -1387,13 +1387,40 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		params = &copy
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.lookupTool(params.Name); tool != nil {
+	tool := cs.lookupTool(params.Name)
+	if tool == nil && cs.sendsParamHeaders() {
+		tool = cs.findTool(ctx, params.Name)
+	}
+	if tool != nil {
 		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+}
+
+// sendsParamHeaders reports whether tool calls on this session carry
+// Mcp-Param-* headers, which the transport derives from the tool definition.
+func (cs *ClientSession) sendsParamHeaders() bool {
+	_, ok := cs.mcpConn.(*streamableClientConn)
+	return ok && cs.usesNewProtocol()
+}
+
+// findTool pages through tools/list until it finds the named tool, filling the
+// tools cache as it goes, so that a call made without a prior ListTools still
+// carries the tool's Mcp-Param-* headers. It returns nil if the tool is not
+// listed or listing fails; the call then goes out without those headers.
+func (cs *ClientSession) findTool(ctx context.Context, name string) *Tool {
+	for t, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			return nil
+		}
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
 }
 
 // SetLoggingLevel sets the minimum severity level for log messages sent by

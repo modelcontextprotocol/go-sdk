@@ -2140,6 +2140,15 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 						wantProtocolVersion: protocolVersion20251125,
 						optional:            true,
 					},
+					// On 2026-07-28, CallTool lists tools to find an uncached
+					// tool's definition for its Mcp-Param-* headers.
+					{"POST", "", methodListTools, ""}: {
+						header: header{"Content-Type": "application/json"},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return jsonBody(t, resp(r.ID.Raw().(int64), &ListToolsResult{Tools: []*Tool{}}, nil)), 0
+						},
+						optional: true,
+					},
 					{"POST", "", "tools/call", ""}: {
 						header: header{"Content-Type": "application/json"},
 						responseFunc: func(r *jsonrpc.Request) (string, int) {

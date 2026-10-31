@@ -1029,6 +1029,47 @@ func TestInMemory_E2E_DiscoverSuccess(t *testing.T) {
 	}
 }
 
+// TestCallToolWithoutListToolsNonHTTP verifies that CallTool does not list
+// tools to find a definition on a transport that sends no Mcp-Param-* headers.
+func TestCallToolWithoutListToolsNonHTTP(t *testing.T) {
+	ctx := context.Background()
+
+	server := NewServer(&Implementation{Name: "stdio-like-server", Version: "v1"}, nil)
+	server.AddTool(&Tool{Name: "greet", InputSchema: map[string]any{"type": "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "hi"}}}, nil
+		})
+	var lists atomic.Int32
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodListTools {
+				lists.Add(1)
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	client := NewClient(&Implementation{Name: "stdio-like-client", Version: "v1"}, nil)
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if _, err := cs.CallTool(ctx, &CallToolParams{Name: "greet"}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if n := lists.Load(); n != 0 {
+		t.Errorf("CallTool sent %d tools/list requests, want 0", n)
+	}
+}
+
 // TestInMemory_E2E_DiscoverFallback_NoOverlap verifies the fallback path
 // over an InMemory (STDIO-equivalent) transport: the client probes with
 // _meta.protocolVersion = 2026-07-28, but the server overrides discover via
