@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
@@ -2024,6 +2025,11 @@ type Tool struct {
 	// From the client, this field will hold the default JSON marshaling of the
 	// server's input schema (a map[string]any).
 	InputSchema any `json:"inputSchema"`
+	// LegacyInputSchema, if set, is used when the session speaks a legacy MCP
+	// protocol version (2025-11-25 and earlier). This lets a dual-era server keep
+	// a canonical modern schema for modern clients without silently serving a
+	// schema that the legacy protocol cannot represent.
+	LegacyInputSchema any `json:"-"`
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
 	Name string `json:"name"`
@@ -2042,6 +2048,9 @@ type Tool struct {
 	// From the client, this field will hold the default JSON marshaling of the
 	// server's output schema (a map[string]any).
 	OutputSchema any `json:"outputSchema,omitempty"`
+	// LegacyOutputSchema is the legacy-compatible schema used for older MCP
+	// sessions; otherwise OutputSchema is used for all versions.
+	LegacyOutputSchema any `json:"-"`
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
 	// If not provided, Annotations.Title should be used for display if present,
@@ -2049,6 +2058,84 @@ type Tool struct {
 	Title string `json:"title,omitempty"`
 	// Icons for the tool, if any.
 	Icons []Icon `json:"icons,omitempty"`
+}
+
+func (t *Tool) cloneForProtocolVersion(version string) (*Tool, error) {
+	if t == nil {
+		return nil, nil
+	}
+	clone := *t
+	input, err := cloneToolSchema(t.InputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q: cloning input schema: %w", t.Name, err)
+	}
+	clone.InputSchema = input
+	output, err := cloneToolSchema(t.OutputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q: cloning output schema: %w", t.Name, err)
+	}
+	clone.OutputSchema = output
+	if version < protocolVersion20260728 {
+		if t.LegacyInputSchema != nil {
+			legacyInput, err := cloneToolSchema(t.LegacyInputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q: cloning legacy input schema: %w", t.Name, err)
+			}
+			clone.InputSchema = legacyInput
+		} else if hasLegacySchemaConflict(t.InputSchema) {
+			return nil, fmt.Errorf("tool %q has a modern-only input schema for legacy protocol version %q; set LegacyInputSchema", t.Name, version)
+		}
+		if t.LegacyOutputSchema != nil {
+			legacyOutput, err := cloneToolSchema(t.LegacyOutputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q: cloning legacy output schema: %w", t.Name, err)
+			}
+			clone.OutputSchema = legacyOutput
+		}
+	}
+	return &clone, nil
+}
+
+func cloneToolSchema(schema any) (any, error) {
+	if schema == nil {
+		return nil, nil
+	}
+	switch s := schema.(type) {
+	case *jsonschema.Schema:
+		var clone *jsonschema.Schema
+		if err := remarshal(s, &clone); err != nil {
+			return nil, err
+		}
+		return clone, nil
+	case jsonschema.Schema:
+		var clone *jsonschema.Schema
+		if err := remarshal(s, &clone); err != nil {
+			return nil, err
+		}
+		return clone, nil
+	default:
+		var clone any
+		if err := remarshal(schema, &clone); err != nil {
+			return nil, err
+		}
+		return clone, nil
+	}
+}
+
+func hasLegacySchemaConflict(schema any) bool {
+	if schema == nil {
+		return false
+	}
+	var m map[string]any
+	if err := remarshal(schema, &m); err != nil {
+		return false
+	}
+	for _, k := range []string{"anyOf", "oneOf", "allOf"} {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // hintomitempty is a compatibility parameter that restores the pre-1.7.0

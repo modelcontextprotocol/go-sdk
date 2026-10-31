@@ -1051,14 +1051,45 @@ func (s *Server) listTools(ctx context.Context, req *ListToolsRequest) (*ListToo
 	if req.Params == nil {
 		req.Params = &ListToolsParams{}
 	}
-	res, err := paginateList(s.tools, s.opts.PageSize, req.Params, &ListToolsResult{}, func(res *ListToolsResult, tools []*serverTool) {
-		res.Tools = []*Tool{} // avoid JSON null
-		for _, t := range tools {
-			res.Tools = append(res.Tools, t.tool)
+	version := latestProtocolVersion
+	if ss, ok := req.GetSession().(*ServerSession); ok && ss != nil {
+		if ip := ss.InitializeParams(); ip != nil && ip.ProtocolVersion != "" {
+			version = ip.ProtocolVersion
 		}
-	})
-	if err != nil {
-		return nil, err
+	}
+
+	var seq iter.Seq[*serverTool]
+	if req.Params.cursorPtr() == nil || *req.Params.cursorPtr() == "" {
+		seq = s.tools.all()
+	} else {
+		pageToken, err := decodeCursor(*req.Params.cursorPtr())
+		if err != nil {
+			return nil, jsonrpc2.ErrInvalidParams
+		}
+		seq = s.tools.above(pageToken.LastUID)
+	}
+
+	res := &ListToolsResult{Tools: []*Tool{}}
+	count := 0
+	var last *serverTool
+	for tool := range seq {
+		count++
+		if count == s.opts.PageSize+1 {
+			break
+		}
+		last = tool
+		clone, err := tool.tool.cloneForProtocolVersion(version)
+		if err != nil {
+			return nil, err
+		}
+		res.Tools = append(res.Tools, clone)
+	}
+	if count > s.opts.PageSize {
+		nextCursor, err := encodeCursor(s.tools.uniqueID(last))
+		if err != nil {
+			return nil, err
+		}
+		res.NextCursor = nextCursor
 	}
 	s.resolveCacheable(ctx, req, &res.Cacheable)
 	return res, nil

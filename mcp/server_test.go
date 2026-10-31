@@ -1462,6 +1462,93 @@ func newProtocolParams(fields map[string]any) map[string]any {
 	return params
 }
 
+func TestServerListTools_LegacySchemaProjection(t *testing.T) {
+	ctx := context.Background()
+	legacyTool := &Tool{
+		Name:        "dual",
+		Description: "supports both eras",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": "string"},
+			},
+			"anyOf": []any{map[string]any{"properties": map[string]any{"other": map[string]any{"type": "number"}}}},
+		},
+		LegacyInputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	t.Run("legacy clients see legacy schema", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		server.AddTool(legacyTool, nil)
+
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		res, err := cs.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatalf("ListTools() failed: %v", err)
+		}
+		if len(res.Tools) != 1 {
+			t.Fatalf("ListTools() returned %d tools, want 1", len(res.Tools))
+		}
+		if diff := cmp.Diff(legacyTool.LegacyInputSchema, res.Tools[0].InputSchema); diff != "" {
+			t.Fatalf("legacy input schema mismatch (-want +got):\n%s", diff)
+		}
+		if _, ok := legacyTool.InputSchema.(map[string]any)["anyOf"]; !ok {
+			t.Fatal("server tool was mutated; modern anyOf schema was lost")
+		}
+	})
+
+	t.Run("legacy clients reject modern-only input schemas without a legacy representation", func(t *testing.T) {
+		server := NewServer(testImpl, nil)
+		server.AddTool(&Tool{
+			Name: "modern-only",
+			InputSchema: map[string]any{
+				"type":  "object",
+				"anyOf": []any{map[string]any{"properties": map[string]any{"value": map[string]any{"type": "string"}}}},
+			},
+		}, nil)
+
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ss.Close()
+
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cs.Close()
+
+		_, err = cs.ListTools(ctx, nil)
+		if err == nil {
+			t.Fatal("ListTools() succeeded for legacy client with incompatible schema, want error")
+		}
+		if !strings.Contains(err.Error(), "LegacyInputSchema") {
+			t.Fatalf("ListTools() error = %q, want a LegacyInputSchema hint", err)
+		}
+	})
+}
+
 func TestServerSessionHandle_SetsResultTypeOnNewProtocol(t *testing.T) {
 	server := NewServer(testImpl, &ServerOptions{
 		CompletionHandler: func(context.Context, *CompleteRequest) (*CompleteResult, error) {
