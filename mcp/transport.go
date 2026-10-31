@@ -18,6 +18,7 @@ import (
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -27,6 +28,13 @@ import (
 // abandoned) must not be able to block the caller's return path or
 // re-trigger expensive recovery on its behalf. See issue #882.
 const notifyCancellationTimeout = 5 * time.Second
+
+// blockingcancelnotify, when set to "1" via MCPGODEBUG, restores the previous
+// behavior of blocking the caller's return on delivery of the best-effort
+// notifications/cancelled message (up to notifyCancellationTimeout). By
+// default, the call is retired immediately and the notification is sent
+// asynchronously so the caller returns as soon as its context is cancelled.
+var blockingcancelnotify = mcpgodebug.Value("blockingcancelnotify")
 
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
@@ -94,8 +102,8 @@ type Connection interface {
 type clientConnection interface {
 	Connection
 
-	// sessionUpdated is called whenever the client session state changes.
-	sessionUpdated(clientSessionState)
+	// clientSessionUpdated is called whenever the client session state changes.
+	clientSessionUpdated(clientSessionState)
 }
 
 // A serverConnection is a Connection that is specific to the MCP server.
@@ -106,16 +114,27 @@ type clientConnection interface {
 // TODO: should this interface be exported?
 type serverConnection interface {
 	Connection
-	sessionUpdated(ServerSessionState)
+
+	// serverSessionUpdated is called whenever the server session state changes.
+	serverSessionUpdated(ServerSessionState)
 }
+
+// DefaultMaxLineLength is the default maximum number of bytes buffered while
+// decoding a single inbound JSON-RPC frame.
+const DefaultMaxLineLength = 16 * 1024 * 1024
 
 // A StdioTransport is a [Transport] that communicates over stdin/stdout using
 // newline-delimited JSON.
-type StdioTransport struct{}
+type StdioTransport struct {
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
+}
 
 // Connect implements the [Transport] interface.
-func (*StdioTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{os.Stdin, nopCloserWriter{os.Stdout}}), nil
+func (t *StdioTransport) Connect(context.Context) (Connection, error) {
+	return newIOConnLimited(rwc{os.Stdin, nopCloserWriter{os.Stdout}}, t.MaxLineLength), nil
 }
 
 // nopCloserWriter is an io.WriteCloser with a trivial Close method.
@@ -130,11 +149,15 @@ func (nopCloserWriter) Close() error { return nil }
 type IOTransport struct {
 	Reader io.ReadCloser
 	Writer io.WriteCloser
+	// MaxLineLength bounds the number of bytes that may be buffered while
+	// decoding a single inbound JSON-RPC frame. A value of 0 selects [DefaultMaxLineLength],
+	// a negative value disables the cap.
+	MaxLineLength int
 }
 
 // Connect implements the [Transport] interface.
 func (t *IOTransport) Connect(context.Context) (Connection, error) {
-	return newIOConn(rwc{t.Reader, t.Writer}), nil
+	return newIOConnLimited(rwc{t.Reader, t.Writer}, t.MaxLineLength), nil
 }
 
 // An InMemoryTransport is a [Transport] that communicates over an in-memory
@@ -184,7 +207,7 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 	reader, writer := jsonrpc2.Reader(mcpConn), jsonrpc2.Writer(mcpConn)
 	var (
 		h         H
-		preempter canceller
+		preempter = canceller{logger: logger}
 	)
 	bind := func(conn *jsonrpc2.Connection) jsonrpc2.Handler {
 		h = b.bind(mcpConn, conn, s, onClose)
@@ -210,6 +233,9 @@ func connect[H handler, State any](ctx context.Context, t Transport, b binder[H,
 		OnInternalError: func(err error) {
 			logger.Error("jsonrpc2 internal error", "error", err)
 		},
+		OnResponseWriteError: func(req *jsonrpc2.Request, err error) {
+			logger.Warn("failed to write response", "method", req.Method, "id", req.ID.Raw(), "error", err)
+		},
 		PropagateCancellation: propagateCancellation,
 	})
 	assert(preempter.conn != nil, "unbound preempter")
@@ -227,44 +253,52 @@ type cancellationPropagator interface {
 }
 
 // A canceller is a jsonrpc2.Preempter that cancels in-flight requests on MCP
-// cancelled notifications.
+// cancelled notifications. A connection that implements
+// [jsonrpc2.ResponseDropper] can then drop the cancelled request's response,
+// as the spec requires.
 type canceller struct {
-	conn *jsonrpc2.Connection
+	conn   *jsonrpc2.Connection
+	logger *slog.Logger
 }
 
 // Preempt implements [jsonrpc2.Preempter].
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
+		// UseNumber keeps a numeric requestId exact, as in jsonrpc2.DecodeMessage.
+		if err := internaljson.UnmarshalUseNumber(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)
 		if err != nil {
 			return nil, err
 		}
-		go c.conn.Cancel(id)
+		// The spec says implementations should log cancellation reasons, and
+		// the handler is the one place that can act on one, so the reason
+		// travels as the cause of the request's context rather than being
+		// dropped here.
+		c.logger.Debug("request cancelled by the peer", "id", id.Raw(), "reason", params.Reason)
+		c.conn.CancelFromPeer(id, &peerCancelledError{reason: params.Reason})
 	}
 	return nil, jsonrpc2.ErrNotHandled
 }
 
-// callSubscriptionsListen issues a "subscriptions/listen" call (SEP-2575)
-// without awaiting its JSON-RPC response. The call's logical lifetime is the
-// stream of notifications that follow on the same channel — the empty
-// response, if ever delivered, only marks subscription teardown — so the
-// caller has nothing useful to block on.
-//
-// Cancellation is driven by ctx: when it is cancelled, a background goroutine
-// sends a "notifications/cancelled" notification referencing the listen's
-// request ID and retires the call from the connection's outgoing-calls map.
-func callSubscriptionsListen(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params) {
-	call := conn.Call(ctx, method, params)
-
-	go func() {
-		<-ctx.Done()
-		_ = cancelCall(ctx, conn, call)
-	}()
+// A peerCancelledError is the cause a request's context carries once the peer
+// has sent a cancelled notification for it: [context.Cause] returns it to the
+// handler with the reason the peer gave, and it unwraps to [context.Canceled]
+// so that [errors.Is] keeps classifying the cancellation as one.
+type peerCancelledError struct {
+	reason string
 }
+
+func (e *peerCancelledError) Error() string {
+	if e.reason == "" {
+		return "request cancelled by the peer"
+	}
+	return "request cancelled by the peer: " + e.reason
+}
+
+func (e *peerCancelledError) Unwrap() error { return context.Canceled }
 
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
@@ -273,15 +307,67 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
-	case errors.Is(err, jsonrpc2.ErrClientClosing), errors.Is(err, jsonrpc2.ErrServerClosing):
-		return fmt.Errorf("%w: calling %q: %v", ErrConnectionClosed, method, err)
+	case err == nil:
+		// The response arrived and decoded. It is returned even if ctx has
+		// been cancelled in the meantime: the request is complete, so there
+		// is nothing to cancel, and the spec permits notifications/cancelled
+		// only for requests believed to still be in progress.
+		return nil
+	case errors.Is(err, jsonrpc2.ErrConnClosing):
+		if cause := withoutClosingErrors(err); cause != nil {
+			return fmt.Errorf("%w: calling %q: %w", ErrConnectionClosed, method, cause)
+		}
+		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
-		err := cancelCall(ctx, conn, call)
-		return errors.Join(ctx.Err(), err)
+		// The notifications/cancelled message is best-effort. Retire the call
+		// immediately (so an unresponsive peer cannot delay the eager
+		// retirement that cancelCall's docstring promises) and send the
+		// notification off the caller's return path so a slow or unresponsive
+		// peer cannot delay the caller past its own deadline. See issue #1150.
+		//
+		// Setting MCPGODEBUG=blockingcancelnotify=1 restores the previous
+		// behavior of waiting synchronously for delivery inside cancelCall.
+		if blockingcancelnotify == "1" {
+			err := cancelCall(ctx, conn, call)
+			return errors.Join(ctx.Err(), err)
+		}
+		conn.Retire(call, ctx.Err())
+		go func() {
+			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
+			defer stop()
+			_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+				Reason:    ctx.Err().Error(),
+				RequestID: call.ID().Raw(),
+			})
+		}()
+		return ctx.Err()
 	case err != nil:
 		return fmt.Errorf("calling %q: %w", method, err)
 	}
 	return nil
+}
+
+// withoutClosingErrors returns err with jsonrpc2.ErrConnClosing removed from
+// its tree, or nil if nothing else is left. That error is internal: wrapping it
+// would expose its code.
+func withoutClosingErrors(err error) error {
+	if !errors.Is(err, jsonrpc2.ErrConnClosing) {
+		return err
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() []error }:
+		var causes []error
+		for _, child := range err.Unwrap() {
+			if cause := withoutClosingErrors(child); cause != nil {
+				causes = append(causes, cause)
+			}
+		}
+		return errors.Join(causes...)
+	case interface{ Unwrap() error }:
+		return withoutClosingErrors(err.Unwrap())
+	default:
+		return nil
+	}
 }
 
 // cancelCall sends a "notifications/cancelled" notification for call and eagerly
@@ -374,8 +460,47 @@ func (s *loggingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	return err
 }
 
+// DropResponse implements [jsonrpc2.ResponseDropper] by forwarding to the
+// delegate: the connection asks its writer for the interface, so a wrapper
+// without it would keep the delegate from learning that a call was cancelled.
+func (s *loggingConn) DropResponse(id jsonrpc.ID) {
+	if dropper, ok := s.delegate.(jsonrpc2.ResponseDropper); ok {
+		dropper.DropResponse(id)
+	}
+}
+
 func (s *loggingConn) Close() error {
 	return s.delegate.Close()
+}
+
+// The methods below forward the optional connection interfaces to the
+// delegate. Client and server sessions look these up with a type assertion on
+// the connection, so without them wrapping a transport in a LoggingTransport
+// would silently change its behavior.
+var (
+	_ clientConnection         = (*loggingConn)(nil)
+	_ serverConnection         = (*loggingConn)(nil)
+	_ cancellationPropagator   = (*loggingConn)(nil)
+	_ jsonrpc2.ResponseDropper = (*loggingConn)(nil)
+)
+
+func (s *loggingConn) clientSessionUpdated(state clientSessionState) {
+	if c, ok := s.delegate.(clientConnection); ok {
+		c.clientSessionUpdated(state)
+	}
+}
+
+// serverSessionUpdated forwards to the delegate, whose behavior may depend on
+// the negotiated protocol version (see [ioConn.DropResponse]).
+func (s *loggingConn) serverSessionUpdated(state ServerSessionState) {
+	if c, ok := s.delegate.(serverConnection); ok {
+		c.serverSessionUpdated(state)
+	}
+}
+
+func (s *loggingConn) propagateCancellation() bool {
+	cp, ok := s.delegate.(cancellationPropagator)
+	return ok && cp.propagateCancellation()
 }
 
 // A rwc binds an io.ReadCloser and io.WriteCloser together to create an
@@ -415,8 +540,12 @@ type ioConn struct {
 	// protocolVersion is the negotiated version of the protocol,
 	// set during session initialization.
 	// Since writes may be concurrent to reads, we need to guard this with a mutex.
+	//
+	// dropped holds the incoming calls the peer cancelled, whose responses
+	// Write discards (see [ioConn.DropResponse]). It is guarded by sessionMu too.
 	sessionMu       sync.Mutex
 	protocolVersion string
+	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
 	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
 	rwc     io.ReadWriteCloser // the underlying stream
@@ -448,6 +577,17 @@ type msgOrErr struct {
 }
 
 func newIOConn(rwc io.ReadWriteCloser) *ioConn {
+	return newIOConnLimited(rwc, DefaultMaxLineLength)
+}
+
+// newIOConnLimited builds an [ioConn] over rwc that bounds the number of bytes
+// buffered while decoding a single inbound JSON-RPC frame to maxLineLength.
+// maxLineLength == 0 selects [DefaultMaxLineLength], a negative value means no cap.
+func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
+	limit := maxLineLength
+	if limit == 0 {
+		limit = DefaultMaxLineLength
+	}
 	var (
 		incoming = make(chan msgOrErr)
 		closed   = make(chan struct{})
@@ -459,7 +599,15 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	// but that is unavoidable since AFAIK there is no (easy and portable) way to
 	// guarantee that reads of stdin are unblocked when closed.
 	go func() {
-		dec := json.NewDecoder(rwc)
+		var (
+			reader  io.Reader = rwc
+			limiter *frameLimitReader
+		)
+		if limit > 0 {
+			limiter = &frameLimitReader{r: rwc, limit: limit}
+			reader = limiter
+		}
+		dec := json.NewDecoder(reader)
 		for {
 			var raw json.RawMessage
 			err := dec.Decode(&raw)
@@ -485,6 +633,9 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 			if err != nil {
 				return
 			}
+			if limiter != nil {
+				limiter.resetFrame()
+			}
 		}
 	}()
 	return &ioConn{
@@ -494,20 +645,42 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 	}
 }
 
+// errFrameTooLarge means that a single inbound JSON-RPC frame exceeded the configured byte
+// limit before the value was completely received.
+var errFrameTooLarge = errors.New("inbound JSON-RPC frame exceeded the configured maximum line length")
+
+// frameLimitReader bounds the number of bytes [json.Decoder] may buffer while
+// decoding a single JSON value. Read returns [errFrameTooLarge] once the budget is exhausted.
+type frameLimitReader struct {
+	r     io.Reader
+	limit int
+	count int
+}
+
+func (r *frameLimitReader) Read(p []byte) (int, error) {
+	if r.count >= r.limit {
+		return 0, errFrameTooLarge
+	}
+	if len(p) > r.limit-r.count {
+		p = p[:r.limit-r.count]
+	}
+	n, err := r.r.Read(p)
+	r.count += n
+	return n, err
+}
+
+func (r *frameLimitReader) resetFrame() { r.count = 0 }
+
 func (c *ioConn) SessionID() string { return "" }
 
-func (c *ioConn) sessionUpdated(state ServerSessionState) {
-	protocolVersion := ""
-	if state.InitializeParams != nil {
-		protocolVersion = state.InitializeParams.ProtocolVersion
-	}
+func (c *ioConn) serverSessionUpdated(state ServerSessionState) {
+	protocolVersion := state.NegotiatedProtocolVersion
 	if protocolVersion == "" {
 		// 2025-03-26 is used, because it's the last spec version
 		// where specifying the protocol version in the HTTP header
 		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	protocolVersion = negotiatedVersion(protocolVersion)
 	c.sessionMu.Lock()
 	c.protocolVersion = protocolVersion
 	c.sessionMu.Unlock()
@@ -532,6 +705,31 @@ func (t *ioConn) addBatch(batch *msgBatch) error {
 		t.batches[id] = batch
 	}
 	return nil
+}
+
+// DropResponse implements [jsonrpc2.ResponseDropper]: on a session using
+// protocol version 2026-07-28 or later, Write discards the response to the
+// cancelled call. Sessions on earlier versions keep answering it.
+func (t *ioConn) DropResponse(id jsonrpc.ID) {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	if t.protocolVersion < protocolVersion20260728 {
+		return
+	}
+	if t.dropped == nil {
+		t.dropped = make(map[jsonrpc2.ID]bool)
+	}
+	t.dropped[id] = true
+}
+
+// takeDropped reports whether the response to the call with the given ID is
+// to be discarded (see [ioConn.DropResponse]), and forgets the call.
+func (t *ioConn) takeDropped(id jsonrpc.ID) bool {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	dropped := t.dropped[id]
+	delete(t.dropped, id)
+	return dropped
 }
 
 // updateBatch records a response in the message batch tracking the
@@ -624,7 +822,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if batch {
 		var respBatch *msgBatch // track incoming requests in the batch
 		for _, msg := range msgs {
-			if req, ok := msg.(*jsonrpc.Request); ok {
+			if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
 				if respBatch == nil {
 					respBatch = &msgBatch{
 						unresolved: make(map[jsonrpc2.ID]int),
@@ -686,6 +884,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	// want to collect it into a batch before sending, if we're configured to use
 	// outgoing batches.
 	if resp, ok := msg.(*jsonrpc.Response); ok {
+		if t.takeDropped(resp.ID) {
+			return nil
+		}
 		if batch, ok := t.updateBatch(resp); ok {
 			if len(batch) > 0 {
 				data, err := marshalMessages(batch)

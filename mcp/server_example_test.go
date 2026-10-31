@@ -88,6 +88,77 @@ func Example_prompts() {
 
 // !-prompts
 
+// !+promptcontent
+
+func Example_promptContent() {
+	ctx := context.Background()
+
+	const styleGuide = "- Prefer clarity over cleverness.\n"
+	screenshotPNG := []byte("\x89PNG\r\n\x1a\n")
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+
+	s.AddResource(&mcp.Resource{URI: "doc://style-guide", MIMEType: "text/markdown"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "doc://style-guide",
+					MIMEType: "text/markdown",
+					Text:     styleGuide,
+				}},
+			}, nil
+		})
+
+	s.AddPrompt(&mcp.Prompt{Name: "review_screenshot"},
+		func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{
+				Messages: []*mcp.PromptMessage{
+					{Role: "user", Content: &mcp.EmbeddedResource{
+						Resource: &mcp.ResourceContents{
+							URI:      "doc://style-guide",
+							MIMEType: "text/markdown",
+							Text:     styleGuide,
+						},
+					}},
+					{Role: "user", Content: &mcp.ImageContent{Data: screenshotPNG, MIMEType: "image/png"}},
+					{Role: "user", Content: &mcp.TextContent{Text: "Review the screenshot against the style guide."}},
+				},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: "review_screenshot"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, msg := range res.Messages {
+		switch content := msg.Content.(type) {
+		case *mcp.TextContent:
+			fmt.Println(msg.Role, "text:", content.Text)
+		case *mcp.ImageContent:
+			fmt.Printf("%s image: %s, %d bytes\n", msg.Role, content.MIMEType, len(content.Data))
+		case *mcp.EmbeddedResource:
+			fmt.Printf("%s embedded resource: %s (%s)\n", msg.Role, content.Resource.URI, content.Resource.MIMEType)
+		}
+	}
+	// Output:
+	// user embedded resource: doc://style-guide (text/markdown)
+	// user image: image/png, 8 bytes
+	// user text: Review the screenshot against the style guide.
+}
+
+// !-promptcontent
+
 // !+logging
 
 func Example_logging() {
@@ -221,6 +292,186 @@ func Example_resources() {
 }
 
 // !-resources
+
+// !+listchanged
+
+func Example_listChanged() {
+	ctx := context.Background()
+
+	changed := make(chan string, 3)
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			changed <- "tools"
+		},
+		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
+			changed <- "prompts"
+		},
+		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
+			changed <- "resources"
+		},
+	})
+
+	// Nothing is registered before Connect, so the capabilities that carry these
+	// notifications have to be declared explicitly.
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		HasTools:     true,
+		HasPrompts:   true,
+		HasResources: true,
+	})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	mcp.AddTool(s, &mcp.Tool{Name: "greet"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	s.AddPrompt(&mcp.Prompt{Name: "review"}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{}, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	s.AddResource(&mcp.Resource{URI: "file:///a"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	fmt.Println("changed:", <-changed)
+
+	// Removing a feature notifies the client just as adding one does.
+	s.RemoveTools("greet")
+	fmt.Println("changed:", <-changed)
+
+	// Output:
+	// changed: tools
+	// changed: prompts
+	// changed: resources
+	// changed: tools
+}
+
+// !-listchanged
+
+// !+subscribe
+
+func Example_resourceSubscription() {
+	ctx := context.Background()
+
+	config := "theme=light\n"
+
+	updated := make(chan string, 1)
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, &mcp.ClientOptions{
+		// The notification carries only the URI, so read the resource again to
+		// see what it now holds.
+		ResourceUpdatedHandler: func(context.Context, *mcp.ResourceUpdatedNotificationRequest) {
+			updated <- "config://app"
+		},
+	})
+
+	subscribed := make(chan string, 2)
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, &mcp.ServerOptions{
+		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {
+			subscribed <- "subscribed to " + req.Params.URI
+			return nil
+		},
+		UnsubscribeHandler: func(_ context.Context, req *mcp.UnsubscribeRequest) error {
+			subscribed <- "unsubscribed from " + req.Params.URI
+			return nil
+		},
+	})
+	s.AddResource(&mcp.Resource{URI: "config://app"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{URI: "config://app", Text: config}},
+			}, nil
+		})
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	if err := cs.Subscribe(ctx, &mcp.SubscribeParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(<-subscribed)
+
+	config = "theme=dark\n"
+	if err := s.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	uri := <-updated
+
+	res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Print("re-read: ", res.Contents[0].Text)
+
+	if err := cs.Unsubscribe(ctx, &mcp.UnsubscribeParams{URI: "config://app"}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(<-subscribed)
+
+	// Output:
+	// subscribed to config://app
+	// re-read: theme=dark
+	// unsubscribed from config://app
+}
+
+// !-subscribe
+
+// !+binaryresource
+
+func Example_binaryResource() {
+	ctx := context.Background()
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
+	s.AddResource(&mcp.Resource{URI: "file:///logo.png", MIMEType: "image/png"},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      "file:///logo.png",
+					MIMEType: "image/png",
+					Blob:     []byte("\x89PNG\r\n\x1a\n"),
+				}},
+			}, nil
+		})
+
+	c := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v0.0.1"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		log.Fatal(err)
+	}
+	cs, err := c.Connect(ctx, t2, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cs.Close()
+
+	res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "file:///logo.png"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	contents := res.Contents[0]
+	fmt.Printf("%s: %d bytes of %s, text is %q\n",
+		contents.URI, len(contents.Blob), contents.MIMEType, contents.Text)
+
+	// Output:
+	// file:///logo.png: 8 bytes of image/png, text is ""
+}
+
+// !-binaryresource
 
 // !+mrtr
 

@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -40,6 +41,17 @@ import (
 // See the documentation for the mcpgodebug package for instructions how to enable it.
 // The option will be removed in a future version of the SDK.
 var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
+
+// nointernalerrorcode is a compatibility parameter that restores the previous
+// behavior of [handleReceive]. When unset (the default), an error returned by
+// a request handler that carries no JSON-RPC error code is sent with code
+// -32603 (Internal error) rather than the zero-value code 0, which tells the
+// peer nothing. The error's message is unchanged. See:
+// https://github.com/modelcontextprotocol/go-sdk/issues/1394.
+//
+// See the documentation for the mcpgodebug package for instructions how to enable it.
+// The option will be removed in a future version of the SDK.
+var nointernalerrorcode = mcpgodebug.Value("nointernalerrorcode")
 
 const (
 	// latestProtocolVersion is the latest protocol version that this version of
@@ -63,19 +75,35 @@ var supportedProtocolVersions = []string{
 	protocolVersion20241105,
 }
 
+// SupportedProtocolVersions returns the protocol versions supported by this
+// version of the SDK, newest first.
+//
+// Use it to discover the values accepted by
+// [ServerOptions.SupportedProtocolVersions]. The returned slice is a copy:
+// modifying it does not change what the SDK supports.
+func SupportedProtocolVersions() []string { return slices.Clone(supportedProtocolVersions) }
+
 // negotiatedVersion returns the effective protocol version to use, given a
-// client version.
-func negotiatedVersion(clientVersion string) string {
-	// In general, prefer to use the clientVersion, but if we don't support the
-	// client's version, use the latest version.
+// client version and the versions the server supports, newest first.
+func negotiatedVersion(clientVersion string, supported []string) string {
+	// In general, prefer to use the clientVersion, but if not supported
+	// by the server, use the latest version the server supports.
 	//
 	// Cap the supported versions at the legacy protocolVersion20251125, as this
 	// method is used by the initialize method which is deprecated in
 	// version protocolVersion20260728.
-	if slices.Contains(supportedProtocolVersions, clientVersion) && clientVersion < protocolVersion20260728 {
+	if slices.Contains(supported, clientVersion) && clientVersion < protocolVersion20260728 {
 		return clientVersion
 	}
-	return protocolVersion20251125
+	for _, v := range supported {
+		if v < protocolVersion20260728 {
+			return v
+		}
+	}
+	// A server that supports no version before protocolVersion20260728 has
+	// nothing to negotiate. [ServerSession.handle] rejects initialize on such
+	// a server with CodeUnsupportedProtocolVersion before it gets here.
+	return ""
 }
 
 // negotiateMutuallySupportedVersion returns a protocol version that is supported
@@ -132,17 +160,21 @@ func defaultSendingMethodHandler(ctx context.Context, method string, req Request
 	}
 	// Notifications don't have results.
 	if strings.HasPrefix(method, "notifications/") {
-		return nil, req.GetSession().getConn().Notify(ctx, method, params)
+		err := req.GetSession().getConn().Notify(ctx, method, params)
+		if errors.Is(err, jsonrpc2.ErrConnClosing) {
+			if cause := withoutClosingErrors(err); cause != nil {
+				err = fmt.Errorf("%w: %w", ErrConnectionClosed, cause)
+			} else {
+				err = ErrConnectionClosed
+			}
+		}
+		return nil, err
 	}
 	// Create the result to unmarshal into.
 	// The concrete type of the result is the return type of the receiving function.
 	res := info.newResult()
-	if method == methodSubscriptionsListen {
-		callSubscriptionsListen(ctx, req.GetSession().getConn(), method, params)
-	} else {
-		if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
-			return nil, err
-		}
+	if err := call(ctx, req.GetSession().getConn(), method, params, res); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
@@ -195,14 +227,33 @@ func handleReceive[S Session](ctx context.Context, session S, jreq *jsonrpc.Requ
 
 	mh := session.receivingMethodHandler()
 	re, _ := jreq.Extra.(*RequestExtra)
-	req := info.newRequest(session, params, re)
+	req := info.newRequest(session, params, re, jreq.ID)
 	// mh might be user code, so ensure that it returns the right values for the jsonrpc2 protocol.
 	res, err := mh(ctx, jreq.Method, req)
 	if err != nil {
-		return nil, err
+		return nil, withInternalErrorCode(err)
 	}
 	return res, nil
 }
+
+// withInternalErrorCode gives an error that carries no JSON-RPC error code the
+// code -32603 (Internal error), so that it does not reach the peer as code 0.
+// Errors that already carry a code are returned unchanged, as is
+// [jsonrpc2.ErrNotHandled], which the connection turns into "method not found".
+func withInternalErrorCode(err error) error {
+	var wireErr *jsonrpc.Error
+	if nointernalerrorcode == "1" || errors.As(err, &wireErr) || errors.Is(err, jsonrpc2.ErrNotHandled) {
+		return err
+	}
+	return &internalError{err}
+}
+
+// internalError reports err with the code of [jsonrpc2.ErrInternal]. Its
+// message is err's, and err stays in its chain for [errors.Is] and [errors.As].
+type internalError struct{ err error }
+
+func (e *internalError) Error() string   { return e.err.Error() }
+func (e *internalError) Unwrap() []error { return []error{e.err, jsonrpc2.ErrInternal} }
 
 // checkRequest checks the given request against the provided method info, to
 // ensure it is a valid MCP request.
@@ -242,7 +293,7 @@ type methodInfo struct {
 	// Unmarshal params from the wire into a Params struct.
 	// Used on the receive side.
 	unmarshalParams func(json.RawMessage) (Params, error)
-	newRequest      func(Session, Params, *RequestExtra) Request
+	newRequest      func(Session, Params, *RequestExtra, jsonrpc.ID) Request
 	// Run the code when a call to the method is received.
 	// Used on the receive side.
 	handleMethod MethodHandler
@@ -277,8 +328,8 @@ const (
 
 func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, _ *RequestExtra) Request {
-		r := &ClientRequest[P]{Session: s.(*ClientSession)}
+	mi.newRequest = func(s Session, p Params, _ *RequestExtra, id jsonrpc.ID) Request {
+		r := &ClientRequest[P]{Session: s.(*ClientSession), ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -292,8 +343,8 @@ func newClientMethodInfo[P paramsPtr[T], R Result, T any](d typedClientMethodHan
 
 func newServerMethodInfo[P paramsPtr[T], R Result, T any](d typedServerMethodHandler[P, R], flags methodFlags) methodInfo {
 	mi := newMethodInfo[P, R](flags)
-	mi.newRequest = func(s Session, p Params, re *RequestExtra) Request {
-		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re}
+	mi.newRequest = func(s Session, p Params, re *RequestExtra, id jsonrpc.ID) Request {
+		r := &ServerRequest[P]{Session: s.(*ServerSession), Extra: re, ID: id}
 		if p != nil {
 			r.Params = p.(P)
 		}
@@ -446,27 +497,39 @@ const (
 	codeUnsupportedMethod = -31001
 )
 
-// notifySessions calls Notify on all the sessions.
+// notifyTimeout bounds each session's notification send in notifySessions
+// and Server.notifySubscribedSessions.
+//
+// TODO: make this configurable.
+const notifyTimeout = 10 * time.Second
+
+// notifySessions calls Notify on all the sessions, concurrently and each
+// under its own deadline, so that one session whose write stalls (a peer that
+// has stopped reading) neither delays nor fails delivery to the others. It
+// returns once every session has been attempted.
 // Should be called on a copy of the peer sessions.
 // The logger must be non-nil.
 func notifySessions[S Session, P Params](sessions []S, method string, params P, logger *slog.Logger) {
 	if sessions == nil {
 		return
 	}
-	// Notify with the background context, so the messages are sent on the
-	// standalone stream.
-	// TODO: make this timeout configurable, or call handleNotify asynchronously.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// TODO: there's a potential spec violation here, when the feature list
 	// changes before the session (client or server) is initialized.
+	var wg sync.WaitGroup
 	for _, s := range sessions {
-		req := newRequest(s, params)
-		if err := handleNotify(ctx, method, req); err != nil {
-			logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Notify with the background context, so the messages are sent on
+			// the standalone stream.
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			if err := handleNotify(ctx, method, newRequest(s, params)); err != nil {
+				logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 func newRequest[S Session, P Params](s S, p P) Request {
@@ -533,21 +596,52 @@ type validatedMeta struct {
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
 // the >= 2026-07-28 protocol via the `_meta` field.
-// If the request has no _meta, or no protocolVersion in _meta, it returns a non-nil
-// validatedMeta with usesNewProtocol set to false, and a nil error.
-// If the request has a protocolVersion in _meta it validates the presence of
-// clientCapabilities in _meta. If it is missing or invalid, it returns nil and
-// a non-nil error. clientInfo is optional; if present but invalid, an error is
-// returned. Otherwise, it returns usesNewProtocol set to true and the populated
-// initializeParams.
+// If the request has no _meta, no protocolVersion in _meta, or a protocolVersion
+// naming a supported version that predates 2026-07-28, it returns a non-nil
+// validatedMeta with usesNewProtocol set to false, and a nil error: such a request
+// belongs to the initialize handshake.
+// If the protocolVersion names a version that is not supported at all, it returns
+// usesNewProtocol set to true with initializeParams carrying only that version, so
+// that the caller answers with [CodeUnsupportedProtocolVersion]. The rest of the
+// `_meta` triple is not validated in that case, since the revision defining it is
+// unknown.
+// Otherwise, it validates the presence of clientCapabilities in _meta. If it is
+// missing or invalid, it returns nil and a non-nil error. clientInfo is optional;
+// if present but invalid, an error is returned. Otherwise, it returns
+// usesNewProtocol set to true and the populated initializeParams.
+// Notifications always report usesNewProtocol false and never error.
 func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
+	// SEP-2575 defines the `_meta` triple for calls only: NotificationParams
+	// declares `_meta` optional with no protocolVersion, so a notification
+	// neither selects the new protocol nor is discarded for carrying an
+	// incomplete triple.
+	if !req.IsCall() {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
 	meta := extractRequestMeta(req.Params)
 	if meta == nil {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	protocolVersion, ok := meta[MetaKeyProtocolVersion].(string)
-	if !ok || protocolVersion < protocolVersion20260728 {
+	// An absent or empty value declares no version at all, which is also how the
+	// streamable handler reads `_meta.protocolVersion`.
+	if !ok || protocolVersion == "" {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	// Classify by membership rather than by ordering: a version the SDK does not
+	// know sorts arbitrarily against 2026-07-28, and one that sorts below it would
+	// be served as a legacy handshake instead of reaching the
+	// CodeUnsupportedProtocolVersion check in ServerSession.handle. The
+	// streamable handler already applies the same membership rule to the
+	// Mcp-Protocol-Version header.
+	supported := slices.Contains(supportedProtocolVersions, protocolVersion)
+	if supported && protocolVersion < protocolVersion20260728 {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	}
+	if !supported {
+		return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
+			ProtocolVersion: protocolVersion,
+		}}, nil
 	}
 	var clientInfo *Implementation
 	if _, present := meta[MetaKeyClientInfo]; present {
@@ -583,12 +677,18 @@ type Request interface {
 	GetParams() Params
 	// GetExtra returns the Extra field for ServerRequests, and nil for ClientRequests.
 	GetExtra() *RequestExtra
+	// GetID returns the JSON-RPC id of the message being handled, or the zero ID
+	// for a notification and for a request the SDK itself originates. Use
+	// [jsonrpc.ID.IsValid] to tell those apart and [jsonrpc.ID.Raw] to read the
+	// underlying string or int64.
+	GetID() jsonrpc.ID
 }
 
 // A ClientRequest is a request to a client.
 type ClientRequest[P Params] struct {
 	Session *ClientSession
 	Params  P
+	ID      jsonrpc.ID
 }
 
 // A ServerRequest is a request to a server.
@@ -596,6 +696,7 @@ type ServerRequest[P Params] struct {
 	Session *ServerSession
 	Params  P
 	Extra   *RequestExtra
+	ID      jsonrpc.ID
 }
 
 // RequestExtra is extra information included in requests, typically from
@@ -636,6 +737,33 @@ func (r *ServerRequest[P]) GetParams() Params { return r.Params }
 
 func (r *ClientRequest[P]) GetExtra() *RequestExtra { return nil }
 func (r *ServerRequest[P]) GetExtra() *RequestExtra { return r.Extra }
+
+func (r *ClientRequest[P]) GetID() jsonrpc.ID { return r.ID }
+func (r *ServerRequest[P]) GetID() jsonrpc.ID { return r.ID }
+
+// HasParams reports whether req carries params.
+//
+// The "params" member of a message may be omitted for several methods, among
+// them the list methods, ping and notifications/initialized. For such a request
+// [Request.GetParams] returns a non-nil [Params] holding a nil pointer, so
+// comparing its result against nil reports that params are present, while
+// calling a method on that result panics. Middleware that inspects params must
+// ask this first:
+//
+//	if mcp.HasParams(req) {
+//		log.Println(method, req.GetParams().GetMeta())
+//	}
+func HasParams(req Request) bool {
+	params := req.GetParams()
+	if params == nil {
+		return false
+	}
+	// isNil cannot answer this for every value: a params type embedding
+	// ParamsBase promotes isNil through a field selector, which dereferences
+	// the nil outer pointer before the method body runs.
+	v := reflect.ValueOf(params)
+	return v.Kind() != reflect.Pointer || !v.IsNil()
+}
 
 // ProtocolVersion returns the protocol version negotiated for this request.
 //
@@ -698,8 +826,7 @@ func (r *ServerRequest[P]) ClientCapabilities() *ClientCapabilities {
 // getRequestMeta returns the raw `_meta` map from the request's params, or
 // nil if the params are absent.
 func getRequestMeta[P Params](r *ServerRequest[P]) map[string]any {
-	// In practice P is a pointer type implementing Params.
-	if any(r.Params) == nil || r.Params.isNil() {
+	if !HasParams(r) {
 		return nil
 	}
 	return r.Params.GetMeta()
@@ -781,6 +908,9 @@ type Result interface {
 	// isResult discourages implementation of Result outside of this package.
 	isResult()
 
+	// isNil returns true if the underlying value is nil.
+	isNil() bool
+
 	// GetMeta returns metadata from a value.
 	GetMeta() map[string]any
 	// SetMeta sets the metadata on a value.
@@ -799,13 +929,15 @@ type ResultBase struct {
 	Meta `json:"_meta,omitempty"`
 }
 
-func (*ResultBase) isResult() {}
+func (*ResultBase) isResult()     {}
+func (x *ResultBase) isNil() bool { return x == nil }
 
 // emptyResult is returned by methods that have no result, like ping.
 // Those methods cannot return nil, because jsonrpc2 cannot handle nils.
 type emptyResult struct{}
 
 func (*emptyResult) isResult()               {}
+func (x *emptyResult) isNil() bool           { return x == nil }
 func (*emptyResult) GetMeta() map[string]any { panic("should never be called") }
 func (*emptyResult) SetMeta(map[string]any)  { panic("should never be called") }
 
@@ -859,9 +991,12 @@ func startKeepalive(session keepaliveSession, interval time.Duration, failureThr
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				pingCtx, pingCancel := context.WithTimeout(context.Background(), interval/2)
+				pingCtx, pingCancel := context.WithTimeout(ctx, interval/2)
 				err := session.Ping(pingCtx, nil)
 				pingCancel()
+				if ctx.Err() != nil {
+					return
+				}
 				if err == nil {
 					consecutiveFailures = 0
 					continue
@@ -882,7 +1017,7 @@ func startKeepalive(session keepaliveSession, interval time.Duration, failureThr
 				}
 				// Threshold reached; log before closing the session so the
 				// failure is observable to operators. See #218.
-				logger.Error("keepalive ping failed; closing session",
+				logger.Warn("keepalive ping failed; closing session",
 					"error", err,
 					"consecutiveFailures", consecutiveFailures,
 					"failureThreshold", failureThreshold)

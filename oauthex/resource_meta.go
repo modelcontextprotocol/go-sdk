@@ -110,6 +110,7 @@ type Challenge struct {
 	Scheme string
 	// Params is a map of authentication parameters.
 	// Keys are case-insensitive. Parsed keys are always lower-case.
+	// A challenge that carries a token68 instead of parameters has no Params.
 	Params map[string]string
 }
 
@@ -178,33 +179,38 @@ func ParseWWWAuthenticate(headers []string) ([]Challenge, error) {
 func splitChallenges(header string) ([]string, error) {
 	var challenges []string
 	inQuotes := false
+	escaped := false
 	start := 0
+	// Every comma in a run of commas and blanks sees the same text after the
+	// run, so the lookahead is computed once per run. Rescanning per comma
+	// makes a long header take quadratic time.
+	runEnd := 0
+	runIsParam := false
 	for i, r := range header {
-		if r == '"' {
-			if i > 0 && header[i-1] != '\\' {
-				inQuotes = !inQuotes
-			} else if i == 0 {
+		if escaped {
+			// The previous backslash began a quoted-pair, so this character is
+			// literal, even if it is a quote or another backslash.
+			escaped = false
+		} else if r == '\\' && inQuotes {
+			escaped = true
+		} else if r == '"' {
+			if i == 0 {
 				// A challenge begins with an auth-scheme, which is a token, which cannot contain
 				// a quote.
 				return nil, errors.New(`challenge begins with '"'`)
 			}
+			inQuotes = !inQuotes
 		} else if r == ',' && !inQuotes {
 			// This is a potential challenge separator.
 			// A new challenge does not start with `key=value`.
 			// We check if the part after the comma looks like a parameter.
-			lookahead := strings.TrimSpace(header[i+1:])
-			eqPos := strings.Index(lookahead, "=")
-
-			isParam := false
-			if eqPos > 0 {
-				// Check if the part before '=' is a single token (no spaces).
-				token := lookahead[:eqPos]
-				if strings.IndexFunc(token, unicode.IsSpace) == -1 {
-					isParam = true
-				}
+			if i >= runEnd {
+				lookahead := trimEmptyListElements(header[i+1:])
+				runEnd = len(header) - len(lookahead)
+				runIsParam = startsWithAuthParam(lookahead)
 			}
 
-			if !isParam {
+			if !runIsParam {
 				// The part after the comma does not look like a parameter,
 				// so this comma separates challenges.
 				challenges = append(challenges, header[start:i])
@@ -215,6 +221,26 @@ func splitChallenges(header string) ([]string, error) {
 	// Add the last (or only) challenge to the list.
 	challenges = append(challenges, header[start:])
 	return challenges, nil
+}
+
+// startsWithAuthParam reports whether s begins with a token followed by '='.
+// Whitespace between the token and '=' is allowed (BWS, RFC 9110 section 11.2).
+// It reads no further than that token, so its cost does not depend on the
+// length of the rest of the header.
+func startsWithAuthParam(s string) bool {
+	for i, r := range s {
+		switch {
+		case r == '=':
+			return i > 0
+		case r == ',':
+			return false
+		case r == ' ' || r == '\t':
+			return strings.HasPrefix(strings.TrimLeft(s[i:], " \t"), "=")
+		case unicode.IsSpace(r):
+			return false
+		}
+	}
+	return false
 }
 
 // parseSingleChallenge parses a string containing exactly one challenge.
@@ -230,8 +256,14 @@ func parseSingleChallenge(s string) (Challenge, error) {
 	if !found {
 		return c, nil
 	}
+	if isToken68(strings.TrimSpace(paramsStr)) {
+		// The challenge carries a token68 (for example, Negotiate with a
+		// SPNEGO token) rather than auth-params. It has no parameters.
+		return c, nil
+	}
 
 	params := make(map[string]string)
+	paramsStr = trimEmptyListElements(paramsStr)
 
 	// Parse the key-value parameters.
 	for paramsStr != "" {
@@ -282,9 +314,11 @@ func parseSingleChallenge(s string) (Challenge, error) {
 				value = strings.TrimSpace(paramsStr[:commaPos])
 				paramsStr = strings.TrimSpace(paramsStr[commaPos:]) // Keep comma for next check
 			}
-		}
-		if value == "" {
-			return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			// A token is one or more characters. A quoted string may be empty
+			// (RFC 9110, section 5.6.4), so only an unquoted value is checked here.
+			if value == "" {
+				return Challenge{}, fmt.Errorf("no value for auth param %q", key)
+			}
 		}
 
 		// Per RFC 9110, parameter keys are case-insensitive.
@@ -292,7 +326,7 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 		// If there is a comma, consume it and continue to the next parameter.
 		if strings.HasPrefix(paramsStr, ",") {
-			paramsStr = strings.TrimSpace(paramsStr[1:])
+			paramsStr = trimEmptyListElements(paramsStr[1:])
 		} else if paramsStr != "" {
 			// If there's content but it's not a new parameter, the format is wrong.
 			return Challenge{}, fmt.Errorf("malformed auth parameter: expected comma after value, but got %q", paramsStr)
@@ -301,4 +335,32 @@ func parseSingleChallenge(s string) (Challenge, error) {
 
 	// Per RFC 9110, the scheme is case-insensitive.
 	return Challenge{Scheme: strings.ToLower(scheme), Params: params}, nil
+}
+
+// trimEmptyListElements removes leading whitespace and any empty list
+// elements, such as the extra comma in "a=1,, b=2". RFC 9110, section 5.6.1.2,
+// requires recipients to accept them.
+func trimEmptyListElements(s string) string {
+	return strings.TrimLeftFunc(s, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
+// isToken68 reports whether s is a token68 (RFC 9110, section 11.2):
+//
+//	token68 = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="
+func isToken68(s string) bool {
+	body := strings.TrimRight(s, "=")
+	if body == "" {
+		return false
+	}
+	for _, r := range body {
+		switch {
+		case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
+		case strings.ContainsRune("-._~+/", r):
+		default:
+			return false
+		}
+	}
+	return true
 }

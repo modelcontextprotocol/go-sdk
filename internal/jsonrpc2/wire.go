@@ -30,10 +30,11 @@ var (
 
 	// ErrUnknown should be used for all non coded errors.
 	ErrUnknown = NewError(-32001, "unknown error")
-	// ErrServerClosing is returned for calls that arrive while the server is closing.
-	ErrServerClosing = NewError(-32004, "server is closing")
-	// ErrClientClosing is a dummy error returned for calls initiated while the client is closing.
-	ErrClientClosing = NewError(-32003, "client is closing")
+	// ErrConnClosing is returned for calls and notifications that are sent or
+	// received while the connection is closing. Calls received while closing
+	// are answered with it, so it keeps the code that peers already send for
+	// this condition.
+	ErrConnClosing = NewError(-32004, "connection is closing")
 
 	// The following errors have special semantics for MCP transports
 
@@ -87,7 +88,7 @@ func (err *WireError) Error() string {
 
 func (err *WireError) Is(other error) bool {
 	w, ok := other.(*WireError)
-	if !ok {
+	if !ok || w == nil {
 		return false
 	}
 	return err.Code == w.Code

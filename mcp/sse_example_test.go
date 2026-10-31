@@ -27,6 +27,8 @@ func Add(ctx context.Context, req *mcp.CallToolRequest, args AddParams) (*mcp.Ca
 	}, nil, nil
 }
 
+// !+ssehandler
+
 func ExampleSSEHandler() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "adder", Version: "v0.0.1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "add", Description: "add two numbers"}, Add)
@@ -55,3 +57,5 @@ func ExampleSSEHandler() {
 
 	// Output: 3
 }
+
+// !-ssehandler

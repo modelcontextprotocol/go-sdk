@@ -5,14 +5,53 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
+
+func TestNotifyAfterServerClose(t *testing.T) {
+	cs, ss, cleanup := basicConnection(t, nil)
+	defer cleanup()
+	if err := ss.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cs.NotifyProgress(context.Background(), &ProgressNotificationParams{ProgressToken: "test"})
+	checkConnectionClosedError(t, err, io.EOF)
+}
+
+func TestNotifyConnectionClosed(t *testing.T) {
+	for _, test := range connectionClosedTests() {
+		t.Run(test.name, func(t *testing.T) {
+			conn, peer := newTestJSONRPCConnection(t, test.readErr)
+			if test.close {
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := peer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Wait()
+			}
+			cs := &ClientSession{client: NewClient(testImpl, nil), conn: conn}
+			err := cs.NotifyProgress(context.Background(), &ProgressNotificationParams{ProgressToken: "test"})
+			checkConnectionClosedError(t, err, test.causes...)
+		})
+	}
+}
 
 func TestValidateRequestMeta(t *testing.T) {
 	tests := []struct {
@@ -101,6 +140,57 @@ func TestValidateRequestMeta(t *testing.T) {
 			method:      methodCallTool,
 			params:      json.RawMessage(`{"_meta": "not an object", "name": "x"}`),
 			wantUsesNew: false,
+		},
+		{
+			name:   "supported pre-2026-07-28 version: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20251125,
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			name:   "empty protocolVersion declares nothing: old protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "",
+				},
+				"name": "x",
+			},
+			wantUsesNew: false,
+		},
+		{
+			// An unsupported version sorting below 2026-07-28 is still a
+			// new-protocol request, so that the caller can answer it with
+			// CodeUnsupportedProtocolVersion.
+			name:   "unsupported version: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    "1900-01-01",
+					MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
+		},
+		{
+			// The triple is defined by a revision the SDK does not know, so an
+			// unsupported version is reported without validating the rest of it.
+			name:   "unsupported version missing clientCapabilities: new protocol",
+			method: methodCallTool,
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: "1900-01-01",
+				},
+				"name": "x",
+			},
+			wantUsesNew: true,
 		},
 		{
 			name:   "new protocol with logLevel",
@@ -262,6 +352,62 @@ func TestServerRequest_PerRequestAccessors_Empty(t *testing.T) {
 	req := &ServerRequest[*CallToolParamsRaw]{
 		Params: &CallToolParamsRaw{Name: "x"},
 	}
+	if got := req.ProtocolVersion(); got != "" {
+		t.Errorf("ProtocolVersion = %q, want empty", got)
+	}
+	if got := req.ClientInfo(); got != nil {
+		t.Errorf("ClientInfo = %+v, want nil", got)
+	}
+	if got := req.ClientCapabilities(); got != nil {
+		t.Errorf("ClientCapabilities = %+v, want nil", got)
+	}
+}
+
+func TestHasParams(t *testing.T) {
+	// {"jsonrpc":"2.0","id":1,"method":"tools/list"} is a complete request:
+	// serverMethodInfos marks these methods missingParamsOK. Build what
+	// handleReceive hands the middleware chain for one.
+	for _, method := range []string{
+		methodListTools,
+		methodListPrompts,
+		methodListResources,
+		notificationInitialized,
+	} {
+		t.Run(method, func(t *testing.T) {
+			info := serverMethodInfos[method]
+			params, err := info.unmarshalParams(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := info.newRequest(&ServerSession{}, params, nil, jsonrpc.ID{})
+			if req.GetParams() == nil {
+				t.Fatal("GetParams returned a nil interface, so this test no longer covers the typed-nil case")
+			}
+			if HasParams(req) {
+				t.Error("HasParams = true for a request whose params member was omitted")
+			}
+		})
+	}
+
+	t.Run("params present", func(t *testing.T) {
+		info := serverMethodInfos[methodListTools]
+		params, err := info.unmarshalParams(json.RawMessage(`{"cursor":"c"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := info.newRequest(&ServerSession{}, params, nil, jsonrpc.ID{})
+		if !HasParams(req) {
+			t.Error("HasParams = false for a request carrying params")
+		}
+	})
+}
+
+func TestServerRequest_PerRequestAccessors_MissingParams(t *testing.T) {
+	// Custom methods also allow the params member to be omitted, and their
+	// params types embed ParamsBase, whose promoted isNil dereferences the
+	// typed-nil outer pointer.
+	type customParams struct{ ParamsBase }
+	req := &ServerRequest[*customParams]{}
 	if got := req.ProtocolVersion(); got != "" {
 		t.Errorf("ProtocolVersion = %q, want empty", got)
 	}
@@ -549,5 +695,176 @@ func TestUnmarshalParamsInvalidParamsCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unmarshaling") {
 		t.Errorf("error message = %q, want it to mention unmarshaling", err.Error())
+	}
+}
+
+// TestHandlerErrorWithoutCode asserts that an error returned by a request
+// handler without a JSON-RPC error code reaches the peer as -32603 (Internal
+// error) with its message unchanged, while an error that carries a code keeps
+// it. Both directions use the same path: a server's prompt handler and a
+// client's sampling handler. See
+// https://github.com/modelcontextprotocol/go-sdk/issues/1394.
+func TestHandlerErrorWithoutCode(t *testing.T) {
+	coded := &jsonrpc.Error{Code: -32002, Message: "prompt is gone"}
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode int64
+	}{
+		{"plain", errors.New("prompt failed"), jsonrpc.CodeInternalError},
+		{"wrapped plain", fmt.Errorf("rendering: %w", errors.New("prompt failed")), jsonrpc.CodeInternalError},
+		{"coded", coded, -32002},
+		{"wrapped coded", fmt.Errorf("lookup: %w", coded), -32002},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			server := NewServer(&Implementation{Name: "server", Version: "v0.0.1"}, nil)
+			server.AddPrompt(&Prompt{Name: "p"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+				return nil, tc.err
+			})
+			client := NewClient(&Implementation{Name: "client", Version: "v0.0.1"}, &ClientOptions{
+				CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+					return nil, tc.err
+				},
+			})
+			ct, st := NewInMemoryTransports()
+			ss, err := server.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			// Sampling outside a request needs a protocol version before 2026-07-28.
+			cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			check := func(who string, err error) {
+				t.Helper()
+				var rpcErr *jsonrpc.Error
+				if !errors.As(err, &rpcErr) {
+					t.Fatalf("%s: error %v carries no JSON-RPC error", who, err)
+				}
+				if rpcErr.Code != tc.wantCode {
+					t.Errorf("%s: code = %d, want %d", who, rpcErr.Code, tc.wantCode)
+				}
+				if !strings.Contains(rpcErr.Message, tc.err.Error()) {
+					t.Errorf("%s: message = %q, want it to contain %q", who, rpcErr.Message, tc.err.Error())
+				}
+			}
+			_, err = cs.GetPrompt(ctx, &GetPromptParams{Name: "p"})
+			check("server prompt handler", err)
+			_, err = ss.CreateMessage(ctx, &CreateMessageParams{Messages: []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}}})
+			check("client sampling handler", err)
+
+			// MCPGODEBUG=nointernalerrorcode=1 restores the old code, 0, for errors without one.
+			defer func(old string) { nointernalerrorcode = old }(nointernalerrorcode)
+			nointernalerrorcode = "1"
+			_, err = cs.GetPrompt(ctx, &GetPromptParams{Name: "p"})
+			var rpcErr *jsonrpc.Error
+			if !errors.As(err, &rpcErr) {
+				t.Fatalf("old behavior: error %v carries no JSON-RPC error", err)
+			}
+			want := tc.wantCode
+			if want == jsonrpc.CodeInternalError {
+				want = 0
+			}
+			if rpcErr.Code != want {
+				t.Errorf("old behavior: code = %d, want %d", rpcErr.Code, want)
+			}
+		})
+	}
+}
+
+// TestRequestIDInReceivingMiddleware verifies that receiving middleware can
+// read the JSON-RPC id of the message being handled, on both sides of a
+// session, and that notifications carry an invalid (zero) id.
+func TestRequestIDInReceivingMiddleware(t *testing.T) {
+	ctx := context.Background()
+
+	type record struct {
+		method string
+		id     jsonrpc.ID
+	}
+	var mu sync.Mutex
+	recordMiddleware := func(dst *[]record) Middleware {
+		return func(next MethodHandler) MethodHandler {
+			return func(ctx context.Context, method string, req Request) (Result, error) {
+				mu.Lock()
+				*dst = append(*dst, record{method: method, id: req.GetID()})
+				mu.Unlock()
+				return next(ctx, method, req)
+			}
+		}
+	}
+
+	var serverRecords, clientRecords []record
+	client := NewClient(testImpl, &ClientOptions{
+		Capabilities: &ClientCapabilities{RootsV2: &RootCapabilities{}},
+	})
+	client.AddReceivingMiddleware(recordMiddleware(&clientRecords))
+
+	ct, st := NewInMemoryTransports()
+	server := NewServer(testImpl, nil)
+	server.AddReceivingMiddleware(recordMiddleware(&serverRecords))
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close()
+
+	const callID = "server-call-id"
+	id, err := jsonrpc.MakeID(callID)
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+	if _, err := handleReceive(ctx, ss, &jsonrpc.Request{
+		Method: methodListTools,
+		ID:     id,
+		Params: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("handleReceive(tools/list): %v", err)
+	}
+	if _, err := handleReceive(ctx, ss, &jsonrpc.Request{
+		Method: notificationProgress,
+		Params: json.RawMessage(`{"progressToken":"p","progress":1}`),
+	}); err != nil {
+		t.Fatalf("handleReceive(notifications/progress): %v", err)
+	}
+	if _, err := ss.ListRoots(ctx, nil); err != nil {
+		t.Fatalf("ListRoots: %v", err)
+	}
+
+	find := func(records []record, method string) (record, bool) {
+		for _, r := range records {
+			if r.method == method {
+				return r, true
+			}
+		}
+		return record{}, false
+	}
+
+	if r, ok := find(serverRecords, methodListTools); !ok {
+		t.Fatal("server middleware did not see tools/list")
+	} else if got, want := r.id.Raw(), any(callID); got != want {
+		t.Errorf("tools/list id = %v (%T), want %v", got, got, want)
+	}
+
+	if r, ok := find(serverRecords, notificationProgress); !ok {
+		t.Fatal("server middleware did not see notifications/progress")
+	} else if r.id.IsValid() {
+		t.Errorf("notification id = %v, want invalid (zero) id", r.id.Raw())
+	}
+
+	if r, ok := find(clientRecords, methodListRoots); !ok {
+		t.Fatal("client middleware did not see roots/list")
+	} else if !r.id.IsValid() {
+		t.Error("roots/list id is invalid, want the server-minted id")
 	}
 }
