@@ -252,6 +252,14 @@ type ClientSessionOptions struct {
 	// discover) request. If empty, the latest supported version is used.
 	// The server may negotiate a different mutually supported version.
 	ProtocolVersion string
+	// DiscoverTimeout bounds how long Connect waits for a server/discover
+	// response before falling back to the initialize handshake, since an
+	// older stdio server may silently ignore discover.
+	//
+	// The bound applies only on stdio, IO and in-memory transports. If zero,
+	// it defaults to 10s, and a negative value disables it. The bound never
+	// exceeds half of the remaining Connect deadline.
+	DiscoverTimeout time.Duration
 }
 
 func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
@@ -316,6 +324,10 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	if opts != nil && opts.ProtocolVersion != "" {
 		protocolVersion = opts.ProtocolVersion
 	}
+	var discoverTimeout time.Duration
+	if opts != nil {
+		discoverTimeout = opts.DiscoverTimeout
+	}
 
 	if protocolVersion >= protocolVersion20260728 {
 		// Per SEP-2575, try the stateless server/discover RPC first. If the server
@@ -326,7 +338,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		// requested version but specifies which versions it supports, we negotiate
 		// a mutually supported version and try again.
 		for range 2 {
-			discRes, err := c.discover(discoverCtx, cs)
+			probeCtx, cancelProbe := discoverProbeContext(discoverCtx, cs.mcpConn, discoverTimeout)
+			discRes, err := c.discover(probeCtx, cs)
+			cancelProbe()
 			if err == nil {
 				cs.state.InitializeResult = discRes
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
@@ -414,6 +428,37 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 
 	return cs, nil
+}
+
+const defaultDiscoverTimeout = 10 * time.Second
+
+// discoverProbeContext bounds the server/discover probe as described by
+// [ClientSessionOptions.DiscoverTimeout]. It only applies to newline-delimited
+// stream connections (including custom transports that return one), where a
+// handshake-era server may silently ignore requests it doesn't recognize
+// before initialize. Half of any remaining deadline is kept for the initialize
+// fallback.
+func discoverProbeContext(ctx context.Context, conn Connection, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout == 0 {
+		timeout = defaultDiscoverTimeout
+	}
+	if timeout <= 0 || !isStreamConn(conn) {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline)/2)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func isStreamConn(conn Connection) bool {
+	switch conn := conn.(type) {
+	case *ioConn:
+		return true
+	case *loggingConn:
+		return isStreamConn(conn.delegate)
+	}
+	return false
 }
 
 // discover sends a SEP-2575 server/discover request to probe the server for
