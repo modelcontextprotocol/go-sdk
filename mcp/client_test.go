@@ -8,8 +8,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -763,6 +768,60 @@ func TestClientConnectDiscover(t *testing.T) {
 	}
 }
 
+// TestClientPingRemovedOnNewProtocol verifies that Ping on a session
+// negotiated at 2026-07-28 returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the ping method, which the
+// 2026-07-28 protocol schema removes. A plain Connect negotiates
+// 2026-07-28 over in-memory transports via server/discover.
+func TestClientPingRemovedOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	var gotPing bool
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	// Registered before Connect: the session caches its sending handler at
+	// connect time. The middleware asserts that no ping request is sent.
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodPing {
+				gotPing = true
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	err = cs.Ping(ctx, nil)
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("Ping on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if got, want := jsonrpcErr.Message, `"ping" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+	if gotPing {
+		t.Error("ping request was sent despite the removed-method guard")
+	}
+}
+
 // TestClientConnectDiscover_RequestContents verifies that the server/discover
 // request sent by Client.Connect carries the SEP-2575 per-request _meta triple:
 // protocolVersion, clientInfo, and clientCapabilities.
@@ -834,6 +893,101 @@ func TestClientConnectDiscover_RequestContents(t *testing.T) {
 	}
 	if _, ok := caps["sampling"]; !ok {
 		t.Errorf("clientCapabilities.sampling missing (CreateMessageHandler was set); got %v", caps)
+	}
+}
+
+// TestClientSessionDiscover verifies that ClientSession.Discover on a
+// 2026-07-28 session sends server/discover with the SEP-2575 _meta triple on
+// every call, even when the server returns a ttlMs, and returns the server's
+// DiscoverResult unchanged.
+func TestClientSessionDiscover(t *testing.T) {
+	ctx := context.Background()
+	const ttl = 60_000
+
+	var discovers atomic.Int32
+	var lastParams atomic.Pointer[DiscoverParams]
+	s := NewServer(testImpl, &ServerOptions{
+		Instructions: "discover instructions",
+		SetCacheable: func(_ context.Context, req Request, c *Cacheable) {
+			if _, ok := req.(*ServerRequest[*DiscoverParams]); ok {
+				c.TTLMs = ttl
+			}
+		},
+	})
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodDiscover {
+				discovers.Add(1)
+				lastParams.Store(req.(*ServerRequest[*DiscoverParams]).Params)
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	clientImpl := &Implementation{Name: "discover-client", Version: "v1.2.3"}
+	cs, err := NewClient(clientImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	ir := cs.InitializeResult()
+	if ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+	afterConnect := discovers.Load()
+
+	for i := range 2 {
+		res, err := cs.Discover(ctx, nil)
+		if err != nil {
+			t.Fatalf("Discover #%d: %v", i, err)
+		}
+		if got, want := discovers.Load()-afterConnect, int32(i+1); got != want {
+			t.Errorf("after Discover #%d, server received %d server/discover requests, want %d", i, got, want)
+		}
+		if !slices.Contains(res.SupportedVersions, ir.ProtocolVersion) {
+			t.Errorf("SupportedVersions = %v, want it to contain %q", res.SupportedVersions, ir.ProtocolVersion)
+		}
+		if res.Capabilities == nil {
+			t.Error("Capabilities is nil")
+		}
+		if got, want := res.Instructions, "discover instructions"; got != want {
+			t.Errorf("Instructions = %q, want %q", got, want)
+		}
+		if got, want := res.TTLMs, ttl; got != want {
+			t.Errorf("TTLMs = %d, want %d", got, want)
+		}
+		if got, want := res.CacheScope, "public"; got != want {
+			t.Errorf("CacheScope = %q, want %q", got, want)
+		}
+		serverInfo, ok := decodeMetaValue[*Implementation](res.GetMeta(), MetaKeyServerInfo)
+		if !ok || serverInfo == nil || serverInfo.Name != testImpl.Name {
+			t.Errorf("_meta[%s] = %+v, want server info named %q", MetaKeyServerInfo, serverInfo, testImpl.Name)
+		}
+	}
+
+	params := lastParams.Load()
+	if params == nil {
+		t.Fatal("server did not receive server/discover params")
+	}
+	meta := params.GetMeta()
+	if v, _ := meta[MetaKeyProtocolVersion].(string); v != ir.ProtocolVersion {
+		t.Errorf("_meta[%s] = %q, want %q", MetaKeyProtocolVersion, v, ir.ProtocolVersion)
+	}
+	if info, _ := meta[MetaKeyClientInfo].(map[string]any); info["name"] != clientImpl.Name {
+		t.Errorf("_meta[%s] = %v, want clientInfo named %q", MetaKeyClientInfo, meta[MetaKeyClientInfo], clientImpl.Name)
+	}
+	if _, ok := meta[MetaKeyClientCapabilities].(map[string]any); !ok {
+		t.Errorf("_meta[%s] = %T, want map[string]any", MetaKeyClientCapabilities, meta[MetaKeyClientCapabilities])
+	}
+	if cs.InitializeResult() != ir {
+		t.Error("Discover replaced the session's InitializeResult")
 	}
 }
 
@@ -1090,5 +1244,270 @@ func TestClientConnectDiscover_UnsupportedVersionNegotiation(t *testing.T) {
 	}
 	if got, want := ir.ProtocolVersion, protocolVersion20260728; got != want {
 		t.Errorf("InitializeResult.ProtocolVersion = %q, want %q", got, want)
+	}
+}
+
+// TestClientRejectsMissingRequiredParams checks that server-to-client messages
+// whose params are required by the schema are rejected when params is omitted
+// or null, instead of reaching handlers that dereference them.
+func TestClientRejectsMissingRequiredParams(t *testing.T) {
+	ctx := context.Background()
+	var handlerCalls atomic.Int32
+	c := NewClient(testImpl, &ClientOptions{
+		Capabilities: &ClientCapabilities{
+			Elicitation: &ElicitationCapabilities{
+				Form: &FormElicitationCapabilities{},
+				URL:  &URLElicitationCapabilities{},
+			},
+		},
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			handlerCalls.Add(1)
+			return &ElicitResult{Action: "decline"}, nil
+		},
+		ElicitationCompleteHandler: func(context.Context, *ElicitationCompleteNotificationRequest) {
+			handlerCalls.Add(1)
+		},
+		ResourceUpdatedHandler: func(context.Context, *ResourceUpdatedNotificationRequest) {
+			handlerCalls.Add(1)
+		},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	for _, tc := range []struct {
+		method string
+		call   bool
+	}{
+		{methodElicit, true},
+		{notificationElicitationComplete, false},
+		{notificationResourceUpdated, false},
+	} {
+		for _, params := range []json.RawMessage{nil, json.RawMessage("null")} {
+			t.Run(fmt.Sprintf("%s/params=%s", tc.method, params), func(t *testing.T) {
+				req := &jsonrpc.Request{Method: tc.method, Params: params}
+				if tc.call {
+					req.ID = jsonrpc2.Int64ID(1)
+				}
+				if _, err := cs.handle(ctx, req); err == nil {
+					t.Errorf("handle(%q) with params %q: got nil error, want an invalid request error", tc.method, params)
+				}
+			})
+		}
+	}
+	if n := handlerCalls.Load(); n != 0 {
+		t.Errorf("handlers were called %d times, want 0", n)
+	}
+}
+
+func TestClientAllowMissingParamsCompat(t *testing.T) {
+	// MCPGODEBUG=allowmissingclientparams=1 restores the pre-1.9 behavior: a
+	// notifications/resources/updated without params is accepted and the
+	// handler observes nil Params.
+	defer func(old string) { allowmissingclientparams = old }(allowmissingclientparams)
+	allowmissingclientparams = "1"
+
+	ctx := context.Background()
+	var got atomic.Int32
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			if req.Params == nil {
+				got.Add(1)
+			}
+		},
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	if _, err := cs.handle(ctx, &jsonrpc.Request{Method: notificationResourceUpdated}); err != nil {
+		t.Fatalf("handle without params in compat mode: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("handler called with nil params %d times, want 1", got.Load())
+	}
+}
+
+func TestListRootsCapabilityDisabled(t *testing.T) {
+	ctx := context.Background()
+	roots := []*Root{{URI: "file:///secret", Name: "secret"}}
+
+	tests := []struct {
+		name    string
+		caps    *ClientCapabilities
+		wantErr bool
+	}{
+		{"default", nil, false},
+		{"RootsV2 set", &ClientCapabilities{RootsV2: &RootCapabilities{}}, false},
+		{"disabled", &ClientCapabilities{}, true},
+		{"only deprecated Roots set", &ClientCapabilities{Roots: struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{ListChanged: true}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+
+			c := NewClient(testImpl, &ClientOptions{Capabilities: tc.caps})
+			c.AddRoots(roots...)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			res, err := ss.ListRoots(ctx, nil)
+			if tc.wantErr {
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) || jerr.Code != codeUnsupportedMethod {
+					t.Fatalf("ListRoots error = %v, want code %d", err, codeUnsupportedMethod)
+				}
+				if res != nil {
+					t.Errorf("ListRoots returned roots %v despite disabled capability", res.Roots)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(roots, res.Roots); diff != "" {
+				t.Errorf("roots mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestInjectRequestMetaPreservesParams(t *testing.T) {
+	cs := &ClientSession{
+		client: NewClient(testImpl, nil),
+		state: clientSessionState{InitializeResult: &InitializeResult{
+			ProtocolVersion: protocolVersion20260728,
+		}},
+	}
+	for _, meta := range []Meta{
+		nil,
+		{},
+		{"custom": "value"},
+		{MetaKeyProtocolVersion: "override", MetaKeyClientInfo: "client", MetaKeyClientCapabilities: "capabilities"},
+	} {
+		params := &GetPromptParams{Name: "prompt", Meta: meta}
+		wantMeta := maps.Clone(meta)
+		got := injectRequestMeta(cs, params)
+		if diff := cmp.Diff(wantMeta, params.Meta); diff != "" {
+			t.Errorf("caller metadata changed (-want +got):\n%s", diff)
+		}
+		if got == params {
+			t.Error("injectRequestMeta returned caller-owned params")
+		}
+		if got.Name != params.Name {
+			t.Error("prompt name changed")
+		}
+		for _, key := range []string{MetaKeyProtocolVersion, MetaKeyClientInfo, MetaKeyClientCapabilities} {
+			if _, ok := got.Meta[key]; !ok {
+				t.Errorf("missing metadata key %q", key)
+			}
+			if value, ok := wantMeta[key]; ok && !cmp.Equal(value, got.Meta[key]) {
+				t.Errorf("explicit metadata key %q was overwritten", key)
+			}
+		}
+		got.Meta["custom"] = "changed"
+		if diff := cmp.Diff(wantMeta, params.Meta); diff != "" {
+			t.Errorf("metadata map is shared (-want +got):\n%s", diff)
+		}
+	}
+	if got := injectRequestMeta(cs, (*GetPromptParams)(nil)); got == nil || got.Meta == nil {
+		t.Error("nil params did not receive metadata")
+	}
+}
+
+func TestCallToolPreservesSharedParams(t *testing.T) {
+	for _, version := range []string{protocolVersion20251125, protocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			ctx := t.Context()
+			s := NewServer(testImpl, nil)
+			s.AddTool(&Tool{Name: "ping", InputSchema: map[string]any{"type": "object"}},
+				func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					name := "legacy"
+					if info, ok := req.Params.Meta[MetaKeyClientInfo].(map[string]any); ok {
+						name, _ = info["name"].(string)
+					}
+					return &CallToolResult{Content: []Content{&TextContent{Text: name}}}, nil
+				})
+			var clients []*ClientSession
+			for _, name := range []string{"client-a", "client-b"} {
+				ct, st := NewInMemoryTransports()
+				ss, err := s.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+				cs, err := NewClient(&Implementation{Name: name, Version: "1"}, nil).Connect(ctx, ct,
+					&ClientSessionOptions{ProtocolVersion: version})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cs.Close() })
+				clients = append(clients, cs)
+			}
+			call := func(cs *ClientSession, params *CallToolParams) {
+				t.Helper()
+				result, err := cs.CallTool(ctx, params)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				want := "legacy"
+				if version == protocolVersion20260728 {
+					want = cs.client.impl.Name
+				}
+				if got := result.Content[0].(*TextContent).Text; got != want {
+					t.Errorf("server received client name %q, want %q", got, want)
+				}
+			}
+			for _, concurrent := range []bool{false, true} {
+				for _, meta := range []Meta{nil, {"custom": "value"}} {
+					params := &CallToolParams{Name: "ping", Meta: meta}
+					want := &CallToolParams{Name: "ping", Meta: maps.Clone(meta)}
+					if concurrent {
+						var wg sync.WaitGroup
+						for range 4 {
+							for _, cs := range clients {
+								wg.Go(func() { call(cs, params) })
+							}
+						}
+						wg.Wait()
+					} else {
+						for _, cs := range clients {
+							call(cs, params)
+						}
+					}
+					if diff := cmp.Diff(want, params); diff != "" {
+						t.Errorf("caller params changed (-want +got):\n%s", diff)
+					}
+				}
+			}
+		})
 	}
 }

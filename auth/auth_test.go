@@ -75,6 +75,14 @@ func TestVerify(t *testing.T) {
 			"missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer valid",
 			"insufficient scope", 403,
 		},
+		{
+			"expired and missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer expired",
+			"token expired", 401,
+		},
+		{
+			"no expiration and missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer noexp",
+			"token missing expiration", 401,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, gotMsg, gotCode := verify(&http.Request{
@@ -250,7 +258,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes: []string{"admin"},
 			},
 			authHeader: "Bearer valid", // Has "read", needs "admin" -> 403
-			wantHeader: "Bearer scope=\"admin\"",
+			wantHeader: "Bearer error=\"insufficient_scope\", scope=\"admin\"",
 			wantStatus: http.StatusForbidden,
 		},
 		{

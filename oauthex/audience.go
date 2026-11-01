@@ -6,13 +6,12 @@ package oauthex
 
 import "strings"
 
-// MatchesResource reports whether any of claims matches resource under
-// RFC 3986 §6.2.3 scheme-based normalization, narrowed to the empty-path
-// case: a URI with an empty path is treated as equivalent to one with a
-// path of "/". All other URI components (scheme, host case, port, query,
-// fragment) must match exactly — this is intentionally narrower than the
-// full §6.2.3 rung, which would also fold scheme/host case and default
-// ports.
+// MatchesResource reports whether any of claims matches resource, treating a
+// single trailing "/" as insignificant: a URI is equivalent to the same URI
+// with a trailing "/" removed. All other URI components (scheme, host case,
+// port, path segments, query, fragment) must match exactly — this is
+// intentionally narrower than full RFC 3986 §6.2.3 normalization, which would
+// also fold scheme/host case and default ports.
 //
 // RFC 9728 §3.3 normatively requires "simple string comparison" per
 // RFC 3986 §6.2.1 (byte-equal). Callers that need strict byte-equal

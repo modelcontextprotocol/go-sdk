@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitChallenges(t *testing.T) {
@@ -49,9 +51,49 @@ func TestSplitChallenges(t *testing.T) {
 			want:  []string{`Bearer realm="example \"quoted\""`},
 		},
 		{
+			name:  "quoted value ending in escaped backslash",
+			input: `Basic realm="C:\\", Bearer error="insufficient_scope"`,
+			want:  []string{`Basic realm="C:\\"`, ` Bearer error="insufficient_scope"`},
+		},
+		{
+			name:  "empty list element between params",
+			input: `Bearer realm="example",, error="invalid_token"`,
+			want:  []string{`Bearer realm="example",, error="invalid_token"`},
+		},
+		{
+			name:  "empty list element between challenges",
+			input: `Basic, , Bearer realm="example"`,
+			want:  []string{`Basic`, ` `, ` Bearer realm="example"`},
+		},
+		{
 			name:  "empty input",
 			input: "",
 			want:  []string{""},
+		},
+		{
+			name:  "challenges without params",
+			input: `Basic,Bearer`,
+			want:  []string{`Basic`, `Bearer`},
+		},
+		{
+			name:  "blank between token and equals",
+			input: "Bearer a=1, b \t=2",
+			want:  []string{"Bearer a=1, b \t=2"},
+		},
+		{
+			name:  "whitespace inside the name starts a new challenge",
+			input: `Basic realm="a", Bearer x y=1`,
+			want:  []string{`Basic realm="a"`, ` Bearer x y=1`},
+		},
+		{
+			name:  "non-blank whitespace before equals starts a new challenge",
+			input: "Basic, Bearer\u00a0=1",
+			want:  []string{"Basic", " Bearer\u00a0=1"},
+		},
+		{
+			name:  "comma inside the name starts a new challenge",
+			input: `Bearer x, a,b=c`,
+			want:  []string{`Bearer x`, ` a,b=c`},
 		},
 	}
 
@@ -65,6 +107,115 @@ func TestSplitChallenges(t *testing.T) {
 				t.Errorf("splitChallenges() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// The lookahead after a comma must not rescan the rest of the header, or a
+// long header from a server takes quadratic time that no context deadline can
+// interrupt. The input is kept small: the test only needs the old code to take
+// several times longer than the deadline, and it must not load the machine,
+// because other packages' tests run in parallel with it.
+func TestParseWWWAuthenticateLinearTime(t *testing.T) {
+	header := "Bearer " + strings.Repeat(",", 100_000)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseWWWAuthenticate([]string{header})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ParseWWWAuthenticate did not finish within 2s on a %d byte header", len(header))
+	}
+}
+
+// A quoted string may end in an escaped backslash. The quote after it closes
+// the string, so the comma that follows still separates two challenges and
+// the Bearer challenge the auth handlers look for is not lost.
+func TestParseWWWAuthenticateEscapedBackslash(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Basic realm="C:\\", Bearer error="insufficient_scope", scope="files:write"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "basic", Params: map[string]string{"realm": `C:\`}},
+		{Scheme: "bearer", Params: map[string]string{
+			"error": "insufficient_scope",
+			"scope": "files:write",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// A quoted string may be empty. An empty realm or error_description must not
+// make the whole header unparseable, or the auth handlers never see the
+// resource_metadata parameter that follows it.
+func TestParseWWWAuthenticateEmptyQuotedValue(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Bearer realm="", error_description="", resource_metadata="https://example.com/.well-known/oauth-protected-resource"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "bearer", Params: map[string]string{
+			"realm":             "",
+			"error_description": "",
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// RFC 9110, section 5.6.1.2, requires recipients to accept empty list
+// elements. An extra comma must not move the parameters after it into a
+// separate challenge, or the auth handlers never see resource_metadata.
+func TestParseWWWAuthenticateEmptyListElements(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Bearer , realm="example",, resource_metadata="https://example.com/.well-known/oauth-protected-resource" ,, Basic realm="other",`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "bearer", Params: map[string]string{
+			"realm":             "example",
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+		{Scheme: "basic", Params: map[string]string{"realm": "other"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// A challenge may carry a token68 instead of auth-params (RFC 9110,
+// section 11.6.1). It must not stop the Bearer challenge next to it from
+// being parsed.
+func TestParseWWWAuthenticateToken68(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Negotiate oYH1MIHyoAMKAQ, Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "negotiate"},
+		{Scheme: "bearer", Params: map[string]string{
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
 	}
 }
 
@@ -161,8 +312,41 @@ func TestParseSingleChallenge(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "malformed param - no value",
-			input:   "Bearer realm=",
+			name:  "empty list elements around params",
+			input: `Bearer , realm="example",, error=invalid_token, ,`,
+			want: Challenge{
+				Scheme: "bearer",
+				Params: map[string]string{"realm": "example", "error": "invalid_token"},
+			},
+			wantErr: false,
+		},
+		{
+			name:  "token68",
+			input: "Negotiate oYH1MIHyoAMKAQ",
+			want:  Challenge{Scheme: "negotiate"},
+		},
+		{
+			name:  "token68 with padding",
+			input: "Basic dGVzdA==",
+			want:  Challenge{Scheme: "basic"},
+		},
+		{
+			name:    "malformed token68",
+			input:   "Negotiate abc def",
+			wantErr: true,
+		},
+		{
+			name:  "empty quoted param",
+			input: `Bearer realm="", error="invalid_token"`,
+			want: Challenge{
+				Scheme: "bearer",
+				Params: map[string]string{"realm": "", "error": "invalid_token"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "malformed param - no value before comma",
+			input:   `Bearer realm=, error="invalid_token"`,
 			wantErr: true,
 		},
 		{
@@ -255,4 +439,60 @@ func (h *fakeResourceHandler) installHandlers(serverURL string) {
 			panic(err)
 		}
 	}))
+}
+
+// RFC 9110 section 11.2 allows optional whitespace (BWS) around the "=" of an
+// auth-param, so "scope = ..." after a comma is a parameter, not a new
+// challenge.
+func TestParseWWWAuthenticateWhitespaceAroundEquals(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   []Challenge
+	}{
+		{
+			name:   "space before and after",
+			header: `Bearer realm="mcp", scope = "files:read"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"realm": "mcp", "scope": "files:read"}},
+			},
+		},
+		{
+			name:   "space on one side only",
+			header: `Bearer error="insufficient_scope", scope ="files:write", resource_metadata= "https://example.com/rm"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{
+					"error":             "insufficient_scope",
+					"scope":             "files:write",
+					"resource_metadata": "https://example.com/rm",
+				}},
+			},
+		},
+		{
+			name:   "tab before",
+			header: "Bearer realm=\"mcp\", scope\t= \"files:read\"",
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"realm": "mcp", "scope": "files:read"}},
+			},
+		},
+		{
+			name:   "next challenge still splits",
+			header: `Bearer scope = "files:read", Basic realm = "mcp"`,
+			want: []Challenge{
+				{Scheme: "bearer", Params: map[string]string{"scope": "files:read"}},
+				{Scheme: "basic", Params: map[string]string{"realm": "mcp"}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseWWWAuthenticate([]string{tt.header})
+			if err != nil {
+				t.Fatalf("ParseWWWAuthenticate(%q) error = %v", tt.header, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseWWWAuthenticate(%q) = %+v, want %+v", tt.header, got, tt.want)
+			}
+		})
+	}
 }
