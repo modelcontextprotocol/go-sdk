@@ -77,11 +77,11 @@ type Server struct {
 	sessions                    []*ServerSession
 	sendingMethodHandler_       MethodHandler
 	receivingMethodHandler_     MethodHandler
-	toolChangeSubscriptions     map[*ServerSession]jsonrpc.ID            // session -> requestID for "tools/changed"
-	promptChangeSubscriptions   map[*ServerSession]jsonrpc.ID            // session -> requestID for "prompts/changed"
-	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID            // session -> requestID for "resources/changed"
-	resourceSubscriptions       map[string]map[*ServerSession]jsonrpc.ID // uri -> session -> requestID
-	pendingNotifications        map[string]*time.Timer                   // notification name -> timer for pending notification send
+	toolChangeSubscriptions     map[*ServerSession]jsonrpc.ID              // session -> requestID for "tools/changed"
+	promptChangeSubscriptions   map[*ServerSession]jsonrpc.ID              // session -> requestID for "prompts/changed"
+	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID              // session -> requestID for "resources/changed"
+	resourceSubscriptions       map[string]map[*ServerSession][]jsonrpc.ID // uri -> session -> requestID of each subscription
+	pendingNotifications        map[string]*time.Timer                     // notification name -> timer for pending notification send
 	// receiveMethods is the merged map of methods this server may receive
 	// from a client: it always contains the standard server methods (from
 	// serverMethodInfos) plus any custom methods registered via
@@ -286,7 +286,7 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		toolChangeSubscriptions:     make(map[*ServerSession]jsonrpc.ID),
 		promptChangeSubscriptions:   make(map[*ServerSession]jsonrpc.ID),
 		resourceChangeSubscriptions: make(map[*ServerSession]jsonrpc.ID),
-		resourceSubscriptions:       make(map[string]map[*ServerSession]jsonrpc.ID),
+		resourceSubscriptions:       make(map[string]map[*ServerSession][]jsonrpc.ID),
 		pendingNotifications:        make(map[string]*time.Timer),
 		receiveMethods:              receiveMethods,
 	}
@@ -834,18 +834,16 @@ func (s *Server) notifySessions(n string) {
 
 	// Notify modern sessions only if they have an active subscription for
 	// this notification type.
-	s.notifySubscribedSessions(subscribers, n, changeNotificationParams[n])
+	s.notifySubscribedSessions(maps.All(subscribers), n, changeNotificationParams[n])
 }
 
 // notifySubscribedSessions delivers a list-changed or resource-updated
-// notification to each session in subscribers, stamping the session's
-// listen-request ID into the params' _meta so the receiving client can demultiplex
-// notifications belonging to different concurrent listens.
-func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc.ID, method string, makeParams func() Params) {
-	if len(subscribers) == 0 {
-		return
-	}
-	// One goroutine per session, each with its own deadline, so a session
+// notification for each session and listen-request ID in subscribers, stamping
+// the ID into the params' _meta so the receiving client can demultiplex
+// notifications belonging to different concurrent listens. A session with
+// several such listens appears once for each.
+func (s *Server) notifySubscribedSessions(subscribers iter.Seq2[*ServerSession, jsonrpc.ID], method string, makeParams func() Params) {
+	// One goroutine per notification, each with its own deadline, so a session
 	// whose write stalls neither delays nor fails the others (as in the
 	// notifySessions function in shared.go).
 	var wg sync.WaitGroup
@@ -1257,30 +1255,49 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	subscribedSessions := s.resourceSubscriptions[params.URI]
 	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
 	var legacySessions []*ServerSession
-	newSessions := make(map[*ServerSession]jsonrpc.ID)
-	for sess, reqID := range subscribedSessions {
+	newSessions := make(map[*ServerSession][]jsonrpc.ID)
+	listens := 0
+	for sess, reqIDs := range subscribedSessions {
 		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		} else {
-			newSessions[sess] = reqID
+			newSessions[sess] = slices.Clone(reqIDs)
+			listens += len(reqIDs)
 		}
 	}
 	s.mu.Unlock()
 
 	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
 
-	// Notify modern sessions, injecting the per-session subscription ID into the notification's metadata.
-	s.notifySubscribedSessions(newSessions, notificationResourceUpdated, func() Params {
+	// Notify modern sessions on each of their listens for the URI, injecting
+	// the listen's subscription ID into the notification's metadata.
+	s.notifySubscribedSessions(func(yield func(*ServerSession, jsonrpc.ID) bool) {
+		for sess, reqIDs := range newSessions {
+			for _, reqID := range reqIDs {
+				if !yield(sess, reqID) {
+					return
+				}
+			}
+		}
+	}, notificationResourceUpdated, func() Params {
 		p := *params
 		return &p
 	})
 	s.opts.Logger.Info("resource updated notification sent",
 		"uri", params.URI,
-		"subscriber_count", len(legacySessions)+len(newSessions))
+		"subscriber_count", len(legacySessions)+listens)
 	return nil
 }
 
 func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyResult, error) {
+	return s.startSubscription(ctx, req, false)
+}
+
+// startSubscription subscribes the session to req.Params.URI under the request
+// ID in ctx. A listen adds its ID to those of the session's other listens on
+// the URI, since each listen is a subscription of its own; resources/subscribe
+// replaces whatever the session held, as before.
+func (s *Server) startSubscription(ctx context.Context, req *SubscribeRequest, listen bool) (*emptyResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscribe requires a request ID", jsonrpc2.ErrInvalidRequest)
@@ -1295,9 +1312,16 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.resourceSubscriptions[req.Params.URI] == nil {
-		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]jsonrpc.ID)
+		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession][]jsonrpc.ID)
 	}
-	s.resourceSubscriptions[req.Params.URI][req.Session] = requestID
+	reqIDs := s.resourceSubscriptions[req.Params.URI][req.Session]
+	switch {
+	case !listen:
+		reqIDs = []jsonrpc.ID{requestID}
+	case !slices.Contains(reqIDs, requestID):
+		reqIDs = append(reqIDs, requestID)
+	}
+	s.resourceSubscriptions[req.Params.URI][req.Session] = reqIDs
 	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID(), "request_id", requestID)
 
 	return &emptyResult{}, nil
@@ -1308,9 +1332,10 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 }
 
 // endSubscription ends the session's subscription to req.Params.URI. A zero
-// listenID removes the entry whichever request made it; a valid one removes it
-// only while the entry still records that listen, since a later listen on the
-// session may have replaced it. The UnsubscribeHandler is called either way.
+// listenID removes the session's entry whichever requests made it; a valid one
+// removes only that listen's ID, and the entry with the last of them, since
+// other listens on the session may hold the URI too. The UnsubscribeHandler is
+// called either way.
 func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, listenID jsonrpc.ID) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
@@ -1323,7 +1348,13 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		if !listenID.IsValid() || subscribedSessions[req.Session] == listenID {
+		var reqIDs []jsonrpc.ID // what the session still holds once this ends
+		if listenID.IsValid() {
+			reqIDs = slices.DeleteFunc(subscribedSessions[req.Session], func(id jsonrpc.ID) bool { return id == listenID })
+		}
+		if len(reqIDs) > 0 {
+			subscribedSessions[req.Session] = reqIDs
+		} else {
 			delete(subscribedSessions, req.Session)
 		}
 		if len(subscribedSessions) == 0 {
@@ -1375,13 +1406,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	}()
 
 	for _, uri := range allowed.ResourceSubscriptions {
-		_, err := s.subscribe(ctx, &SubscribeRequest{
+		_, err := s.startSubscription(ctx, &SubscribeRequest{
 			Session: req.Session,
 			Params: &SubscribeParams{
 				URI:  uri,
 				Meta: req.Params.GetMeta(),
 			},
-		})
+		}, true)
 		if err != nil {
 			return nil, err
 		}

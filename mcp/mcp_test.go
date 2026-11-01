@@ -3808,6 +3808,199 @@ func TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown(t *testing.T) {
 	})
 }
 
+// uriListens is a 2026-07-28 session with a server that serves one resource,
+// for the tests that hold listens open on its URI. The server counts the calls
+// to its SubscribeHandler and UnsubscribeHandler, and the client reports each
+// listen's acknowledgment and each update with its subscription ID.
+type uriListens struct {
+	t                        *testing.T
+	ctx                      context.Context
+	uri                      string
+	server                   *Server
+	ss                       *ServerSession
+	cs                       *ClientSession
+	events                   chan subListenEvent
+	subscribes, unsubscribes atomic.Int32
+}
+
+func newURIListens(t *testing.T, uri string) *uriListens {
+	t.Helper()
+	f := &uriListens{t: t, uri: uri, events: make(chan subListenEvent, 16)}
+	f.server = NewServer(testImpl, &ServerOptions{
+		SubscribeHandler: func(context.Context, *SubscribeRequest) error {
+			f.subscribes.Add(1)
+			return nil
+		},
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error {
+			f.unsubscribes.Add(1)
+			return nil
+		},
+	})
+	f.server.AddResource(&Resource{Name: "r1", URI: uri}, nil)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := f.server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	t.Cleanup(func() { ss.Close() })
+	f.ss = ss
+
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			f.events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					f.events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	f.ctx = ctx
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+	f.cs = cs
+	return f
+}
+
+// listen opens a listen naming uris, and returns its subscription ID and the
+// function that cancels it.
+func (f *uriListens) listen(uris ...string) (string, context.CancelFunc) {
+	f.t.Helper()
+	listenCtx, cancel := context.WithCancel(f.ctx)
+	f.t.Cleanup(cancel)
+	go f.cs.subscriptionsListen(listenCtx, &SubscriptionsListenParams{
+		Notifications: &NotificationSubscriptions{ResourceSubscriptions: uris},
+	})
+	return waitSubListenEvent(f.t, f.events, "ack").id, cancel
+}
+
+// updates returns the subscription IDs of the updates received within d,
+// returning as soon as there are n.
+func (f *uriListens) updates(n int, d time.Duration) []string {
+	f.t.Helper()
+	var ids []string
+	timeout := time.After(d)
+	for len(ids) < n {
+		select {
+		case e := <-f.events:
+			if e.kind != "updated" {
+				f.t.Fatalf("got event %q, want %q", e.kind, "updated")
+			}
+			ids = append(ids, e.id)
+		case <-timeout:
+			return ids
+		}
+	}
+	return ids
+}
+
+// wantUpdate calls ResourceUpdated and checks the subscription IDs the update
+// is delivered under, one delivery for each.
+func (f *uriListens) wantUpdate(when string, want ...string) {
+	f.t.Helper()
+	if err := f.server.ResourceUpdated(f.ctx, &ResourceUpdatedNotificationParams{URI: f.uri}); err != nil {
+		f.t.Fatalf("ResourceUpdated: %v", err)
+	}
+	got := f.updates(len(want), 5*time.Second)
+	got = append(got, f.updates(1, notificationDelay*10)...)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		f.t.Errorf("%s: update delivered under subscription IDs %v, want %v", when, got, want)
+	}
+}
+
+// wantHandlerCalls checks how many times the SubscribeHandler and the
+// UnsubscribeHandler have been called.
+func (f *uriListens) wantHandlerCalls(when string, subscribes, unsubscribes int32) {
+	f.t.Helper()
+	if s, u := f.subscribes.Load(), f.unsubscribes.Load(); s != subscribes || u != unsubscribes {
+		f.t.Errorf("%s: SubscribeHandler called %d times and UnsubscribeHandler %d, want %d and %d", when, s, u, subscribes, unsubscribes)
+	}
+}
+
+// wantUnsubscribed checks that no session is subscribed to the URI.
+func (f *uriListens) wantUnsubscribed(when string) {
+	f.t.Helper()
+	f.server.mu.Lock()
+	_, subscribed := f.server.resourceSubscriptions[f.uri]
+	f.server.mu.Unlock()
+	if subscribed {
+		f.t.Errorf("%s: the session is still subscribed to %s", when, f.uri)
+	}
+}
+
+// TestSubscriptionsListen_EveryListenOnAURIIsNotified verifies that two
+// listens held open at once on one URI each receive every update under their
+// own subscription ID, whichever of them ends first, and that the
+// SubscribeHandler and UnsubscribeHandler are still called once for each
+// listen.
+func TestSubscriptionsListen_EveryListenOnAURIIsNotified(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		laterEndsFirst bool
+	}{
+		{"later listen ends first", true},
+		{"earlier listen ends first", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newURIListens(t, "file:///r1")
+			earlier, cancelEarlier := f.listen(f.uri)
+			later, cancelLater := f.listen(f.uri)
+			if later == earlier {
+				t.Fatalf("second listen reused subscription ID %s", earlier)
+			}
+			f.wantHandlerCalls("both listens open", 2, 0)
+			f.wantUpdate("both listens open", earlier, later)
+
+			endFirst, endLast, remaining := cancelEarlier, cancelLater, later
+			if tc.laterEndsFirst {
+				endFirst, endLast, remaining = cancelLater, cancelEarlier, earlier
+			}
+			endFirst()
+			waitListens(t, f.ss, 1, "the first listen to end to unwind")
+			// The handlers are told once for each listen, as before, so a
+			// handler that counts them still holds the session subscribed.
+			f.wantHandlerCalls("one listen ended", 2, 1)
+			f.wantUpdate("one listen ended", remaining)
+
+			endLast()
+			waitListens(t, f.ss, 0, "the other listen to unwind")
+			f.wantHandlerCalls("both listens ended", 2, 2)
+			f.wantUpdate("both listens ended")
+			f.wantUnsubscribed("both listens ended")
+		})
+	}
+}
+
+// TestSubscriptionsListen_URINamedTwiceIsNotifiedOnce verifies that a listen
+// naming its URI twice receives each update once, and that the
+// SubscribeHandler and UnsubscribeHandler are still called once for each time
+// it names the URI.
+func TestSubscriptionsListen_URINamedTwiceIsNotifiedOnce(t *testing.T) {
+	f := newURIListens(t, "file:///r1")
+	id, cancelListen := f.listen(f.uri, f.uri)
+	f.wantHandlerCalls("listen open", 2, 0)
+	f.wantUpdate("listen open", id)
+
+	cancelListen()
+	waitListens(t, f.ss, 0, "the listen to unwind")
+	f.wantHandlerCalls("listen ended", 2, 2)
+	f.wantUpdate("listen ended")
+	f.wantUnsubscribed("listen ended")
+}
+
 // TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown verifies that the
 // auto-listen's teardown leaves in place a second listen's registration for
 // the same list-changed notification.
