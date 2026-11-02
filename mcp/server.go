@@ -77,9 +77,9 @@ type Server struct {
 	sessions                    []*ServerSession
 	sendingMethodHandler_       MethodHandler
 	receivingMethodHandler_     MethodHandler
-	toolChangeSubscriptions     map[*ServerSession]jsonrpc.ID              // session -> requestID for "tools/changed"
-	promptChangeSubscriptions   map[*ServerSession]jsonrpc.ID              // session -> requestID for "prompts/changed"
-	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID              // session -> requestID for "resources/changed"
+	toolChangeSubscriptions     map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "tools/changed"
+	promptChangeSubscriptions   map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "prompts/changed"
+	resourceChangeSubscriptions map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "resources/changed"
 	resourceSubscriptions       map[string]map[*ServerSession][]jsonrpc.ID // uri -> session -> requestID of each subscription
 	pendingNotifications        map[string]*time.Timer                     // notification name -> timer for pending notification send
 	// receiveMethods is the merged map of methods this server may receive
@@ -283,9 +283,9 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceTemplates:           newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:       defaultSendingMethodHandler,
 		receivingMethodHandler_:     defaultReceivingMethodHandler[*ServerSession],
-		toolChangeSubscriptions:     make(map[*ServerSession]jsonrpc.ID),
-		promptChangeSubscriptions:   make(map[*ServerSession]jsonrpc.ID),
-		resourceChangeSubscriptions: make(map[*ServerSession]jsonrpc.ID),
+		toolChangeSubscriptions:     make(map[*ServerSession][]jsonrpc.ID),
+		promptChangeSubscriptions:   make(map[*ServerSession][]jsonrpc.ID),
+		resourceChangeSubscriptions: make(map[*ServerSession][]jsonrpc.ID),
 		resourceSubscriptions:       make(map[string]map[*ServerSession][]jsonrpc.ID),
 		pendingNotifications:        make(map[string]*time.Timer),
 		receiveMethods:              receiveMethods,
@@ -817,14 +817,14 @@ func (s *Server) notifySessions(n string) {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
-	var subscribers map[*ServerSession]jsonrpc.ID
+	var subscribers map[*ServerSession][]jsonrpc.ID
 	switch n {
 	case notificationToolListChanged:
-		subscribers = maps.Clone(s.toolChangeSubscriptions)
+		subscribers = cloneListens(s.toolChangeSubscriptions)
 	case notificationPromptListChanged:
-		subscribers = maps.Clone(s.promptChangeSubscriptions)
+		subscribers = cloneListens(s.promptChangeSubscriptions)
 	case notificationResourceListChanged:
-		subscribers = maps.Clone(s.resourceChangeSubscriptions)
+		subscribers = cloneListens(s.resourceChangeSubscriptions)
 	}
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 
@@ -834,31 +834,35 @@ func (s *Server) notifySessions(n string) {
 
 	// Notify modern sessions only if they have an active subscription for
 	// this notification type.
-	s.notifySubscribedSessions(maps.All(subscribers), n, changeNotificationParams[n])
+	s.notifySubscribedSessions(subscribers, n, changeNotificationParams[n])
 }
 
 // notifySubscribedSessions delivers a list-changed or resource-updated
-// notification for each session and listen-request ID in subscribers, stamping
-// the ID into the params' _meta so the receiving client can demultiplex
-// notifications belonging to different concurrent listens. A session with
-// several such listens appears once for each.
-func (s *Server) notifySubscribedSessions(subscribers iter.Seq2[*ServerSession, jsonrpc.ID], method string, makeParams func() Params) {
+// notification on each listen in subscribers, stamping the listen's
+// request ID into the params' _meta so the receiving client can demultiplex
+// notifications belonging to different concurrent listens.
+func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession][]jsonrpc.ID, method string, makeParams func() Params) {
+	if len(subscribers) == 0 {
+		return
+	}
 	// One goroutine per notification, each with its own deadline, so a session
 	// whose write stalls neither delays nor fails the others (as in the
 	// notifySessions function in shared.go).
 	var wg sync.WaitGroup
-	for sess, reqID := range subscribers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
-			defer cancel()
-			params := makeParams()
-			injectMetaSubscriptionID(params, reqID)
-			if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
-				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-			}
-		}()
+	for sess, reqIDs := range subscribers {
+		for _, reqID := range reqIDs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+				defer cancel()
+				params := makeParams()
+				injectMetaSubscriptionID(params, reqID)
+				if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
+					s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+				}
+			}()
+		}
 	}
 	wg.Wait()
 }
@@ -1271,15 +1275,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 
 	// Notify modern sessions on each of their listens for the URI, injecting
 	// the listen's subscription ID into the notification's metadata.
-	s.notifySubscribedSessions(func(yield func(*ServerSession, jsonrpc.ID) bool) {
-		for sess, reqIDs := range newSessions {
-			for _, reqID := range reqIDs {
-				if !yield(sess, reqID) {
-					return
-				}
-			}
-		}
-	}, notificationResourceUpdated, func() Params {
+	s.notifySubscribedSessions(newSessions, notificationResourceUpdated, func() Params {
 		p := *params
 		return &p
 	})
@@ -1314,14 +1310,11 @@ func (s *Server) startSubscription(ctx context.Context, req *SubscribeRequest, l
 	if s.resourceSubscriptions[req.Params.URI] == nil {
 		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession][]jsonrpc.ID)
 	}
-	reqIDs := s.resourceSubscriptions[req.Params.URI][req.Session]
-	switch {
-	case !listen:
-		reqIDs = []jsonrpc.ID{requestID}
-	case !slices.Contains(reqIDs, requestID):
-		reqIDs = append(reqIDs, requestID)
+	if listen {
+		addListen(s.resourceSubscriptions[req.Params.URI], req.Session, requestID)
+	} else {
+		s.resourceSubscriptions[req.Params.URI][req.Session] = []jsonrpc.ID{requestID}
 	}
-	s.resourceSubscriptions[req.Params.URI][req.Session] = reqIDs
 	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID(), "request_id", requestID)
 
 	return &emptyResult{}, nil
@@ -1348,12 +1341,8 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		var reqIDs []jsonrpc.ID // what the session still holds once this ends
 		if listenID.IsValid() {
-			reqIDs = slices.DeleteFunc(subscribedSessions[req.Session], func(id jsonrpc.ID) bool { return id == listenID })
-		}
-		if len(reqIDs) > 0 {
-			subscribedSessions[req.Session] = reqIDs
+			removeListen(subscribedSessions, req.Session, listenID)
 		} else {
 			delete(subscribedSessions, req.Session)
 		}
@@ -1364,6 +1353,34 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 	s.opts.Logger.Info("resource unsubscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
+}
+
+// addListen records a listen's request ID in the session's entry of a
+// subscription registry, once.
+func addListen(registry map[*ServerSession][]jsonrpc.ID, ss *ServerSession, id jsonrpc.ID) {
+	if !slices.Contains(registry[ss], id) {
+		registry[ss] = append(registry[ss], id)
+	}
+}
+
+// removeListen removes a listen's request ID from the session's entry of a
+// subscription registry, and the entry with its last ID.
+func removeListen(registry map[*ServerSession][]jsonrpc.ID, ss *ServerSession, id jsonrpc.ID) {
+	if ids := slices.DeleteFunc(registry[ss], func(x jsonrpc.ID) bool { return x == id }); len(ids) > 0 {
+		registry[ss] = ids
+	} else {
+		delete(registry, ss)
+	}
+}
+
+// cloneListens copies a subscription registry and its ID slices, which
+// removeListen edits in place, so the copy can be read without s.mu.
+func cloneListens(registry map[*ServerSession][]jsonrpc.ID) map[*ServerSession][]jsonrpc.ID {
+	listens := make(map[*ServerSession][]jsonrpc.ID, len(registry))
+	for ss, ids := range registry {
+		listens[ss] = slices.Clone(ids)
+	}
+	return listens
 }
 
 func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*SubscriptionsListenResult, error) {
@@ -1379,13 +1396,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
 	s.mu.Lock()
 	if allowed.ToolsListChanged {
-		s.toolChangeSubscriptions[req.Session] = requestID
+		addListen(s.toolChangeSubscriptions, req.Session, requestID)
 	}
 	if allowed.PromptsListChanged {
-		s.promptChangeSubscriptions[req.Session] = requestID
+		addListen(s.promptChangeSubscriptions, req.Session, requestID)
 	}
 	if allowed.ResourcesListChanged {
-		s.resourceChangeSubscriptions[req.Session] = requestID
+		addListen(s.resourceChangeSubscriptions, req.Session, requestID)
 	}
 	s.mu.Unlock()
 	defer func() {
@@ -1393,14 +1410,14 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		// several listens at once, and deleting by session alone retires a
 		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		if allowed.ToolsListChanged && s.toolChangeSubscriptions[req.Session] == requestID {
-			delete(s.toolChangeSubscriptions, req.Session)
+		if allowed.ToolsListChanged {
+			removeListen(s.toolChangeSubscriptions, req.Session, requestID)
 		}
-		if allowed.PromptsListChanged && s.promptChangeSubscriptions[req.Session] == requestID {
-			delete(s.promptChangeSubscriptions, req.Session)
+		if allowed.PromptsListChanged {
+			removeListen(s.promptChangeSubscriptions, req.Session, requestID)
 		}
-		if allowed.ResourcesListChanged && s.resourceChangeSubscriptions[req.Session] == requestID {
-			delete(s.resourceChangeSubscriptions, req.Session)
+		if allowed.ResourcesListChanged {
+			removeListen(s.resourceChangeSubscriptions, req.Session, requestID)
 		}
 		s.mu.Unlock()
 	}()

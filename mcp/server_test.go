@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -2377,7 +2376,7 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 	ctx := context.Background()
 	server := NewServer(testImpl, nil)
 
-	subscribers := map[*ServerSession]jsonrpc.ID{}
+	subscribers := map[*ServerSession][]jsonrpc.ID{}
 	want := map[*ServerSession]string{}
 	var mu sync.Mutex
 	got := map[string]any{}
@@ -2396,7 +2395,7 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		subscribers[ss] = id
+		subscribers[ss] = []jsonrpc.ID{id}
 		want[ss] = "sub-" + name
 		readers.Add(1)
 		go func() {
@@ -2421,7 +2420,7 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 	}
 
 	params := &ResourceUpdatedNotificationParams{URI: "test://r", Meta: Meta{"caller": "set"}}
-	server.notifySubscribedSessions(maps.All(subscribers), notificationResourceUpdated, func() Params {
+	server.notifySubscribedSessions(subscribers, notificationResourceUpdated, func() Params {
 		p := *params
 		return &p
 	})
