@@ -2228,7 +2228,7 @@ func (ss *ServerSession) protocolVersion() string {
 // legacy: without an 'initialize' handshake it is a SEP-2575 session.
 func (ss *ServerSession) negotiatedLegacyProtocol() bool {
 	version := ss.protocolVersion()
-	return version != "" && version < protocolVersion20260728
+	return version < protocolVersion20260728
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
