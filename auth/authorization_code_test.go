@@ -421,6 +421,61 @@ func TestAuthorize_ScopeAccumulation(t *testing.T) {
 	}
 }
 
+// TestAuthorize_RequiresPKCE verifies that the authorization code flow still
+// refuses an authorization server that does not advertise PKCE, as the MCP
+// authorization spec requires, before the user is sent to it.
+func TestAuthorize_RequiresPKCE(t *testing.T) {
+	authServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		OmitPKCEMethods: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"test_client_id": {
+					Secret:       "test_client_secret",
+					RedirectURIs: []string{"http://localhost:12345/callback"},
+				},
+			},
+		},
+	})
+	authServer.Start(t)
+
+	resourceMux := http.NewServeMux()
+	resourceServer := httptest.NewServer(resourceMux)
+	t.Cleanup(resourceServer.Close)
+	resourceURL := resourceServer.URL + "/resource"
+	resourceMux.Handle("/.well-known/oauth-protected-resource/resource", ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource:             resourceURL,
+		AuthorizationServers: []string{authServer.URL()},
+	}))
+
+	handler, err := NewAuthorizationCodeHandler(&AuthorizationCodeHandlerConfig{
+		RedirectURL: "http://localhost:12345/callback",
+		PreregisteredClient: &oauthex.ClientCredentials{
+			ClientID:         "test_client_id",
+			ClientSecretAuth: &oauthex.ClientSecretAuth{ClientSecret: "test_client_secret"},
+		},
+		AuthorizationCodeFetcher: func(ctx context.Context, args *AuthorizationArgs) (*AuthorizationResult, error) {
+			t.Error("AuthorizationCodeFetcher called for an authorization server without PKCE")
+			return nil, fmt.Errorf("unexpected authorization")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	resp.Header.Set("WWW-Authenticate", "Bearer resource_metadata="+resourceServer.URL+"/.well-known/oauth-protected-resource/resource")
+	err = handler.Authorize(context.Background(), req, resp)
+	if err == nil || !strings.Contains(err.Error(), "does not implement PKCE") {
+		t.Errorf("Authorize() = %v, want an error about missing PKCE support", err)
+	}
+}
+
 func TestAuthorize_ForbiddenUnhandledError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
 	resp := &http.Response{

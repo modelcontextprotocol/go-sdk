@@ -88,9 +88,9 @@ func TestUnmarshalableResultSendsError(t *testing.T) {
 // failure).
 func TestShuttingDownWrapsWriteError(t *testing.T) {
 	s := &inFlightState{writeErr: io.EOF}
-	err := s.shuttingDown(ErrServerClosing)
-	if !errors.Is(err, ErrServerClosing) {
-		t.Errorf("shuttingDown() error = %v, want it to wrap ErrServerClosing", err)
+	err := s.shuttingDown(ErrConnClosing)
+	if !errors.Is(err, ErrConnClosing) {
+		t.Errorf("shuttingDown() error = %v, want it to wrap ErrConnClosing", err)
 	}
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("shuttingDown() error = %v, want it to wrap io.EOF", err)
@@ -99,14 +99,56 @@ func TestShuttingDownWrapsWriteError(t *testing.T) {
 
 func TestShuttingDownWrapsReadError(t *testing.T) {
 	s := &inFlightState{readErr: io.EOF}
-	err := s.shuttingDown(ErrServerClosing)
-	if !errors.Is(err, ErrServerClosing) {
-		t.Errorf("shuttingDown() error = %v, want it to wrap ErrServerClosing", err)
+	err := s.shuttingDown(ErrConnClosing)
+	if !errors.Is(err, ErrConnClosing) {
+		t.Errorf("shuttingDown() error = %v, want it to wrap ErrConnClosing", err)
 	}
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("shuttingDown() error = %v, want it to wrap io.EOF", err)
 	}
 }
+
+func TestReadErrorRetiresCalls(t *testing.T) {
+	for _, readErr := range []error{io.EOF, io.ErrUnexpectedEOF, errors.New("read failed")} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			ctx := context.Background()
+			failed := make(chan struct{})
+			fail := sync.OnceFunc(func() { close(failed) })
+			w := fakeWriter{out: make(chan Message, 1)}
+			conn := NewConnection(ctx, ConnectionConfig{
+				Reader: readerFunc(func(context.Context) (Message, error) {
+					<-failed
+					return nil, readErr
+				}),
+				Writer: w,
+				Closer: nopCloser{},
+				Bind: func(*Connection) Handler {
+					return HandlerFunc(func(context.Context, *Request) (any, error) {
+						return nil, ErrNotHandled
+					})
+				},
+			})
+			t.Cleanup(func() {
+				fail()
+				conn.Close()
+			})
+
+			call := conn.Call(ctx, "test", nil)
+			<-w.out
+			fail()
+			err := call.Await(ctx, nil)
+			for _, want := range []error{ErrConnClosing, readErr} {
+				if !errors.Is(err, want) {
+					t.Errorf("Await() = %v, want an error wrapping %v", err, want)
+				}
+			}
+		})
+	}
+}
+
+type readerFunc func(context.Context) (Message, error)
+
+func (f readerFunc) Read(ctx context.Context) (Message, error) { return f(ctx) }
 
 // TestCancelFromPeer verifies that CancelFromPeer tells a [ResponseDropper]
 // writer about the call before the handler's context is cancelled, that a

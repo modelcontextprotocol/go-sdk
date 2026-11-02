@@ -159,11 +159,12 @@ func (h *ClientCredentialsHandler) Authorize(ctx context.Context, req *http.Requ
 
 	// Step 3: Exchange client credentials for an access token.
 	cfg := &clientcredentials.Config{
-		ClientID:     creds.ClientID,
-		ClientSecret: creds.ClientSecretAuth.ClientSecret,
-		TokenURL:     asm.TokenEndpoint,
-		Scopes:       requestedScopes,
-		AuthStyle:    selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
+		ClientID:       creds.ClientID,
+		ClientSecret:   creds.ClientSecretAuth.ClientSecret,
+		TokenURL:       asm.TokenEndpoint,
+		Scopes:         requestedScopes,
+		AuthStyle:      selectTokenAuthMethod(asm.TokenEndpointAuthMethodsSupported),
+		EndpointParams: url.Values{"resource": {prm.Resource}},
 	}
 
 	client := util.RestrictRedirects(httpClient)

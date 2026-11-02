@@ -106,7 +106,7 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Params json.RawMessage `json:"params"`
 	}
 	var rawMap map[string]raw
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	if rawMap == nil {
@@ -117,19 +117,19 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		switch raw.Method {
 		case methodElicit:
 			var p ElicitParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodCreateMessage:
 			var p CreateMessageWithToolsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodListRoots:
 			var p ListRootsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
@@ -153,7 +153,7 @@ type InputResponseMap map[string]InputResponse
 
 func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
 	var rawMap map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	result := make(InputResponseMap, len(rawMap))
@@ -176,25 +176,25 @@ func unmarshalInputResponse(data json.RawMessage) (InputResponse, error) {
 		Role   json.RawMessage `json:"role"`
 		Roots  json.RawMessage `json:"roots"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := internaljson.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
 	switch {
 	case probe.Roots != nil:
 		var p ListRootsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Action != nil:
 		var p ElicitResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Role != nil:
 		var p CreateMessageWithToolsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil

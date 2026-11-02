@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -95,7 +96,7 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 	if !forOutput {
 		v := make(map[string]any)
 		if len(data) > 0 {
-			if err := internaljson.Unmarshal(data, &v); err != nil {
+			if err := internaljson.UnmarshalUseNumber(data, &v); err != nil {
 				return nil, fmt.Errorf("unmarshaling arguments: %w", err)
 			}
 		}
@@ -107,7 +108,7 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		unmarshaled = v
 	} else {
 		if len(data) > 0 {
-			if err := internaljson.Unmarshal(data, &unmarshaled); err != nil {
+			if err := internaljson.UnmarshalUseNumber(data, &unmarshaled); err != nil {
 				return nil, fmt.Errorf("unmarshaling output: %w", err)
 			}
 		}
@@ -131,7 +132,11 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		appliedDefaults = true
 	}
 
-	if err := resolved.Validate(&unmarshaled); err != nil {
+	instance, err := validationInstance(unmarshaled)
+	if err != nil {
+		return nil, err
+	}
+	if err := resolved.Validate(&instance); err != nil {
 		return nil, err
 	}
 
@@ -144,6 +149,49 @@ func applySchema(data json.RawMessage, resolved *jsonschema.Resolved, forOutput 
 		return nil, fmt.Errorf("marshalling with defaults: %v", err)
 	}
 	return out, nil
+}
+
+// validationInstance returns a copy of v, a value decoded with UseNumber, that
+// jsonschema can validate. jsonschema treats a json.Number as a string, so each
+// one is replaced by an int64 or uint64 if it is an integer in range, keeping
+// validation exact, and by a float64 otherwise.
+func validationInstance(v any) (any, error) {
+	switch v := v.(type) {
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, nil
+		}
+		if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
+			return u, nil
+		}
+		f, err := v.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("number %s cannot be represented as a float64", v)
+		}
+		return f, nil
+	case map[string]any:
+		m := make(map[string]any, len(v))
+		for k, e := range v {
+			c, err := validationInstance(e)
+			if err != nil {
+				return nil, err
+			}
+			m[k] = c
+		}
+		return m, nil
+	case []any:
+		s := make([]any, len(v))
+		for i, e := range v {
+			c, err := validationInstance(e)
+			if err != nil {
+				return nil, err
+			}
+			s[i] = c
+		}
+		return s, nil
+	default:
+		return v, nil
+	}
 }
 
 // isObjectJSON reports whether data is a JSON object (i.e., starts with '{'

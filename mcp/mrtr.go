@@ -281,12 +281,14 @@ func setMultiRoundTripRetryParams(method string, req Request, responses InputRes
 	}
 	switch s := req.GetSession().(type) {
 	case *ClientSession:
-		return newClientRequest(s, retryParams), nil
+		r := newClientRequest(s, retryParams)
+		r.ID = req.GetID()
+		return r, nil
 	case *ServerSession:
 		// Rebuild with the same constructor handleReceive uses: the
 		// receiving dispatch type-asserts on the request's concrete
-		// *ServerRequest[P] type, and Extra must carry over.
-		return s.receivingMethodInfos()[method].newRequest(s, retryParams, req.GetExtra()), nil
+		// *ServerRequest[P] type, and Extra and the request ID must carry over.
+		return s.receivingMethodInfos()[method].newRequest(s, retryParams, req.GetExtra(), req.GetID()), nil
 	default:
 		return nil, fmt.Errorf("multi-round-trip: unsupported session type %T", s)
 	}
@@ -315,16 +317,30 @@ func fulfillInputRequests(ctx context.Context, cs *ClientSession, requests Input
 }
 
 func fulfillInputRequest(ctx context.Context, cs *ClientSession, ir InputRequest) (InputResponse, error) {
+	var (
+		method string
+		params Params
+	)
 	switch p := ir.(type) {
 	case *ElicitParams:
-		return cs.client.elicit(ctx, newClientRequest(cs, p))
+		method, params = methodElicit, p
 	case *CreateMessageParams:
-		return cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: createMessageParamsToWithTools(p)})
+		method, params = methodCreateMessage, createMessageParamsToWithTools(p)
 	case *CreateMessageWithToolsParams:
-		return cs.client.createMessage(ctx, &CreateMessageWithToolsRequest{Session: cs, Params: p})
+		method, params = methodCreateMessage, p
 	case *ListRootsParams:
-		return cs.client.listRoots(ctx, newClientRequest(cs, p))
+		method, params = methodListRoots, p
 	default:
 		return nil, fmt.Errorf("unknown input request type: %T", ir)
 	}
+	req := cs.receivingMethodInfos()[method].newRequest(cs, params, nil, jsonrpc.ID{})
+	res, err := cs.receivingMethodHandler()(ctx, method, req)
+	if err != nil {
+		return nil, err
+	}
+	resp, ok := res.(InputResponse)
+	if !ok {
+		return nil, fmt.Errorf("%s: result of type %T is not an input response", method, res)
+	}
+	return resp, nil
 }

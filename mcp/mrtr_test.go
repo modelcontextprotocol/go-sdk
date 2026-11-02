@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -195,6 +196,81 @@ func TestMultiRoundTrip_AutoRetry(t *testing.T) {
 
 			if diff := cmp.Diff(tt.wantResult, res.StructuredContent, ctrCmpOpts...); diff != "" {
 				t.Errorf("result mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// inputRequestServer returns a server with a tool "ask" that asks the client
+// for an elicitation, a sampling message and its roots before it completes.
+func inputRequestServer() *Server {
+	srv := NewServer(testImpl, nil)
+	AddTool(srv, &Tool{Name: "ask"}, func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &CallToolResult{InputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "OK?"},
+				"draft": &CreateMessageParams{
+					Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "write"}}},
+					MaxTokens: 50,
+				},
+				"roots": &ListRootsParams{},
+			}}, nil, nil
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+	return srv
+}
+
+var inputRequestClientOptions = &ClientOptions{
+	ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+		return &ElicitResult{Action: "accept"}, nil
+	},
+	CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+		return &CreateMessageResult{Model: "test-model", Role: "assistant", Content: &TextContent{Text: "response"}}, nil
+	},
+}
+
+// TestMultiRoundTrip_InputRequestsReachReceivingMiddleware checks that client
+// receiving middleware sees the requests a server makes for input in the same
+// way whether they arrive as server-to-client requests (2025-11-25) or as
+// input requests in a multi round-trip result (2026-07-28).
+func TestMultiRoundTrip_InputRequestsReachReceivingMiddleware(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		connect func(*testing.T, *Server, *ClientOptions) *ClientSession
+	}{
+		{"2025-11-25", mustConnectOldProtocol},
+		{"2026-07-28", mustConnect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := tc.connect(t, inputRequestServer(), inputRequestClientOptions)
+			cs.client.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+			var (
+				mu   sync.Mutex
+				seen = map[string]string{} // method -> params type
+			)
+			cs.client.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					switch method {
+					case methodElicit, methodCreateMessage, methodListRoots:
+						mu.Lock()
+						seen[method] = fmt.Sprintf("%T", req.GetParams())
+						mu.Unlock()
+					}
+					return next(ctx, method, req)
+				}
+			})
+
+			if _, err := cs.CallTool(context.Background(), &CallToolParams{Name: "ask"}); err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			want := map[string]string{
+				methodElicit:        "*mcp.ElicitParams",
+				methodCreateMessage: "*mcp.CreateMessageWithToolsParams",
+				methodListRoots:     "*mcp.ListRootsParams",
+			}
+			if diff := cmp.Diff(want, seen); diff != "" {
+				t.Errorf("receiving middleware saw (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -1192,7 +1268,8 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 
 	t.Run("server callTool", func(t *testing.T) {
 		orig := &CallToolParamsRaw{Name: "act"}
-		req, err := setMultiRoundTripRetryParams(methodCallTool, &ServerRequest[*CallToolParamsRaw]{Session: ss, Params: orig, Extra: extra}, responses, "s1")
+		id := jsonrpc2.StringID("mrtr-id")
+		req, err := setMultiRoundTripRetryParams(methodCallTool, &ServerRequest[*CallToolParamsRaw]{Session: ss, Params: orig, Extra: extra, ID: id}, responses, "s1")
 		if err != nil {
 			t.Fatalf("setMultiRoundTripRetryParams() error = %v", err)
 		}
@@ -1202,6 +1279,9 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 		}
 		if got.Extra != extra {
 			t.Error("retry request lost Extra")
+		}
+		if got.GetID() != id {
+			t.Errorf("retry request id = %v, want %v", got.GetID().Raw(), id.Raw())
 		}
 		checkRetry(t, orig, got.Params)
 	})
@@ -1239,18 +1319,24 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 	})
 
 	t.Run("client params", func(t *testing.T) {
+		id := jsonrpc2.StringID("mrtr-client-id")
 		for _, orig := range []Params{
 			&CallToolParams{Name: "act"},
 			&GetPromptParams{Name: "review"},
 			&ReadResourceParams{URI: "test://data"},
 		} {
-			req, err := setMultiRoundTripRetryParams(methodCallTool, newClientRequest[Params](nil, orig), responses, "s1")
+			creq := newClientRequest[Params](nil, orig)
+			creq.ID = id
+			req, err := setMultiRoundTripRetryParams(methodCallTool, creq, responses, "s1")
 			if err != nil {
 				t.Fatalf("setMultiRoundTripRetryParams(%T) error = %v", orig, err)
 			}
 			got, ok := req.(*ClientRequest[Params])
 			if !ok {
 				t.Fatalf("retry request type = %T, want *ClientRequest[Params]", req)
+			}
+			if got.GetID() != id {
+				t.Errorf("retry request id = %v, want %v", got.GetID().Raw(), id.Raw())
 			}
 			checkRetry(t, orig, got.Params)
 		}
