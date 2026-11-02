@@ -2224,8 +2224,7 @@ func (ss *ServerSession) protocolVersion() string {
 }
 
 // negotiatedLegacyProtocol reports whether the session speaks a version older
-// than protocolVersion20260728. A session with no recorded version is not
-// legacy: without an 'initialize' handshake it is a SEP-2575 session.
+// than protocolVersion20260728, a session with no recorded version included.
 func (ss *ServerSession) negotiatedLegacyProtocol() bool {
 	version := ss.protocolVersion()
 	return version < protocolVersion20260728

@@ -2954,16 +2954,15 @@ func TestResourceUpdated_NegotiatedDownFromNewProtocol(t *testing.T) {
 	}
 }
 
-// TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy pins that a session with no
-// recorded protocol version reads as the current protocol, since a session
-// without an initialize handshake is a SEP-2575 session.
-func TestSpeaksLegacyProtocol_NoHandshakeIsNotLegacy(t *testing.T) {
+// TestNegotiatedLegacyProtocol_NoHandshakeIsLegacy pins that a session with no
+// recorded protocol version reads as legacy, as a negotiated-down one does.
+func TestNegotiatedLegacyProtocol_NoHandshakeIsLegacy(t *testing.T) {
 	tests := []struct {
 		name  string
 		state ServerSessionState
 		want  bool
 	}{
-		{name: "no handshake", want: false},
+		{name: "no handshake", want: true},
 		{
 			name: "discover, new protocol",
 			state: ServerSessionState{

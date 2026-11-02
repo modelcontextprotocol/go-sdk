@@ -1359,10 +1359,10 @@ func TestClientSupportsMultiRoundTrip(t *testing.T) {
 		want  bool
 	}{
 		{
-			// A session that ran no handshake speaks the new protocol: every
-			// request carries its own version in _meta (SEP-2575).
+			// A new-protocol call records its version before it is dispatched,
+			// so a session with none recorded is read as legacy.
 			name: "no handshake",
-			want: true,
+			want: false,
 		},
 		{
 			name: "discover, new protocol",
