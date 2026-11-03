@@ -2150,7 +2150,7 @@ func (c *streamableServerConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	// pushing down into the delivery layer.
 	delivered := false
 	var errs []error
-	protocolVersion := protocolVersionFromContext(ctx)
+	protocolVersion := s.protocolVersion
 	if c.eventStore != nil && protocolVersion < protocolVersion20260728 {
 		if err := c.eventStore.Append(ctx, c.sessionID, s.id, data); err != nil {
 			errs = append(errs, err)

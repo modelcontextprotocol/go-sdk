@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -48,11 +49,24 @@ func init() {
 	}
 }
 
+// sortedSlogLevels holds the keys of slogToMCP in ascending order, for
+// mapping slog levels that fall between two MCP levels.
+var sortedSlogLevels = slices.Sorted(maps.Keys(slogToMCP))
+
+// slogLevelToMCP returns the MCP logging level for sl. A level that is not one
+// of the eight MCP levels maps to the highest MCP level that does not exceed
+// it, so that a custom level (such as slog.LevelInfo+1) is filtered the same
+// way by [LoggingHandler.Enabled] and by [ServerSession.Log], which compare
+// slog levels. Levels below LevelDebug map to "debug".
 func slogLevelToMCP(sl slog.Level) LoggingLevel {
 	if ml, ok := slogToMCP[sl]; ok {
 		return ml
 	}
-	return "debug" // for lack of a better idea
+	i, _ := slices.BinarySearch(sortedSlogLevels, sl)
+	if i == 0 {
+		return "debug"
+	}
+	return slogToMCP[sortedSlogLevels[i-1]]
 }
 
 func mcpLevelToSlog(ll LoggingLevel) slog.Level {
