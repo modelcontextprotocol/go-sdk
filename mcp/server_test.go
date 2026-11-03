@@ -2376,7 +2376,7 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 	ctx := context.Background()
 	server := NewServer(testImpl, nil)
 
-	subscribers := map[*ServerSession]jsonrpc.ID{}
+	subscribers := map[*ServerSession][]jsonrpc.ID{}
 	want := map[*ServerSession]string{}
 	var mu sync.Mutex
 	got := map[string]any{}
@@ -2395,7 +2395,7 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		subscribers[ss] = id
+		subscribers[ss] = []jsonrpc.ID{id}
 		want[ss] = "sub-" + name
 		readers.Add(1)
 		go func() {
@@ -2441,6 +2441,58 @@ func TestNotifySubscribedSessionsDoesNotShareMeta(t *testing.T) {
 	}
 	if _, polluted := params.Meta[MetaKeySubscriptionID]; polluted || len(params.Meta) != 1 {
 		t.Errorf("caller params.Meta mutated: %v", params.Meta)
+	}
+}
+
+// TestServerSubscribe_LegacyResubscribeReplacesID verifies that on a session
+// before 2026-07-28 a second resources/subscribe for a URI replaces the
+// request ID the session holds for it rather than adding one, and that
+// resources/unsubscribe then ends the subscription.
+func TestServerSubscribe_LegacyResubscribeReplacesID(t *testing.T) {
+	const uri = "file:///r1"
+	server := NewServer(testImpl, &ServerOptions{
+		SubscribeHandler:   func(context.Context, *SubscribeRequest) error { return nil },
+		UnsubscribeHandler: func(context.Context, *UnsubscribeRequest) error { return nil },
+	})
+	server.AddResource(&Resource{Name: "r1", URI: uri}, nil)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	// held returns the request IDs the session holds for uri.
+	held := func() []jsonrpc.ID {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return slices.Clone(server.resourceSubscriptions[uri][ss])
+	}
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	first := held()
+	if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("second Subscribe: %v", err)
+	}
+	second := held()
+	if len(first) != 1 || len(second) != 1 || second[0] == first[0] {
+		t.Errorf("the session holds request IDs %v after one resources/subscribe and %v after a second, want the second's ID alone", first, second)
+	}
+
+	if err := cs.Unsubscribe(ctx, &UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if ids := held(); len(ids) != 0 {
+		t.Errorf("the session holds request IDs %v after resources/unsubscribe, want none", ids)
 	}
 }
 
