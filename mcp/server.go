@@ -813,7 +813,7 @@ func (s *Server) notifySessions(n string) {
 	// shared session channel without opt-in; collect them while we hold the lock.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
@@ -1259,7 +1259,7 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	var legacySessions []*ServerSession
 	newSessions := make(map[*ServerSession]jsonrpc.ID)
 	for sess, reqID := range subscribedSessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		} else {
 			newSessions[sess] = reqID
@@ -1708,12 +1708,11 @@ func (ss *ServerSession) ID() string {
 // in an [InputRequiredResult] returned from a handler for one of the multi
 // round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
 func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
-	if iparams := ss.InitializeParams(); iparams != nil &&
-		iparams.ProtocolVersion >= protocolVersion20260728 {
+	if version := ss.protocolVersion(); version >= protocolVersion20260728 {
 		return fmt.Errorf(
 			"%q cannot be sent while serving a request on protocol version %s: "+
 				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
-			method, iparams.ProtocolVersion)
+			method, version)
 	}
 	return nil
 }
@@ -2207,6 +2206,28 @@ func (ss *ServerSession) InitializeParams() *InitializeParams {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	return ss.state.InitializeParams
+}
+
+// protocolVersion returns the version the session speaks: the negotiated one,
+// or the declared one when the state recorded none (a caller-supplied State, or
+// state saved by an older release). It returns "" when neither is known.
+func (ss *ServerSession) protocolVersion() string {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if v := ss.state.NegotiatedProtocolVersion; v != "" {
+		return v
+	}
+	if ss.state.InitializeParams != nil {
+		return ss.state.InitializeParams.ProtocolVersion
+	}
+	return ""
+}
+
+// negotiatedLegacyProtocol reports whether the session speaks a version older
+// than protocolVersion20260728, a session with no recorded version included.
+func (ss *ServerSession) negotiatedLegacyProtocol() bool {
+	version := ss.protocolVersion()
+	return version < protocolVersion20260728
 }
 
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
