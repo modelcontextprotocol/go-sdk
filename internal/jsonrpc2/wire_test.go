@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
@@ -186,6 +188,68 @@ func TestDecodeIntegerIDs(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkJSON(t, reencoded, []byte(encoded))
+		}
+	}
+}
+
+// TestIntegralNumberIDs checks that a numeric ID written as a decimal or
+// exponent form of an integer decodes exactly, without going through the
+// lossy float64 fallback, and that equal values written differently make
+// equal IDs: that equality is what matches notifications/cancelled to the
+// in-flight request. Genuinely fractional values keep the fallback.
+func TestIntegralNumberIDs(t *testing.T) {
+	for _, tc := range []struct {
+		wire string
+		want int64
+	}{
+		{`9007199254740993`, 9007199254740993},
+		{`9007199254740993.0`, 9007199254740993},
+		{`90071992547409930e-1`, 9007199254740993},
+		{`-9007199254740993.0`, -9007199254740993},
+		{`1e2`, 100},
+		{`1.5e2`, 150},
+		{`9223372036854775807.0`, 9223372036854775807},
+		{`-9223372036854775808.0e0`, -9223372036854775808},
+		{`0e1000000`, 0},
+		{`1.5`, 1}, // fractional: the legacy float64 fallback truncates
+	} {
+		wantID := jsonrpc2.Int64ID(tc.want)
+		canonical := strconv.FormatInt(tc.want, 10)
+		for _, encoded := range []string{
+			`{"jsonrpc":"2.0","id":` + tc.wire + `,"method":"m"}`,
+			`{"jsonrpc":"2.0","id":` + tc.wire + `,"result":{}}`,
+		} {
+			msg, err := jsonrpc2.DecodeMessage([]byte(encoded))
+			if err != nil {
+				t.Fatalf("DecodeMessage(%s): %v", encoded, err)
+			}
+			var got jsonrpc2.ID
+			switch msg := msg.(type) {
+			case *jsonrpc2.Request:
+				got = msg.ID
+			case *jsonrpc2.Response:
+				got = msg.ID
+			}
+			if got != wantID {
+				t.Errorf("DecodeMessage(%s) ID = %v, want %v", encoded, got.Raw(), wantID.Raw())
+			}
+			// A response echoes the request ID: the value must encode back
+			// exactly, under its canonical integer spelling.
+			reencoded, err := jsonrpc2.EncodeMessage(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Replace(encoded, tc.wire, canonical, 1)
+			checkJSON(t, reencoded, []byte(want))
+		}
+		// MakeID sees the same value as DecodeMessage, so a cancel
+		// notification in any spelling matches the request.
+		id, err := jsonrpc2.MakeID(json.Number(tc.wire))
+		if err != nil {
+			t.Fatalf("MakeID(%q): %v", tc.wire, err)
+		}
+		if id != wantID {
+			t.Errorf("MakeID(%q) = %v, want %v", tc.wire, id.Raw(), wantID.Raw())
 		}
 	}
 }

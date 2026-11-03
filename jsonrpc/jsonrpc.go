@@ -23,8 +23,10 @@ type (
 
 // MakeID coerces the given Go value to an ID. The value should be the JSON
 // decoding of a Request identifier: nil, float64, json.Number, or string.
-// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
-// must be an integer literal in the int64 range.
+// Decoding with json.Number keeps numeric IDs exact: a json.Number whose
+// value is an integer in the int64 range is kept exactly, whatever its JSON
+// spelling ("1e2" is 100). A fractional or out-of-range value falls back to
+// float64.
 //
 // Returns an error if the value type was not a valid Request ID type.
 func MakeID(v any) (ID, error) {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -21,8 +22,10 @@ type ID struct {
 
 // MakeID coerces the given Go value to an ID. The value should be the JSON
 // decoding of a Request identifier: nil, float64, json.Number, or string.
-// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
-// must be an integer literal in the int64 range.
+// Decoding with json.Number keeps numeric IDs exact: a json.Number whose
+// value is an integer in the int64 range is kept exactly, whatever its JSON
+// spelling ("1e2" is 100). A fractional or out-of-range value falls back to
+// float64.
 //
 // Returns an error if the value type was not a valid Request ID type.
 //
@@ -39,6 +42,11 @@ func MakeID(v any) (ID, error) {
 		if i, err := v.Int64(); err == nil {
 			return Int64ID(i), nil
 		}
+		// An integer value in decimal or exponent spelling is still an
+		// exact integer ID: normalize it without going through float64.
+		if i, ok := parseInt64Exact(string(v)); ok {
+			return Int64ID(i), nil
+		}
 		// Fallback to maintain backward compatibility
 		if f, err := v.Float64(); err == nil {
 			return Int64ID(int64(f)), nil
@@ -49,6 +57,118 @@ func MakeID(v any) (ID, error) {
 	}
 	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
 }
+
+// parseInt64Exact returns the value of s, a JSON number, if that value is
+// exactly an integer in the int64 range, whatever its spelling: "1e2" and
+// "100.0" are both 100. ok reports whether s is such an integer: genuinely
+// fractional values and values outside the int64 range return ok == false, so
+// that callers keep their float64 fallback. The exponent is handled
+// arithmetically, so even a huge one costs no allocation.
+func parseInt64Exact(s string) (val int64, ok bool) {
+	i := 0
+	neg := false
+	if i < len(s) && (s[i] == '-' || s[i] == '+') {
+		neg = s[i] == '-'
+		i++
+	}
+	intStart := i
+	for i < len(s) && isDigit(s[i]) {
+		i++
+	}
+	digits := s[intStart:i]
+	fracLen := 0
+	if i < len(s) && s[i] == '.' {
+		i++
+		fracStart := i
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		fracLen = i - fracStart
+		digits += s[fracStart:i]
+	}
+	exp := 0
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		expNeg := false
+		if i < len(s) && (s[i] == '-' || s[i] == '+') {
+			expNeg = s[i] == '-'
+			i++
+		}
+		expStart := i
+		// Any exponent beyond len(s)+20 leaves the value out of the int64
+		// range (or zero) however the rest of s is spelled, so stop there.
+		expLimit := len(s) + 20
+		for i < len(s) && isDigit(s[i]) {
+			if exp < expLimit {
+				exp = exp*10 + int(s[i]-'0')
+			}
+			i++
+		}
+		if i == expStart {
+			return 0, false
+		}
+		if expNeg {
+			exp = -exp
+		}
+	}
+	if i != len(s) || digits == "" {
+		return 0, false
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 0, true // zero in any spelling
+	}
+	// The value's magnitude is digits * 10^scale.
+	scale := exp - fracLen
+	n := len(digits)
+	// The negative range holds one more magnitude than the positive one.
+	limit := uint64(1<<63 - 1)
+	if neg {
+		limit++
+	}
+	var mag uint64
+	if scale >= 0 {
+		// The magnitude has n+scale digits: more than 19 of them is at
+		// least 10^19, out of range, and at most 19 fit exactly below.
+		if n+scale > 19 {
+			return 0, false
+		}
+		for _, c := range digits {
+			mag = mag*10 + uint64(c-'0')
+		}
+		for k := 0; k < scale; k++ {
+			mag *= 10
+		}
+	} else {
+		// The value is an integer only if digits ends in -scale zeros;
+		// fewer of them leaves a fraction, as does a magnitude below 1.
+		k := -scale
+		if k >= n {
+			return 0, false
+		}
+		for j := n - k; j < n; j++ {
+			if digits[j] != '0' {
+				return 0, false
+			}
+		}
+		digits = digits[:n-k]
+		if len(digits) > 19 {
+			return 0, false
+		}
+		for _, c := range digits {
+			mag = mag*10 + uint64(c-'0')
+		}
+	}
+	if mag > limit {
+		return 0, false
+	}
+	if neg {
+		return -int64(mag-1) - 1, true // exact even for mag == 1<<63
+	}
+	return int64(mag), true
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // Message is the interface to all jsonrpc2 message types.
 // They share no common functionality, but are a closed set of concrete types
