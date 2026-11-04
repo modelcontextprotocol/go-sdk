@@ -392,6 +392,7 @@ func TestParseURLElicitationRequiredError(t *testing.T) {
 		{"empty mode", `{"elicitations":[{"message":"m","url":"https://x","elicitationId":"1"}]}`},
 		{"no url", `{"elicitations":[{"mode":"url","message":"m","elicitationId":"1"}]}`},
 		{"no elicitation id", `{"elicitations":[{"mode":"url","message":"m","url":"https://x"}]}`},
+		{"valid then invalid", `{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"form","message":"m"}]}`},
 	} {
 		t.Run("malformed/"+tc.name, func(t *testing.T) {
 			err := &jsonrpc.Error{Code: CodeURLElicitationRequired, Message: "URL elicitation required"}
@@ -404,4 +405,15 @@ func TestParseURLElicitationRequiredError(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("malformed/reports invalid index", func(t *testing.T) {
+		err := &jsonrpc.Error{
+			Code: CodeURLElicitationRequired,
+			Data: json.RawMessage(`{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"url","message":"m","elicitationId":"2"}]}`),
+		}
+		_, _, parseErr := ParseURLElicitationRequiredError(err)
+		if parseErr == nil || !strings.Contains(parseErr.Error(), "elicitation 1 ") {
+			t.Errorf("got parseErr %v, want it to name elicitation 1", parseErr)
+		}
+	})
 }

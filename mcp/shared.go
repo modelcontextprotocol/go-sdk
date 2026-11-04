@@ -444,8 +444,8 @@ const (
 	// SEP-2575 for UnsupportedProtocolVersionError.
 	CodeUnsupportedProtocolVersion = -32022
 	// CodeURLElicitationRequired indicates that the server requires URL elicitation
-	// before processing the request. The client should execute the elicitation handler
-	// with the elicitations provided in the error data.
+	// before processing the request. A client decodes the elicitations from the error
+	// data with [ParseURLElicitationRequiredError].
 	CodeURLElicitationRequired = -32042
 )
 
@@ -489,13 +489,17 @@ func URLElicitationRequiredError(elicitations []*ElicitParams) error {
 }
 
 // ParseURLElicitationRequiredError extracts the URL mode elicitations from err
-// if err wraps a [*jsonrpc.Error] with code [CodeURLElicitationRequired]. It is
-// the inverse of [URLElicitationRequiredError].
+// if err wraps a [*jsonrpc.Error] with code [CodeURLElicitationRequired]. For
+// well-formed elicitations, it is the inverse of [URLElicitationRequiredError].
 //
 // If err does not have code CodeURLElicitationRequired, it returns
 // (nil, false, nil). Otherwise ok is true, and parseErr is non-nil if the error
-// data is malformed or holds an elicitation that is not a URL mode elicitation
-// with "mode": "url", a URL and an ElicitationID.
+// data is malformed, holds no elicitations, or holds an elicitation that is not
+// a URL mode elicitation with "mode": "url", a URL and an ElicitationID. A single
+// invalid elicitation rejects the whole list.
+//
+// The URLs are chosen by the server. Per the MCP specification, a client must
+// show the full URL to the user and get their consent before opening it.
 func ParseURLElicitationRequiredError(err error) (elicitations []*ElicitParams, ok bool, parseErr error) {
 	var rpcErr *jsonrpc.Error
 	if !errors.As(err, &rpcErr) || rpcErr.Code != CodeURLElicitationRequired {
