@@ -488,6 +488,46 @@ func URLElicitationRequiredError(elicitations []*ElicitParams) error {
 	}
 }
 
+// ParseURLElicitationRequiredError extracts the URL mode elicitations from err
+// if err wraps a [*jsonrpc.Error] with code [CodeURLElicitationRequired]. It is
+// the inverse of [URLElicitationRequiredError].
+//
+// If err does not have code CodeURLElicitationRequired, it returns
+// (nil, false, nil). Otherwise ok is true, and parseErr is non-nil if the error
+// data is malformed or holds an elicitation that is not a URL mode elicitation
+// with "mode": "url", a URL and an ElicitationID.
+func ParseURLElicitationRequiredError(err error) (elicitations []*ElicitParams, ok bool, parseErr error) {
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != CodeURLElicitationRequired {
+		return nil, false, nil
+	}
+	if len(rpcErr.Data) == 0 {
+		return nil, true, errors.New("URL elicitation required error has no data")
+	}
+	var data struct {
+		Elicitations []*ElicitParams `json:"elicitations"`
+	}
+	if err := internaljson.Unmarshal(rpcErr.Data, &data); err != nil {
+		return nil, true, fmt.Errorf("decoding URL elicitation required error data: %w", err)
+	}
+	if len(data.Elicitations) == 0 {
+		return nil, true, errors.New("URL elicitation required error has no elicitations")
+	}
+	for i, e := range data.Elicitations {
+		switch {
+		case e == nil:
+			return nil, true, fmt.Errorf("elicitation %d is null", i)
+		case e.Mode != "url":
+			return nil, true, fmt.Errorf("elicitation %d has mode %q, want \"url\"", i, e.Mode)
+		case e.URL == "":
+			return nil, true, fmt.Errorf("elicitation %d has no url", i)
+		case e.ElicitationID == "":
+			return nil, true, fmt.Errorf("elicitation %d has no elicitationId", i)
+		}
+	}
+	return data.Elicitations, true, nil
+}
+
 // Internal error codes
 const (
 	// The error code if the method exists and was called properly, but the peer does not support it.
