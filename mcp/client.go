@@ -775,8 +775,13 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if res == nil {
 			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
 		}
+		// An accept without content answers nothing, so every field takes its
+		// default.
+		if res.Action == "accept" && schema != nil && res.Content == nil {
+			res.Content = map[string]any{}
+		}
 		// Validate elicitation result content against requested schema.
-		if res.Action == "accept" && schema != nil && res.Content != nil {
+		if res.Action == "accept" && schema != nil {
 			resolved, err := schema.Resolve(nil)
 			if err != nil {
 				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("failed to resolve requested schema: %v", err)}

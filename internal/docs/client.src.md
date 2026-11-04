@@ -108,6 +108,11 @@ defaulted field `Required` defeats it: accepted content is validated against
 the schema before defaults are applied, so an answer that omits the field is
 rejected rather than defaulted.
 
+An elicitation handler that accepts the form as offered can return
+`&ElicitResult{Action: "accept"}` with no `Content`. The client treats that
+as an empty answer: every field takes its default, and a required field
+without one is rejected.
+
 An `Enum` ([SEP-1330](https://modelcontextprotocol.io/seps/1330-elicitation-enum-schema-improvements-and-standards)) restricts a
 field to a fixed set of values, which the client renders as a choice. Enums
 are supported only on `"string"` fields; declaring one on another type is
