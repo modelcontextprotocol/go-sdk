@@ -8,11 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -245,10 +246,8 @@ func TestInputValidationToolError(t *testing.T) {
 }
 
 // TestURLElicitationRequired validates that URL elicitation required errors
-// are properly created and handled by the client.
+// are properly created.
 func TestURLElicitationRequired(t *testing.T) {
-	ctx := context.Background()
-
 	t.Run("error creation", func(t *testing.T) {
 		elicitations := []*ElicitParams{
 			{
@@ -327,157 +326,94 @@ func TestURLElicitationRequired(t *testing.T) {
 			},
 		})
 	})
+}
 
-	t.Run("client middleware", func(t *testing.T) {
-		// Declare ss outside so it can be captured in handlers.
-		var ss *ServerSession
+func TestParseURLElicitationRequiredError(t *testing.T) {
+	want := []*ElicitParams{
+		{Mode: "url", Message: "Sign in to A", URL: "https://a.example.com/auth", ElicitationID: "a-1"},
+		{Mode: "url", Message: "Sign in to B", URL: "https://b.example.com/auth", ElicitationID: "b-1"},
+	}
 
-		elicitCalled := false
-		elicitURL := ""
-		elicitID := "form-123"
+	t.Run("round trip through wrapping", func(t *testing.T) {
+		err := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", URLElicitationRequiredError(want)))
+		got, ok, parseErr := ParseURLElicitationRequiredError(err)
+		if !ok || parseErr != nil {
+			t.Fatalf("got ok=%v, parseErr=%v; want ok=true, parseErr=nil", ok, parseErr)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("elicitations mismatch (-want +got):\n%s", diff)
+		}
+	})
 
-		// Create client with elicitation handler and middleware.
-		client := NewClient(testImpl, &ClientOptions{
-			Capabilities: &ClientCapabilities{
-				Roots:   RootCapabilities{ListChanged: true},
-				RootsV2: &RootCapabilities{ListChanged: true},
-				Elicitation: &ElicitationCapabilities{
-					URL: &URLElicitationCapabilities{},
-				},
-			},
-			ElicitationHandler: func(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
-				elicitCalled = true
-				elicitURL = req.Params.URL
-
-				// Simulate the server sending elicitation complete notification.
-				// In a real scenario, this would happen out-of-band after the user
-				// completes the form submission.
-				go func() {
-					err := ss.NotifyElicitationComplete(ctx, &ElicitationCompleteParams{
-						ElicitationID: elicitID,
-					})
-					if err != nil {
-						t.Errorf("failed to send elicitation complete notification: %v", err)
-					}
-				}()
-
-				return &ElicitResult{Action: "accept"}, nil
-			},
+	t.Run("returned by CallTool", func(t *testing.T) {
+		cs, _, cleanup := basicConnection(t, func(s *Server) {
+			AddTool(s, &Tool{Name: "needs-auth"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+				return nil, nil, URLElicitationRequiredError(want)
+			})
 		})
-		// Add URL elicitation middleware for automatic retry.
-		client.AddSendingMiddleware(urlElicitationMiddleware())
-
-		var callCount atomic.Int32
-
-		cs, serverSession, cleanup := basicClientServerConnection(t,
-			client,
-			nil,
-			func(s *Server) {
-				// Tool that requires form submission on first call, succeeds on second.
-				handler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
-					if callCount.Add(1) == 1 {
-						// First call: require elicitation.
-						return nil, nil, URLElicitationRequiredError([]*ElicitParams{
-							{
-								Mode:          "url",
-								Message:       "Please complete the form",
-								URL:           "https://example.com/form",
-								ElicitationID: elicitID,
-							},
-						})
-					}
-					// Second call (after retry): return success.
-					return &CallToolResult{
-						Content: []Content{&TextContent{Text: "form submitted"}},
-					}, nil, nil
-				}
-				AddTool(s, &Tool{Name: "submit_form", Description: "requires form submission"}, handler)
-
-				// Tool that returns invalid elicitation mode (form instead of URL).
-				badHandler := func(ctx context.Context, req *CallToolRequest, args map[string]any) (*CallToolResult, any, error) {
-					// Manually construct an error with form mode (bypassing validation).
-					data, _ := json.Marshal(map[string]any{
-						"elicitations": []*ElicitParams{
-							{
-								Mode:          "form",
-								Message:       "Invalid mode",
-								ElicitationID: "bad-form",
-							},
-						},
-					})
-					return nil, nil, &jsonrpc.Error{
-						Code:    CodeURLElicitationRequired,
-						Message: "URL elicitation required",
-						Data:    json.RawMessage(data),
-					}
-				}
-				AddTool(s, &Tool{Name: "bad_tool", Description: "returns invalid elicitation"}, badHandler)
-			},
-		)
-		ss = serverSession
 		defer cleanup()
 
-		t.Run("auto-retry after elicitation", func(t *testing.T) {
-			// Reset state for this subtest.
-			elicitCalled = false
-			elicitURL = ""
-			callCount.Store(0)
+		_, err := cs.CallTool(t.Context(), &CallToolParams{Name: "needs-auth"})
+		got, ok, parseErr := ParseURLElicitationRequiredError(err)
+		if !ok || parseErr != nil {
+			t.Fatalf("CallTool error %v: got ok=%v, parseErr=%v; want ok=true, parseErr=nil", err, ok, parseErr)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("elicitations mismatch (-want +got):\n%s", diff)
+		}
+	})
 
-			// Call the tool that requires URL elicitation.
-			result, err := cs.CallTool(ctx, &CallToolParams{
-				Name:      "submit_form",
-				Arguments: map[string]any{},
-			})
-
-			// After automatic retry, the operation should succeed.
-			if err != nil {
-				t.Fatalf("CallTool failed: %v", err)
-			}
-
-			// Verify the elicitation handler was called.
-			if !elicitCalled {
-				t.Error("elicitation handler not called")
-			}
-
-			if elicitURL != "https://example.com/form" {
-				t.Errorf("got elicit URL %q, want 'https://example.com/form'", elicitURL)
-			}
-
-			// Verify the tool was called twice (first attempt + retry).
-			if got, want := callCount.Load(), int32(2); got != want {
-				t.Errorf("CallTool(): with retry, got %d tool calls, want %d", got, want)
-			}
-
-			// Verify we got the successful result.
-			if len(result.Content) != 1 {
-				t.Fatalf("CallTool(): got %d content items, want 1", len(result.Content))
-			}
-
-			textContent, ok := result.Content[0].(*TextContent)
-			if !ok {
-				t.Fatalf("CallTool(): got content type %T, want TextContent", result.Content[0])
-			}
-
-			if textContent.Text != "form submitted" {
-				t.Errorf("CallTool(): got text %q, want 'form submitted'", textContent.Text)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"nil", nil},
+		{"plain error", errors.New("boom")},
+		{"other code", &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "bad"}},
+	} {
+		t.Run("not ok/"+tc.name, func(t *testing.T) {
+			got, ok, parseErr := ParseURLElicitationRequiredError(tc.err)
+			if got != nil || ok || parseErr != nil {
+				t.Errorf("got (%v, %v, %v), want (nil, false, nil)", got, ok, parseErr)
 			}
 		})
+	}
 
-		t.Run("reject non-URL mode", func(t *testing.T) {
-			// Call the tool that returns invalid elicitation mode.
-			_, err := cs.CallTool(ctx, &CallToolParams{
-				Name:      "bad_tool",
-				Arguments: map[string]any{},
-			})
-
-			// Should get an error about invalid mode.
-			if err == nil {
-				t.Fatal("got nil error for non-URL mode elicitation, want error")
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"no data", ""},
+		{"invalid json", `{"elicitations":`},
+		{"no elicitations", `{}`},
+		{"empty elicitations", `{"elicitations":[]}`},
+		{"null elicitation", `{"elicitations":[null]}`},
+		{"form mode", `{"elicitations":[{"mode":"form","message":"m","url":"https://x","elicitationId":"1"}]}`},
+		{"empty mode", `{"elicitations":[{"message":"m","url":"https://x","elicitationId":"1"}]}`},
+		{"no url", `{"elicitations":[{"mode":"url","message":"m","elicitationId":"1"}]}`},
+		{"no elicitation id", `{"elicitations":[{"mode":"url","message":"m","url":"https://x"}]}`},
+		{"valid then invalid", `{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"form","message":"m"}]}`},
+	} {
+		t.Run("malformed/"+tc.name, func(t *testing.T) {
+			err := &jsonrpc.Error{Code: CodeURLElicitationRequired, Message: "URL elicitation required"}
+			if tc.data != "" {
+				err.Data = json.RawMessage(tc.data)
 			}
-
-			if !strings.Contains(err.Error(), "URL mode") {
-				t.Errorf("got error %v, want mention of URL mode", err)
+			got, ok, parseErr := ParseURLElicitationRequiredError(err)
+			if got != nil || !ok || parseErr == nil {
+				t.Errorf("got (%v, %v, %v), want (nil, true, non-nil)", got, ok, parseErr)
 			}
 		})
+	}
+
+	t.Run("malformed/reports invalid index", func(t *testing.T) {
+		err := &jsonrpc.Error{
+			Code: CodeURLElicitationRequired,
+			Data: json.RawMessage(`{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"url","message":"m","elicitationId":"2"}]}`),
+		}
+		_, _, parseErr := ParseURLElicitationRequiredError(err)
+		if parseErr == nil || !strings.Contains(parseErr.Error(), "elicitation 1 ") {
+			t.Errorf("got parseErr %v, want it to name elicitation 1", parseErr)
+		}
 	})
 }
