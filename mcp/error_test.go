@@ -311,21 +311,70 @@ func TestURLElicitationRequired(t *testing.T) {
 		})
 	})
 
-	t.Run("error creation with empty mode panics", func(t *testing.T) {
+	t.Run("error creation with empty mode and no URL fields panics", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
-				t.Error("got no panic when creating URLElicitationRequiredError with empty mode (defaults to form), want panic")
+				t.Error("got no panic when creating URLElicitationRequiredError with an inferred form mode, want panic")
 			}
 		}()
 
-		// This should panic because empty mode defaults to "form"
 		URLElicitationRequiredError([]*ElicitParams{
 			{
-				Message:       "This should panic",
-				ElicitationID: "bad-123",
+				Message: "This should panic",
 			},
 		})
 	})
+
+	t.Run("empty mode is inferred as url", func(t *testing.T) {
+		in := []*ElicitParams{
+			{
+				Message:       "Please authorize",
+				URL:           "https://example.com/auth",
+				ElicitationID: "auth-123",
+			},
+		}
+		got, ok, parseErr := ParseURLElicitationRequiredError(URLElicitationRequiredError(in))
+		if !ok || parseErr != nil {
+			t.Fatalf("ParseURLElicitationRequiredError: got ok=%v, err=%v, want ok=true, err=nil", ok, parseErr)
+		}
+		want := []*ElicitParams{
+			{
+				Mode:          "url",
+				Message:       "Please authorize",
+				URL:           "https://example.com/auth",
+				ElicitationID: "auth-123",
+			},
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("elicitations mismatch (-want +got):\n%s", diff)
+		}
+		if in[0].Mode != "" {
+			t.Errorf("input Mode was changed to %q, want it left empty", in[0].Mode)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		elicitations []*ElicitParams
+		wantErr      string
+	}{
+		{"nil list", nil, "no elicitations"},
+		{"nil elicitation", []*ElicitParams{nil}, "elicitation 0 is nil"},
+		{"missing URL", []*ElicitParams{{Mode: "url", ElicitationID: "auth-123"}}, "elicitation 0 has no URL"},
+		{"missing ElicitationID", []*ElicitParams{{Mode: "url", URL: "https://example.com/auth"}}, "elicitation 0 has no ElicitationID"},
+		{"inferred mode missing ElicitationID", []*ElicitParams{{URL: "https://example.com/auth"}}, "elicitation 0 has no ElicitationID"},
+	} {
+		t.Run("invalid input: "+tc.name, func(t *testing.T) {
+			err := URLElicitationRequiredError(tc.elicitations)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got error %v, want one containing %q", err, tc.wantErr)
+			}
+			var rpcErr *jsonrpc.Error
+			if errors.As(err, &rpcErr) {
+				t.Errorf("got *jsonrpc.Error with code %d, want a non-protocol error", rpcErr.Code)
+			}
+		})
+	}
 }
 
 func TestParseURLElicitationRequiredError(t *testing.T) {

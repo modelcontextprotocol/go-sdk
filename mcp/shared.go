@@ -462,20 +462,36 @@ var CodeResourceNotFound int64 = jsonrpc.CodeInvalidParams
 // URLElicitationRequiredError returns an error indicating that URL elicitation is required
 // before the request can be processed. The elicitations parameter should contain the
 // elicitation requests that must be completed.
+//
+// An empty Mode is inferred as in [ServerSession.Elicit]: "url" when URL or
+// ElicitationID is set, otherwise "form". It panics if an elicitation's mode is
+// not "url". If elicitations is empty, or an elicitation is nil or lacks a URL or
+// an ElicitationID, it returns an error that is not a [*jsonrpc.Error], since a
+// client could not act on such a request.
 func URLElicitationRequiredError(elicitations []*ElicitParams) error {
-	// Validate that all elicitations are URL mode
-	for _, elicit := range elicitations {
-		mode := elicit.Mode
-		if mode == "" {
-			mode = "form" // default mode
+	if len(elicitations) == 0 {
+		return errors.New("URLElicitationRequiredError: no elicitations")
+	}
+	inferred := make([]*ElicitParams, len(elicitations))
+	for i, elicit := range elicitations {
+		if elicit == nil {
+			return fmt.Errorf("URLElicitationRequiredError: elicitation %d is nil", i)
 		}
-		if mode != "url" {
-			panic(fmt.Sprintf("URLElicitationRequiredError requires all elicitations to be URL mode, got %q", mode))
+		elicit = elicit.inferElicitMode()
+		if elicit.Mode != "url" {
+			panic(fmt.Sprintf("URLElicitationRequiredError requires all elicitations to be URL mode, got %q", elicit.Mode))
 		}
+		switch {
+		case elicit.URL == "":
+			return fmt.Errorf("URLElicitationRequiredError: elicitation %d has no URL", i)
+		case elicit.ElicitationID == "":
+			return fmt.Errorf("URLElicitationRequiredError: elicitation %d has no ElicitationID", i)
+		}
+		inferred[i] = elicit
 	}
 
 	data, err := json.Marshal(map[string]any{
-		"elicitations": elicitations,
+		"elicitations": inferred,
 	})
 	if err != nil {
 		// This should never happen with valid ElicitParams
