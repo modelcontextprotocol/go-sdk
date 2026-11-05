@@ -2253,8 +2253,8 @@ type ElicitParams struct {
 	// Internally, the SDK uses github.com/google/jsonschema-go for validation,
 	// which only supports the 2020-12 draft of the JSON schema spec.
 	//
-	// From the client, this field will use the default JSON marshaling (a
-	// map[string]any).
+	// From the client, this field holds the decoded schema with json.Number
+	// values, preserving numeric constraints without floating-point rounding.
 	//
 	// Only top-level properties are allowed, without nesting.
 	//
@@ -2268,6 +2268,16 @@ type ElicitParams struct {
 	//
 	// This is only used for "url" elicitation.
 	ElicitationID string `json:"elicitationId,omitempty"`
+}
+
+func (x *ElicitParams) UnmarshalJSON(data []byte) error {
+	type wireElicitParams ElicitParams
+	var wire wireElicitParams
+	if err := internaljson.UnmarshalUseNumber(data, &wire); err != nil {
+		return err
+	}
+	*x = ElicitParams(wire)
+	return nil
 }
 
 func (x *ElicitParams) isParams()       {}
