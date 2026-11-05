@@ -130,3 +130,21 @@ func TestTemplateMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestComputeURIFilepathLocalizeError checks that a path which fails
+// filepath.Localize (e.g. one escaping its directory) is named in the returned
+// error. Regression: the message formatted filepath.Localize's error-path
+// return value, which is always "", so it never identified the offending path.
+func TestComputeURIFilepathLocalizeError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TODO: fix for Windows")
+	}
+	dirFilepath := filepath.FromSlash("/files")
+	_, err := computeURIFilepath("file://foo/../bar", dirFilepath, nil)
+	if err == nil {
+		t.Fatal("expected a localize error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bar") {
+		t.Errorf("error %q does not name the offending path %q", err, "../bar")
+	}
+}

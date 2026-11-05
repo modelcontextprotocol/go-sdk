@@ -1,6 +1,5 @@
 client:
   # OAuth mechanisms not implemented by the Go MCP SDK.
-  - auth/client-credentials-basic
   - auth/client-credentials-jwt
   - auth/enterprise-managed-authorization
 

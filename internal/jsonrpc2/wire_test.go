@@ -148,6 +148,48 @@ func TestDecodeIDOnlyMessageIsResponse(t *testing.T) {
 	}
 }
 
+// TestDecodeIntegerIDs checks that numeric IDs decode exactly, including
+// integers above 2^53 that a float64 cannot hold, and that a numeric ID that
+// is not an int64 integer literal is rejected.
+func TestDecodeIntegerIDs(t *testing.T) {
+	for _, tc := range []struct {
+		wire string
+		want jsonrpc2.ID
+	}{
+		{`9007199254740992`, jsonrpc2.Int64ID(9007199254740992)},
+		{`9007199254740993`, jsonrpc2.Int64ID(9007199254740993)},
+		{`9223372036854775807`, jsonrpc2.Int64ID(9223372036854775807)},
+		{`-9223372036854775808`, jsonrpc2.Int64ID(-9223372036854775808)},
+		{`"9007199254740993"`, jsonrpc2.StringID("9007199254740993")},
+	} {
+		for _, encoded := range []string{
+			`{"jsonrpc":"2.0","id":` + tc.wire + `,"method":"m"}`,
+			`{"jsonrpc":"2.0","id":` + tc.wire + `,"result":{}}`,
+		} {
+			msg, err := jsonrpc2.DecodeMessage([]byte(encoded))
+			if err != nil {
+				t.Fatalf("DecodeMessage(%s): %v", encoded, err)
+			}
+			var got jsonrpc2.ID
+			switch msg := msg.(type) {
+			case *jsonrpc2.Request:
+				got = msg.ID
+			case *jsonrpc2.Response:
+				got = msg.ID
+			}
+			if got != tc.want {
+				t.Errorf("DecodeMessage(%s) ID = %v, want %v", encoded, got.Raw(), tc.want.Raw())
+			}
+			// A response echoes the request ID, so it must encode back unchanged.
+			reencoded, err := jsonrpc2.EncodeMessage(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkJSON(t, reencoded, []byte(encoded))
+		}
+	}
+}
+
 // TestWireErrorIs checks the errors.Is behavior of WireError, including that
 // comparing against a typed-nil *WireError does not panic.
 func TestWireErrorIs(t *testing.T) {

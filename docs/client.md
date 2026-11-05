@@ -387,12 +387,6 @@ through
 [`ClientOptions.ElicitationCompleteHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationCompleteHandler).
 Send it from whatever endpoint the hosted flow redirects back to.
 
-The notification matters most when a handler rejects a request with
-[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError):
-the client parks the original request until a notification names that
-`ElicitationID`, and then retries it automatically. Until one arrives, the
-client waits.
-
 ```go
 func Example_elicitationComplete() {
 	ctx := context.Background()

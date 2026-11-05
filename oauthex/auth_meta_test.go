@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 )
 
@@ -32,12 +32,16 @@ func TestAuthMetaParse(t *testing.T) {
 	}
 }
 
-func TestGetAuthServerMetaPKCESupport(t *testing.T) {
+// TestGetAuthServerMetaPKCEMethods verifies that GetAuthServerMeta returns the
+// advertised PKCE methods without judging them. Only the authorization code
+// flows need PKCE, and they check it themselves; a server that serves only the
+// client credentials or JWT bearer grant does not advertise it.
+func TestGetAuthServerMetaPKCEMethods(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
 		name                    string
 		hasPKCESupport          bool
-		wantError               string
+		pkceMethods             []string // overrides the default ["S256"] when set
 		issuerWithTrailingSlash bool
 	}{
 		{
@@ -47,7 +51,16 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 		{
 			name:           "server_without_pkce_support",
 			hasPKCESupport: false,
-			wantError:      "does not implement PKCE",
+		},
+		{
+			name:           "server_with_only_plain_pkce",
+			hasPKCESupport: true,
+			pkceMethods:    []string{"plain"},
+		},
+		{
+			name:           "server_with_plain_and_s256_pkce",
+			hasPKCESupport: true,
+			pkceMethods:    []string{"plain", "S256"},
 		},
 		{
 			// ProtectedResourceMetadata may contain AuthorizationServers with a trailing slash (see Issue #953)
@@ -79,6 +92,9 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 				// Add PKCE support based on test case
 				if tt.hasPKCESupport {
 					metadata.CodeChallengeMethodsSupported = []string{"S256"}
+					if tt.pkceMethods != nil {
+						metadata.CodeChallengeMethodsSupported = tt.pkceMethods
+					}
 				}
 				// If hasPKCESupport is false, CodeChallengeMethodsSupported remains empty
 
@@ -105,24 +121,21 @@ func TestGetAuthServerMetaPKCESupport(t *testing.T) {
 			}
 
 			meta, err := GetAuthServerMeta(ctx, metadataURL, issuer, httpClient)
-			if tt.wantError != "" {
-				if err == nil {
-					t.Fatal("wanted error but got none")
+			if err != nil {
+				t.Fatalf("unwanted error: %v", err)
+			}
+			if meta == nil {
+				t.Fatal("wanted metadata but got nil")
+			}
+			var wantMethods []string
+			if tt.hasPKCESupport {
+				wantMethods = []string{"S256"}
+				if tt.pkceMethods != nil {
+					wantMethods = tt.pkceMethods
 				}
-				if !strings.Contains(err.Error(), tt.wantError) {
-					t.Errorf("wanted error to contain %q, but got: %v", tt.wantError, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("unwanted error: %v", err)
-				}
-				if meta == nil {
-					t.Fatal("wanted metadata but got nil")
-				}
-				// Verify PKCE support is present
-				if len(meta.CodeChallengeMethodsSupported) == 0 {
-					t.Error("wanted PKCE support but CodeChallengeMethodsSupported is empty")
-				}
+			}
+			if !slices.Equal(meta.CodeChallengeMethodsSupported, wantMethods) {
+				t.Errorf("CodeChallengeMethodsSupported = %v, want %v", meta.CodeChallengeMethodsSupported, wantMethods)
 			}
 		})
 	}
