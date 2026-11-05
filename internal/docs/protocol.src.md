@@ -234,6 +234,8 @@ non-ASCII values). On the server, the headers are validated against the body
 and either accepted or rejected with `-32020`. Properties so annotated must
 be typed `string`, `integer`, or `boolean`; tools that fail validation at
 registration time are silently dropped from `tools/list`.
+If a `tools/call` is rejected with `-32020`, `ClientSession.CallTool` fetches 
+the tool's current definition with `tools/list` and retries once if the tool's `x-mcp-header` annotations changed.
 
 #### Resumability and Redelivery
 
