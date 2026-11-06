@@ -99,10 +99,11 @@ Options listed below were added and will be removed in the 1.9.0 version of the 
   delivered (up to `notifyCancellationTimeout`, currently 5 s) before
   returning to the caller, restoring the previous behavior. The delivery
   error is joined into the caller's returned error. The default behavior was
-  changed so that the call is retired immediately and the notification is
-  sent asynchronously off the caller's return path: the caller returns as
-  soon as its context is cancelled and cannot be delayed by a slow or
-  unresponsive peer. See issue #1150.
+  changed so that the notification is sent asynchronously off the caller's
+  return path: the caller returns as soon as its context is cancelled and
+  cannot be delayed by a slow or unresponsive peer. The pending write is
+  reserved before return so a subsequent Close still delivers it. See
+  issues #1150 and #1505.
 
 Options below were removed, according to plan:
 

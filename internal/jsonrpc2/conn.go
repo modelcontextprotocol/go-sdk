@@ -293,10 +293,12 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 
 	c.updateInFlight(func(s *inFlightState) {
 		// If the connection is shutting down, allow outgoing notifications only if
-		// there is at least one call still in flight. The number of calls in flight
-		// cannot increase once shutdown begins, and allowing outgoing notifications
-		// may permit notifications that will cancel in-flight calls.
-		if len(s.outgoingCalls) == 0 && len(s.incomingByID) == 0 {
+		// there is at least one call still in flight, or a notification already
+		// reserved with [Connection.BeginOutgoingNotification]. The number of
+		// calls in flight cannot increase once shutdown begins, and allowing
+		// outgoing notifications may permit notifications that will cancel
+		// in-flight calls.
+		if len(s.outgoingCalls) == 0 && len(s.incomingByID) == 0 && s.outgoingNotifications == 0 {
 			err = s.shuttingDown(ErrConnClosing)
 			if err != nil {
 				return
@@ -315,6 +317,32 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 	}
 
 	return c.write(ctx, notify)
+}
+
+// BeginOutgoingNotification records that a notification will be sent
+// asynchronously. Close waits until the returned function is called, and
+// [Connection.Notify] is allowed to write during shutdown while the
+// reservation is held. If the connection is already done, the reservation is
+// a no-op.
+func (c *Connection) BeginOutgoingNotification() (end func()) {
+	accepted := false
+	c.updateInFlight(func(s *inFlightState) {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+		s.outgoingNotifications++
+		accepted = true
+	})
+	if !accepted {
+		return func() {}
+	}
+	return sync.OnceFunc(func() {
+		c.updateInFlight(func(s *inFlightState) {
+			s.outgoingNotifications--
+		})
+	})
 }
 
 // Call invokes the target method and returns an object that can be used to await the response.

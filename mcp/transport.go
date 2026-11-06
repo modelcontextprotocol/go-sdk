@@ -32,8 +32,8 @@ const notifyCancellationTimeout = 5 * time.Second
 // blockingcancelnotify, when set to "1" via MCPGODEBUG, restores the previous
 // behavior of blocking the caller's return on delivery of the best-effort
 // notifications/cancelled message (up to notifyCancellationTimeout). By
-// default, the call is retired immediately and the notification is sent
-// asynchronously so the caller returns as soon as its context is cancelled.
+// default, the notification is sent asynchronously so the caller returns as
+// soon as its context is cancelled.
 var blockingcancelnotify = mcpgodebug.Value("blockingcancelnotify")
 
 // ErrConnectionClosed is returned when sending a message to a connection that
@@ -319,11 +319,15 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		}
 		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
-		// The notifications/cancelled message is best-effort. Retire the call
-		// immediately (so an unresponsive peer cannot delay the eager
-		// retirement that cancelCall's docstring promises) and send the
-		// notification off the caller's return path so a slow or unresponsive
-		// peer cannot delay the caller past its own deadline. See issue #1150.
+		// The notifications/cancelled message is best-effort. Send it off the
+		// caller's return path so a slow or unresponsive peer cannot delay
+		// the caller past its own deadline (issue #1150).
+		//
+		// Reserve the write before returning so Close, which follows a
+		// cancelled call on graceful shutdown, waits for it and does not
+		// reject Notify. Retire immediately so an unresponsive peer's missing
+		// response cannot delay Close beyond notifyCancellationTimeout.
+		// See issue #1505.
 		//
 		// Setting MCPGODEBUG=blockingcancelnotify=1 restores the previous
 		// behavior of waiting synchronously for delivery inside cancelCall.
@@ -331,8 +335,10 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 			err := cancelCall(ctx, conn, call)
 			return errors.Join(ctx.Err(), err)
 		}
+		endNotify := conn.BeginOutgoingNotification()
 		conn.Retire(call, ctx.Err())
 		go func() {
+			defer endNotify()
 			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
 			defer stop()
 			_ = conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{

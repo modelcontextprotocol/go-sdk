@@ -4032,13 +4032,17 @@ func TestCallCancellation_FastReturn(t *testing.T) {
 	// slack accounts for scheduling jitter around the deadline.
 	const slack = 500 * time.Millisecond
 
+	stopStall := make(chan struct{})
 	stallCancelNotify := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost && r.Body != nil {
 				body, _ := io.ReadAll(r.Body)
 				r.Body = io.NopCloser(bytes.NewReader(body))
 				if bytes.Contains(body, []byte(notificationCancelled)) {
-					time.Sleep(stallDuration)
+					select {
+					case <-time.After(stallDuration):
+					case <-stopStall:
+					}
 				}
 			}
 			h.ServeHTTP(w, r)
@@ -4068,7 +4072,10 @@ func TestCallCancellation_FastReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { cs.Close() })
+	t.Cleanup(func() {
+		close(stopStall)
+		cs.Close()
+	})
 
 	callCtx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
@@ -4084,6 +4091,60 @@ func TestCallCancellation_FastReturn(t *testing.T) {
 	if elapsed > callerDeadline+slack {
 		t.Errorf("CallTool returned after %v; want <= %v (caller deadline %v + slack %v)",
 			elapsed, callerDeadline+slack, callerDeadline, slack)
+	}
+}
+
+// TestCloseAfterCanceledCallCancelsTheServerHandler verifies that closing the
+// session immediately after a cancelled tools/call still delivers
+// notifications/cancelled. Otherwise a stateful streamable handler keeps
+// running and ClientSession.Close blocks for closeDeleteTimeout. See #1505.
+func TestCloseAfterCanceledCallCancelsTheServerHandler(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	release := make(chan struct{})
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "wait"},
+		func(ctx context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+			entered <- struct{}{}
+			select {
+			case <-ctx.Done():
+				canceled <- struct{}{}
+				return nil, nil, ctx.Err()
+			case <-release:
+				return &CallToolResult{}, nil, nil
+			}
+		})
+	httpServer := httptest.NewServer(NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, nil))
+	t.Cleanup(httpServer.Close)
+	t.Cleanup(func() { close(release) })
+
+	client := NewClient(testImpl, nil)
+	session, err := client.Connect(context.Background(), &StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-entered
+		cancel()
+	}()
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "wait"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallTool: got %v, want context.Canceled", err)
+	}
+
+	start := time.Now()
+	_ = session.Close()
+	closed := time.Since(start)
+
+	select {
+	case <-canceled:
+		if closed >= closeDeleteTimeout {
+			t.Errorf("Close took %v; want less than closeDeleteTimeout (%v)", closed, closeDeleteTimeout)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("server handler never saw the cancellation; Close took %v", closed.Round(time.Millisecond))
 	}
 }
 

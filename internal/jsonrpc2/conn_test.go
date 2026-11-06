@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakeReader struct {
@@ -258,4 +259,62 @@ func (w *dropWriter) drops() []ID {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.dropped)
+}
+
+// TestBeginOutgoingNotificationAllowsNotifyDuringClose verifies that a
+// notification reserved with BeginOutgoingNotification is still written when
+// Close races with the sender, which is how MCP delivers notifications/cancelled
+// after a cancelled call (issue #1505).
+func TestBeginOutgoingNotificationAllowsNotifyDuringClose(t *testing.T) {
+	in := &chanReader{msgs: make(chan Message)}
+	w := fakeWriter{out: make(chan Message, 2)}
+	conn := NewConnection(context.Background(), ConnectionConfig{
+		Reader: in,
+		Writer: w,
+		Closer: in,
+		Bind: func(*Connection) Handler {
+			return HandlerFunc(func(context.Context, *Request) (any, error) {
+				return nil, ErrNotHandled
+			})
+		},
+	})
+
+	callCtx, cancel := context.WithCancel(context.Background())
+	call := conn.Call(callCtx, "slow", nil)
+	got := <-w.out
+	if req, ok := got.(*Request); !ok || !req.IsCall() {
+		t.Fatalf("got %#v, want the outgoing call", got)
+	}
+	cancel()
+	if err := call.Await(callCtx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Await: %v, want context.Canceled", err)
+	}
+
+	end := conn.BeginOutgoingNotification()
+	conn.Retire(call, callCtx.Err())
+	go func() {
+		defer end()
+		_ = conn.Notify(context.Background(), "notifications/cancelled", nil)
+	}()
+
+	closed := make(chan error, 1)
+	go func() { closed <- conn.Close() }()
+
+	select {
+	case msg := <-w.out:
+		req, ok := msg.(*Request)
+		if !ok || req.IsCall() || req.Method != "notifications/cancelled" {
+			t.Fatalf("got %#v, want notifications/cancelled", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification was not written")
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
 }
