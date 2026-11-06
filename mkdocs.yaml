@@ -50,6 +50,8 @@ nav:
     - MCP Components:
       - MCP Client: client.md
       - MCP Server: server.md
+    - Experimental Extensions:
+      - Server Cards: server_cards.md
     - Troubleshooting: troubleshooting.md
     - Backwards Compatibility: mcpgodebug.md
     - Rough Edges: rough_edges.md
