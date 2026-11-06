@@ -13,10 +13,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
-	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -890,95 +889,52 @@ func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
 	}
 }
 
-// writeObserver reports when the connection starts writing to its peer.
-type writeObserver struct {
-	net.Conn
-	once    sync.Once
-	writing chan struct{}
-}
+// TestIOConnCanceledQueuedWrite checks that a Write canceled while it waits for
+// another Write returns without sending its message, and that the connection
+// stays usable.
+func TestIOConnCanceledQueuedWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		local, peer := net.Pipe()
+		conn := newIOConn(local)
+		defer conn.Close()
+		defer peer.Close()
 
-func (w *writeObserver) Write(p []byte) (int, error) {
-	w.once.Do(func() { close(w.writing) })
-	return w.Conn.Write(p)
-}
+		write := func(ctx context.Context, method string) <-chan error {
+			errc := make(chan error, 1)
+			go func() { errc <- conn.Write(ctx, &jsonrpc.Request{Method: method}) }()
+			return errc
+		}
 
-func observedPipe(t *testing.T) (*ioConn, *writeObserver, net.Conn) {
-	t.Helper()
-	local, peer := net.Pipe()
-	observed := &writeObserver{Conn: local, writing: make(chan struct{})}
-	conn := newIOConn(observed)
-	t.Cleanup(func() {
-		conn.Close()
-		peer.Close()
+		// The peer is not reading yet, so the first Write blocks in the pipe.
+		first := write(context.Background(), "first")
+		synctest.Wait()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		canceled := write(ctx, "canceled")
+		synctest.Wait()
+		cancel()
+		if err := <-canceled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Write() = %v, want %v", err, context.Canceled)
+		}
+
+		second := write(context.Background(), "second")
+		frames := bufio.NewScanner(peer)
+		for _, want := range []string{"first", "second"} {
+			if !frames.Scan() {
+				t.Fatalf("peer read no frame, want %q: %v", want, frames.Err())
+			}
+			msg, err := jsonrpc2.DecodeMessage(frames.Bytes())
+			if err != nil {
+				t.Fatalf("decoding %q: %v", frames.Bytes(), err)
+			}
+			if got := msg.(*jsonrpc.Request).Method; got != want {
+				t.Fatalf("peer read %q, want %q", got, want)
+			}
+		}
+		for _, errc := range []<-chan error{first, second} {
+			if err := <-errc; err != nil {
+				t.Errorf("Write() = %v, want nil", err)
+			}
+		}
 	})
-	return conn, observed, peer
-}
-
-// TestIOConnCanceledQueuedWriteIsNeverSent checks that a message canceled while
-// waiting behind a blocked sender returns promptly, never reaches the peer, and
-// leaves the sender ahead of it intact.
-func TestIOConnCanceledQueuedWriteIsNeverSent(t *testing.T) {
-	conn, observed, peer := observedPipe(t)
-	first := make(chan error, 1)
-	go func() {
-		first <- conn.Write(context.Background(), &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "first"})
-	}()
-	<-observed.writing
-
-	ctx, cancel := context.WithCancel(context.Background())
-	queued := make(chan error, 1)
-	go func() {
-		queued <- conn.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(2), Method: "canceled"})
-	}()
-	time.Sleep(20 * time.Millisecond) // let the second message reach the queue
-	cancel()
-	select {
-	case err := <-queued:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("queued Write() = %v, want context.Canceled", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("queued Write() did not return after cancellation")
-	}
-
-	frames := bufio.NewReader(peer)
-	line, err := frames.ReadString('\n')
-	if err != nil || !strings.Contains(line, `"first"`) {
-		t.Fatalf("peer read %q, %v; want the first message", line, err)
-	}
-	if err := <-first; err != nil {
-		t.Fatalf("first Write() = %v, want nil", err)
-	}
-	peer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	if line, err := frames.ReadString('\n'); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("peer read %q, %v after the canceled message; want nothing", line, err)
-	}
-}
-
-// TestIOConnCanceledActiveWriteClosesConnection checks that canceling a write
-// blocked by a peer that never reads returns the cancellation and closes the
-// connection, since a partial frame may already be on the stream.
-func TestIOConnCanceledActiveWriteClosesConnection(t *testing.T) {
-	conn, observed, _ := observedPipe(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- conn.Write(ctx, &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "blocked"})
-	}()
-	<-observed.writing
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Write() = %v, want context.Canceled", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Write() did not return after cancellation")
-	}
-	if _, err := conn.Read(context.Background()); err == nil {
-		t.Fatal("Read() succeeded on a connection whose write was interrupted")
-	}
-	if err := conn.Write(context.Background(), &jsonrpc.Request{ID: jsonrpc2.Int64ID(2), Method: "after"}); err == nil {
-		t.Fatal("Write() succeeded on a connection whose write was interrupted")
-	}
 }

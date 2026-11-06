@@ -547,9 +547,10 @@ type ioConn struct {
 	protocolVersion string
 	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
-	// sending is a one-slot send queue. Its holder alone writes rwc and
-	// outgoingBatch; waiting for it is cancelable, unlike a mutex.
-	sending chan struct{}
+	// writeMu is a 1-element semaphore guarding Write, which must be
+	// concurrency safe. Send to it to lock and receive from it to unlock.
+	// Unlike a sync.Mutex, waiting for it can stop when the context is done.
+	writeMu chan struct{}
 	rwc     io.ReadWriteCloser // the underlying stream
 
 	// incoming receives messages from the read loop started in [newIOConn].
@@ -641,7 +642,7 @@ func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
 		}
 	}()
 	return &ioConn{
-		sending:  make(chan struct{}, 1),
+		writeMu:  make(chan struct{}, 1),
 		rwc:      rwc,
 		incoming: incoming,
 		closed:   closed,
@@ -872,17 +873,19 @@ func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 }
 
 func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
-	// A message still waiting for the stream leaves the queue without being
-	// sent, and its cancellation does not disturb the sender ahead of it.
+	// As in [ioConn.Read], enforce that Writes on a closed context are an error.
 	select {
-	case t.sending <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	select {
+	case t.writeMu <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-t.sending }()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	defer func() { <-t.writeMu }()
 
 	// Batching support: if msg is a Response, it may have completed a batch, so
 	// check that first. Otherwise, it is a request or notification, and we may
@@ -898,7 +901,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 				if err != nil {
 					return err
 				}
-				return t.send(ctx, append(data, '\n'))
+				data = append(data, '\n')
+				_, err = t.rwc.Write(data)
+				return err
 			}
 			return nil
 		}
@@ -910,7 +915,9 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 			if err != nil {
 				return err
 			}
-			return t.send(ctx, append(data, '\n'))
+			data = append(data, '\n')
+			_, err = t.rwc.Write(data)
+			return err
 		}
 		return nil
 	}
@@ -918,20 +925,8 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	if err != nil {
 		return fmt.Errorf("marshaling message: %v", err)
 	}
-	return t.send(ctx, append(data, '\n')) // newline delimited
-}
-
-// send writes one complete frame. Bytes already handed to the stream cannot be
-// withdrawn, and a partially written frame would corrupt every later one, so
-// canceling ctx mid-write closes the connection. That interrupts the write only
-// if closing rwc unblocks it; the caller then still learns that the peer may
-// have received some or all of the frame.
-func (t *ioConn) send(ctx context.Context, data []byte) error {
-	interrupt := context.AfterFunc(ctx, func() { _ = t.Close() })
-	_, err := t.rwc.Write(data)
-	if !interrupt() {
-		return errors.Join(ctx.Err(), err)
-	}
+	data = append(data, '\n') // newline delimited
+	_, err = t.rwc.Write(data)
 	return err
 }
 
