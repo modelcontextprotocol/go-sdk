@@ -27,6 +27,13 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   that large integers and other exact JSON values do not silently lose
   precision.
 
+- `schemaandmetafloat64` added. If set to `1`, numbers in tool input and
+  output schemas, elicitation schemas, and the `_meta` of tools, tool results,
+  their content, and elicitation requests are decoded as `float64`, restoring
+  the previous behavior. The default behavior decodes them as `json.Number`, as
+  for `CallToolResult.StructuredContent`, so that large integers and other
+  exact JSON values do not silently lose precision.
+
 - `disablepromptargsvalidation` added. If set to `1`, `Server.getPrompt` will
   call the prompt handler even when a required argument of the prompt is
   missing from the request, restoring the previous behavior. The default
