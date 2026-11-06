@@ -2165,6 +2165,14 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "missing",
 		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+			},
+			messages:       []jsonrpc.Message{req(0, "notifications/cancelled", &CancelledParams{RequestID: 9})},
+			wantStatusCode: http.StatusAccepted,
+		},
 	})
 }
 
