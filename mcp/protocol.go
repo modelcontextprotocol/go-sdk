@@ -333,6 +333,8 @@ type CallToolParamsRaw struct {
 type CallToolResult struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
+	// Numbers received from the wire, here and in the metadata of Content, are
+	// represented as [json.Number] to preserve their exact values.
 	Meta `json:"_meta,omitempty"`
 
 	// A list of content objects that represent the unstructured result of the tool
@@ -445,6 +447,22 @@ func (r *CallToolResult) NeedsInput() bool { return r.resultType == resultTypeIn
 // losing precision. The option will be removed in the 1.11.0 version of the SDK.
 var structuredcontentfloat64 = mcpgodebug.Value("structuredcontentfloat64")
 
+// schemaandmetafloat64 is a compatibility parameter that restores the previous
+// behavior of decoding numbers in tool and elicitation schemas, and in the
+// metadata of tools, tool results and their content, and elicitation requests,
+// as float64 values. By default, numbers are decoded as [json.Number] to avoid
+// losing precision. The option will be removed in the 1.11.0 version of the SDK.
+var schemaandmetafloat64 = mcpgodebug.Value("schemaandmetafloat64")
+
+// unmarshalSchemaAndMeta is [internaljson.UnmarshalUseNumber], or
+// [internaljson.Unmarshal] if schemaandmetafloat64 is set.
+func unmarshalSchemaAndMeta(data []byte, v any) error {
+	if schemaandmetafloat64 == "1" {
+		return internaljson.Unmarshal(data, v)
+	}
+	return internaljson.UnmarshalUseNumber(data, v)
+}
+
 func (x *CallToolResult) MarshalJSON() ([]byte, error) {
 	type res CallToolResult // avoid recursion
 	type wire struct {
@@ -471,7 +489,7 @@ func (x *CallToolResult) UnmarshalJSON(data []byte) error {
 		StructuredContent json.RawMessage `json:"structuredContent"`
 		ResultType        resultType      `json:"resultType"`
 	}
-	if err := internaljson.Unmarshal(data, &wire); err != nil {
+	if err := unmarshalSchemaAndMeta(data, &wire); err != nil {
 		return err
 	}
 	if len(wire.StructuredContent) > 0 {
@@ -2000,6 +2018,8 @@ func (x *SetLoggingLevelParams) SetProgressToken(t any) { setProgressToken(x, t)
 type Tool struct {
 	// See [specification/2025-06-18/basic/index#general-fields] for notes on _meta
 	// usage.
+	// Numbers received from the wire are represented as [json.Number] to
+	// preserve their exact values.
 	Meta `json:"_meta,omitempty"`
 	// Optional additional tool information.
 	//
@@ -2022,7 +2042,8 @@ type Tool struct {
 	// [Server.AddTool].
 	//
 	// From the client, this field will hold the default JSON marshaling of the
-	// server's input schema (a map[string]any).
+	// server's input schema (a map[string]any), with numbers represented as
+	// [json.Number] to preserve their exact values.
 	InputSchema any `json:"inputSchema"`
 	// Intended for programmatic or logical use, but used as a display name in past
 	// specs or fallback (if title isn't present).
@@ -2040,7 +2061,8 @@ type Tool struct {
 	// [Server.AddTool].
 	//
 	// From the client, this field will hold the default JSON marshaling of the
-	// server's output schema (a map[string]any).
+	// server's output schema (a map[string]any), with numbers represented as
+	// [json.Number] to preserve their exact values.
 	OutputSchema any `json:"outputSchema,omitempty"`
 	// Intended for UI and end-user contexts — optimized to be human-readable and
 	// easily understood, even by those unfamiliar with domain-specific terminology.
@@ -2049,6 +2071,11 @@ type Tool struct {
 	Title string `json:"title,omitempty"`
 	// Icons for the tool, if any.
 	Icons []Icon `json:"icons,omitempty"`
+}
+
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type tool Tool // avoid recursion
+	return unmarshalSchemaAndMeta(data, (*tool)(t))
 }
 
 // hintomitempty is a compatibility parameter that restores the pre-1.7.0
@@ -2228,6 +2255,8 @@ func (x *SubscriptionsListenResult) isNil() bool { return x == nil }
 type ElicitParams struct {
 	// This property is reserved by the protocol to allow clients and servers to
 	// attach additional metadata to their responses.
+	// Numbers received from the wire are represented as [json.Number] to
+	// preserve their exact values.
 	Meta `json:"_meta,omitempty"`
 	// The mode of elicitation to use.
 	//
@@ -2243,7 +2272,8 @@ type ElicitParams struct {
 	// which only supports the 2020-12 draft of the JSON schema spec.
 	//
 	// From the client, this field will use the default JSON marshaling (a
-	// map[string]any).
+	// map[string]any), with numbers represented as [json.Number] to preserve
+	// their exact values.
 	//
 	// Only top-level properties are allowed, without nesting.
 	//
@@ -2257,6 +2287,11 @@ type ElicitParams struct {
 	//
 	// This is only used for "url" elicitation.
 	ElicitationID string `json:"elicitationId,omitempty"`
+}
+
+func (x *ElicitParams) UnmarshalJSON(data []byte) error {
+	type params ElicitParams // avoid recursion
+	return unmarshalSchemaAndMeta(data, (*params)(x))
 }
 
 func (x *ElicitParams) isParams()       {}
