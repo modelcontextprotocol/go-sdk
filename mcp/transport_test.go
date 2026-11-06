@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -885,4 +887,54 @@ func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
 	if plain.propagateCancellation() {
 		t.Error("propagateCancellation() = true for a delegate without the interface, want false")
 	}
+}
+
+// TestIOConnCanceledQueuedWrite checks that a Write canceled while it waits for
+// another Write returns without sending its message, and that the connection
+// stays usable.
+func TestIOConnCanceledQueuedWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		local, peer := net.Pipe()
+		conn := newIOConn(local)
+		defer conn.Close()
+		defer peer.Close()
+
+		write := func(ctx context.Context, method string) <-chan error {
+			errc := make(chan error, 1)
+			go func() { errc <- conn.Write(ctx, &jsonrpc.Request{Method: method}) }()
+			return errc
+		}
+
+		// The peer is not reading yet, so the first Write blocks in the pipe.
+		first := write(context.Background(), "first")
+		synctest.Wait()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		canceled := write(ctx, "canceled")
+		synctest.Wait()
+		cancel()
+		if err := <-canceled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Write() = %v, want %v", err, context.Canceled)
+		}
+
+		second := write(context.Background(), "second")
+		frames := bufio.NewScanner(peer)
+		for _, want := range []string{"first", "second"} {
+			if !frames.Scan() {
+				t.Fatalf("peer read no frame, want %q: %v", want, frames.Err())
+			}
+			msg, err := jsonrpc2.DecodeMessage(frames.Bytes())
+			if err != nil {
+				t.Fatalf("decoding %q: %v", frames.Bytes(), err)
+			}
+			if got := msg.(*jsonrpc.Request).Method; got != want {
+				t.Fatalf("peer read %q, want %q", got, want)
+			}
+		}
+		for _, errc := range []<-chan error{first, second} {
+			if err := <-errc; err != nil {
+				t.Errorf("Write() = %v, want nil", err)
+			}
+		}
+	})
 }
