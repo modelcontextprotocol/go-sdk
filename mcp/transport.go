@@ -547,7 +547,10 @@ type ioConn struct {
 	protocolVersion string
 	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
-	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
+	// writeMu is a 1-element semaphore guarding Write, which must be
+	// concurrency safe. Send to it to lock and receive from it to unlock.
+	// Unlike a sync.Mutex, waiting for it can stop when the context is done.
+	writeMu chan struct{}
 	rwc     io.ReadWriteCloser // the underlying stream
 
 	// incoming receives messages from the read loop started in [newIOConn].
@@ -639,6 +642,7 @@ func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
 		}
 	}()
 	return &ioConn{
+		writeMu:  make(chan struct{}, 1),
 		rwc:      rwc,
 		incoming: incoming,
 		closed:   closed,
@@ -876,8 +880,12 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	default:
 	}
 
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
+	select {
+	case t.writeMu <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-t.writeMu }()
 
 	// Batching support: if msg is a Response, it may have completed a batch, so
 	// check that first. Otherwise, it is a request or notification, and we may

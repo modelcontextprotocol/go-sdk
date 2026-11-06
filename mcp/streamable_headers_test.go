@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -240,7 +241,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		{
 			name:           "missing Mcp-Method header",
 			version:        minVersionForStandardHeaders,
-			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
+			msg:            &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr:        true,
 			wantErrContain: "missing required Mcp-Method header",
 		},
@@ -366,6 +367,20 @@ func TestValidateMcpHeaders(t *testing.T) {
 			methodHeader: "notifications/initialized",
 			msg:          &jsonrpc.Request{Method: "notifications/initialized"},
 			wantErr:      false,
+		},
+		{
+			name:    "notification without Mcp-Method header",
+			version: minVersionForStandardHeaders,
+			msg:     &jsonrpc.Request{Method: "notifications/cancelled"},
+			wantErr: false,
+		},
+		{
+			name:           "notification with mismatched Mcp-Method header",
+			version:        minVersionForStandardHeaders,
+			methodHeader:   "notifications/initialized",
+			msg:            &jsonrpc.Request{Method: "notifications/cancelled"},
+			wantErr:        true,
+			wantErrContain: "Mcp-Method header value 'notifications/initialized' does not match body value 'notifications/cancelled'",
 		},
 		{
 			name:         "tool name with hyphen",

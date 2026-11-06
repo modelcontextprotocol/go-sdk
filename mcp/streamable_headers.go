@@ -418,6 +418,9 @@ func validateMcpHeaders(header http.Header, msg jsonrpc.Message, toolLookup func
 			return err
 		}
 		if methodInHeader == "" {
+			if !msg.IsCall() {
+				return nil
+			}
 			return errors.New("missing required Mcp-Method header")
 		}
 		if methodInHeader != msg.Method {

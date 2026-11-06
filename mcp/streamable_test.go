@@ -2165,6 +2165,14 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "missing",
 		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+			},
+			messages:       []jsonrpc.Message{req(0, "notifications/cancelled", &CancelledParams{RequestID: 9})},
+			wantStatusCode: http.StatusAccepted,
+		},
 	})
 }
 
@@ -2482,6 +2490,138 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	}
 	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
 		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+}
+
+// TestCallToolFallbackOnHeaderMismatch verifies that CallTool refreshes a
+// missing or stale tool definition and retries once when the server rejects
+// the call with CodeHeaderMismatch.
+func TestCallToolFallbackOnHeaderMismatch(t *testing.T) {
+	ctx := t.Context()
+
+	server := NewServer(&Implementation{Name: "s", Version: "v1"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "get_weather",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region"},
+				},
+			},
+		},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		},
+	)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	tests := []struct {
+		name         string
+		cached       *Tool
+		listFirst    bool
+		wantRequests []string
+	}{
+		{
+			name:         "empty cache",
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+		{
+			name:         "cached without annotation",
+			cached:       &Tool{Name: "get_weather", InputSchema: map[string]any{"type": "object"}},
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+		{
+			name:         "cache up to date",
+			listFirst:    true,
+			wantRequests: []string{"tools/call Region=us-east4"},
+		},
+		{
+			name: "cached with renamed header",
+			cached: &Tool{
+				Name: "get_weather",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Zone"},
+					},
+				},
+			},
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				mu       sync.Mutex
+				requests []string
+			)
+			httpClient := &http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					switch method := req.Header.Get(methodHeader); method {
+					case methodCallTool:
+						mu.Lock()
+						requests = append(requests, method+" Region="+req.Header.Get(paramHeaderPrefix+"Region"))
+						mu.Unlock()
+					case methodListTools:
+						mu.Lock()
+						requests = append(requests, method)
+						mu.Unlock()
+					}
+					return http.DefaultTransport.RoundTrip(req)
+				}),
+			}
+
+			client := NewClient(&Implementation{Name: "c", Version: "v1"}, nil)
+			session, err := client.Connect(ctx,
+				&StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: httpClient},
+				&ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			if tt.listFirst {
+				if _, err := session.ListTools(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if tt.cached != nil {
+				session.toolsCache.put("", &ListToolsResult{
+					Cacheable: Cacheable{TTLMs: 60_000},
+					Tools:     []*Tool{tt.cached},
+				})
+			}
+			mu.Lock()
+			requests = nil
+			mu.Unlock()
+			_, err = session.CallTool(ctx, &CallToolParams{
+				Name:      "get_weather",
+				Arguments: map[string]any{"region": "us-east4"},
+			})
+			if err != nil {
+				t.Errorf("CallTool() failed: %v", err)
+			}
+
+			mu.Lock()
+			got := requests
+			mu.Unlock()
+			if diff := cmp.Diff(tt.wantRequests, got); diff != "" {
+				t.Errorf("requests mismatch (-want +got): \n%s", diff)
+			}
+		})
 	}
 }
 
