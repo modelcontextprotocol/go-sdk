@@ -494,10 +494,6 @@ type ClientSession struct {
 	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
 	readResourceCache      methodCache[*ReadResourceResult]
 
-	// Pending URL elicitations waiting for completion notifications.
-	pendingElicitationsMu sync.Mutex
-	pendingElicitations   map[string]chan struct{}
-
 	// resourceSubsMu guards resourceSubs and nextResourceSubGen.
 	resourceSubsMu sync.Mutex
 	// resourceSubs maps a subscribed resource URI to the state of the
@@ -629,46 +625,6 @@ func (cs *ClientSession) lookupTool(name string) *Tool {
 	return nil
 }
 
-// registerElicitationWaiter registers a waiter for an elicitation complete
-// notification with the given elicitation ID. It returns two functions: an await
-// function that waits for the notification or context cancellation, and a cleanup
-// function that must be called to unregister the waiter. This must be called before
-// triggering the elicitation to avoid a race condition where the notification
-// arrives before the waiter is registered.
-//
-// The cleanup function must be called even if the await function is never called,
-// to prevent leaking the registration.
-func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await func(context.Context) error, cleanup func()) {
-	// Create a channel for this elicitation.
-	ch := make(chan struct{}, 1)
-
-	// Register the channel.
-	cs.pendingElicitationsMu.Lock()
-	if cs.pendingElicitations == nil {
-		cs.pendingElicitations = make(map[string]chan struct{})
-	}
-	cs.pendingElicitations[elicitationID] = ch
-	cs.pendingElicitationsMu.Unlock()
-
-	// Return await and cleanup functions.
-	await = func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for elicitation completion: %w", ctx.Err())
-		case <-ch:
-			return nil
-		}
-	}
-
-	cleanup = func() {
-		cs.pendingElicitationsMu.Lock()
-		delete(cs.pendingElicitations, elicitationID)
-		cs.pendingElicitationsMu.Unlock()
-	}
-
-	return await, cleanup
-}
-
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
 	startKeepalive(cs, interval, cs.client.opts.KeepAliveFailureThreshold, &cs.keepaliveCancel, cs.client.opts.Logger)
@@ -791,110 +747,6 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 		return res.toWithTools(), nil
 	}
 	return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
-}
-
-// urlElicitationMiddleware returns middleware that automatically handles URL elicitation
-// required errors by executing the elicitation handler, waiting for completion notifications,
-// and retrying the operation.
-//
-// This middleware should be added to clients that want automatic URL elicitation handling:
-//
-//	client := mcp.NewClient(impl, opts)
-//	client.AddSendingMiddleware(mcp.urlElicitationMiddleware())
-//
-// TODO(rfindley): this isn't strictly necessary for the SEP, but may be
-// useful. Propose exporting it.
-func urlElicitationMiddleware() Middleware {
-	return func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			// Call the underlying handler.
-			res, err := next(ctx, method, req)
-			if err == nil {
-				return res, nil
-			}
-
-			// Check if this is a URL elicitation required error.
-			var rpcErr *jsonrpc.Error
-			if !errors.As(err, &rpcErr) || rpcErr.Code != CodeURLElicitationRequired {
-				return res, err
-			}
-
-			// Notifications don't support retries.
-			if strings.HasPrefix(method, "notifications/") {
-				return res, err
-			}
-
-			// Extract the client session.
-			cs, ok := req.GetSession().(*ClientSession)
-			if !ok {
-				return res, err
-			}
-
-			// Check if the client has an elicitation handler.
-			if cs.client.opts.ElicitationHandler == nil {
-				return res, err
-			}
-
-			// Parse the elicitations from the error data.
-			var errorData struct {
-				Elicitations []*ElicitParams `json:"elicitations"`
-			}
-			if rpcErr.Data != nil {
-				if err := json.Unmarshal(rpcErr.Data, &errorData); err != nil {
-					return nil, fmt.Errorf("failed to parse URL elicitation error data: %w", err)
-				}
-			}
-
-			// Validate that all elicitations are URL mode.
-			for _, elicit := range errorData.Elicitations {
-				mode := elicit.Mode
-				if mode == "" {
-					mode = "form" // Default mode.
-				}
-				if mode != "url" {
-					return nil, fmt.Errorf("URLElicitationRequired error must only contain URL mode elicitations, got %q", mode)
-				}
-			}
-
-			// Register waiters for all elicitations before executing handlers
-			// to avoid race condition where notification arrives before waiter is registered.
-			type waiter struct {
-				await   func(context.Context) error
-				cleanup func()
-			}
-			waiters := make([]waiter, 0, len(errorData.Elicitations))
-			for _, elicitParams := range errorData.Elicitations {
-				await, cleanup := cs.registerElicitationWaiter(elicitParams.ElicitationID)
-				waiters = append(waiters, waiter{await: await, cleanup: cleanup})
-			}
-
-			// Ensure cleanup happens even if we return early.
-			defer func() {
-				for _, w := range waiters {
-					w.cleanup()
-				}
-			}()
-
-			// Execute the elicitation handler for each elicitation.
-			for _, elicitParams := range errorData.Elicitations {
-				elicitReq := newClientRequest(cs, elicitParams)
-				_, elicitErr := cs.client.elicit(ctx, elicitReq)
-				if elicitErr != nil {
-					return nil, fmt.Errorf("URL elicitation failed: %w", elicitErr)
-				}
-			}
-
-			// Wait for all elicitations to complete.
-			for _, w := range waiters {
-				if err := w.await(ctx); err != nil {
-					return nil, err
-				}
-			}
-
-			// All elicitations complete, retry the original operation.
-			return next(ctx, method, req)
-		}
-	}
 }
 
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
@@ -1377,6 +1229,10 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 // CallTool calls the tool with the given parameters.
 //
 // The params.Arguments can be any value that marshals into a JSON object.
+//
+// If the server rejects the call with [CodeHeaderMismatch], CallTool refreshes
+// its definition of the tool with tools/list and retries once if the tool's
+// x-mcp-header annotations changed.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
 	if params == nil {
 		params = new(CallToolParams)
@@ -1387,13 +1243,59 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		params = &copy
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.lookupTool(params.Name); tool != nil {
-		ctx = context.WithValue(ctx, toolContextKey, tool)
-	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+
+	call := func(tool *Tool) (*CallToolResult, error) {
+		callCtx := ctx
+		if tool != nil {
+			callCtx = context.WithValue(ctx, toolContextKey, tool)
+		}
+		return handleSend[*CallToolResult](callCtx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	}
+
+	tool := cs.lookupTool(params.Name)
+	res, err := call(tool)
+	var wireErr *jsonrpc.Error
+	if cs.usesNewProtocol() && errors.As(err, &wireErr) && wireErr.Code == CodeHeaderMismatch {
+		if fresh := cs.refreshTool(ctx, params.Name); fresh != nil && !sameParamHeaders(tool, fresh) {
+			return call(fresh)
+		}
+	}
+	return res, err
+}
+
+// refreshTool clears the tools cache and re-lists tools until it finds the
+// named tool. It returns nil if the tool is not found or listing fails.
+func (cs *ClientSession) refreshTool(ctx context.Context, name string) *Tool {
+	cs.toolsCache.invalidate()
+	for t, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			return nil
+		}
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
+}
+
+// sameParamHeaders reports whether tool1 and tool2 produce the same
+// Mcp-Param-* headers for the same arguments.
+func sameParamHeaders(tool1, tool2 *Tool) bool {
+	return maps.EqualFunc(paramHeaderPaths(tool1), paramHeaderPaths(tool2), slices.Equal)
+}
+
+func paramHeaderPaths(tool *Tool) map[string][]string {
+	if tool == nil {
+		return nil
+	}
+	m := make(map[string][]string)
+	for _, binding := range extractParamHeaderAnnotations(tool) {
+		m[strings.ToLower(binding.Header)] = binding.Path
+	}
+	return m
 }
 
 // SetLoggingLevel sets the minimum severity level for log messages sent by
@@ -1681,20 +1583,6 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 }
 
 func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *ElicitationCompleteNotificationRequest) (Result, error) {
-	// Check if there's a pending elicitation waiting for this notification.
-	if cs, ok := req.GetSession().(*ClientSession); ok {
-		cs.pendingElicitationsMu.Lock()
-		if ch, exists := cs.pendingElicitations[req.Params.ElicitationID]; exists {
-			select {
-			case ch <- struct{}{}:
-			default:
-				// Channel already signaled.
-			}
-		}
-		cs.pendingElicitationsMu.Unlock()
-	}
-
-	// Call the user's handler if provided.
 	if h := c.opts.ElicitationCompleteHandler; h != nil {
 		h(ctx, req)
 	}
