@@ -254,30 +254,25 @@ type ToolResultContent struct {
 }
 
 func (c *ToolResultContent) MarshalJSON() ([]byte, error) {
-	// Marshal nested content
-	var contentWire []*wireContent
+	var contentWire []json.RawMessage
 	for _, content := range c.Content {
 		data, err := content.MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
-		var w wireContent
-		if err := internaljson.Unmarshal(data, &w); err != nil {
-			return nil, err
-		}
-		contentWire = append(contentWire, &w)
+		contentWire = append(contentWire, data)
 	}
 	if contentWire == nil {
-		contentWire = []*wireContent{} // avoid JSON null
+		contentWire = []json.RawMessage{} // avoid JSON null
 	}
 
 	wire := struct {
-		Type              string         `json:"type"`
-		ToolUseID         string         `json:"toolUseId"`
-		Content           []*wireContent `json:"content"`
-		StructuredContent any            `json:"structuredContent,omitempty"`
-		IsError           bool           `json:"isError,omitempty"`
-		Meta              Meta           `json:"_meta,omitempty"`
+		Type              string            `json:"type"`
+		ToolUseID         string            `json:"toolUseId"`
+		Content           []json.RawMessage `json:"content"`
+		StructuredContent any               `json:"structuredContent,omitempty"`
+		IsError           bool              `json:"isError,omitempty"`
+		Meta              Meta              `json:"_meta,omitempty"`
 	}{
 		Type:              "tool_result",
 		ToolUseID:         c.ToolUseID,
