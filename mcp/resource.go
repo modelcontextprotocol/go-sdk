@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
@@ -186,11 +187,26 @@ func fileRoot(root *Root) (_ string, err error) {
 		return "", errors.New("empty path")
 	}
 	// We don't want Localize here: we want an absolute path, which is not local.
-	fileRoot := filepath.Clean(filepath.FromSlash(rurl.Path))
+	fileRoot := filepath.Clean(filepath.FromSlash(fileURIPath(rurl.Path, runtime.GOOS)))
 	if !filepath.IsAbs(fileRoot) {
 		return "", errors.New("not an absolute path")
 	}
 	return fileRoot, nil
+}
+
+// fileURIPath returns the path of a file URI in the form used by goos.
+// On Windows, the path of a file URI for a drive letter path starts with a
+// slash, as in file:///C:/dir (RFC 8089, Appendix E.2), which is dropped so
+// that the result is the absolute path C:/dir.
+func fileURIPath(uriPath, goos string) string {
+	if goos == "windows" && len(uriPath) >= 3 && uriPath[0] == '/' && uriPath[2] == ':' && isASCIILetter(uriPath[1]) {
+		return uriPath[1:]
+	}
+	return uriPath
+}
+
+func isASCIILetter(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // Matches reports whether the receiver's uri template matches the uri.

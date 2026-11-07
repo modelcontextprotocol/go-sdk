@@ -12,23 +12,35 @@ import (
 )
 
 func TestFileRoot(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("TODO: fix for Windows")
-	}
-
-	for _, tt := range []struct {
+	type test struct {
 		uri     string
 		want    string
 		wantErr string // error must contain this string
-	}{
-		{uri: "file:///foo", want: "/foo"},
-		{uri: "file:///foo/bar", want: "/foo/bar"},
-		{uri: "file:///foo/../bar", want: "/bar"},
-		{uri: "file:/foo", want: "/foo"},
+	}
+	tests := []test{
 		{uri: "http:///foo", wantErr: "not a file"},
 		{uri: "file://foo", wantErr: "empty path"},
 		{uri: ":", wantErr: "missing protocol scheme"},
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			test{uri: "file:///C:/foo", want: `C:\foo`},
+			test{uri: "file:///c:/foo/bar", want: `c:\foo\bar`},
+			test{uri: "file:///C:/foo/../bar", want: `C:\bar`},
+			test{uri: "file:/C:/foo", want: `C:\foo`},
+			// VS Code percent-encodes the colon after the drive letter.
+			test{uri: "file:///c%3A/foo", want: `c:\foo`},
+			test{uri: "file:///foo", wantErr: "not an absolute path"},
+		)
+	} else {
+		tests = append(tests,
+			test{uri: "file:///foo", want: "/foo"},
+			test{uri: "file:///foo/bar", want: "/foo/bar"},
+			test{uri: "file:///foo/../bar", want: "/bar"},
+			test{uri: "file:/foo", want: "/foo"},
+		)
+	}
+	for _, tt := range tests {
 		got, err := fileRoot(&Root{URI: tt.uri})
 		if err != nil {
 			if tt.wantErr == "" {
@@ -43,6 +55,24 @@ func TestFileRoot(t *testing.T) {
 			t.Errorf("%s: succeeded, but wanted error with %q", tt.uri, tt.wantErr)
 		} else if got != tt.want {
 			t.Errorf("%s: got %q, want %q", tt.uri, got, tt.want)
+		}
+	}
+}
+
+func TestFileURIPath(t *testing.T) {
+	for _, tt := range []struct {
+		uriPath, goos, want string
+	}{
+		{"/C:/foo", "windows", "C:/foo"},
+		{"/c:/foo", "windows", "c:/foo"},
+		{"/C:", "windows", "C:"},
+		{"/foo", "windows", "/foo"},
+		{"/1:/foo", "windows", "/1:/foo"},
+		{"/C:/foo", "linux", "/C:/foo"},
+		{"/foo", "linux", "/foo"},
+	} {
+		if got := fileURIPath(tt.uriPath, tt.goos); got != tt.want {
+			t.Errorf("fileURIPath(%q, %q) = %q, want %q", tt.uriPath, tt.goos, got, tt.want)
 		}
 	}
 }
