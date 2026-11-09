@@ -186,20 +186,29 @@ func fileRoot(root *Root) (_ string, err error) {
 		// common mistake "file://foo".
 		return "", errors.New("empty path")
 	}
-	// We don't want Localize here: we want an absolute path, which is not local.
-	fileRoot := filepath.Clean(filepath.FromSlash(fileURIPath(rurl.Path, runtime.GOOS)))
+	fileRoot := filepath.Clean(filepath.FromSlash(fileURIPath(rurl.Host, rurl.Path, runtime.GOOS)))
 	if !filepath.IsAbs(fileRoot) {
 		return "", errors.New("not an absolute path")
 	}
 	return fileRoot, nil
 }
 
-// fileURIPath returns the path of a file URI in the form used by goos.
-// On Windows, the path of a file URI for a drive letter path starts with a
-// slash, as in file:///C:/dir (RFC 8089, Appendix E.2), which is dropped so
-// that the result is the absolute path C:/dir.
-func fileURIPath(uriPath, goos string) string {
-	if goos == "windows" && len(uriPath) >= 3 && uriPath[0] == '/' && uriPath[2] == ':' && isASCIILetter(uriPath[1]) {
+// fileURIPath returns the path of a file URI with the given host and path in
+// the form used by goos. On Windows:
+//   - The path of a file URI for a drive letter path starts with a slash, as
+//     in file:///C:/dir (RFC 8089, Appendix E.2), which is dropped so that the
+//     result is the absolute path C:/dir.
+//   - A file URI with a host other than localhost names a UNC path, as in
+//     file://server/share/dir (RFC 8089, Appendix E.3.1), whose result is
+//     //server/share/dir.
+func fileURIPath(host, uriPath, goos string) string {
+	if goos != "windows" {
+		return uriPath
+	}
+	if host != "" && !strings.EqualFold(host, "localhost") {
+		return "//" + host + uriPath
+	}
+	if len(uriPath) >= 3 && uriPath[0] == '/' && uriPath[2] == ':' && isASCIILetter(uriPath[1]) {
 		return uriPath[1:]
 	}
 	return uriPath

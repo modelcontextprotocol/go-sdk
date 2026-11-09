@@ -31,6 +31,8 @@ func TestFileRoot(t *testing.T) {
 			// VS Code percent-encodes the colon after the drive letter.
 			test{uri: "file:///c%3A/foo", want: `c:\foo`},
 			test{uri: "file:///foo", wantErr: "not an absolute path"},
+			test{uri: "file://localhost/C:/foo", want: `C:\foo`},
+			test{uri: "file://server/share/foo", want: `\\server\share\foo`},
 		)
 	} else {
 		tests = append(tests,
@@ -61,26 +63,26 @@ func TestFileRoot(t *testing.T) {
 
 func TestFileURIPath(t *testing.T) {
 	for _, tt := range []struct {
-		uriPath, goos, want string
+		host, uriPath, goos, want string
 	}{
-		{"/C:/foo", "windows", "C:/foo"},
-		{"/c:/foo", "windows", "c:/foo"},
-		{"/C:", "windows", "C:"},
-		{"/foo", "windows", "/foo"},
-		{"/1:/foo", "windows", "/1:/foo"},
-		{"/C:/foo", "linux", "/C:/foo"},
-		{"/foo", "linux", "/foo"},
+		{"", "/C:/foo", "windows", "C:/foo"},
+		{"", "/c:/foo", "windows", "c:/foo"},
+		{"", "/C:", "windows", "C:"},
+		{"", "/foo", "windows", "/foo"},
+		{"", "/1:/foo", "windows", "/1:/foo"},
+		{"localhost", "/C:/foo", "windows", "C:/foo"},
+		{"server", "/share/foo", "windows", "//server/share/foo"},
+		{"", "/C:/foo", "linux", "/C:/foo"},
+		{"", "/foo", "linux", "/foo"},
+		{"server", "/share/foo", "linux", "/share/foo"},
 	} {
-		if got := fileURIPath(tt.uriPath, tt.goos); got != tt.want {
-			t.Errorf("fileURIPath(%q, %q) = %q, want %q", tt.uriPath, tt.goos, got, tt.want)
+		if got := fileURIPath(tt.host, tt.uriPath, tt.goos); got != tt.want {
+			t.Errorf("fileURIPath(%q, %q, %q) = %q, want %q", tt.host, tt.uriPath, tt.goos, got, tt.want)
 		}
 	}
 }
 
 func TestComputeURIFilepath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("TODO: fix for Windows")
-	}
 	// TODO(jba): test with Windows \\host paths and C: paths
 	dirFilepath := filepath.FromSlash("/files")
 	rootFilepaths := []string{
@@ -125,9 +127,6 @@ func TestComputeURIFilepath(t *testing.T) {
 }
 
 func TestReadFileResource(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("TODO: fix for Windows")
-	}
 	abs, err := filepath.Abs("testdata")
 	if err != nil {
 		t.Fatal(err)
@@ -166,9 +165,6 @@ func TestTemplateMatch(t *testing.T) {
 // error. Regression: the message formatted filepath.Localize's error-path
 // return value, which is always "", so it never identified the offending path.
 func TestComputeURIFilepathLocalizeError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("TODO: fix for Windows")
-	}
 	dirFilepath := filepath.FromSlash("/files")
 	_, err := computeURIFilepath("file://foo/../bar", dirFilepath, nil)
 	if err == nil {
