@@ -2834,7 +2834,7 @@ func runSubscriptionsListenTest(t *testing.T, client *Client, server *Server, ct
 }
 
 type subListenEvent struct {
-	kind string // "ack", "tool", "prompt"
+	kind string // "ack", "tool", "prompt", "resource"
 	id   string // subscription ID from _meta, stringified for cross-encoding equality
 }
 
@@ -2851,6 +2851,9 @@ func newSubListenClient(events chan subListenEvent) *Client {
 		},
 		PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
 			events <- asEvent("prompt", req.Params.Meta[MetaKeySubscriptionID])
+		},
+		ResourceListChangedHandler: func(_ context.Context, req *ResourceListChangedRequest) {
+			events <- asEvent("resource", req.Params.Meta[MetaKeySubscriptionID])
 		},
 	})
 	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
@@ -2870,6 +2873,7 @@ func newSubListenServer() *Server {
 	s := NewServer(testImpl, nil)
 	AddTool(s, &Tool{Name: "t1"}, sayHi)
 	s.AddPrompt(&Prompt{Name: "p1"}, nil)
+	s.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
 	return s
 }
 
@@ -2985,6 +2989,150 @@ func TestSubscriptionsListen_MissingNotifications(t *testing.T) {
 	}
 	if jerr.Code != jsonrpc.CodeInvalidParams {
 		t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
+	}
+}
+
+// TestNotifyListChanged_OnlyChosenSession verifies that each Notify*ListChanged
+// method notifies only the session it is called on, on that session's listen and
+// tagged with the listen's subscription ID.
+func TestNotifyListChanged_OnlyChosenSession(t *testing.T) {
+	ctx := t.Context()
+	server := newSubListenServer()
+
+	// Open two clients on the same server.
+	open := func(t *testing.T) (chan subListenEvent, *ServerSession) {
+		t.Helper()
+		events := make(chan subListenEvent, 16)
+		ct, st := NewInMemoryTransports()
+		ss, err := server.Connect(context.Background(), st, nil)
+		if err != nil {
+			t.Fatalf("server connect: %v", err)
+		}
+		c := newSubListenClient(events)
+		_, err = c.Connect(context.Background(), ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		return events, ss
+	}
+	evA, ssA := open(t)
+	defer ssA.Close()
+	evB, ssB := open(t)
+	defer ssB.Close()
+	ackA := waitSubListenEvent(t, evA, "ack")
+	waitSubListenEvent(t, evB, "ack")
+
+	for _, tc := range []struct {
+		kind   string
+		notify func(context.Context, *ServerSession) error
+	}{
+		{"tool", func(ctx context.Context, ss *ServerSession) error { return ss.NotifyToolListChanged(ctx, nil) }},
+		{"prompt", func(ctx context.Context, ss *ServerSession) error { return ss.NotifyPromptListChanged(ctx, nil) }},
+		{"resource", func(ctx context.Context, ss *ServerSession) error { return ss.NotifyResourceListChanged(ctx, nil) }},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if err := tc.notify(ctx, ssA); err != nil {
+				t.Fatalf("notify: %v", err)
+			}
+
+			gotA := waitSubListenEvent(t, evA, tc.kind)
+			if gotA.id != ackA.id {
+				t.Errorf("session A: %s notification id = %s, want %s", tc.kind, gotA.id, ackA.id)
+			}
+			select {
+			case e := <-evA:
+				t.Fatalf("session A received a second event: %q", e.kind)
+			case e := <-evB:
+				t.Fatalf("session B received unexpected event %q", e.kind)
+			case <-time.After(notificationDelay * 5):
+			}
+		})
+	}
+}
+
+// TestNotifyListChanged_StreamableStateless verifies that, on a stateless HTTP
+// server, notifying the session of one client's subscriptions/listen request
+// reaches only that client, even when the caller's ctx carries the ID of an
+// unrelated request.
+func TestNotifyListChanged_StreamableStateless(t *testing.T) {
+	ctx := t.Context()
+	server := newSubListenServer()
+
+	listenSessions := make(chan *ServerSession, 2)
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSubscriptionsListen {
+				select {
+				case listenSessions <- req.GetSession().(*ServerSession):
+				default:
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{Stateless: true})
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// Close waits for open requests, so it must run after the clients close.
+	t.Cleanup(httpServer.Close)
+
+	// Open two clients on the same server.
+	open := func(t *testing.T) (chan subListenEvent, *ServerSession) {
+		t.Helper()
+		events := make(chan subListenEvent, 16)
+		c := newSubListenClient(events)
+		cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		t.Cleanup(func() { cs.Close() })
+		// Wait for this client's listen before opening the next client, so
+		// each saved session is matched to the right client.
+		select {
+		case ss := <-listenSessions:
+			return events, ss
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the client's listen")
+			return nil, nil
+		}
+	}
+	evA, ssA := open(t)
+	evB, _ := open(t)
+	ackA := waitSubListenEvent(t, evA, "ack")
+	waitSubListenEvent(t, evB, "ack")
+
+	// Notify with a ctx carrying another request's ID, as a tool handler's ctx
+	// would. The notification must still go out on the listen's stream.
+	otherID, err := jsonrpc.MakeID("other-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCtx := context.WithValue(ctx, idContextKey{}, otherID)
+
+	for _, tc := range []struct {
+		kind   string
+		ctx    context.Context
+		notify func(context.Context, *ServerSession) error
+	}{
+		{"tool", otherCtx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyToolListChanged(ctx, nil) }},
+		{"prompt", ctx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyPromptListChanged(ctx, nil) }},
+		{"resource", ctx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyResourceListChanged(ctx, nil) }}, // ctx of another request
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if err := tc.notify(tc.ctx, ssA); err != nil {
+				t.Fatalf("notify: %v", err)
+			}
+			gotA := waitSubListenEvent(t, evA, tc.kind)
+			if gotA.id != ackA.id {
+				t.Errorf("session A: %s notification id = %s, want %s", tc.kind, gotA.id, ackA.id)
+			}
+			select {
+			case e := <-evA:
+				t.Fatalf("session A received a second event: %q", e.kind)
+			case e := <-evB:
+				t.Fatalf("session B received unexpected event %q", e.kind)
+			case <-time.After(notificationDelay * 5):
+			}
+		})
 	}
 }
 
@@ -3536,8 +3684,8 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 		t.Fatal("timed out waiting for ack")
 	}
 
-	// Server should now have this session in tools+prompts maps (the fixture
-	// client opts in to both via newSubListenClient).
+	// Server should now have this session in tools+prompts+resource maps
+	// (the fixture client opts in to all three via newSubListenClient).
 	server.mu.Lock()
 	if _, ok := server.toolChangeSubscriptions[ss]; !ok {
 		server.mu.Unlock()
@@ -3546,6 +3694,10 @@ func TestSubscriptionsListen_DisconnectScrubsMaps(t *testing.T) {
 	if _, ok := server.promptChangeSubscriptions[ss]; !ok {
 		server.mu.Unlock()
 		t.Fatal("session missing from promptChangeSubscriptions before close")
+	}
+	if _, ok := server.resourceChangeSubscriptions[ss]; !ok {
+		server.mu.Unlock()
+		t.Fatal("session missing from resourceChangeSubscriptions before close")
 	}
 	server.mu.Unlock()
 
@@ -4028,7 +4180,6 @@ func TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown(t *testing.T) {
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			server := newSubListenServer()
-			server.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
 
 			ct, st := NewInMemoryTransports()
 			ss, err := server.Connect(context.Background(), st, nil)
@@ -4040,30 +4191,7 @@ func TestSubscriptionsListen_ListChangedOutlivesEarlierTeardown(t *testing.T) {
 			// A client with all three handlers, so that the auto-listen opened
 			// by Connect asks for every list-changed notification.
 			events := make(chan subListenEvent, 16)
-			notified := func(kind string, meta Meta) {
-				events <- subListenEvent{kind, fmt.Sprint(meta[MetaKeySubscriptionID])}
-			}
-			c := NewClient(testImpl, &ClientOptions{
-				ToolListChangedHandler: func(_ context.Context, req *ToolListChangedRequest) {
-					notified("tool", req.Params.Meta)
-				},
-				PromptListChangedHandler: func(_ context.Context, req *PromptListChangedRequest) {
-					notified("prompt", req.Params.Meta)
-				},
-				ResourceListChangedHandler: func(_ context.Context, req *ResourceListChangedRequest) {
-					notified("resource", req.Params.Meta)
-				},
-			})
-			c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-				return func(ctx context.Context, method string, req Request) (Result, error) {
-					if method == notificationSubscriptionsAck {
-						if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
-							notified("ack", cr.Params.Meta)
-						}
-					}
-					return next(ctx, method, req)
-				}
-			})
+			c := newSubListenClient(events)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
@@ -4148,7 +4276,6 @@ func TestSubscriptionsListen_EveryListenIsNotifiedOfListChanges(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					server := newSubListenServer()
-					server.AddResource(&Resource{Name: "r1", URI: "file:///r1"}, nil)
 
 					ct, st := NewInMemoryTransports()
 					ss, err := server.Connect(context.Background(), st, nil)
