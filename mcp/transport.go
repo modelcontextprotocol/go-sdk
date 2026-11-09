@@ -547,7 +547,10 @@ type ioConn struct {
 	protocolVersion string
 	dropped         map[jsonrpc2.ID]bool // lazily allocated
 
-	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
+	// writeMu is a 1-element semaphore guarding Write, which must be
+	// concurrency safe. Send to it to lock and receive from it to unlock.
+	// Unlike a sync.Mutex, waiting for it can stop when the context is done.
+	writeMu chan struct{}
 	rwc     io.ReadWriteCloser // the underlying stream
 
 	// incoming receives messages from the read loop started in [newIOConn].
@@ -604,7 +607,7 @@ func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
 			limiter *frameLimitReader
 		)
 		if limit > 0 {
-			limiter = &frameLimitReader{r: rwc, limit: limit}
+			limiter = &frameLimitReader{r: rwc, limit: int64(limit)}
 			reader = limiter
 		}
 		dec := json.NewDecoder(reader)
@@ -634,11 +637,12 @@ func newIOConnLimited(rwc io.ReadWriteCloser, maxLineLength int) *ioConn {
 				return
 			}
 			if limiter != nil {
-				limiter.resetFrame()
+				limiter.beginFrame(dec.InputOffset())
 			}
 		}
 	}()
 	return &ioConn{
+		writeMu:  make(chan struct{}, 1),
 		rwc:      rwc,
 		incoming: incoming,
 		closed:   closed,
@@ -651,25 +655,32 @@ var errFrameTooLarge = errors.New("inbound JSON-RPC frame exceeded the configure
 
 // frameLimitReader bounds the number of bytes [json.Decoder] may buffer while
 // decoding a single JSON value. Read returns [errFrameTooLarge] once the budget is exhausted.
+//
+// The decoder reads ahead, so when it finishes a value it may already hold
+// bytes of the next one. Those bytes belong to the next frame's budget, which
+// therefore starts at the decoder's input offset rather than at the reader's.
 type frameLimitReader struct {
 	r     io.Reader
-	limit int
-	count int
+	limit int64
+	read  int64 // bytes read from r
+	start int64 // offset in r of the current frame
 }
 
 func (r *frameLimitReader) Read(p []byte) (int, error) {
-	if r.count >= r.limit {
+	remaining := r.limit - (r.read - r.start)
+	if remaining <= 0 {
 		return 0, errFrameTooLarge
 	}
-	if len(p) > r.limit-r.count {
-		p = p[:r.limit-r.count]
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
 	}
 	n, err := r.r.Read(p)
-	r.count += n
+	r.read += int64(n)
 	return n, err
 }
 
-func (r *frameLimitReader) resetFrame() { r.count = 0 }
+// beginFrame starts the budget of a frame that begins at offset in r.
+func (r *frameLimitReader) beginFrame(offset int64) { r.start = offset }
 
 func (c *ioConn) SessionID() string { return "" }
 
@@ -876,8 +887,12 @@ func (t *ioConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	default:
 	}
 
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
+	select {
+	case t.writeMu <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-t.writeMu }()
 
 	// Batching support: if msg is a Response, it may have completed a batch, so
 	// check that first. Otherwise, it is a request or notification, and we may

@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -591,6 +593,121 @@ func TestIOConnFrameCap(t *testing.T) {
 	}
 }
 
+// TestIOConnFrameCapIgnoresReadBoundaries checks that whether a message fits
+// within the frame cap depends only on the message, not on how the reader
+// splits the stream or on what the decoder read ahead while decoding the
+// message before it.
+func TestIOConnFrameCapIgnoresReadBoundaries(t *testing.T) {
+	const limit = 128
+	chunks := []int{1, 2, 3, 7, 64, limit - 1, limit, limit + 1, 1 << 16}
+	tests := []struct {
+		name   string
+		frames []capFrame
+	}{
+		{"first message at the cap", []capFrame{{"", limit}}},
+		{"first message over the cap", []capFrame{{"", limit + 1}}},
+		{"message at the cap after a short one", []capFrame{{"", 50}, {"\n", limit}}},
+		{"message over the cap after a short one", []capFrame{{"", 50}, {"\n", limit + 1}}},
+		{"CRLF counts toward the next message", []capFrame{{"", 50}, {"\r\n", limit}, {"\r\n", limit + 1}}},
+		{"blank lines count toward the next message", []capFrame{{"", 50}, {"\n\n\n", limit}, {"\n\n", limit + 1}}},
+		{"each message has the whole cap", []capFrame{{"", limit}, {"\n", limit}, {"\n", limit}, {"\n", limit}}},
+		{"short messages then one over the cap", []capFrame{{"", 50}, {"\n", 50}, {"\n", 50}, {"\n", limit + 1}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkFrameCap(t, limit, tt.frames, chunks)
+		})
+	}
+}
+
+func FuzzIOConnFrameCap(f *testing.F) {
+	f.Add(uint8(64), uint8(0), []byte{0, 1, 2, 3})
+	f.Add(uint8(0), uint8(63), []byte{4, 255, 17, 200, 9})
+	f.Add(uint8(255), uint8(255), []byte{252, 253, 254, 255})
+	f.Fuzz(func(t *testing.T, limitByte, chunkByte uint8, layout []byte) {
+		const maxFrames = 16
+		if len(layout) > maxFrames {
+			layout = layout[:maxFrames]
+		}
+		separators := []string{"\n", "\r\n", "\n\n", "\r\n\r\n"}
+		frames := make([]capFrame, len(layout))
+		for i, b := range layout {
+			sep := separators[b%4]
+			if i == 0 {
+				sep = ""
+			}
+			frames[i] = capFrame{sep, len(sep) + len(capMessage("")) + 5*int(b/4)}
+		}
+		checkFrameCap(t, 64+int(limitByte), frames, []int{1, 1 + int(chunkByte), 1 << 16})
+	})
+}
+
+// A capFrame describes a message in a stream given to the frame cap.
+type capFrame struct {
+	sep  string // line terminators before the message
+	size int    // bytes the cap counts: len(sep) plus the message
+}
+
+// capMessage returns a JSON-RPC notification carrying pad.
+func capMessage(pad string) string {
+	return `{"jsonrpc":"2.0","method":"m","params":{"p":"` + pad + `"}}`
+}
+
+// checkFrameCap reads the stream described by frames, splitting it into
+// reads of each of the chunk sizes in turn, and checks that the connection
+// delivers exactly the leading messages whose size is at most limit.
+func checkFrameCap(t *testing.T, limit int, frames []capFrame, chunks []int) {
+	t.Helper()
+	var b strings.Builder
+	for _, f := range frames {
+		pad := f.size - len(f.sep) - len(capMessage(""))
+		if pad < 0 {
+			t.Fatalf("frame size %d is too small for a message after %q", f.size, f.sep)
+		}
+		b.WriteString(f.sep)
+		b.WriteString(capMessage(strings.Repeat("x", pad)))
+	}
+	b.WriteString("\n")
+	stream := b.String()
+
+	want, wantErr := 0, io.EOF
+	for want < len(frames) && frames[want].size <= limit {
+		want++
+	}
+	if want < len(frames) {
+		wantErr = errFrameTooLarge
+	}
+	for _, chunk := range chunks {
+		r := &chunkReader{r: strings.NewReader(stream), n: chunk}
+		tr := newIOConnLimited(rwc{rc: io.NopCloser(r)}, limit)
+		got := 0
+		var err error
+		for {
+			if _, err = tr.Read(context.Background()); err != nil {
+				break
+			}
+			got++
+		}
+		tr.Close()
+		if got != want || !errors.Is(err, wantErr) {
+			t.Errorf("reading %d bytes at a time: got %d messages, then %v; want %d, then %v", chunk, got, err, want, wantErr)
+		}
+	}
+}
+
+// chunkReader returns at most n bytes from each Read.
+type chunkReader struct {
+	r io.Reader
+	n int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(p) > r.n {
+		p = p[:r.n]
+	}
+	return r.r.Read(p)
+}
+
 // TestIOConnDropResponse checks that ioConn discards the response to a call
 // the peer cancelled on a session using protocol version 2026-07-28 or later,
 // and still sends it on earlier versions.
@@ -885,4 +1002,54 @@ func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
 	if plain.propagateCancellation() {
 		t.Error("propagateCancellation() = true for a delegate without the interface, want false")
 	}
+}
+
+// TestIOConnCanceledQueuedWrite checks that a Write canceled while it waits for
+// another Write returns without sending its message, and that the connection
+// stays usable.
+func TestIOConnCanceledQueuedWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		local, peer := net.Pipe()
+		conn := newIOConn(local)
+		defer conn.Close()
+		defer peer.Close()
+
+		write := func(ctx context.Context, method string) <-chan error {
+			errc := make(chan error, 1)
+			go func() { errc <- conn.Write(ctx, &jsonrpc.Request{Method: method}) }()
+			return errc
+		}
+
+		// The peer is not reading yet, so the first Write blocks in the pipe.
+		first := write(context.Background(), "first")
+		synctest.Wait()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		canceled := write(ctx, "canceled")
+		synctest.Wait()
+		cancel()
+		if err := <-canceled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Write() = %v, want %v", err, context.Canceled)
+		}
+
+		second := write(context.Background(), "second")
+		frames := bufio.NewScanner(peer)
+		for _, want := range []string{"first", "second"} {
+			if !frames.Scan() {
+				t.Fatalf("peer read no frame, want %q: %v", want, frames.Err())
+			}
+			msg, err := jsonrpc2.DecodeMessage(frames.Bytes())
+			if err != nil {
+				t.Fatalf("decoding %q: %v", frames.Bytes(), err)
+			}
+			if got := msg.(*jsonrpc.Request).Method; got != want {
+				t.Fatalf("peer read %q, want %q", got, want)
+			}
+		}
+		for _, errc := range []<-chan error{first, second} {
+			if err := <-errc; err != nil {
+				t.Errorf("Write() = %v, want nil", err)
+			}
+		}
+	})
 }
