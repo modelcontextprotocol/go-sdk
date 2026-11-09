@@ -3050,65 +3050,86 @@ func TestNotifyListChanged_OnlyChosenSession(t *testing.T) {
 	}
 }
 
-// TestNotifyListChanged_WhenSent verifies that a legacy session receives the
-// notification, and that nothing is sent when the server sets ListChanged to
-// false or a 2026-07-28 session has no open listen.
-func TestNotifyListChanged_WhenSent(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		opts          *ServerOptions
-		version       string
-		wantDelivered bool
-	}{
-		{
-			name:          "legacy",
-			version:       protocolVersion20251125,
-			wantDelivered: true,
-		},
-		{
-			name:    "capability off",
-			opts:    &ServerOptions{Capabilities: &ServerCapabilities{Tools: &ToolCapabilities{ListChanged: false}}},
-			version: protocolVersion20251125,
-		},
-		{
-			name:    "no listen",
-			version: protocolVersion20260728,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := t.Context()
-			server := NewServer(testImpl, tc.opts)
-			AddTool(server, &Tool{Name: "t1"}, sayHi)
-			ct, st := NewInMemoryTransports()
-			ss, err := server.Connect(ctx, st, nil)
-			if err != nil {
-				t.Fatalf("server connect: %v", err)
-			}
-			defer ss.Close()
+// TestNotifyListChanged_StreamableStateless verifies that, on a stateless HTTP
+// server, notifying the session of one client's subscriptions/listen request
+// reaches only that client, even when the caller's ctx carries the ID of an
+// unrelated request.
+func TestNotifyListChanged_StreamableStateless(t *testing.T) {
+	ctx := t.Context()
+	server := newSubListenServer()
 
-			// No list-changed handlers, so a 2026-07-28 client opens no listen.
-			events := make(chan subListenEvent, 4)
-			client := NewClient(testImpl, nil)
-			client.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-				return func(ctx context.Context, method string, req Request) (Result, error) {
-					if method == notificationToolListChanged {
-						events <- subListenEvent{kind: "tool"}
-					}
-					return next(ctx, method, req)
+	listenSessions := make(chan *ServerSession, 2)
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSubscriptionsListen {
+				select {
+				case listenSessions <- req.GetSession().(*ServerSession):
+				default:
 				}
-			})
-			if _, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: tc.version}); err != nil {
-				t.Fatalf("client connect: %v", err)
 			}
-			if err := ss.NotifyToolListChanged(ctx, nil); err != nil {
-				t.Fatalf("NotifyToolListChanged: %v", err)
+			return next(ctx, method, req)
+		}
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{Stateless: true})
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	// Close waits for open requests, so it must run after the clients close.
+	t.Cleanup(httpServer.Close)
+
+	// Open two clients on the same server.
+	open := func(t *testing.T) (chan subListenEvent, *ServerSession) {
+		t.Helper()
+		events := make(chan subListenEvent, 16)
+		c := newSubListenClient(events)
+		cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		t.Cleanup(func() { cs.Close() })
+		// Wait for this client's listen before opening the next client, so
+		// each saved session is matched to the right client.
+		select {
+		case ss := <-listenSessions:
+			return events, ss
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the client's listen")
+			return nil, nil
+		}
+	}
+	evA, ssA := open(t)
+	evB, _ := open(t)
+	ackA := waitSubListenEvent(t, evA, "ack")
+	waitSubListenEvent(t, evB, "ack")
+
+	// Notify with a ctx carrying another request's ID, as a tool handler's ctx
+	// would. The notification must still go out on the listen's stream.
+	otherID, err := jsonrpc.MakeID("other-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCtx := context.WithValue(ctx, idContextKey{}, otherID)
+
+	for _, tc := range []struct {
+		kind   string
+		ctx    context.Context
+		notify func(context.Context, *ServerSession) error
+	}{
+		{"tool", otherCtx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyToolListChanged(ctx, nil) }},
+		{"prompt", ctx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyPromptListChanged(ctx, nil) }},
+		{"resource", ctx, func(ctx context.Context, ss *ServerSession) error { return ss.NotifyResourceListChanged(ctx, nil) }}, // ctx of another request
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if err := tc.notify(tc.ctx, ssA); err != nil {
+				t.Fatalf("notify: %v", err)
 			}
-			if tc.wantDelivered {
-				waitSubListenEvent(t, events, "tool")
+			gotA := waitSubListenEvent(t, evA, tc.kind)
+			if gotA.id != ackA.id {
+				t.Errorf("session A: %s notification id = %s, want %s", tc.kind, gotA.id, ackA.id)
 			}
 			select {
-			case e := <-events:
-				t.Fatalf("unexpected event %q", e.kind)
+			case e := <-evA:
+				t.Fatalf("session A received a second event: %q", e.kind)
+			case e := <-evB:
+				t.Fatalf("session B received unexpected event %q", e.kind)
 			case <-time.After(notificationDelay * 5):
 			}
 		})

@@ -846,11 +846,10 @@ that session have changed, call
 [`NotifyPromptListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyPromptListChanged),
 or
 [`NotifyResourceListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceListChanged).
-The capability rules above apply to them too. On `2026-07-28` and later
-sessions the notification is sent once on each of the session's
+These methods only notify sessions on protocol version `2026-07-28` or later:
+the notification is sent once on each of the session's
 [`subscriptions/listen`](protocol.md#subscriptions) streams that asked for it,
-and not at all if there are none.
-
+and not at all if there are none. The capability rules above apply to them too.
 ## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)

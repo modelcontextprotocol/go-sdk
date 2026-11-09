@@ -1667,10 +1667,11 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 // added or removed. Use this method to notify a single session, for example
 // when only the tools visible to that session have changed.
 //
-// Nothing is sent if the server's capabilities set
-// [ToolCapabilities.ListChanged] to false. A client on protocol version
-// 2026-07-28 or later is notified once on each of its open subscriptions/listen
-// streams that asked for tool list changes, and not at all if it has none.
+// The notification is sent once on each of the session's open
+// subscriptions/listen streams that asked for tool list changes, and not at
+// all if there are none. Only clients on protocol version 2026-07-28 or later
+// open such streams, and only for lists the server advertises, so nothing is
+// sent to earlier sessions or if [ToolCapabilities.ListChanged] is false.
 //
 // params may be nil.
 func (ss *ServerSession) NotifyToolListChanged(ctx context.Context, params *ToolListChangedParams) error {
@@ -1715,19 +1716,10 @@ func (ss *ServerSession) NotifyResourceListChanged(ctx context.Context, params *
 // list-changed notification method.
 //
 // makeParams is called once per notification sent and must return a new value
-// each time, because on newer protocol versions each notification carries the
-// ID of the listen it is sent on in its _meta (see [injectMetaSubscriptionID]).
+// each time, because each notification carries the ID of the listen it is sent
+// on in its _meta (see [injectMetaSubscriptionID]).
 func (ss *ServerSession) notifyListChanged(ctx context.Context, method string, makeParams func() Params) error {
 	server := ss.server
-	if !server.shouldSendListChangedNotification(method) {
-		return nil
-	}
-	if ss.negotiatedLegacyProtocol() {
-		// Clear any request ID inherited from ctx, so that the notification
-		// goes out on the standalone stream.
-		ctx := context.WithValue(ctx, idContextKey{}, jsonrpc.ID{})
-		return handleNotify(ctx, method, newServerRequest(ss, makeParams()))
-	}
 
 	server.mu.Lock()
 	var ids []jsonrpc.ID
