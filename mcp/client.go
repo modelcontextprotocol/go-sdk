@@ -13,6 +13,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1233,6 +1234,10 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 // CallTool calls the tool with the given parameters.
 //
 // The params.Arguments can be any value that marshals into a JSON object.
+//
+// If the server rejects the call with [CodeHeaderMismatch], CallTool refreshes
+// its definition of the tool with tools/list and retries once if the tool's
+// x-mcp-header annotations changed.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
 	if params == nil {
 		params = new(CallToolParams)
@@ -1243,13 +1248,59 @@ func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (
 		params = &copy
 		params.Arguments = map[string]any{}
 	}
-	if tool := cs.lookupTool(params.Name); tool != nil {
-		ctx = context.WithValue(ctx, toolContextKey, tool)
-	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+
+	call := func(tool *Tool) (*CallToolResult, error) {
+		callCtx := ctx
+		if tool != nil {
+			callCtx = context.WithValue(ctx, toolContextKey, tool)
+		}
+		return handleSend[*CallToolResult](callCtx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	}
+
+	tool := cs.lookupTool(params.Name)
+	res, err := call(tool)
+	var wireErr *jsonrpc.Error
+	if cs.usesNewProtocol() && errors.As(err, &wireErr) && wireErr.Code == CodeHeaderMismatch {
+		if fresh := cs.refreshTool(ctx, params.Name); fresh != nil && !sameParamHeaders(tool, fresh) {
+			return call(fresh)
+		}
+	}
+	return res, err
+}
+
+// refreshTool clears the tools cache and re-lists tools until it finds the
+// named tool. It returns nil if the tool is not found or listing fails.
+func (cs *ClientSession) refreshTool(ctx context.Context, name string) *Tool {
+	cs.toolsCache.invalidate()
+	for t, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			return nil
+		}
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
+}
+
+// sameParamHeaders reports whether tool1 and tool2 produce the same
+// Mcp-Param-* headers for the same arguments.
+func sameParamHeaders(tool1, tool2 *Tool) bool {
+	return maps.EqualFunc(paramHeaderPaths(tool1), paramHeaderPaths(tool2), slices.Equal)
+}
+
+func paramHeaderPaths(tool *Tool) map[string][]string {
+	if tool == nil {
+		return nil
+	}
+	m := make(map[string][]string)
+	for _, binding := range extractParamHeaderAnnotations(tool) {
+		m[strings.ToLower(binding.Header)] = binding.Path
+	}
+	return m
 }
 
 // SetLoggingLevel sets the minimum severity level for log messages sent by

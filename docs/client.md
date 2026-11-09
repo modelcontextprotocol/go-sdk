@@ -446,6 +446,13 @@ func Example_elicitationComplete() {
 }
 ```
 
+A server can also refuse a request until a URL elicitation is done, with
+[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError).
+The client receives that `-32042` error from the call itself, not through its
+elicitation handler.
+[`ParseURLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ParseURLElicitationRequiredError)
+decodes the elicitations it carries.
+
 ## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)

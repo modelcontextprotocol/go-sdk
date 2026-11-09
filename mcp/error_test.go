@@ -8,10 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -323,5 +325,95 @@ func TestURLElicitationRequired(t *testing.T) {
 				ElicitationID: "bad-123",
 			},
 		})
+	})
+}
+
+func TestParseURLElicitationRequiredError(t *testing.T) {
+	want := []*ElicitParams{
+		{Mode: "url", Message: "Sign in to A", URL: "https://a.example.com/auth", ElicitationID: "a-1"},
+		{Mode: "url", Message: "Sign in to B", URL: "https://b.example.com/auth", ElicitationID: "b-1"},
+	}
+
+	t.Run("round trip through wrapping", func(t *testing.T) {
+		err := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", URLElicitationRequiredError(want)))
+		got, ok, parseErr := ParseURLElicitationRequiredError(err)
+		if !ok || parseErr != nil {
+			t.Fatalf("got ok=%v, parseErr=%v; want ok=true, parseErr=nil", ok, parseErr)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("elicitations mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("returned by CallTool", func(t *testing.T) {
+		cs, _, cleanup := basicConnection(t, func(s *Server) {
+			AddTool(s, &Tool{Name: "needs-auth"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+				return nil, nil, URLElicitationRequiredError(want)
+			})
+		})
+		defer cleanup()
+
+		_, err := cs.CallTool(t.Context(), &CallToolParams{Name: "needs-auth"})
+		got, ok, parseErr := ParseURLElicitationRequiredError(err)
+		if !ok || parseErr != nil {
+			t.Fatalf("CallTool error %v: got ok=%v, parseErr=%v; want ok=true, parseErr=nil", err, ok, parseErr)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("elicitations mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"nil", nil},
+		{"plain error", errors.New("boom")},
+		{"other code", &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "bad"}},
+	} {
+		t.Run("not ok/"+tc.name, func(t *testing.T) {
+			got, ok, parseErr := ParseURLElicitationRequiredError(tc.err)
+			if got != nil || ok || parseErr != nil {
+				t.Errorf("got (%v, %v, %v), want (nil, false, nil)", got, ok, parseErr)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"no data", ""},
+		{"invalid json", `{"elicitations":`},
+		{"no elicitations", `{}`},
+		{"empty elicitations", `{"elicitations":[]}`},
+		{"null elicitation", `{"elicitations":[null]}`},
+		{"form mode", `{"elicitations":[{"mode":"form","message":"m","url":"https://x","elicitationId":"1"}]}`},
+		{"empty mode", `{"elicitations":[{"message":"m","url":"https://x","elicitationId":"1"}]}`},
+		{"no url", `{"elicitations":[{"mode":"url","message":"m","elicitationId":"1"}]}`},
+		{"no elicitation id", `{"elicitations":[{"mode":"url","message":"m","url":"https://x"}]}`},
+		{"valid then invalid", `{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"form","message":"m"}]}`},
+	} {
+		t.Run("malformed/"+tc.name, func(t *testing.T) {
+			err := &jsonrpc.Error{Code: CodeURLElicitationRequired, Message: "URL elicitation required"}
+			if tc.data != "" {
+				err.Data = json.RawMessage(tc.data)
+			}
+			got, ok, parseErr := ParseURLElicitationRequiredError(err)
+			if got != nil || !ok || parseErr == nil {
+				t.Errorf("got (%v, %v, %v), want (nil, true, non-nil)", got, ok, parseErr)
+			}
+		})
+	}
+
+	t.Run("malformed/reports invalid index", func(t *testing.T) {
+		err := &jsonrpc.Error{
+			Code: CodeURLElicitationRequired,
+			Data: json.RawMessage(`{"elicitations":[{"mode":"url","message":"m","url":"https://x","elicitationId":"1"},{"mode":"url","message":"m","elicitationId":"2"}]}`),
+		}
+		_, _, parseErr := ParseURLElicitationRequiredError(err)
+		if parseErr == nil || !strings.Contains(parseErr.Error(), "elicitation 1 ") {
+			t.Errorf("got parseErr %v, want it to name elicitation 1", parseErr)
+		}
 	})
 }
