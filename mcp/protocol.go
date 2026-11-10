@@ -128,9 +128,12 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 			}
 			result[k] = &p
 		case methodListRoots:
+			// For a roots/list request, params are optional.
 			var p ListRootsParams
-			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
-				return err
+			if len(raw.Params) > 0 {
+				if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
+					return err
+				}
 			}
 			result[k] = &p
 		default:
