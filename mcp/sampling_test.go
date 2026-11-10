@@ -10,6 +10,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -152,6 +154,91 @@ func TestSamplingWithTools_ToolResult(t *testing.T) {
 
 	if diff := cmp.Diff(params, gotParams); diff != "" {
 		t.Errorf("CreateMessageParams mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSamplingWithTools_ToolResultContent(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content []Content
+		want    string
+	}{
+		{"empty text", []Content{&TextContent{}}, `[{"type":"text","text":""}]`},
+		{"empty image", []Content{&ImageContent{}}, `[{"type":"image","mimeType":"","data":""}]`},
+		{"empty audio", []Content{&AudioContent{}}, `[{"type":"audio","mimeType":"","data":""}]`},
+		{"nil content", nil, `[]`},
+		{"empty content", []Content{}, `[]`},
+		{
+			"text metadata",
+			[]Content{&TextContent{Text: "done", Meta: Meta{"sequence": int64(9007199254740993), "source": "test"}, Annotations: &Annotations{Priority: 1}}},
+			`[{"type":"text","text":"done","_meta":{"sequence":9007199254740993,"source":"test"},"annotations":{"priority":1}}]`,
+		},
+		{
+			"mixed content",
+			[]Content{&TextContent{}, &ImageContent{MIMEType: "image/png", Data: []byte("image")}, &AudioContent{MIMEType: "audio/wav", Data: []byte("audio")}},
+			`[{"type":"text","text":""},{"type":"image","mimeType":"image/png","data":"aW1hZ2U="},{"type":"audio","mimeType":"audio/wav","data":"YXVkaW8="}]`,
+		},
+		{
+			"empty resource",
+			[]Content{&EmbeddedResource{Resource: &ResourceContents{URI: "file:///empty.txt"}}},
+			`[{"type":"resource","resource":{"uri":"file:///empty.txt","text":""}}]`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			ct, st := NewInMemoryTransports()
+			var logbuf safeBuffer
+			client := NewClient(testImpl, &ClientOptions{
+				CreateMessageWithToolsHandler: func(context.Context, *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
+					return &CreateMessageWithToolsResult{
+						Model: "test-model", Role: "assistant", Content: []Content{&TextContent{Text: "done"}},
+					}, nil
+				},
+				Capabilities: &ClientCapabilities{
+					Sampling: &SamplingCapabilities{Tools: &SamplingToolsCapabilities{}},
+				},
+			})
+			ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			cs, err := client.Connect(ctx, &LoggingTransport{Transport: ct, Writer: &logbuf}, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+			_, err = ss.CreateMessageWithTools(ctx, &CreateMessageWithToolsParams{
+				MaxTokens: 100,
+				Messages: []*SamplingMessageV2{
+					{Role: "assistant", Content: []Content{&ToolUseContent{ID: "tool_1", Name: "test", Input: map[string]any{}}}},
+					{Role: "user", Content: []Content{&ToolResultContent{ToolUseID: "tool_1", Content: tt.content}}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Inspect the received JSON: decoding into Go values hides missing empty fields.
+			logbuf.mu.Lock()
+			logs := logbuf.buf.String()
+			logbuf.mu.Unlock()
+			want := `{"type":"tool_result","toolUseId":"tool_1","content":` + tt.want + `}`
+			if !strings.Contains(logs, want) {
+				t.Errorf("sampling request missing %s:\n%s", want, logs)
+			}
+		})
+	}
+}
+
+func TestToolResultContentMarshalError(t *testing.T) {
+	content := &ToolResultContent{
+		ToolUseID: "tool_1",
+		Content:   []Content{&TextContent{Meta: Meta{"invalid": make(chan int)}}},
+	}
+	_, err := content.MarshalJSON()
+	var unsupported *json.UnsupportedTypeError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("MarshalJSON() error = %v, want json.UnsupportedTypeError", err)
 	}
 }
 
