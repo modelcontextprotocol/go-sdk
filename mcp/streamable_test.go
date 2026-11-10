@@ -5037,6 +5037,64 @@ func TestStreamableServerPreservesSingleRequestBatchResponse(t *testing.T) {
 	}
 }
 
+// TestStreamableServerBatchWithoutVersionHeader verifies that a batch sent
+// without MCP-Protocol-Version is rejected when
+// [ServerOptions.SupportedProtocolVersions] leaves no version that allows
+// batching, and is still accepted when one remains.
+func TestStreamableServerBatchWithoutVersionHeader(t *testing.T) {
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}`
+	noBatching := []string{protocolVersion20251125, protocolVersion20250618}
+
+	tests := []struct {
+		name      string
+		supported []string
+		stateless bool
+		body      string
+		want      int
+	}{
+		{name: "default server accepts batch", body: "[" + initialize + "]", want: http.StatusOK},
+		{name: "server with 2025-03-26 accepts batch", supported: []string{protocolVersion20250618, protocolVersion20250326}, body: "[" + initialize + "]", want: http.StatusOK},
+		{name: "server without batching versions rejects batch", supported: noBatching, body: "[" + initialize + "]", want: http.StatusBadRequest},
+		{name: "stateless server without batching versions rejects batch", supported: noBatching, stateless: true, body: "[" + initialize + "]", want: http.StatusBadRequest},
+		{name: "server without batching versions accepts single message", supported: noBatching, body: initialize, want: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, &ServerOptions{
+				SupportedProtocolVersions: test.supported,
+			})
+			handler := NewStreamableHTTPHandler(
+				func(*http.Request) *Server { return server },
+				&StreamableHTTPOptions{JSONResponse: true, Stateless: test.stateless},
+			)
+			defer handler.closeAll()
+
+			httpServer := httptest.NewServer(handler)
+			defer httpServer.Close()
+
+			req, err := http.NewRequest(http.MethodPost, httpServer.URL, strings.NewReader(test.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != test.want {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.want, data)
+			}
+		})
+	}
+}
+
 // TestStreamableMaxRequestBodyBytes verifies that the streamable HTTP handler
 // enforces StreamableHTTPOptions.MaxRequestBodyBytes on incoming request
 // bodies. The limit must apply uniformly regardless of transfer encoding:

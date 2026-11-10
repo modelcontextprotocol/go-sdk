@@ -1670,6 +1670,14 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 		http.Error(w, fmt.Sprintf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion), http.StatusBadRequest)
 		return
 	}
+	// Batching was removed in 2025-06-18. A request without
+	// MCP-Protocol-Version falls back to 2025-03-26 above, so a server whose
+	// [ServerOptions.SupportedProtocolVersions] excludes every earlier version
+	// must reject the batch itself, as it would with an explicit header.
+	if isBatch && c.server != nil && !slices.ContainsFunc(c.server.protocolVersions, func(v string) bool { return v < protocolVersion20250618 }) {
+		http.Error(w, fmt.Sprintf("JSON-RPC batching is not supported by this server (supported versions: %s)", strings.Join(c.server.protocolVersions, ",")), http.StatusBadRequest)
+		return
+	}
 
 	// TODO(rfindley): no tests fail if we reject batch JSON requests entirely.
 	// We need to test this with older protocol versions.
