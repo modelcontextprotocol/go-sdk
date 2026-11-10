@@ -321,6 +321,16 @@ client is never told.
 
 %include ../../mcp/server_example_test.go listchanged -
 
+To notify a single session instead, for example when only the tools visible to
+that session have changed, call
+[`ServerSession.NotifyToolListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyToolListChanged),
+[`NotifyPromptListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyPromptListChanged),
+or
+[`NotifyResourceListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceListChanged).
+These methods only notify sessions on protocol version `2026-07-28` or later:
+the notification is sent once on each of the session's
+[`subscriptions/listen`](protocol.md#subscriptions) streams that asked for it,
+and not at all if there are none. The capability rules above apply to them too.
 ## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)

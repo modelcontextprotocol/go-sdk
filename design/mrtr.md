@@ -84,7 +84,7 @@ The SDK validates at runtime that a handler does not return both content and `In
 
 An unexported receiving middleware is installed on the server for backward compatibility with older clients. When a handler returns `InputRequests` and the connected client uses a protocol version that does not support MRTR, the middleware fulfills the requests by calling `ServerSession.Elicit`/`CreateMessage`/`ListRoots` on the client directly and reinvokes the handler with the collected `InputResponses`, repeating until the handler completes or the same retry limit as the client-side middleware is reached. If any of these calls fail, the entire request fails. Input requests are fulfilled concurrently. This lets server developers write protocol-version-independent code.
 
-An unexported sending middleware is installed on the client, which similarly to `urlElicitationMiddleware` will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. Clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
+An unexported sending middleware is installed on the client, which will automatically invoke handlers for the corresponding methods on incomplete results and retry the original request. Clients have an option to disable it and write a retry loop manually using `NeedsInput()`:
 ```go
 type MultiRoundTripOptions struct {
   Disabled   bool

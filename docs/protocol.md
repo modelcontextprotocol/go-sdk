@@ -313,6 +313,8 @@ schema root through `properties` keys alone (not through `items`, `oneOf`,
 `anyOf`, `allOf`, `not`, `if`/`then`/`else`, `$ref`, or similar keywords);
 tools that fail validation at registration time are silently dropped from
 `tools/list`.
+If a `tools/call` is rejected with `-32020`, `ClientSession.CallTool` fetches 
+the tool's current definition with `tools/list` and retries once if the tool's `x-mcp-header` annotations changed.
 
 #### Resumability and Redelivery
 
