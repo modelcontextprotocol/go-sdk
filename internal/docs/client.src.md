@@ -128,13 +128,14 @@ through
 [`ClientOptions.ElicitationCompleteHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationCompleteHandler).
 Send it from whatever endpoint the hosted flow redirects back to.
 
-The notification matters most when a handler rejects a request with
-[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError):
-the client parks the original request until a notification names that
-`ElicitationID`, and then retries it automatically. Until one arrives, the
-client waits.
-
 %include ../../mcp/client_example_test.go elicitationcomplete -
+
+A server can also refuse a request until a URL elicitation is done, with
+[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError).
+The client receives that `-32042` error from the call itself, not through its
+elicitation handler.
+[`ParseURLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ParseURLElicitationRequiredError)
+decodes the elicitations it carries.
 
 ## Multi Round-Trip Requests
 

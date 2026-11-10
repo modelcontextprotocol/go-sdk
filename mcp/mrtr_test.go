@@ -8,10 +8,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -195,6 +197,81 @@ func TestMultiRoundTrip_AutoRetry(t *testing.T) {
 
 			if diff := cmp.Diff(tt.wantResult, res.StructuredContent, ctrCmpOpts...); diff != "" {
 				t.Errorf("result mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// inputRequestServer returns a server with a tool "ask" that asks the client
+// for an elicitation, a sampling message and its roots before it completes.
+func inputRequestServer() *Server {
+	srv := NewServer(testImpl, nil)
+	AddTool(srv, &Tool{Name: "ask"}, func(ctx context.Context, req *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &CallToolResult{InputRequests: InputRequestMap{
+				"confirm": &ElicitParams{Message: "OK?"},
+				"draft": &CreateMessageParams{
+					Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "write"}}},
+					MaxTokens: 50,
+				},
+				"roots": &ListRootsParams{},
+			}}, nil, nil
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+	return srv
+}
+
+var inputRequestClientOptions = &ClientOptions{
+	ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+		return &ElicitResult{Action: "accept"}, nil
+	},
+	CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+		return &CreateMessageResult{Model: "test-model", Role: "assistant", Content: &TextContent{Text: "response"}}, nil
+	},
+}
+
+// TestMultiRoundTrip_InputRequestsReachReceivingMiddleware checks that client
+// receiving middleware sees the requests a server makes for input in the same
+// way whether they arrive as server-to-client requests (2025-11-25) or as
+// input requests in a multi round-trip result (2026-07-28).
+func TestMultiRoundTrip_InputRequestsReachReceivingMiddleware(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		connect func(*testing.T, *Server, *ClientOptions) *ClientSession
+	}{
+		{"2025-11-25", mustConnectOldProtocol},
+		{"2026-07-28", mustConnect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := tc.connect(t, inputRequestServer(), inputRequestClientOptions)
+			cs.client.AddRoots(&Root{URI: "file:///workspace", Name: "workspace"})
+			var (
+				mu   sync.Mutex
+				seen = map[string]string{} // method -> params type
+			)
+			cs.client.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+				return func(ctx context.Context, method string, req Request) (Result, error) {
+					switch method {
+					case methodElicit, methodCreateMessage, methodListRoots:
+						mu.Lock()
+						seen[method] = fmt.Sprintf("%T", req.GetParams())
+						mu.Unlock()
+					}
+					return next(ctx, method, req)
+				}
+			})
+
+			if _, err := cs.CallTool(context.Background(), &CallToolParams{Name: "ask"}); err != nil {
+				t.Fatalf("CallTool() error = %v", err)
+			}
+			want := map[string]string{
+				methodElicit:        "*mcp.ElicitParams",
+				methodCreateMessage: "*mcp.CreateMessageWithToolsParams",
+				methodListRoots:     "*mcp.ListRootsParams",
+			}
+			if diff := cmp.Diff(want, seen); diff != "" {
+				t.Errorf("receiving middleware saw (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -1273,6 +1350,167 @@ func TestSetMultiRoundTripRetryParams(t *testing.T) {
 			t.Fatalf("setMultiRoundTripRetryParams() error = %v, want unsupported params type error", err)
 		}
 	})
+}
+
+func TestClientSupportsMultiRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		state ServerSessionState
+		want  bool
+	}{
+		{
+			// A new-protocol call records its version before it is dispatched,
+			// so a session with none recorded is read as legacy.
+			name: "no handshake",
+			want: false,
+		},
+		{
+			name: "discover, new protocol",
+			state: ServerSessionState{
+				InitializeParams: &InitializeParams{ProtocolVersion: protocolVersion20260728},
+			},
+			want: true,
+		},
+		{
+			name: "initialize, legacy version",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20251125},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: false,
+		},
+		{
+			// initialize is deprecated in protocolVersion20260728, so a client
+			// asking for it there is negotiated down and must be served the
+			// legacy interaction whatever it declared.
+			name: "initialize, negotiated down",
+			state: ServerSessionState{
+				InitializeParams:          &InitializeParams{ProtocolVersion: protocolVersion20260728},
+				NegotiatedProtocolVersion: protocolVersion20251125,
+			},
+			want: false,
+		},
+		{
+			name: "stateless request, legacy version",
+			state: ServerSessionState{
+				InitializeParams: &InitializeParams{ProtocolVersion: protocolVersion20250618},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ss := &ServerSession{state: tt.state}
+			if got := clientSupportsMultiRoundTrip(ss); got != tt.want {
+				t.Errorf("clientSupportsMultiRoundTrip() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMultiRoundTrip_NegotiatedDownFromNewProtocol asserts that a session
+// negotiated down to protocolVersion20251125 gets elicitation/create, not an
+// input-required result that its version does not define.
+func TestMultiRoundTrip_NegotiatedDownFromNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	srv := NewServer(testImpl, nil)
+	srv.AddTool(
+		&Tool{Name: "act", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error) {
+			if len(req.Params.InputResponses) == 0 {
+				return &CallToolResult{
+					InputRequests: InputRequestMap{"confirm": &ElicitParams{Message: "OK?"}},
+					RequestState:  "state-1",
+				}, nil
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "confirmed"}}}, nil
+		},
+	)
+
+	ct, st := NewInMemoryTransports()
+	ss, err := srv.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect() error = %v", err)
+	}
+	defer ss.Close()
+
+	conn, err := ct.Connect(ctx)
+	if err != nil {
+		t.Fatalf("transport.Connect() error = %v", err)
+	}
+	defer conn.Close()
+
+	write := func(msg jsonrpc.Message, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("building message: %v", err)
+		}
+		if err := conn.Write(ctx, msg); err != nil {
+			t.Fatalf("conn.Write() error = %v", err)
+		}
+	}
+	read := func() jsonrpc.Message {
+		t.Helper()
+		msg, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("conn.Read() error = %v", err)
+		}
+		return msg
+	}
+
+	write(jsonrpc2.NewCall(jsonrpc2.Int64ID(1), methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20260728,
+		ClientInfo:      testImpl,
+		Capabilities:    &ClientCapabilities{Elicitation: &ElicitationCapabilities{}},
+	}))
+	initResp, ok := read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("initialize: got %T, want *jsonrpc2.Response", initResp)
+	}
+	if initResp.Error != nil {
+		t.Fatalf("initialize failed: %v", initResp.Error)
+	}
+	var initRes InitializeResult
+	if err := json.Unmarshal(initResp.Result, &initRes); err != nil {
+		t.Fatalf("unmarshalling initialize result: %v", err)
+	}
+	if initRes.ProtocolVersion != protocolVersion20251125 {
+		t.Fatalf("negotiated protocol version = %q, want %q", initRes.ProtocolVersion, protocolVersion20251125)
+	}
+	write(jsonrpc2.NewNotification(notificationInitialized, &InitializedParams{}))
+
+	write(jsonrpc2.NewCall(jsonrpc2.Int64ID(2), methodCallTool, &CallToolParams{Name: "act"}))
+	msg := read()
+	elicitReq, ok := msg.(*jsonrpc2.Request)
+	if !ok {
+		resp := msg.(*jsonrpc2.Response)
+		t.Fatalf("tools/call was answered without an %q request: result = %s, error = %v",
+			methodElicit, resp.Result, resp.Error)
+	}
+	if elicitReq.Method != methodElicit {
+		t.Fatalf("server request method = %q, want %q", elicitReq.Method, methodElicit)
+	}
+	write(jsonrpc2.NewResponse(elicitReq.ID, &ElicitResult{Action: "accept"}, nil))
+
+	callResp, ok := read().(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("tools/call: got %T, want *jsonrpc2.Response", callResp)
+	}
+	if callResp.Error != nil {
+		t.Fatalf("tools/call failed: %v", callResp.Error)
+	}
+	var callRes CallToolResult
+	if err := json.Unmarshal(callResp.Result, &callRes); err != nil {
+		t.Fatalf("unmarshalling tools/call result: %v", err)
+	}
+	if len(callRes.Content) != 1 {
+		t.Fatalf("len(result.Content) = %d, want 1", len(callRes.Content))
+	}
+	if got := callRes.Content[0].(*TextContent).Text; got != "confirmed" {
+		t.Errorf("result text = %q, want %q", got, "confirmed")
+	}
 }
 
 func mustConnect(t *testing.T, s *Server, clientOpts *ClientOptions) *ClientSession {
