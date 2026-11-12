@@ -2660,7 +2660,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
+	// server/discover is sessionless. A legacy server that rejects it may still
+	// set a session ID, which must not leak into the fallback initialize.
+	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" && requestMethod != methodDiscover {
 		c.mu.Lock()
 		hadSessionID := c.sessionID
 		if hadSessionID == "" {
