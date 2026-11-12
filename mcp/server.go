@@ -1696,6 +1696,92 @@ func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNot
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
 }
 
+// NotifyToolListChanged sends a "notifications/tools/list_changed"
+// notification to the client of this session.
+//
+// The server already sends this notification to every session when tools are
+// added or removed. Use this method to notify a single session, for example
+// when only the tools visible to that session have changed.
+//
+// The notification is sent once on each of the session's open
+// subscriptions/listen streams that asked for tool list changes, and not at
+// all if there are none. Only clients on protocol version 2026-07-28 or later
+// open such streams, and only for lists the server advertises, so nothing is
+// sent to earlier sessions or if [ToolCapabilities.ListChanged] is false.
+//
+// params may be nil.
+func (ss *ServerSession) NotifyToolListChanged(ctx context.Context, params *ToolListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationToolListChanged, func() Params {
+		if params == nil {
+			return &ToolListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// NotifyPromptListChanged sends a "notifications/prompts/list_changed"
+// notification to the client of this session. It is like
+// [ServerSession.NotifyToolListChanged], but for prompts, and is governed by
+// [PromptCapabilities.ListChanged].
+func (ss *ServerSession) NotifyPromptListChanged(ctx context.Context, params *PromptListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationPromptListChanged, func() Params {
+		if params == nil {
+			return &PromptListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// NotifyResourceListChanged sends a "notifications/resources/list_changed"
+// notification to the client of this session. It is like
+// [ServerSession.NotifyToolListChanged], but for resources, and is governed by
+// [ResourceCapabilities.ListChanged].
+func (ss *ServerSession) NotifyResourceListChanged(ctx context.Context, params *ResourceListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationResourceListChanged, func() Params {
+		if params == nil {
+			return &ResourceListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// notifyListChanged implements the Notify*ListChanged methods for the given
+// list-changed notification method.
+//
+// makeParams is called once per notification sent and must return a new value
+// each time, because each notification carries the ID of the listen it is sent
+// on in its _meta (see [injectMetaSubscriptionID]).
+func (ss *ServerSession) notifyListChanged(ctx context.Context, method string, makeParams func() Params) error {
+	server := ss.server
+
+	server.mu.Lock()
+	var ids []jsonrpc.ID
+	switch method {
+	case notificationToolListChanged:
+		ids = slices.Clone(server.toolChangeSubscriptions[ss])
+	case notificationPromptListChanged:
+		ids = slices.Clone(server.promptChangeSubscriptions[ss])
+	case notificationResourceListChanged:
+		ids = slices.Clone(server.resourceChangeSubscriptions[ss])
+	}
+	server.mu.Unlock()
+	var errs []error
+	for _, id := range ids {
+		params := makeParams()
+		injectMetaSubscriptionID(params, id)
+		// Associate the notification with the listen request, so that it is
+		// sent on that listen's stream.
+		ctx := context.WithValue(ctx, idContextKey{}, id)
+		if err := handleNotify(ctx, method, newServerRequest(ss, params)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
 // notification on the listen stream represented by this session, indicating
 // the subscription filter the server accepted (SEP-2575).
