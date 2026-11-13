@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -21,8 +23,9 @@ type ID struct {
 
 // MakeID coerces the given Go value to an ID. The value should be the JSON
 // decoding of a Request identifier: nil, float64, json.Number, or string.
-// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
-// must be an integer literal in the int64 range.
+// Decoding with json.Number keeps integer IDs in the int64 range exact,
+// including decimal and exponent notation. Other numbers retain the legacy
+// float64 conversion behavior.
 //
 // Returns an error if the value type was not a valid Request ID type.
 //
@@ -39,6 +42,9 @@ func MakeID(v any) (ID, error) {
 		if i, err := v.Int64(); err == nil {
 			return Int64ID(i), nil
 		}
+		if i, ok := exactIntegerID(string(v)); ok {
+			return Int64ID(i), nil
+		}
 		// Fallback to maintain backward compatibility
 		if f, err := v.Float64(); err == nil {
 			return Int64ID(int64(f)), nil
@@ -48,6 +54,63 @@ func MakeID(v any) (ID, error) {
 		return StringID(v), nil
 	}
 	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
+}
+
+// exactIntegerID normalizes decimal digits without converting through float64
+// or allocating storage proportional to the exponent.
+func exactIntegerID(s string) (int64, bool) {
+	if !json.Valid([]byte(s)) || len(s) == 0 {
+		return 0, false
+	}
+	negative := s[0] == '-'
+	if negative {
+		s = s[1:]
+	}
+	mantissa, exponent := s, "0"
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mantissa, exponent = s[:i], s[i+1:]
+	}
+	fractional := 0
+	if i := strings.IndexByte(mantissa, '.'); i >= 0 {
+		fractional = len(mantissa) - i - 1
+		mantissa = mantissa[:i] + mantissa[i+1:]
+	}
+	for _, c := range mantissa {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	if len(mantissa) == 0 {
+		return 0, false
+	}
+	digits := strings.TrimLeft(mantissa, "0")
+	if digits == "" {
+		return 0, true
+	}
+	exp, err := strconv.Atoi(exponent)
+	if err != nil || exp > len(s)+19 || exp < -len(s) {
+		return 0, false
+	}
+	// Remove trailing zeroes before applying the exponent, so a negative scale
+	// can only describe a genuinely fractional number.
+	significant := strings.TrimRight(digits, "0")
+	scale := exp - fractional + len(digits) - len(significant)
+	if scale < 0 || scale > 19 || len(significant) > 19-scale {
+		return 0, false
+	}
+	var buf [20]byte
+	n := 0
+	if negative {
+		buf[n] = '-'
+		n++
+	}
+	n += copy(buf[n:], significant)
+	for range scale {
+		buf[n] = '0'
+		n++
+	}
+	i, err := strconv.ParseInt(string(buf[:n]), 10, 64)
+	return i, err == nil
 }
 
 // Message is the interface to all jsonrpc2 message types.
