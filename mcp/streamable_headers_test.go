@@ -1780,6 +1780,46 @@ func TestValidateParamHeaders_EmptyString(t *testing.T) {
 	}
 }
 
+// TestValidateParamHeaders_InvalidCharacters checks that a value outside
+// visible ASCII is rejected unless it is Base64-wrapped, even when it equals
+// the body value.
+func TestValidateParamHeaders_InvalidCharacters(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	tests := []struct {
+		name    string
+		header  string
+		arg     string
+		wantErr bool
+	}{
+		{"raw non-ASCII", "café", "café", true},
+		{"raw control character", "a\x7fb", "a\x7fb", true},
+		{"Base64-wrapped non-ASCII", encodeBase64("café"), "café", false},
+		{"visible ASCII, space and tab", "us west\t1", "us west\t1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(paramHeaderPrefix+"Region", tt.header)
+			msg := &jsonrpc.Request{
+				Method: "tools/call",
+				Params: mustMarshal(&CallToolParams{Name: "test", Arguments: map[string]any{"region": tt.arg}}),
+			}
+			err := validateParamHeaders(header, msg, tool)
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("validateParamHeaders() = %v, want error: %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestParamHeaderEmptyStringRoundTrip verifies that the server accepts the
 // present but empty Mcp-Param header the client sends for an empty string.
 func TestParamHeaderEmptyStringRoundTrip(t *testing.T) {

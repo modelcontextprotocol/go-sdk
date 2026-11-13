@@ -567,6 +567,10 @@ func validateParamHeaders(header http.Header, msg *jsonrpc.Request, tool *Tool) 
 			return fmt.Errorf("header mismatch: missing %s header for parameter %q", fullHeader, strings.Join(b.Path, "."))
 		}
 
+		if !isHeaderSafe(headerVal) {
+			return fmt.Errorf("header mismatch: %s header contains invalid characters", fullHeader)
+		}
+
 		decoded, ok := decodeHeaderValue(headerVal)
 		if !ok {
 			return fmt.Errorf("header mismatch: %s header contains invalid Base64 encoding", fullHeader)
@@ -667,6 +671,18 @@ func requiresBase64Encoding(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isHeaderSafe reports whether s holds only the characters an Mcp-Param-*
+// value may carry unencoded: visible ASCII, space and horizontal tab
+// (RFC 9110, section 5.5). Anything else must arrive Base64-wrapped.
+func isHeaderSafe(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != '\t' && (c < 0x20 || c > 0x7e) {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeBase64(s string) string {
