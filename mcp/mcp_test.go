@@ -2006,6 +2006,79 @@ func TestElicitationDefaultValues(t *testing.T) {
 	}
 }
 
+// TestElicitationAcceptWithoutContent checks that an accept with nil content
+// is treated as an empty answer: defaults are applied and the schema is still
+// enforced.
+func TestElicitationAcceptWithoutContent(t *testing.T) {
+	ctx := context.Background()
+	testcases := []struct {
+		name     string
+		schema   *jsonschema.Schema
+		expected map[string]any
+		wantErr  bool
+	}{
+		{
+			name: "defaults are applied",
+			schema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"color": {Type: "string", Default: json.RawMessage(`"blue"`)},
+					"count": {Type: "integer", Default: json.RawMessage("3")},
+				},
+			},
+			expected: map[string]any{"color": "blue", "count": float64(3)},
+		},
+		{
+			name: "required property is enforced",
+			schema: &jsonschema.Schema{
+				Type:     "object",
+				Required: []string{"name"},
+				Properties: map[string]*jsonschema.Schema{
+					"name": {Type: "string"},
+				},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			ss, err := NewServer(testImpl, nil).Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			c := NewClient(testImpl, &ClientOptions{
+				ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+					return &ElicitResult{Action: "accept", Content: nil}, nil
+				},
+			})
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			res, err := ss.Elicit(ctx, &ElicitParams{Message: tc.name, RequestedSchema: tc.schema})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Elicit succeeded with content %v, want a validation error", res.Content)
+				}
+				if !strings.Contains(err.Error(), "does not match requested schema") {
+					t.Fatalf("Elicit error = %v, want a schema validation error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Elicit: %v", err)
+			}
+			if diff := cmp.Diff(tc.expected, res.Content); diff != "" {
+				t.Errorf("content mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestKeepAliveFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
