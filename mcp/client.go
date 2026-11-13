@@ -371,8 +371,14 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 					}
 				}
 			}
+			// A legacy server behind authorization would reject initialize the
+			// same way, so falling back would only repeat the authorization flow.
+			if errors.Is(err, errAuthorizationFailed) {
+				_ = cs.Close()
+				return nil, err
+			}
 			// Per the spec, fall back to the legacy initialize handshake on any
-			// non-modern error from server/discover.
+			// other non-modern error from server/discover.
 			break
 		}
 		// Use the latest legacy protocol version for the fallback initialize.
