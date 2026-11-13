@@ -806,6 +806,38 @@ func TestGetProtectedResourceMetadata_Success(t *testing.T) {
 	}
 }
 
+// TestGetProtectedResourceMetadata_QueryInServerURL verifies that a query in
+// the MCP server URL does not prevent matching metadata whose resource has no
+// query (RFC 8707 section 2).
+func TestGetProtectedResourceMetadata_QueryInServerURL(t *testing.T) {
+	handler, err := NewAuthorizationCodeHandler(validConfig())
+	if err != nil {
+		t.Fatalf("NewAuthorizationCodeHandler() error = %v", err)
+	}
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	metadata := &oauthex.ProtectedResourceMetadata{
+		Resource:             server.URL + "/mcp",
+		AuthorizationServers: []string{"https://oauth.example.com"},
+	}
+	mux.Handle("/.well-known/oauth-protected-resource/mcp", ProtectedResourceMetadataHandler(metadata))
+	challenges := []oauthex.Challenge{{
+		Scheme: "Bearer",
+		Params: map[string]string{
+			"resource_metadata": server.URL + "/.well-known/oauth-protected-resource/mcp",
+		},
+	}}
+
+	got, err := handler.getProtectedResourceMetadata(t.Context(), challenges, server.URL+"/mcp?features=flags")
+	if err != nil {
+		t.Fatalf("getProtectedResourceMetadata() error = %v", err)
+	}
+	if diff := cmp.Diff(metadata, got); diff != "" {
+		t.Errorf("getProtectedResourceMetadata() metadata mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestGetProtectedResourceMetadata_Backcompat(t *testing.T) {
 	handler, err := NewAuthorizationCodeHandler(validConfig())
 	if err != nil {

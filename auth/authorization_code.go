@@ -474,6 +474,11 @@ func errorFromChallenges(cs []oauthex.Challenge) string {
 // If no metadata was found or the fetched metadata fails security checks,
 // it returns an error.
 func (h *AuthorizationCodeHandler) getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.Challenge, mcpServerURL string) (*oauthex.ProtectedResourceMetadata, error) {
+	// RFC 8707 section 2: a resource indicator SHOULD NOT include a query component.
+	if u, err := url.Parse(mcpServerURL); err == nil {
+		u.RawQuery, u.ForceQuery, u.Fragment = "", false, ""
+		mcpServerURL = u.String()
+	}
 	// Use MCP server URL as the resource URI per
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri.
 	for _, url := range protectedResourceMetadataURLs(resourceMetadataURLFromChallenges(wwwChallenges), mcpServerURL) {
