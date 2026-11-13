@@ -140,6 +140,11 @@ Publish a change with
 which notifies every session subscribed to that URI. The notification carries
 only the URI, not the new contents, so a client that wants them reads the
 resource again.
+To notify a single session instead, call
+[`ServerSession.NotifyResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceUpdated).
+It only notifies sessions on protocol version `2026-07-28` or later, once on
+each of the session's
+[`subscriptions/listen`](protocol.md#subscriptions) streams that name the URI.
 
 %include ../../mcp/server_example_test.go subscribe -
 
