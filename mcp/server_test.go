@@ -945,6 +945,34 @@ func testToolForSchema[In, Out any](t *testing.T, tool *Tool, in string, out Out
 // TestClientRootCapabilities verifies that the server correctly observes
 // RootsV2 for various client capability configurations. This tests the fix
 // for #607.
+func TestToolForErrWrappedJSONRPCError(t *testing.T) {
+	want := &jsonrpc.Error{
+		Code:    jsonrpc.CodeInvalidParams,
+		Message: "bad input",
+	}
+	handler := func(context.Context, *CallToolRequest, struct{}) (*CallToolResult, struct{}, error) {
+		return nil, struct{}{}, fmt.Errorf("backend: %w", want)
+	}
+	_, toolHandler, err := toolForErr(&Tool{Name: "demo"}, handler, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, gotErr := toolHandler(context.Background(), &CallToolRequest{
+		Params: &CallToolParamsRaw{},
+	})
+	var got *jsonrpc.Error
+	if !errors.As(gotErr, &got) {
+		t.Fatalf("error = %v, want wrapped *jsonrpc.Error", gotErr)
+	}
+	if got.Code != want.Code {
+		t.Errorf("error code = %d, want %d", got.Code, want.Code)
+	}
+	if got.Message != want.Message {
+		t.Errorf("error message = %q, want %q", got.Message, want.Message)
+	}
+}
+
 func TestClientRootCapabilities(t *testing.T) {
 	testCases := []struct {
 		name         string
