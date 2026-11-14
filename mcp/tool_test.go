@@ -283,6 +283,46 @@ func TestToolErrorHandling(t *testing.T) {
 	})
 }
 
+func TestToolWrappedProtocolError(t *testing.T) {
+	want := &jsonrpc.Error{
+		Code:    jsonrpc.CodeInvalidParams,
+		Message: "invalid tool input",
+		Data:    json.RawMessage(`{"argument":"name"}`),
+	}
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"wrapped", fmt.Errorf("calling backend: %w", want)},
+		{"nested", fmt.Errorf("calling tool: %w", fmt.Errorf("calling backend: %w", want))},
+		{"joined", errors.Join(errors.New("backend failed"), want)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cs, _, cleanup := basicConnection(t, func(s *Server) {
+				AddTool(s, &Tool{Name: "error_tool"}, func(context.Context, *CallToolRequest, map[string]any) (*CallToolResult, any, error) {
+					return nil, nil, tt.err
+				})
+			})
+			defer cleanup()
+
+			result, err := cs.CallTool(t.Context(), &CallToolParams{Name: "error_tool"})
+			var got *jsonrpc.Error
+			if !errors.As(err, &got) {
+				t.Fatalf("CallTool returned result %v, error %v; want a JSON-RPC error", result, err)
+			}
+			if got.Code != want.Code {
+				t.Errorf("error code = %d, want %d", got.Code, want.Code)
+			}
+			if got.Message != want.Message {
+				t.Errorf("error message = %q, want %q", got.Message, want.Message)
+			}
+			if string(got.Data) != string(want.Data) {
+				t.Errorf("error data = %s, want %s", got.Data, want.Data)
+			}
+		})
+	}
+}
+
 func TestToolErrorResultOmitsOutput(t *testing.T) {
 	type out struct {
 		Status string `json:"status"`

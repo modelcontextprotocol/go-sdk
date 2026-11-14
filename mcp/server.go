@@ -447,7 +447,8 @@ func toolForErr[In, Out any](t *Tool, h ToolHandlerFor[In, Out], cache *SchemaCa
 		// - This allows tools to distinguish between protocol errors and tool execution errors
 		if err != nil {
 			// Check if this is already a structured JSON-RPC error
-			if wireErr, ok := err.(*jsonrpc.Error); ok {
+			var wireErr *jsonrpc.Error
+			if errors.As(err, &wireErr) {
 				return nil, wireErr
 			}
 			// For regular errors, embed them in the tool result as per MCP spec
