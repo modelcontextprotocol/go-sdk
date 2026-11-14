@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 )
@@ -21,8 +22,9 @@ type ID struct {
 
 // MakeID coerces the given Go value to an ID. The value should be the JSON
 // decoding of a Request identifier: nil, float64, json.Number, or string.
-// Decoding with json.Number keeps integer IDs above 2^53 exact; a json.Number
-// must be an integer literal in the int64 range.
+// Decoding with json.Number keeps integer IDs above 2^53 exact; a float64 or
+// json.Number must hold an integer in the int64 range, and a fractional or
+// out-of-range value is rejected instead of being truncated.
 //
 // Returns an error if the value type was not a valid Request ID type.
 //
@@ -34,20 +36,31 @@ func MakeID(v any) (ID, error) {
 	case nil:
 		return ID{}, nil
 	case float64:
-		return Int64ID(int64(v)), nil
+		return int64ID(v)
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
 			return Int64ID(i), nil
 		}
 		// Fallback to maintain backward compatibility
 		if f, err := v.Float64(); err == nil {
-			return Int64ID(int64(f)), nil
+			return int64ID(f)
 		}
 		return ID{}, fmt.Errorf("%w: invalid numeric ID %q", ErrParse, v)
 	case string:
 		return StringID(v), nil
 	}
 	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
+}
+
+// int64ID converts a numeric ID that holds an integer in the int64 range, and
+// rejects everything else. Truncating a fractional ID would answer a request
+// with an ID the client never sent, and converting a float outside the int64
+// range to int64 has an implementation-defined result.
+func int64ID(f float64) (ID, error) {
+	if f != math.Trunc(f) || f < math.MinInt64 || f >= math.MaxInt64 {
+		return ID{}, fmt.Errorf("%w: invalid numeric ID %v", ErrParse, f)
+	}
+	return Int64ID(int64(f)), nil
 }
 
 // Message is the interface to all jsonrpc2 message types.
