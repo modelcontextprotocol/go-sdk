@@ -1375,7 +1375,7 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 	// reason, and an input-required result is an interim one that the
 	// specification declares not cacheable.
 	if useCache && !result.retried && !result.NeedsInput() {
-		cs.readResourceCache.put(params.URI, result)
+		cs.readResourceCache.putCacheable(params.URI, result)
 	}
 	return result, nil
 }

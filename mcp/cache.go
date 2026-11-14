@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -15,6 +16,9 @@ import (
 type methodCache[R CacheableResult] struct {
 	mu           sync.Mutex
 	cachedValues map[string]*cacheEntry[R]
+	// sweepAt is the number of entries at which putCacheable next removes
+	// the expired ones.
+	sweepAt int
 }
 
 type cacheEntry[R CacheableResult] struct {
@@ -42,11 +46,41 @@ func (mc *methodCache[R]) get(key string) (R, bool) {
 	return entry.result, true
 }
 
+// put stores result under key whatever its TTL, because lookupTool reads
+// tools/list entries after they expire.
 func (mc *methodCache[R]) put(key string, result R) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if mc.cachedValues == nil {
 		mc.cachedValues = make(map[string]*cacheEntry[R])
+	}
+	mc.cachedValues[key] = &cacheEntry[R]{
+		result:     result,
+		receivedAt: time.Now(),
+	}
+}
+
+// minCacheSweep is the smallest cache size at which putCacheable looks for
+// expired entries.
+const minCacheSweep = 64
+
+// putCacheable stores result under key if its TTL is positive, and removes
+// the entry for key otherwise. Since get only removes an expired entry when
+// its own key is looked up again, putCacheable also removes every expired
+// entry each time the cache has doubled in size.
+func (mc *methodCache[R]) putCacheable(key string, result R) {
+	if result.GetTTLMs() <= 0 {
+		mc.invalidateKey(key)
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if mc.cachedValues == nil {
+		mc.cachedValues = make(map[string]*cacheEntry[R])
+	}
+	if len(mc.cachedValues) >= mc.sweepAt {
+		maps.DeleteFunc(mc.cachedValues, func(_ string, e *cacheEntry[R]) bool { return !e.isValid() })
+		mc.sweepAt = max(2*len(mc.cachedValues), minCacheSweep)
 	}
 	mc.cachedValues[key] = &cacheEntry[R]{
 		result:     result,
