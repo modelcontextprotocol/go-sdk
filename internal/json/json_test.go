@@ -171,6 +171,79 @@ func TestUnmarshalChecksNestingDepth(t *testing.T) {
 	}
 }
 
+// checkMaxDepthBytewise is the byte-at-a-time scan that [checkMaxDepth]
+// replaced, kept as its reference.
+func checkMaxDepthBytewise(data []byte, maxDepth int) error {
+	var (
+		depth    int
+		inString bool
+		escaped  bool
+	)
+	for _, b := range data {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maxDepth {
+				return errMaxDepthExceeded
+			}
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return nil
+}
+
+func sameDepthCheckAsBytewise(t *testing.T, data []byte) {
+	t.Helper()
+	for maxDepth := range 5 {
+		got, want := checkMaxDepth(data, maxDepth), checkMaxDepthBytewise(data, maxDepth)
+		if got != want {
+			t.Fatalf("checkMaxDepth(%q, %d) = %v, want %v", data, maxDepth, got, want)
+		}
+	}
+}
+
+var depthCheckCases = []string{
+	`"\\"[[`, `"\\\"[["[[`, `"\\\\"[[`, `"a\"b"[[`, `"""[[`, `"\\`, `"\`, `"`, `""[[`,
+	`["\\\\\\"]"[[`, `{"a":"]]]"}[[[`, `"x\\" [[[`, `\"[[`, `[\\"[[`, `"[\\\\\\\\"[[[`,
+	`"` + strings.Repeat("a", 31) + `\"` + strings.Repeat("a", 40) + `"[[`,
+	`"` + strings.Repeat("a", 30) + strings.Repeat(`\`, 25) + `"x"[[`,
+	`"` + strings.Repeat("a", 40) + strings.Repeat(`\`, 40) + `"[[`,
+	`"` + strings.Repeat(`\`, 41) + `"[["[[`,
+	`"` + strings.Repeat("a", 31) + `\`,
+}
+
+func TestCheckMaxDepthSameAsBytewise(t *testing.T) {
+	for _, c := range append(depthCheckCases, unmarshalCases...) {
+		sameDepthCheckAsBytewise(t, []byte(c))
+	}
+	for _, in := range depthCheckInputs {
+		sameDepthCheckAsBytewise(t, in.data)
+	}
+}
+
+func FuzzCheckMaxDepth(f *testing.F) {
+	for _, c := range append(depthCheckCases, unmarshalCases...) {
+		f.Add([]byte(c))
+	}
+	f.Fuzz(sameDepthCheckAsBytewise)
+}
+
 func TestUnmarshalMaxDepthExitsFast(t *testing.T) {
 	data := []byte(strings.Repeat("[", 500_000) + strings.Repeat("]", 500_000))
 	done := make(chan error, 1)
@@ -378,6 +451,49 @@ func TestUnmarshalDoesNotAliasInput(t *testing.T) {
 	}
 	if m, ok := v.Any.(map[string]any); !ok || m["k"] != "v" {
 		t.Errorf("decoded map changed with the input: %v", v.Any)
+	}
+}
+
+// depthCheckInputs are message shapes whose cost [checkMaxDepth] adds to
+// every [Unmarshal].
+var depthCheckInputs = []struct {
+	name string
+	data []byte
+}{
+	{"small", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_todo","arguments":{"name":"todos/1"}}}`)},
+	{"text_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"text":"` + strings.Repeat("lorem ipsum ", 64<<10/12) + `"}}}`)},
+	{"escaped_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"code":"` + strings.Repeat(`if (s == \"x\") {\n\tprint(\"\\\\\");\n}\n`, 64<<10/40) + `"}}}`)},
+	{"objects_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"result":{"items":[` + strings.TrimSuffix(strings.Repeat(`{"id":12345,"name":"x","ok":true},`, 64<<10/34), ",") + `]}}`)},
+	{"json_in_string_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"[` + strings.TrimSuffix(strings.Repeat(`{\"key\":\"value\",\"n\":1},`, 64<<10/27), ",") + `]"}]}}`)},
+	{"empty_strings_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"result":{"items":[` + strings.TrimSuffix(strings.Repeat(`"",`, 64<<10/3), ",") + `]}}`)},
+	{"quotes_64KiB", []byte(`{"jsonrpc":"2.0","id":1,"result":{"text":"` + strings.Repeat(`\"`, 64<<10/2) + `"}}`)},
+}
+
+func BenchmarkCheckMaxDepth(b *testing.B) {
+	for _, in := range depthCheckInputs {
+		b.Run(in.name, func(b *testing.B) {
+			b.SetBytes(int64(len(in.data)))
+			for b.Loop() {
+				if err := checkMaxDepth(in.data, defaultMaxDepth); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkUnmarshalLarge(b *testing.B) {
+	for _, in := range depthCheckInputs {
+		b.Run(in.name, func(b *testing.B) {
+			b.SetBytes(int64(len(in.data)))
+			b.ReportAllocs()
+			for b.Loop() {
+				var v any
+				if err := Unmarshal(in.data, &v); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
