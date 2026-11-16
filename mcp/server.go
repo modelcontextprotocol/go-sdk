@@ -1722,6 +1722,12 @@ func (ss *ServerSession) NotifyResourceListChanged(ctx context.Context, params *
 // are none. Only clients on protocol version 2026-07-28 or later open such
 // streams, so nothing is sent to earlier sessions.
 func (ss *ServerSession) NotifyResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
+	if params == nil {
+		return fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+	if params.URI == "" {
+		return fmt.Errorf("%w: URI cannot be empty", jsonrpc2.ErrInvalidParams)
+	}
 	if ss.negotiatedLegacyProtocol() {
 		return nil
 	}
