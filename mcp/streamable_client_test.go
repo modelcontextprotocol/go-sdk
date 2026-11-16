@@ -1794,6 +1794,111 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersion(t *testing.T) {
 	}
 }
 
+// TestStreamableClientConnect_DiscoverRejectionSessionID verifies that a
+// session ID on a rejected server/discover response does not carry over to
+// the fallback initialize: only the ID sent with the InitializeResult
+// identifies the legacy session.
+func TestStreamableClientConnect_DiscoverRejectionSessionID(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		status       int
+		contentType  string
+		discoverBody func(r *jsonrpc.Request) string
+	}{
+		{
+			name:        "200 method not found",
+			status:      http.StatusOK,
+			contentType: "application/json",
+			discoverBody: func(r *jsonrpc.Request) string {
+				return jsonBody(t, &jsonrpc.Response{ID: r.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "method not found"}})
+			},
+		},
+		{
+			name:         "400 plain text",
+			status:       http.StatusBadRequest,
+			contentType:  "text/plain",
+			discoverBody: func(*jsonrpc.Request) string { return "Bad Request: Unsupported protocol version" },
+		},
+		{
+			name:        "400 invalid request with unmatched id",
+			status:      http.StatusBadRequest,
+			contentType: "application/json",
+			discoverBody: func(*jsonrpc.Request) string {
+				return `{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Bad Request: Missing session ID"}}`
+			},
+		},
+		{
+			name:        "400 invalid request with legacy supported versions",
+			status:      http.StatusBadRequest,
+			contentType: "application/json",
+			discoverBody: func(r *jsonrpc.Request) string {
+				return jsonBody(t, &jsonrpc.Response{ID: r.ID, Error: &jsonrpc.Error{
+					Code:    jsonrpc.CodeInvalidRequest,
+					Message: "Unsupported protocol version",
+					Data:    json.RawMessage(`{"supported":["2025-11-25","2025-06-18"]}`),
+				}})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeStreamableServer{
+				t: t,
+				responses: fakeResponses{
+					{"POST", "", methodDiscover, ""}: {
+						header: header{
+							"Content-Type":  tt.contentType,
+							sessionIDHeader: "discover-session",
+						},
+						wantProtocolVersion: protocolVersion20260728,
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return tt.discoverBody(r), tt.status
+						},
+					},
+					{"POST", "", methodInitialize, ""}: {
+						header: header{
+							"Content-Type":  "application/json",
+							sessionIDHeader: "initialize-session",
+						},
+						responseFunc: func(r *jsonrpc.Request) (string, int) {
+							return jsonBody(t, &jsonrpc.Response{ID: r.ID, Result: mustMarshal(initResult)}), http.StatusOK
+						},
+					},
+					{"POST", "initialize-session", notificationInitialized, ""}: {
+						status: http.StatusAccepted,
+					},
+					{"GET", "initialize-session", "", ""}: {
+						header:   header{"Content-Type": "text/event-stream"},
+						optional: true,
+					},
+					{"DELETE", "initialize-session", "", ""}: {optional: true},
+				},
+			}
+
+			httpServer := httptest.NewServer(fake)
+			defer httpServer.Close()
+
+			transport := &StreamableClientTransport{Endpoint: httpServer.URL}
+			client := NewClient(testImpl, nil)
+			session, err := client.Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			defer session.Close()
+
+			if got, want := session.ID(), "initialize-session"; got != want {
+				t.Errorf("session.ID() = %q, want %q", got, want)
+			}
+			if missing := fake.missingRequests(); len(missing) > 0 {
+				t.Errorf("did not receive expected requests: %v", missing)
+			}
+		})
+	}
+}
+
 // TestStreamableClientConnect_DiscoverMethodNotFoundVPre verifies that
 // Client.Connect falls back to the legacy initialize handshake when a
 // pre-SEP-2575 (vPre) server rejects server/discover.

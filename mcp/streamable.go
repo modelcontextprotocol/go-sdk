@@ -2663,7 +2663,9 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
 		c.mu.Lock()
 		hadSessionID := c.sessionID
-		if hadSessionID == "" {
+		// A session ID is assigned on the response carrying the InitializeResult.
+		// See https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management.
+		if hadSessionID == "" && requestMethod == methodInitialize {
 			c.sessionID = sessionID
 		}
 		c.mu.Unlock()
