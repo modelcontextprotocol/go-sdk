@@ -3154,6 +3154,28 @@ func resourceSubServer(t *testing.T, subCh, unsubCh chan string) *Server {
 	return s
 }
 
+// resourceSubClient returns a client wired to push every listen
+// acknowledgment and every resource update it receives into events, tagged
+// with the kind ("ack" or "updated") and the subscription ID from _meta.
+func resourceSubClient(events chan subListenEvent) *Client {
+	c := NewClient(testImpl, &ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
+			events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
+		},
+	})
+	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == notificationSubscriptionsAck {
+				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
+					events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	return c
+}
+
 // resourceSubEvent is one delivered notifications/resources/updated.
 type resourceSubEvent struct {
 	uri string
@@ -3322,6 +3344,164 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 	case e := <-events:
 		t.Fatalf("unexpected resource update after unsubscribe: %q (id=%s)", e.uri, e.id)
 	case <-time.After(notificationDelay * 10):
+	}
+}
+
+// TestNotifyResourceUpdated verifies that ServerSession.NotifyResourceUpdated
+// notifies only the session it is called on, only for a URI that session is
+// subscribed to, and only on protocol version 2026-07-28 or later.
+func TestNotifyResourceUpdated(t *testing.T) {
+	const r1, r2 = "file:///r1", "file:///r2"
+	for _, tc := range []struct {
+		name      string
+		version   string // protocol version of session A
+		subscribe string // URI session A subscribes to, if any
+		notify    string // URI session A is notified about
+		wantA     bool
+	}{
+		{"subscribed", protocolVersion20260728, r1, r1, true},
+		{"other URI", protocolVersion20260728, r1, r2, false},
+		{"not subscribed", protocolVersion20260728, "", r1, false},
+		{"legacy", protocolVersion20251125, r1, r1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			server := resourceSubServer(t, make(chan string, 8), make(chan string, 8))
+
+			// open connects a client and subscribes it to uri, if set. It returns
+			// the client's events and its server session.
+			open := func(version, uri string) (chan subListenEvent, *ServerSession) {
+				t.Helper()
+				events := make(chan subListenEvent, 8)
+				ct, st := NewInMemoryTransports()
+				ss, err := server.Connect(context.Background(), st, nil)
+				if err != nil {
+					t.Fatalf("server connect: %v", err)
+				}
+				t.Cleanup(func() { ss.Close() })
+				cs, err := resourceSubClient(events).Connect(context.Background(), ct, &ClientSessionOptions{ProtocolVersion: version})
+				if err != nil {
+					t.Fatalf("client connect: %v", err)
+				}
+				t.Cleanup(func() { cs.Close() })
+				if uri != "" {
+					if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+						t.Fatalf("subscribe %s: %v", uri, err)
+					}
+				}
+				return events, ss
+			}
+			evA, ssA := open(tc.version, tc.subscribe)
+			evB, _ := open(protocolVersion20260728, r1)
+
+			var ackA subListenEvent
+			if tc.subscribe != "" && tc.version >= protocolVersion20260728 {
+				ackA = waitSubListenEvent(t, evA, "ack")
+			}
+			waitSubListenEvent(t, evB, "ack")
+
+			if err := ssA.NotifyResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: tc.notify}); err != nil {
+				t.Fatalf("NotifyResourceUpdated: %v", err)
+			}
+
+			if tc.wantA {
+				if got := waitSubListenEvent(t, evA, "updated"); got.id != ackA.id {
+					t.Errorf("session A: update subscription ID = %s, want %s", got.id, ackA.id)
+				}
+			}
+			select {
+			case e := <-evA:
+				t.Fatalf("session A received unexpected event %q (id=%s)", e.kind, e.id)
+			case e := <-evB:
+				t.Fatalf("session B received unexpected event %q (id=%s)", e.kind, e.id)
+			case <-time.After(notificationDelay * 5):
+			}
+		})
+	}
+}
+
+// TestNotifyResourceUpdated_StreamableStateless verifies that, on a stateless HTTP
+// server, NotifyResourceUpdated reaches only that client, even when the caller's
+// ctx carries the ID of an unrelated request.
+func TestNotifyResourceUpdated_StreamableStateless(t *testing.T) {
+	const uri = "file:///r1"
+	ctx := t.Context()
+	server := resourceSubServer(t, make(chan string, 8), make(chan string, 8))
+
+	listenSessions := make(chan *ServerSession, 2)
+	server.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSubscriptionsListen {
+				select {
+				case listenSessions <- req.GetSession().(*ServerSession):
+				default:
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{Stateless: true})
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	t.Cleanup(httpServer.Close)
+
+	// open connects a client and subscribes it to uri. It returns the client's
+	// events, the session serving its listen, and the listen's acknowledgment.
+	open := func(t *testing.T) (chan subListenEvent, *ServerSession) {
+		t.Helper()
+		events := make(chan subListenEvent, 16)
+		c := resourceSubClient(events)
+		cs, err := c.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL}, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		t.Cleanup(func() { cs.Close() })
+
+		if err := cs.Subscribe(ctx, &SubscribeParams{URI: uri}); err != nil {
+			t.Fatalf("subscribe %s: %v", uri, err)
+		}
+		select {
+		case ss := <-listenSessions:
+			return events, ss
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the client's listen")
+			return nil, nil
+		}
+	}
+	evA, ssA := open(t)
+	evB, _ := open(t)
+	ackA := waitSubListenEvent(t, evA, "ack")
+	waitSubListenEvent(t, evB, "ack")
+
+	// Notify with a ctx carrying another request's ID, as a tool handler's ctx
+	// would. The notification must still go out on the listen's stream.
+	otherID, err := jsonrpc.MakeID("other-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCtx := context.WithValue(ctx, idContextKey{}, otherID)
+
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"plain ctx", ctx},
+		{"context of another request", otherCtx},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ssA.NotifyResourceUpdated(tc.ctx, &ResourceUpdatedNotificationParams{URI: uri}); err != nil {
+				t.Fatalf("NotifyResourceUpdated: %v", err)
+			}
+			if got := waitSubListenEvent(t, evA, "updated"); got.id != ackA.id {
+				t.Errorf("session A: update subscription id = %s, want %s", got.id, ackA.id)
+			}
+			select {
+			case e := <-evA:
+				t.Fatalf("session A received a second event: %q", e.kind)
+			case e := <-evB:
+				t.Fatalf("session B received unexpected event %q", e.kind)
+			case <-time.After(notificationDelay * 5):
+			}
+		})
 	}
 }
 
@@ -3896,21 +4076,7 @@ func TestSubscriptionsListen_ResubscribeOutlivesEarlierTeardown(t *testing.T) {
 	defer ss.Close()
 
 	events := make(chan subListenEvent, 16)
-	c := NewClient(testImpl, &ClientOptions{
-		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
-			events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
-		},
-	})
-	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			if method == notificationSubscriptionsAck {
-				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
-					events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
-				}
-			}
-			return next(ctx, method, req)
-		}
-	})
+	c := resourceSubClient(events)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20260728})
@@ -3998,21 +4164,7 @@ func newURIListens(t *testing.T, uri string) *uriListens {
 	t.Cleanup(func() { ss.Close() })
 	f.ss = ss
 
-	c := NewClient(testImpl, &ClientOptions{
-		ResourceUpdatedHandler: func(_ context.Context, req *ResourceUpdatedNotificationRequest) {
-			f.events <- subListenEvent{"updated", fmt.Sprint(req.Params.Meta[MetaKeySubscriptionID])}
-		},
-	})
-	c.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			if method == notificationSubscriptionsAck {
-				if cr, ok := req.(*ClientRequest[*SubscriptionsAcknowledgedParams]); ok && cr.Params != nil {
-					f.events <- subListenEvent{"ack", fmt.Sprint(cr.Params.Meta[MetaKeySubscriptionID])}
-				}
-			}
-			return next(ctx, method, req)
-		}
-	})
+	c := resourceSubClient(f.events)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	f.ctx = ctx
