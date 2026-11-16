@@ -186,6 +186,12 @@ func fileRoot(root *Root) (_ string, err error) {
 		// common mistake "file://foo".
 		return "", errors.New("empty path")
 	}
+	// The authority of a file URI is a host without a port (RFC 8089, Section 2).
+	// This also catches the mistake "file://C:/dir", whose host is "C:", which
+	// would otherwise become the UNC path \\C:\dir on Windows.
+	if rurl.Port() != "" || strings.HasSuffix(rurl.Host, ":") {
+		return "", errors.New("host has a port")
+	}
 	fileRoot := filepath.Clean(filepath.FromSlash(fileURIPath(rurl.Host, rurl.Path, runtime.GOOS)))
 	if !filepath.IsAbs(fileRoot) {
 		return "", errors.New("not an absolute path")

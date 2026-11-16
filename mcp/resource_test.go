@@ -21,6 +21,8 @@ func TestFileRoot(t *testing.T) {
 		{uri: "http:///foo", wantErr: "not a file"},
 		{uri: "file://foo", wantErr: "empty path"},
 		{uri: ":", wantErr: "missing protocol scheme"},
+		{uri: "file://C:/foo", wantErr: "host has a port"},
+		{uri: "file://server:445/share/foo", wantErr: "host has a port"},
 	}
 	if runtime.GOOS == "windows" {
 		tests = append(tests,
@@ -83,46 +85,51 @@ func TestFileURIPath(t *testing.T) {
 }
 
 func TestComputeURIFilepath(t *testing.T) {
-	// TODO(jba): test with Windows \\host paths and C: paths
-	dirFilepath := filepath.FromSlash("/files")
-	rootFilepaths := []string{
-		filepath.FromSlash("/files/public"),
-		filepath.FromSlash("/files/shared"),
+	dirFilepaths := []string{filepath.FromSlash("/files")}
+	if runtime.GOOS == "windows" {
+		// A drive letter path and a UNC path, as fileRoot returns them.
+		dirFilepaths = append(dirFilepaths, `C:\files`, `\\server\share\files`)
 	}
-	for _, tt := range []struct {
-		uri     string
-		want    string
-		wantErr string // error must contain this
-	}{
-		{"file:///public", "public", ""},
-		{"file:///public/file", "public/file", ""},
-		{"file:///shared/file", "shared/file", ""},
-		{"http:///foo", "", "not a file"},
-		{"file://foo", "", "empty"},
-		{"file://foo/../bar", "", "localized"},
-		{"file:///secret", "", "root"},
-		{"file:///secret/file", "", "root"},
-		{"file:///private/file", "", "root"},
-	} {
-		t.Run(tt.uri, func(t *testing.T) {
-			tt.want = filepath.FromSlash(tt.want) // handle Windows
-			got, gotErr := computeURIFilepath(tt.uri, dirFilepath, rootFilepaths)
-			if gotErr != nil {
-				if tt.wantErr == "" {
-					t.Fatalf("got %v, wanted success", gotErr)
+	for _, dirFilepath := range dirFilepaths {
+		rootFilepaths := []string{
+			filepath.Join(dirFilepath, "public"),
+			filepath.Join(dirFilepath, "shared"),
+		}
+		for _, tt := range []struct {
+			uri     string
+			want    string
+			wantErr string // error must contain this
+		}{
+			{"file:///public", "public", ""},
+			{"file:///public/file", "public/file", ""},
+			{"file:///shared/file", "shared/file", ""},
+			{"http:///foo", "", "not a file"},
+			{"file://foo", "", "empty"},
+			{"file://foo/../bar", "", "localized"},
+			{"file:///secret", "", "root"},
+			{"file:///secret/file", "", "root"},
+			{"file:///private/file", "", "root"},
+		} {
+			t.Run(dirFilepath+" "+tt.uri, func(t *testing.T) {
+				tt.want = filepath.FromSlash(tt.want) // handle Windows
+				got, gotErr := computeURIFilepath(tt.uri, dirFilepath, rootFilepaths)
+				if gotErr != nil {
+					if tt.wantErr == "" {
+						t.Fatalf("got %v, wanted success", gotErr)
+					}
+					if !strings.Contains(gotErr.Error(), tt.wantErr) {
+						t.Fatalf("got error %v, does not contain %q", gotErr, tt.wantErr)
+					}
+					return
 				}
-				if !strings.Contains(gotErr.Error(), tt.wantErr) {
-					t.Fatalf("got error %v, does not contain %q", gotErr, tt.wantErr)
+				if tt.wantErr != "" {
+					t.Fatal("succeeded unexpectedly")
 				}
-				return
-			}
-			if tt.wantErr != "" {
-				t.Fatal("succeeded unexpectedly")
-			}
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
+				if got != tt.want {
+					t.Errorf("got %q, want %q", got, tt.want)
+				}
+			})
+		}
 	}
 }
 
