@@ -1194,7 +1194,7 @@ func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsPar
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.promptsCache.put(params.Cursor, result)
+		cs.promptsCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
@@ -1324,7 +1324,7 @@ func (cs *ClientSession) ListResources(ctx context.Context, params *ListResource
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourcesCache.put(params.Cursor, result)
+		cs.resourcesCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
@@ -1342,7 +1342,7 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourceTemplatesCache.put(params.Cursor, result)
+		cs.resourceTemplatesCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
@@ -1375,7 +1375,7 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 	// reason, and an input-required result is an interim one that the
 	// specification declares not cacheable.
 	if useCache && !result.retried && !result.NeedsInput() {
-		cs.readResourceCache.put(params.URI, result)
+		cs.readResourceCache.putCacheable(params.URI, result)
 	}
 	return result, nil
 }
