@@ -2660,12 +2660,12 @@ func (c *streamableClientConn) Write(ctx context.Context, msg jsonrpc.Message) e
 		return err
 	}
 
-	// server/discover is sessionless. A legacy server that rejects it may still
-	// set a session ID, which must not leak into the fallback initialize.
-	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" && requestMethod != methodDiscover {
+	if sessionID := resp.Header.Get(sessionIDHeader); sessionID != "" {
 		c.mu.Lock()
 		hadSessionID := c.sessionID
-		if hadSessionID == "" {
+		// A session ID is assigned on the response carrying the InitializeResult.
+		// See https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management.
+		if hadSessionID == "" && requestMethod == methodInitialize {
 			c.sessionID = sessionID
 		}
 		c.mu.Unlock()
