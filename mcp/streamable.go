@@ -335,6 +335,18 @@ func (h *StreamableHTTPHandler) closeAll() {
 // of the SDK.
 var fatalnewprotocolerrors = mcpgodebug.Value("fatalnewprotocolerrors")
 
+// plaintextstatefulrejection is a compatibility parameter that restores the
+// previous behavior of a stateful [StreamableHTTPHandler] when it receives a
+// request carrying SEP-2575 per-request metadata (i.e. an
+// `io.modelcontextprotocol/protocolVersion` `_meta` field, or an
+// `MCP-Protocol-Version` header >= 2026-07-28). When unset (the default), the
+// server responds with a JSON-RPC error of code
+// [CodeUnsupportedProtocolVersion] and an [UnsupportedProtocolVersionData]
+// payload listing its supported legacy versions, as required by SEP-2575. When
+// set to "1", the server instead responds with a plain-text `http.Error` body
+// mentioning the `StreamableHTTPOptions.Stateless` field.
+var plaintextstatefulrejection = mcpgodebug.Value("plaintextstatefulrejection")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -1674,6 +1686,13 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
 				if !c.stateless && jreq.Method != methodDiscover {
+					if plaintextstatefulrejection == "1" {
+						http.Error(w, fmt.Sprintf(
+							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
+							protocolVersion),
+							http.StatusBadRequest)
+						return
+					}
 					// Advertise only the legacy versions this stateful server accepts
 					// (i.e. exclude 2026-07-28, since that's what the request asked for
 					// and what we're rejecting).

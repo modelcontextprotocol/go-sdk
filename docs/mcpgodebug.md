@@ -102,16 +102,9 @@ Options below were removed, according to plan:
 - `disablecompleteparamsvalidation`. `Server.complete` now always validates
   the required `ref` and `argument.name` fields.
 
-- `plaintextstatefulrejection`. A stateful `StreamableHTTPHandler` now always
-  rejects per-request metadata with a JSON-RPC
-  `CodeUnsupportedProtocolVersion` error.
-
-- `blockingcancelnotify`. A cancelled call now always returns immediately and
-  sends `notifications/cancelled` asynchronously.
-
 ### 1.8.0
 
-Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+Options listed below were added and will be removed in the 1.10.0 version of the SDK.
 
 - `plaintextstatefulrejection` added. If set to `1`, a stateful
   `StreamableHTTPHandler` will respond with a plain-text `http.Error` 400 body

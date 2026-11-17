@@ -18,6 +18,7 @@ import (
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -27,6 +28,13 @@ import (
 // abandoned) must not be able to block the caller's return path or
 // re-trigger expensive recovery on its behalf. See issue #882.
 const notifyCancellationTimeout = 5 * time.Second
+
+// blockingcancelnotify, when set to "1" via MCPGODEBUG, restores the previous
+// behavior of blocking the caller's return on delivery of the best-effort
+// notifications/cancelled message (up to notifyCancellationTimeout). By
+// default, the call is retired immediately and the notification is sent
+// asynchronously so the caller returns as soon as its context is cancelled.
+var blockingcancelnotify = mcpgodebug.Value("blockingcancelnotify")
 
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
@@ -311,15 +319,18 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 		}
 		return fmt.Errorf("%w: calling %q", ErrConnectionClosed, method)
 	case ctx.Err() != nil:
-		// Eagerly retire the call: by default, the jsonrpc2 library waits for
-		// all outgoing calls to complete on close, which can hang shutdown if
-		// the peer is gone (e.g. a killed streamable client that the server
-		// can only detect via keepalive pings). If the caller will never
-		// receive the response, there's no need to track it.
+		// The notifications/cancelled message is best-effort. Retire the call
+		// immediately (so an unresponsive peer cannot delay the eager
+		// retirement that cancelCall's docstring promises) and send the
+		// notification off the caller's return path so a slow or unresponsive
+		// peer cannot delay the caller past its own deadline. See issue #1150.
 		//
-		// The notifications/cancelled message is best-effort, so it is sent
-		// off the caller's return path: a slow or unresponsive peer cannot
-		// delay the caller past its own deadline. See issue #1150.
+		// Setting MCPGODEBUG=blockingcancelnotify=1 restores the previous
+		// behavior of waiting synchronously for delivery inside cancelCall.
+		if blockingcancelnotify == "1" {
+			err := cancelCall(ctx, conn, call)
+			return errors.Join(ctx.Err(), err)
+		}
 		conn.Retire(call, ctx.Err())
 		go func() {
 			notifyCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
@@ -357,6 +368,30 @@ func withoutClosingErrors(err error) error {
 	default:
 		return nil
 	}
+}
+
+// cancelCall sends a "notifications/cancelled" notification for call and eagerly
+// retires it from conn.
+//
+// By default, the jsonrpc2 library waits for graceful shutdown when the
+// connection is closed, meaning it expects all outgoing and incoming requests
+// to complete. However, for MCP this expectation is unrealistic, and can lead
+// to hanging shutdown. For example, if a streamable client is killed, the
+// server will not be able to detect this event, except via keepalive pings (if
+// they are configured), and so outgoing calls may hang indefinitely.
+//
+// Therefore, we choose to eagerly retire calls, removing them from the
+// outgoingCalls map, when the caller context is cancelled: if the caller will
+// never receive the response, there's no need to track it.
+func cancelCall(ctx context.Context, conn *jsonrpc2.Connection, call *jsonrpc2.AsyncCall) error {
+	notifyCtx, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), notifyCancellationTimeout)
+	defer cancelNotify()
+	err := conn.Notify(notifyCtx, notificationCancelled, &CancelledParams{
+		Reason:    ctx.Err().Error(),
+		RequestID: call.ID().Raw(),
+	})
+	conn.Retire(call, ctx.Err())
+	return err
 }
 
 // A LoggingTransport is a [Transport] that delegates to another transport,
