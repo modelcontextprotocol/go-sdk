@@ -103,6 +103,10 @@ type Config struct {
 	// authorize endpoint still includes iss. Used to test local policy for
 	// unadvertised RFC 9207 iss.
 	UnadvertiseIssParameter bool
+	// OmitPKCEMethods, if true, omits code_challenge_methods_supported from
+	// metadata, as an authorization server without an authorization code
+	// flow does.
+	OmitPKCEMethods bool
 }
 
 // testRefreshToken is the refresh token issued and accepted by the fake server
@@ -208,6 +212,9 @@ func (s *FakeAuthorizationServer) handleMetadata(w http.ResponseWriter, r *http.
 		// Advertise RFC 9207 support unless UnadvertiseIssParameter is set:
 		// the authorize endpoint still includes "iss" in responses either way.
 		AuthorizationResponseIssParameterSupported: !s.config.UnadvertiseIssParameter,
+	}
+	if s.config.OmitPKCEMethods {
+		meta.CodeChallengeMethodsSupported = nil
 	}
 	// Set CORS headers for cross-origin client discovery.
 	w.Header().Set("Access-Control-Allow-Origin", "*")

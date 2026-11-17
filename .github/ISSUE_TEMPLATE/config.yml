@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and design discussion
+    url: https://github.com/modelcontextprotocol/go-sdk/discussions
+    about: Ask questions and discuss ideas in GitHub Discussions.
+  - name: Security vulnerabilities
+    url: https://github.com/modelcontextprotocol/go-sdk/blob/main/SECURITY.md
+    about: Report vulnerabilities privately, never in a public issue.

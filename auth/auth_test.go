@@ -36,60 +36,62 @@ func TestVerify(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name     string
-		opts     *RequireBearerTokenOptions
-		header   string
-		wantMsg  string
-		wantCode int
+		name          string
+		opts          *RequireBearerTokenOptions
+		header        string
+		wantMsg       string
+		wantCode      int
+		wantChallenge string
 	}{
 		{
 			"valid", nil, "Bearer valid",
-			"", 0,
+			"", 0, "",
 		},
 		{
 			"bad header", nil, "Barer valid",
-			"no bearer token", 401,
+			"no bearer token", 401, "",
 		},
 		{
 			"invalid", nil, "bearer invalid",
-			"invalid token", 401,
+			"invalid token", 401, "invalid_token",
 		},
 		{
 			"oauth error", nil, "Bearer oauth",
-			"oauth error", 400,
+			"oauth error", 400, "",
 		},
 		{
 			"no expiration", nil, "Bearer noexp",
-			"token missing expiration", 401,
+			"token missing expiration", 401, "invalid_token",
 		},
 		{
 			"no expiration with AllowMissingExpiration accepts",
 			&RequireBearerTokenOptions{AllowMissingExpiration: true}, "Bearer noexp",
-			"", 0,
+			"", 0, "",
 		},
 		{
 			"expired", nil, "Bearer expired",
-			"token expired", 401,
+			"token expired", 401, "invalid_token",
 		},
 		{
 			"missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer valid",
-			"insufficient scope", 403,
+			"insufficient scope", 403, "insufficient_scope",
 		},
 		{
 			"expired and missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer expired",
-			"token expired", 401,
+			"token expired", 401, "invalid_token",
 		},
 		{
 			"no expiration and missing scope", &RequireBearerTokenOptions{Scopes: []string{"s1"}}, "Bearer noexp",
-			"token missing expiration", 401,
+			"token missing expiration", 401, "invalid_token",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotMsg, gotCode := verify(&http.Request{
+			_, gotMsg, gotCode, gotChallenge := verify(&http.Request{
 				Header: http.Header{"Authorization": {tt.header}},
 			}, verifier, tt.opts)
-			if gotMsg != tt.wantMsg || gotCode != tt.wantCode {
-				t.Errorf("got (%q, %d), want (%q, %d)", gotMsg, gotCode, tt.wantMsg, tt.wantCode)
+			if gotMsg != tt.wantMsg || gotCode != tt.wantCode || gotChallenge != tt.wantChallenge {
+				t.Errorf("got (%q, %d, %q), want (%q, %d, %q)",
+					gotMsg, gotCode, gotChallenge, tt.wantMsg, tt.wantCode, tt.wantChallenge)
 			}
 		})
 	}
@@ -218,9 +220,23 @@ func TestRequireBearerToken(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "no middleware options",
+			name:       "invalid token without middleware options",
 			opts:       nil,
 			authHeader: "Bearer invalid",
+			wantHeader: "Bearer error=\"invalid_token\"",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "no bearer token",
+			opts:       nil,
+			authHeader: "",
+			wantHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "malformed authorization header",
+			opts:       nil,
+			authHeader: "Basic invalid",
 			wantHeader: "",
 			wantStatus: http.StatusUnauthorized,
 		},
@@ -230,7 +246,7 @@ func TestRequireBearerToken(t *testing.T) {
 				ResourceMetadataURL: "https://example.com/resource-metadata",
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\"",
+			wantHeader: "Bearer error=\"invalid_token\", resource_metadata=\"https://example.com/resource-metadata\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -239,7 +255,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes: []string{"read", "write"},
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer scope=\"read write\"",
+			wantHeader: "Bearer error=\"invalid_token\", scope=\"read write\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
@@ -249,7 +265,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes:              []string{"read", "write"},
 			},
 			authHeader: "Bearer invalid",
-			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
+			wantHeader: "Bearer error=\"invalid_token\", resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{

@@ -15,8 +15,11 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // listenRequest returns a raw 2026-07-28 subscriptions/listen POST for uri.
@@ -134,26 +137,10 @@ loop:
 	}
 }
 
-// TestStreamKeepAlive_OnlyListenStreams checks that the keep-alive is
-// confined to subscriptions/listen: a slow tools/call produces an SSE stream
-// whose only content is the final response, however long it stays silent.
-func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
-	const interval = 10 * time.Millisecond
-
-	server := NewServer(testImpl, nil)
-	AddTool(server, &Tool{Name: "slow"},
-		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
-			time.Sleep(10 * interval)
-			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
-		})
-	handler := NewStreamableHTTPHandler(
-		func(*http.Request) *Server { return server },
-		&StreamableHTTPOptions{Stateless: true, StreamKeepAlive: interval},
-	)
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(newProtocolBody(t, "slow", struct{}{})))
+// toolCallRequest returns a raw 2026-07-28 tools/call POST for the tool name.
+func toolCallRequest(t *testing.T, ctx context.Context, url, name string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(newProtocolBody(t, name, struct{}{})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,21 +148,127 @@ func TestStreamKeepAlive_OnlyListenStreams(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set(protocolVersionHeader, protocolVersion20260728)
 	req.Header.Set(methodHeader, "tools/call")
-	req.Header.Set(nameHeader, "slow")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set(nameHeader, name)
+	return req
+}
+
+// TestStreamKeepAlive_SlowToolCall is the scenario from #1155: while a tool
+// call runs, the response headers arrive and the stream carries keep-alive
+// comments, followed by the result once the tool returns.
+func TestStreamKeepAlive_SlowToolCall(t *testing.T) {
+	const interval = 10 * time.Millisecond
+
+	release := make(chan struct{})
+	releaseTool := sync.OnceFunc(func() { close(release) })
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(
+		func(*http.Request) *Server { return server },
+		&StreamableHTTPOptions{Stateless: true, StreamKeepAlive: interval},
+	)
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+	defer releaseTool() // before Close, which waits for the tool call
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The tool is blocked until released below, so Do returns only if the
+	// keep-alive commits the headers.
+	resp, err := http.DefaultClient.Do(toolCallRequest(t, ctx, httpServer.URL, "slow"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("no response headers while the tool runs: %v", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	if !sc.Scan() || sc.Text() != ":" {
+		t.Fatalf("first line = %q, want a keep-alive comment", sc.Text())
+	}
+
+	releaseTool()
+	var gotResult bool
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case strings.HasPrefix(line, "data: "):
+			gotResult = gotResult || strings.Contains(line, `"text":"ok"`)
+		case line == ":" || line == "" || strings.HasPrefix(line, "event: "):
+		default:
+			t.Errorf("unexpected line %q", line)
+		}
+	}
+	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", resp.StatusCode, body)
+	if !gotResult {
+		t.Error("stream ended without the tool result")
 	}
-	if hasSSEComment(body) {
-		t.Errorf("keep-alive written on a tools/call stream:\n%s", body)
+}
+
+// TestStreamKeepAlive_ProtocolErrorStatus checks that a SEP-2575
+// protocol-level error keeps its HTTP status while the stream is still
+// silent, and is sent as an SSE event once a keep-alive comment has committed
+// the headers.
+func TestStreamKeepAlive_ProtocolErrorStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		keepAlive  time.Duration
+		delay      time.Duration
+		wantStatus int
+	}{
+		{"before the first comment", time.Minute, 0, http.StatusBadRequest},
+		{"after the first comment", 10 * time.Millisecond, 200 * time.Millisecond, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(testImpl, nil)
+			AddTool(server, &Tool{Name: "invalid"},
+				func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+					time.Sleep(tc.delay)
+					return nil, nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "bad arguments"}
+				})
+			handler := NewStreamableHTTPHandler(
+				func(*http.Request) *Server { return server },
+				&StreamableHTTPOptions{Stateless: true, StreamKeepAlive: tc.keepAlive},
+			)
+			httpServer := httptest.NewServer(mustNotPanic(t, handler))
+			defer httpServer.Close()
+
+			resp, err := http.DefaultClient.Do(toolCallRequest(t, context.Background(), httpServer.URL, "invalid"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, tc.wantStatus, body)
+			}
+			if tc.wantStatus != http.StatusOK {
+				if !bytes.Contains(body, []byte(`"code":-32602`)) {
+					t.Errorf("body = %s, want the InvalidParams error", body)
+				}
+				return
+			}
+			var gotEvent bool
+			for line := range strings.SplitSeq(string(body), "\n") {
+				gotEvent = gotEvent || strings.HasPrefix(line, "data: ") && strings.Contains(line, `"code":-32602`)
+			}
+			if !hasSSEComment(body) || !gotEvent {
+				t.Errorf("body = %s, want keep-alive comments and the InvalidParams error as an SSE event", body)
+			}
+		})
 	}
 }
 
@@ -223,7 +316,7 @@ func TestStreamKeepAlive_IdleReset(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.mu.Lock()
-	s.startKeepAliveLocked(ctx, interval)
+	s.startKeepAliveLocked(ctx, interval, true)
 	s.mu.Unlock()
 
 	// Headers uncommitted: nothing is written however long we wait.

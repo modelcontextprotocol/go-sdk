@@ -11,10 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
@@ -108,27 +112,68 @@ type connectionClosedTest struct {
 func connectionClosedTests() []connectionClosedTest {
 	readErr := errors.New("read failed")
 	wrappedReadErr := fmt.Errorf("reading: %w", readErr)
-	sameMessageErr := errors.New("client is closing")
+	sameMessageErr := errors.New("connection is closing")
 	return []connectionClosedTest{
 		{name: "local close", close: true},
 		{name: "EOF", readErr: io.EOF, causes: []error{io.EOF}},
 		{name: "unexpected EOF", readErr: io.ErrUnexpectedEOF, causes: []error{io.ErrUnexpectedEOF}},
 		{name: "read error", readErr: readErr, causes: []error{readErr}},
 		{name: "wrapped read error", readErr: wrappedReadErr, causes: []error{wrappedReadErr, readErr}},
-		{name: "client closing", readErr: jsonrpc2.NewError(-32003, "client is closing")},
-		{name: "server closing", readErr: jsonrpc2.NewError(-32004, "server is closing")},
+		{name: "closing", readErr: jsonrpc2.NewError(-32004, "connection is closing")},
+		// Older SDK versions send the same code with a different message.
+		{name: "closing, older message", readErr: jsonrpc2.NewError(-32004, "server is closing")},
 		{
 			name:    "wrapped closing error",
-			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrServerClosing, wrappedReadErr)),
+			readErr: fmt.Errorf("outer: %w", fmt.Errorf("%w: %w", jsonrpc2.ErrConnClosing, wrappedReadErr)),
 			causes:  []error{wrappedReadErr, readErr},
 		},
 		{
 			name:    "joined closing errors",
-			readErr: errors.Join(jsonrpc2.ErrClientClosing, errors.Join(jsonrpc2.ErrServerClosing, readErr), io.ErrUnexpectedEOF),
+			readErr: errors.Join(jsonrpc2.ErrConnClosing, errors.Join(jsonrpc2.ErrConnClosing, readErr), io.ErrUnexpectedEOF),
 			causes:  []error{readErr, io.ErrUnexpectedEOF},
 		},
 		{name: "wire error cause", readErr: jsonrpc2.ErrInvalidParams, causes: []error{jsonrpc2.ErrInvalidParams}},
 		{name: "same message cause", readErr: sameMessageErr, causes: []error{sameMessageErr}},
+	}
+}
+
+// TestServerLogsUndeliveredResponse is a regression test for #1147: when the
+// client goes away before a tool handler finishes, the server logs that the
+// response could not be delivered instead of dropping it silently.
+func TestServerLogsUndeliveredResponse(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	server := NewServer(testImpl, &ServerOptions{
+		Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+	started := make(chan struct{})
+	server.AddTool(&Tool{Name: "slow", InputSchema: &jsonschema.Schema{Type: "object"}},
+		func(ctx context.Context, _ *CallToolRequest) (*CallToolResult, error) {
+			close(started)
+			<-ctx.Done() // cancelled once the client's connection is gone
+			return &CallToolResult{}, nil
+		})
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	ss, err := server.Connect(ctx, &IOTransport{Reader: serverIn, Writer: serverOut}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := NewClient(testImpl, nil).Connect(ctx, &IOTransport{Reader: clientIn, Writer: clientOut}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	go cs.CallTool(ctx, &CallToolParams{Name: "slow"})
+	<-started
+	// The client goes away abruptly, as one that gives up on a slow call does.
+	clientOut.Close()
+	clientIn.Close()
+	ss.Wait()
+
+	got := buf.String()
+	if !strings.Contains(got, `level=WARN msg="failed to write response" method=tools/call id=`) {
+		t.Errorf("server log does not report the undelivered response:\n%s", got)
 	}
 }
 
@@ -139,13 +184,11 @@ func checkConnectionClosedError(t *testing.T, err error, causes ...error) {
 			t.Errorf("error = %v, want an error wrapping %v", err, want)
 		}
 	}
-	for _, closing := range []error{jsonrpc2.ErrClientClosing, jsonrpc2.ErrServerClosing} {
-		if errors.Is(err, closing) {
-			t.Errorf("error = %v, must not wrap %v", err, closing)
-		}
+	if errors.Is(err, jsonrpc2.ErrConnClosing) {
+		t.Errorf("error = %v, must not wrap %v", err, jsonrpc2.ErrConnClosing)
 	}
 	var wireErr *jsonrpc2.WireError
-	if errors.As(err, &wireErr) && (wireErr.Code == -32003 || wireErr.Code == -32004) {
+	if errors.As(err, &wireErr) && wireErr.Code == -32004 {
 		t.Errorf("error = %v, exposes internal closing code %d", err, wireErr.Code)
 	}
 }
@@ -325,7 +368,7 @@ func TestIOConnRead(t *testing.T) {
 				if requested == "" {
 					requested = tt.protocolVersion
 				}
-				tr.sessionUpdated(ServerSessionState{
+				tr.serverSessionUpdated(ServerSessionState{
 					InitializeParams: &InitializeParams{
 						ProtocolVersion: requested,
 					},
@@ -550,6 +593,121 @@ func TestIOConnFrameCap(t *testing.T) {
 	}
 }
 
+// TestIOConnFrameCapIgnoresReadBoundaries checks that whether a message fits
+// within the frame cap depends only on the message, not on how the reader
+// splits the stream or on what the decoder read ahead while decoding the
+// message before it.
+func TestIOConnFrameCapIgnoresReadBoundaries(t *testing.T) {
+	const limit = 128
+	chunks := []int{1, 2, 3, 7, 64, limit - 1, limit, limit + 1, 1 << 16}
+	tests := []struct {
+		name   string
+		frames []capFrame
+	}{
+		{"first message at the cap", []capFrame{{"", limit}}},
+		{"first message over the cap", []capFrame{{"", limit + 1}}},
+		{"message at the cap after a short one", []capFrame{{"", 50}, {"\n", limit}}},
+		{"message over the cap after a short one", []capFrame{{"", 50}, {"\n", limit + 1}}},
+		{"CRLF counts toward the next message", []capFrame{{"", 50}, {"\r\n", limit}, {"\r\n", limit + 1}}},
+		{"blank lines count toward the next message", []capFrame{{"", 50}, {"\n\n\n", limit}, {"\n\n", limit + 1}}},
+		{"each message has the whole cap", []capFrame{{"", limit}, {"\n", limit}, {"\n", limit}, {"\n", limit}}},
+		{"short messages then one over the cap", []capFrame{{"", 50}, {"\n", 50}, {"\n", 50}, {"\n", limit + 1}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkFrameCap(t, limit, tt.frames, chunks)
+		})
+	}
+}
+
+func FuzzIOConnFrameCap(f *testing.F) {
+	f.Add(uint8(64), uint8(0), []byte{0, 1, 2, 3})
+	f.Add(uint8(0), uint8(63), []byte{4, 255, 17, 200, 9})
+	f.Add(uint8(255), uint8(255), []byte{252, 253, 254, 255})
+	f.Fuzz(func(t *testing.T, limitByte, chunkByte uint8, layout []byte) {
+		const maxFrames = 16
+		if len(layout) > maxFrames {
+			layout = layout[:maxFrames]
+		}
+		separators := []string{"\n", "\r\n", "\n\n", "\r\n\r\n"}
+		frames := make([]capFrame, len(layout))
+		for i, b := range layout {
+			sep := separators[b%4]
+			if i == 0 {
+				sep = ""
+			}
+			frames[i] = capFrame{sep, len(sep) + len(capMessage("")) + 5*int(b/4)}
+		}
+		checkFrameCap(t, 64+int(limitByte), frames, []int{1, 1 + int(chunkByte), 1 << 16})
+	})
+}
+
+// A capFrame describes a message in a stream given to the frame cap.
+type capFrame struct {
+	sep  string // line terminators before the message
+	size int    // bytes the cap counts: len(sep) plus the message
+}
+
+// capMessage returns a JSON-RPC notification carrying pad.
+func capMessage(pad string) string {
+	return `{"jsonrpc":"2.0","method":"m","params":{"p":"` + pad + `"}}`
+}
+
+// checkFrameCap reads the stream described by frames, splitting it into
+// reads of each of the chunk sizes in turn, and checks that the connection
+// delivers exactly the leading messages whose size is at most limit.
+func checkFrameCap(t *testing.T, limit int, frames []capFrame, chunks []int) {
+	t.Helper()
+	var b strings.Builder
+	for _, f := range frames {
+		pad := f.size - len(f.sep) - len(capMessage(""))
+		if pad < 0 {
+			t.Fatalf("frame size %d is too small for a message after %q", f.size, f.sep)
+		}
+		b.WriteString(f.sep)
+		b.WriteString(capMessage(strings.Repeat("x", pad)))
+	}
+	b.WriteString("\n")
+	stream := b.String()
+
+	want, wantErr := 0, io.EOF
+	for want < len(frames) && frames[want].size <= limit {
+		want++
+	}
+	if want < len(frames) {
+		wantErr = errFrameTooLarge
+	}
+	for _, chunk := range chunks {
+		r := &chunkReader{r: strings.NewReader(stream), n: chunk}
+		tr := newIOConnLimited(rwc{rc: io.NopCloser(r)}, limit)
+		got := 0
+		var err error
+		for {
+			if _, err = tr.Read(context.Background()); err != nil {
+				break
+			}
+			got++
+		}
+		tr.Close()
+		if got != want || !errors.Is(err, wantErr) {
+			t.Errorf("reading %d bytes at a time: got %d messages, then %v; want %d, then %v", chunk, got, err, want, wantErr)
+		}
+	}
+}
+
+// chunkReader returns at most n bytes from each Read.
+type chunkReader struct {
+	r io.Reader
+	n int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(p) > r.n {
+		p = p[:r.n]
+	}
+	return r.r.Read(p)
+}
+
 // TestIOConnDropResponse checks that ioConn discards the response to a call
 // the peer cancelled on a session using protocol version 2026-07-28 or later,
 // and still sends it on earlier versions.
@@ -573,7 +731,7 @@ func TestIOConnDropResponse(t *testing.T) {
 				wc: nopCloserWriter{&out},
 			})
 			t.Cleanup(func() { tr.Close() })
-			tr.sessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
+			tr.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: test.version})
 
 			if test.drop {
 				tr.DropResponse(jsonrpc2.Int64ID(1))
@@ -597,6 +755,73 @@ func TestIOConnDropResponse(t *testing.T) {
 			}
 			if len(tr.dropped) != 0 {
 				t.Errorf("after the responses were written, %d dropped IDs are still recorded", len(tr.dropped))
+			}
+		})
+	}
+}
+
+// TestLoggingTransportServerBatchRejection verifies that wrapping a stdio-style
+// transport in a LoggingTransport (as examples/server/{everything,memory,
+// sequentialthinking} do) does not change what the server accepts: once a
+// session has negotiated 2025-06-18 or later, a JSON-RPC batch must be rejected
+// (see TestIOConnRead "batching new protocol") whether or not the connection
+// is wrapped.
+func TestLoggingTransportServerBatchRejection(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		name := "plain"
+		if wrap {
+			name = "logging"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			inR, inW := io.Pipe()   // test -> server stdin
+			outR, outW := io.Pipe() // server stdout -> test
+			var tr Transport = &IOTransport{Reader: inR, Writer: outW}
+			if wrap {
+				tr = &LoggingTransport{Transport: tr, Writer: io.Discard}
+			}
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, tr, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			lines := bufio.NewScanner(outR)
+			send := func(msg string) {
+				t.Helper()
+				if _, err := io.WriteString(inW, msg+"\n"); err != nil {
+					t.Fatalf("write %q: %v", msg, err)
+				}
+			}
+			recv := func() (string, bool) {
+				ch := make(chan string, 1)
+				go func() {
+					if lines.Scan() {
+						ch <- lines.Text()
+					}
+					close(ch)
+				}()
+				select {
+				case line, ok := <-ch:
+					return line, ok
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out waiting for the server to respond")
+					return "", false
+				}
+			}
+
+			send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+			if line, ok := recv(); !ok || !strings.Contains(line, `"protocolVersion":"2025-11-25"`) {
+				t.Fatalf("initialize: got %q, want a 2025-11-25 InitializeResult", line)
+			}
+			send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+
+			// A batch is not supported at 2025-06-18 or later: the server must
+			// not answer it.
+			send(`[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","id":3,"method":"ping"}]`)
+			if line, ok := recv(); ok {
+				t.Errorf("server answered a JSON-RPC batch on a 2025-11-25 session: %q", line)
 			}
 		})
 	}
@@ -737,5 +962,94 @@ func TestLoggingConnDropResponse(t *testing.T) {
 	t.Run("does nothing for a delegate that does not", func(t *testing.T) {
 		conn := &loggingConn{delegate: plainConn{}, w: io.Discard}
 		conn.DropResponse(jsonrpc.ID{})
+	})
+}
+
+// optionalConn is a Connection implementing every optional connection
+// interface, recording the calls it receives.
+type optionalConn struct {
+	Connection
+	clientState *clientSessionState
+	serverState *ServerSessionState
+}
+
+func (c *optionalConn) clientSessionUpdated(s clientSessionState) { c.clientState = &s }
+func (c *optionalConn) serverSessionUpdated(s ServerSessionState) { c.serverState = &s }
+func (c *optionalConn) propagateCancellation() bool               { return true }
+
+// TestLoggingConnForwardsOptionalInterfaces verifies that loggingConn forwards
+// the optional connection interfaces to its delegate, and is a no-op for a
+// delegate that implements none of them.
+func TestLoggingConnForwardsOptionalInterfaces(t *testing.T) {
+	delegate := &optionalConn{}
+	lc := &loggingConn{delegate: delegate, w: io.Discard}
+
+	lc.clientSessionUpdated(clientSessionState{InitializeResult: &InitializeResult{ProtocolVersion: protocolVersion20251125}})
+	if delegate.clientState == nil || delegate.clientState.InitializeResult.ProtocolVersion != protocolVersion20251125 {
+		t.Errorf("clientSessionUpdated was not forwarded: got %+v", delegate.clientState)
+	}
+	lc.serverSessionUpdated(ServerSessionState{NegotiatedProtocolVersion: protocolVersion20251125})
+	if delegate.serverState == nil || delegate.serverState.NegotiatedProtocolVersion != protocolVersion20251125 {
+		t.Errorf("serverSessionUpdated was not forwarded: got %+v", delegate.serverState)
+	}
+	if !lc.propagateCancellation() {
+		t.Error("propagateCancellation() = false, want the delegate's true")
+	}
+
+	plain := &loggingConn{delegate: struct{ Connection }{}, w: io.Discard}
+	plain.clientSessionUpdated(clientSessionState{})
+	plain.serverSessionUpdated(ServerSessionState{})
+	if plain.propagateCancellation() {
+		t.Error("propagateCancellation() = true for a delegate without the interface, want false")
+	}
+}
+
+// TestIOConnCanceledQueuedWrite checks that a Write canceled while it waits for
+// another Write returns without sending its message, and that the connection
+// stays usable.
+func TestIOConnCanceledQueuedWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		local, peer := net.Pipe()
+		conn := newIOConn(local)
+		defer conn.Close()
+		defer peer.Close()
+
+		write := func(ctx context.Context, method string) <-chan error {
+			errc := make(chan error, 1)
+			go func() { errc <- conn.Write(ctx, &jsonrpc.Request{Method: method}) }()
+			return errc
+		}
+
+		// The peer is not reading yet, so the first Write blocks in the pipe.
+		first := write(context.Background(), "first")
+		synctest.Wait()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		canceled := write(ctx, "canceled")
+		synctest.Wait()
+		cancel()
+		if err := <-canceled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Write() = %v, want %v", err, context.Canceled)
+		}
+
+		second := write(context.Background(), "second")
+		frames := bufio.NewScanner(peer)
+		for _, want := range []string{"first", "second"} {
+			if !frames.Scan() {
+				t.Fatalf("peer read no frame, want %q: %v", want, frames.Err())
+			}
+			msg, err := jsonrpc2.DecodeMessage(frames.Bytes())
+			if err != nil {
+				t.Fatalf("decoding %q: %v", frames.Bytes(), err)
+			}
+			if got := msg.(*jsonrpc.Request).Method; got != want {
+				t.Fatalf("peer read %q, want %q", got, want)
+			}
+		}
+		for _, errc := range []<-chan error{first, second} {
+			if err := <-errc; err != nil {
+				t.Errorf("Write() = %v, want nil", err)
+			}
+		}
 	})
 }

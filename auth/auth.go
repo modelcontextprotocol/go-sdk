@@ -99,23 +99,23 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 
 	return func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenInfo, errmsg, code := verify(r, verifier, opts)
+			tokenInfo, errmsg, code, challengeErr := verify(r, verifier, opts)
 			if code != 0 {
 				if code == http.StatusUnauthorized || code == http.StatusForbidden {
+					var params []string
+					if challengeErr != "" {
+						params = append(params, fmt.Sprintf("error=%q", challengeErr))
+					}
 					if opts != nil {
-						var params []string
-						if code == http.StatusForbidden {
-							params = append(params, `error="insufficient_scope"`)
-						}
 						if opts.ResourceMetadataURL != "" {
 							params = append(params, fmt.Sprintf("resource_metadata=%q", opts.ResourceMetadataURL))
 						}
 						if len(opts.Scopes) > 0 {
 							params = append(params, fmt.Sprintf("scope=%q", strings.Join(opts.Scopes, " ")))
 						}
-						if len(params) > 0 {
-							w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
-						}
+					}
+					if len(params) > 0 {
+						w.Header().Add("WWW-Authenticate", "Bearer "+strings.Join(params, ", "))
 					}
 				}
 				http.Error(w, errmsg, code)
@@ -127,27 +127,32 @@ func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions)
 	}
 }
 
-func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenOptions) (_ *TokenInfo, errmsg string, code int) {
+// verify checks the request's bearer token. On failure it returns the HTTP
+// status and, for 401 and 403 responses, the OAuth error code to include in
+// the WWW-Authenticate challenge (RFC 6750 §3.1).
+func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenOptions) (_ *TokenInfo, errmsg string, code int, challengeErr string) {
 	// Extract bearer token.
 	authHeader := req.Header.Get("Authorization")
 	fields := strings.Fields(authHeader)
 	if len(fields) != 2 || strings.ToLower(fields[0]) != "bearer" {
-		return nil, "no bearer token", http.StatusUnauthorized
+		// RFC 6750 §3.1: a request without authentication information should not
+		// be answered with an error code.
+		return nil, "no bearer token", http.StatusUnauthorized, ""
 	}
 
 	// Verify the token and get information from it.
 	tokenInfo, err := verifier(req.Context(), fields[1], req)
 	if err != nil {
 		if errors.Is(err, ErrInvalidToken) {
-			return nil, err.Error(), http.StatusUnauthorized
+			return nil, err.Error(), http.StatusUnauthorized, "invalid_token"
 		}
 		if errors.Is(err, ErrOAuth) {
-			return nil, err.Error(), http.StatusBadRequest
+			return nil, err.Error(), http.StatusBadRequest, ""
 		}
-		return nil, err.Error(), http.StatusInternalServerError
+		return nil, err.Error(), http.StatusInternalServerError, ""
 	}
 	if tokenInfo == nil {
-		return nil, "token validation failed", http.StatusInternalServerError
+		return nil, "token validation failed", http.StatusInternalServerError, ""
 	}
 
 	if opts == nil {
@@ -161,20 +166,20 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 	// as lacking scope (403), prompting it to ask for more scopes.
 	if tokenInfo.Expiration.IsZero() {
 		if !opts.AllowMissingExpiration {
-			return nil, "token missing expiration", http.StatusUnauthorized
+			return nil, "token missing expiration", http.StatusUnauthorized, "invalid_token"
 		}
 	} else if tokenInfo.Expiration.Add(opts.ClockSkew).Before(time.Now()) {
-		return nil, "token expired", http.StatusUnauthorized
+		return nil, "token expired", http.StatusUnauthorized, "invalid_token"
 	}
 
 	// Check scopes. All must be present.
 	// Note: quadratic, but N is small.
 	for _, s := range opts.Scopes {
 		if !slices.Contains(tokenInfo.Scopes, s) {
-			return nil, "insufficient scope", http.StatusForbidden
+			return nil, "insufficient scope", http.StatusForbidden, "insufficient_scope"
 		}
 	}
-	return tokenInfo, "", 0
+	return tokenInfo, "", 0, ""
 }
 
 // ProtectedResourceMetadataHandler returns an http.Handler that serves OAuth 2.0

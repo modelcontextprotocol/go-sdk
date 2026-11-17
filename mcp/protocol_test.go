@@ -1222,6 +1222,21 @@ func TestInputRequestMapJSON(t *testing.T) {
 			t.Error("Unmarshal succeeded, want an error for a null input request")
 		}
 	})
+
+	// roots/list params are optional, so a request without them must not fail
+	// decoding the whole result.
+	for _, params := range []string{``, `,"params":null`} {
+		t.Run("roots/list without params"+params, func(t *testing.T) {
+			var got CallToolResult
+			data := `{"content":[],"inputRequests":{"r1":{"method":"roots/list"` + params + `}}}`
+			if err := json.Unmarshal([]byte(data), &got); err != nil {
+				t.Fatalf("Unmarshal(%s) = %v, want nil", data, err)
+			}
+			if p, ok := got.InputRequests["r1"].(*ListRootsParams); !ok || p == nil {
+				t.Errorf("InputRequests[r1] = %#v, want non-nil *ListRootsParams", got.InputRequests["r1"])
+			}
+		})
+	}
 }
 
 func TestInputResponseMapJSON(t *testing.T) {

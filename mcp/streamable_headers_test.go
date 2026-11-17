@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
@@ -240,7 +241,7 @@ func TestValidateMcpHeaders(t *testing.T) {
 		{
 			name:           "missing Mcp-Method header",
 			version:        minVersionForStandardHeaders,
-			msg:            &jsonrpc.Request{Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
+			msg:            &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: "tools/call", Params: mustMarshal(&CallToolParams{Name: "my-tool"})},
 			wantErr:        true,
 			wantErrContain: "missing required Mcp-Method header",
 		},
@@ -366,6 +367,20 @@ func TestValidateMcpHeaders(t *testing.T) {
 			methodHeader: "notifications/initialized",
 			msg:          &jsonrpc.Request{Method: "notifications/initialized"},
 			wantErr:      false,
+		},
+		{
+			name:    "notification without Mcp-Method header",
+			version: minVersionForStandardHeaders,
+			msg:     &jsonrpc.Request{Method: "notifications/cancelled"},
+			wantErr: false,
+		},
+		{
+			name:           "notification with mismatched Mcp-Method header",
+			version:        minVersionForStandardHeaders,
+			methodHeader:   "notifications/initialized",
+			msg:            &jsonrpc.Request{Method: "notifications/cancelled"},
+			wantErr:        true,
+			wantErrContain: "Mcp-Method header value 'notifications/initialized' does not match body value 'notifications/cancelled'",
 		},
 		{
 			name:         "tool name with hyphen",
@@ -897,6 +912,26 @@ func TestValidateToolParamHeaders(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "primitive types",
 		},
+		{
+			name: "jsonschema.Schema x-mcp-header under items is rejected",
+			tool: &Tool{
+				Name: "test",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"tags": {
+							Type: "array",
+							Items: &jsonschema.Schema{
+								Type:  "string",
+								Extra: map[string]any{"x-mcp-header": "Tag"},
+							},
+						},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "not on a property reached",
+		},
 	}
 
 	for _, tt := range tests {
@@ -911,6 +946,94 @@ func TestValidateToolParamHeaders(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Errorf("validateToolParamHeaders() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestValidateParamHeaderPlacement checks that an x-mcp-header annotation is
+// rejected unless it is on a property reached from the schema root through
+// "properties" keys alone, as the 2026-07-28 spec requires. See #1250.
+func TestValidateParamHeaderPlacement(t *testing.T) {
+	tests := []struct {
+		name    string
+		schema  string
+		wantErr bool
+	}{
+		{
+			name:   "nested properties",
+			schema: `{"type":"object","properties":{"config":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}}`,
+		},
+		{
+			name:   "annotation-like values that are not schemas",
+			schema: `{"type":"object","properties":{"x-mcp-header":{"type":"object","default":{"x-mcp-header":"A"},"const":{"x-mcp-header":"B"},"enum":[{"x-mcp-header":"C"}]}}}`,
+		},
+		{
+			name:    "schema root",
+			schema:  `{"type":"string","x-mcp-header":"Root"}`,
+			wantErr: true,
+		},
+		{
+			name:    "items",
+			schema:  `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string","x-mcp-header":"Tag"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "oneOf",
+			schema:  `{"type":"object","properties":{"region":{"oneOf":[{"type":"integer"},{"type":"string","x-mcp-header":"Region"}]}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "anyOf",
+			schema:  `{"type":"object","anyOf":[{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "allOf",
+			schema:  `{"type":"object","allOf":[{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "not",
+			schema:  `{"type":"object","properties":{"region":{"type":"string","not":{"type":"string","x-mcp-header":"Region"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "if",
+			schema:  `{"type":"object","if":{"properties":{"mode":{"type":"string","x-mcp-header":"Mode"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "then",
+			schema:  `{"type":"object","then":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "else",
+			schema:  `{"type":"object","else":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "$defs entry reached through $ref",
+			schema:  `{"type":"object","properties":{"region":{"$ref":"#/$defs/region"}},"$defs":{"region":{"type":"string","x-mcp-header":"Region"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "additionalProperties",
+			schema:  `{"type":"object","additionalProperties":{"type":"string","x-mcp-header":"Extra"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "patternProperties",
+			schema:  `{"type":"object","patternProperties":{"^r":{"type":"string","x-mcp-header":"Region"}}}`,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateParamHeaderAnnotations(&Tool{Name: "test", InputSchema: json.RawMessage(tt.schema)})
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("validateParamHeaderAnnotations() = %v, want error: %t", err, tt.wantErr)
 			}
 		})
 	}
@@ -979,7 +1102,20 @@ func TestFilterValidTools(t *testing.T) {
 		},
 	}
 
-	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedValid, validJsonSchema, invalidJsonSchema})
+	unreachable := &Tool{
+		Name: "unreachable",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tags": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string", "x-mcp-header": "Tag"},
+				},
+			},
+		},
+	}
+
+	result := filterValidTools(nil, []*Tool{valid, invalid, noAnnotation, nestedValid, validJsonSchema, invalidJsonSchema, unreachable})
 	if len(result) != 4 {
 		t.Fatalf("filterValidTools returned %d tools, want 4", len(result))
 	}
@@ -1639,6 +1775,46 @@ func TestValidateParamHeaders_EmptyString(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("validateParamHeaders() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateParamHeaders_InvalidCharacters checks that a value outside
+// visible ASCII is rejected unless it is Base64-wrapped, even when it equals
+// the body value.
+func TestValidateParamHeaders_InvalidCharacters(t *testing.T) {
+	tool := &Tool{
+		Name: "test",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"region": map[string]any{"type": "string", "x-mcp-header": "Region"},
+			},
+		},
+	}
+	tests := []struct {
+		name    string
+		header  string
+		arg     string
+		wantErr bool
+	}{
+		{"raw non-ASCII", "café", "café", true},
+		{"raw control character", "a\x7fb", "a\x7fb", true},
+		{"Base64-wrapped non-ASCII", encodeBase64("café"), "café", false},
+		{"visible ASCII, space and tab", "us west\t1", "us west\t1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			header.Set(paramHeaderPrefix+"Region", tt.header)
+			msg := &jsonrpc.Request{
+				Method: "tools/call",
+				Params: mustMarshal(&CallToolParams{Name: "test", Arguments: map[string]any{"region": tt.arg}}),
+			}
+			err := validateParamHeaders(header, msg, tool)
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("validateParamHeaders() = %v, want error: %t", err, tt.wantErr)
 			}
 		})
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -378,7 +379,7 @@ func TestHasParams(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := info.newRequest(&ServerSession{}, params, nil)
+			req := info.newRequest(&ServerSession{}, params, nil, jsonrpc.ID{})
 			if req.GetParams() == nil {
 				t.Fatal("GetParams returned a nil interface, so this test no longer covers the typed-nil case")
 			}
@@ -394,7 +395,7 @@ func TestHasParams(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := info.newRequest(&ServerSession{}, params, nil)
+		req := info.newRequest(&ServerSession{}, params, nil, jsonrpc.ID{})
 		if !HasParams(req) {
 			t.Error("HasParams = false for a request carrying params")
 		}
@@ -773,5 +774,97 @@ func TestHandlerErrorWithoutCode(t *testing.T) {
 				t.Errorf("old behavior: code = %d, want %d", rpcErr.Code, want)
 			}
 		})
+	}
+}
+
+// TestRequestIDInReceivingMiddleware verifies that receiving middleware can
+// read the JSON-RPC id of the message being handled, on both sides of a
+// session, and that notifications carry an invalid (zero) id.
+func TestRequestIDInReceivingMiddleware(t *testing.T) {
+	ctx := context.Background()
+
+	type record struct {
+		method string
+		id     jsonrpc.ID
+	}
+	var mu sync.Mutex
+	recordMiddleware := func(dst *[]record) Middleware {
+		return func(next MethodHandler) MethodHandler {
+			return func(ctx context.Context, method string, req Request) (Result, error) {
+				mu.Lock()
+				*dst = append(*dst, record{method: method, id: req.GetID()})
+				mu.Unlock()
+				return next(ctx, method, req)
+			}
+		}
+	}
+
+	var serverRecords, clientRecords []record
+	client := NewClient(testImpl, &ClientOptions{
+		Capabilities: &ClientCapabilities{RootsV2: &RootCapabilities{}},
+	})
+	client.AddReceivingMiddleware(recordMiddleware(&clientRecords))
+
+	ct, st := NewInMemoryTransports()
+	server := NewServer(testImpl, nil)
+	server.AddReceivingMiddleware(recordMiddleware(&serverRecords))
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer ss.Close()
+	cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close()
+
+	const callID = "server-call-id"
+	id, err := jsonrpc.MakeID(callID)
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+	if _, err := handleReceive(ctx, ss, &jsonrpc.Request{
+		Method: methodListTools,
+		ID:     id,
+		Params: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("handleReceive(tools/list): %v", err)
+	}
+	if _, err := handleReceive(ctx, ss, &jsonrpc.Request{
+		Method: notificationProgress,
+		Params: json.RawMessage(`{"progressToken":"p","progress":1}`),
+	}); err != nil {
+		t.Fatalf("handleReceive(notifications/progress): %v", err)
+	}
+	if _, err := ss.ListRoots(ctx, nil); err != nil {
+		t.Fatalf("ListRoots: %v", err)
+	}
+
+	find := func(records []record, method string) (record, bool) {
+		for _, r := range records {
+			if r.method == method {
+				return r, true
+			}
+		}
+		return record{}, false
+	}
+
+	if r, ok := find(serverRecords, methodListTools); !ok {
+		t.Fatal("server middleware did not see tools/list")
+	} else if got, want := r.id.Raw(), any(callID); got != want {
+		t.Errorf("tools/list id = %v (%T), want %v", got, got, want)
+	}
+
+	if r, ok := find(serverRecords, notificationProgress); !ok {
+		t.Fatal("server middleware did not see notifications/progress")
+	} else if r.id.IsValid() {
+		t.Errorf("notification id = %v, want invalid (zero) id", r.id.Raw())
+	}
+
+	if r, ok := find(clientRecords, methodListRoots); !ok {
+		t.Fatal("client middleware did not see roots/list")
+	} else if !r.id.IsValid() {
+		t.Error("roots/list id is invalid, want the server-minted id")
 	}
 }
