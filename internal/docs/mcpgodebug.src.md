@@ -78,9 +78,32 @@ Options listed below were added and will be removed in the 1.11.0 version of the
   upgrade from `http` to `https` on the same host with default ports is
   allowed) and keeps the method.
 
+Options below were removed, according to plan:
+
+- `customresnotfounderrcode`. `ResourceNotFoundError` now always uses
+  `-32602` (Invalid Params).
+
+- `hintomitempty`. `ToolAnnotations` now always serializes `ReadOnlyHint` and
+  `IdempotentHint`.
+
+- `allowsessionsinstateless`. Stateless streamable HTTP servers now always
+  ignore session IDs and reject `DELETE` with 405.
+
+- `nomethodnotfoundcodeinerror`. A "method not found" error response now
+  always carries code `-32601`.
+
+- `noprotocolerrorbody`. The streamable HTTP client now always attempts to
+  decode the JSON-RPC error body of a non-2xx response.
+
+- `nowrapinvalidparams`. Params-decoding failures are now always reported with
+  code `-32602`.
+
+- `disablecompleteparamsvalidation`. `Server.complete` now always validates
+  the required `ref` and `argument.name` fields.
+
 ### 1.8.0
 
-Options listed below were added and will be removed in the 1.9.0 version of the SDK.
+Options listed below were added and will be removed in the 1.10.0 version of the SDK.
 
 - `plaintextstatefulrejection` added. If set to `1`, a stateful
   `StreamableHTTPHandler` will respond with a plain-text `http.Error` 400 body

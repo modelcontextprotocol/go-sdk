@@ -157,9 +157,7 @@ type StreamableHTTPOptions struct {
 	// In Stateless mode, GET and DELETE requests return 405 Method Not Allowed.
 	//
 	// This mode aligns with the sessionless direction of the MCP spec; see
-	// [SEP-2567]. The previous behavior, in which stateless servers still
-	// honored Mcp-Session-Id, can be restored temporarily via the
-	// MCPGODEBUG compatibility parameter "allowsessionsinstateless=1".
+	// [SEP-2567].
 	//
 	// [SEP-2567]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567
 	Stateless bool
@@ -233,8 +231,7 @@ type StreamableHTTPOptions struct {
 	// The handler context cancels whenever the HTTP request context does as the
 	// response can no longer be delivered, so cancelling the handler is safe.
 	//
-	// Requests using older protocol versions (including those routed through
-	// the allowsessionsinstateless compatibility path) are unaffected.
+	// Requests using older protocol versions are unaffected.
 	PropagateRequestCancellation bool
 
 	// OnRequestSummary, when non-nil, observes redacted metadata for a single
@@ -332,26 +329,6 @@ func (h *StreamableHTTPHandler) closeAll() {
 	}
 }
 
-// allowsessionsinstateless is a compatibility parameter that restores the old
-// behavior of reading and using Mcp-Session-Id headers in stateless mode. When
-// set to "1", stateless servers will read the session ID from the request
-// header (or generate one via GetSessionID), set it on response headers, and
-// accept DELETE requests. When unset (the default), stateless servers ignore
-// session IDs entirely and reject DELETE with 405.
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in the 1.9.0 version of the SDK.
-var allowsessionsinstateless = mcpgodebug.Value("allowsessionsinstateless")
-
-// noprotocolerrorbody is a compatibility parameter that restores the previous
-// behavior of [streamableClientConn.checkResponse]. When unset (the default),
-// the client attempts to decode the response body of a non-2xx response as a
-// JSON-RPC error. If successful, the underlying JSON-RPC error is surfaced to
-// the caller and wrapped with [jsonrpc2.ErrRejected] so that per-call
-// rejections do not tear down the session. When set to "1", the client
-// ignores response bodies on non-2xx responses and any non-transient error
-// permanently fails the connection.
-var noprotocolerrorbody = mcpgodebug.Value("noprotocolerrorbody")
-
 // fatalnewprotocolerrors is a compatibility parameter that restores the
 // previous behavior of permanently failing the connection when an independent
 // new-protocol request fails. The option will be removed in the 1.11.0 version
@@ -437,17 +414,7 @@ func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, p
 // serveStateless handles requests for stateless servers.
 // Stateless servers only support POST. Each request creates a temporary
 // session that is closed when the request completes.
-//
-// When the allowsessionsinstateless compatibility flag is set, DELETE is also
-// accepted (as a no-op) and session IDs are read from the request header.
 func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.Request) {
-	legacySessions := allowsessionsinstateless == "1"
-
-	if req.Method == http.MethodDelete && legacySessions {
-		h.serveStatelessLegacyDELETE(w, req)
-		return
-	}
-
 	if req.Method != http.MethodPost {
 		// RFC 9110 §15.5.6: 405 responses MUST include Allow header.
 		w.Header().Set("Allow", "POST")
@@ -487,15 +454,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 		return
 	}
 
-	var sessionID string
-	if legacySessions && !info.usesNewProtocol {
-		sessionID = req.Header.Get(sessionIDHeader)
-		if sessionID == "" {
-			sessionID = server.opts.GetSessionID()
-		}
-	}
-
-	transport := h.newStreamableServerTransport(sessionID, true)
+	transport := h.newStreamableServerTransport("", true)
 	transport.shouldPropagateCancellation = info.usesNewProtocol && (info.isSubscriptionsListen || h.opts.PropagateRequestCancellation)
 
 	session, err := connectStreamable(req.Context(), server, transport, info.opts)
@@ -507,19 +466,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	defer session.Close()
 
 	transport.ServeHTTP(w, req)
-}
-
-// serveStatelessLegacyDELETE handles DELETE requests in stateless mode when the
-// allowsessionsinstateless compatibility flag is set. DELETE requires a
-// Mcp-Session-Id header but is otherwise a no-op since stateless servers don't
-// persist sessions.
-func (h *StreamableHTTPHandler) serveStatelessLegacyDELETE(w http.ResponseWriter, req *http.Request) {
-	sessionID := req.Header.Get(sessionIDHeader)
-	if sessionID == "" {
-		http.Error(w, "Bad Request: DELETE requires an Mcp-Session-Id header", http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type ephemeralConnectInfo struct {
@@ -2878,10 +2824,9 @@ func (c *streamableClientConn) checkResponse(ctx context.Context, requestSummary
 	if isTransientHTTPStatus(resp.StatusCode) {
 		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
 	}
-	// By default, always try to decode the body and surface the underlying
-	// JSON-RPC error, wrapping it with ErrRejected to prevent the connection from closing.
-	// Setting MCPGODEBUG=noprotocolerrorbody=1 restores the previous behavior.
-	if noprotocolerrorbody != "1" && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+	// Always try to decode the body and surface the underlying JSON-RPC error,
+	// wrapping it with ErrRejected to prevent the connection from closing.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		msg, _ := jsonrpc.DecodeMessage(body)
 		if response, ok := msg.(*jsonrpc.Response); ok && response.Error != nil {

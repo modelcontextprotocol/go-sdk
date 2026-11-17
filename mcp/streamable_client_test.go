@@ -2077,9 +2077,7 @@ func TestStreamableClientConnect_DiscoverUnsupportedVersionNegotiation(t *testin
 
 // TestStreamableClientHandlerErrorPropagation verifies that per-call
 // handler-level HTTP errors carrying a JSON-RPC error body do not tear down
-// the session, and that setting MCPGODEBUG=noprotocolerrorbody=1 restores the
-// pre-fix behavior in which non-transient errors permanently failed the
-// connection.
+// the session.
 func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 	ctx := context.Background()
 
@@ -2089,14 +2087,13 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		callStatus        int    // HTTP status returned for the tools/call
-		callBody          string // response body for the tools/call ("" for empty; may be a JSON-RPC error)
-		disableBodyDecode bool   // if true, sets noprotocolerrorbody="1" for the duration of the test
-		fatalNewErrors    bool   // if true, sets fatalnewprotocolerrors="1" for the duration of the test
-		protocolVersion   string // defaults to protocolVersion20260728
-		wantErrRejected   bool   // whether the returned error should match errors.Is(err, jsonrpc2.ErrRejected)
-		wantSessionAlive  bool   // whether a subsequent call on the same session should succeed
+		name             string
+		callStatus       int    // HTTP status returned for the tools/call
+		callBody         string // response body for the tools/call ("" for empty; may be a JSON-RPC error)
+		fatalNewErrors   bool   // if true, sets fatalnewprotocolerrors="1" for the duration of the test
+		protocolVersion  string // defaults to protocolVersion20260728
+		wantErrRejected  bool   // whether the returned error should match errors.Is(err, jsonrpc2.ErrRejected)
+		wantSessionAlive bool   // whether a subsequent call on the same session should succeed
 	}{
 		{
 			// SEP-2575 §"Missing Required Capabilities": server returns
@@ -2131,29 +2128,6 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			fatalNewErrors:   true,
 			wantErrRejected:  false,
 			wantSessionAlive: false,
-		},
-		{
-			// Same server response, but the user opted out via
-			// MCPGODEBUG=noprotocolerrorbody=1. The body is ignored, but
-			// without a session the failure still fails only the call.
-			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1)",
-			callStatus:        http.StatusBadRequest,
-			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
-			disableBodyDecode: true,
-			wantErrRejected:   true,
-			wantSessionAlive:  true,
-		},
-		{
-			// Same server response, but the user opted out via
-			// MCPGODEBUG=noprotocolerrorbody=1 and fatalnewprotocolerrors=1.
-			// Pre-fix behavior: the session is torn down.
-			name:              "400 with JSON-RPC error body (noprotocolerrorbody=1, fatalnewprotocolerrors=1)",
-			callStatus:        http.StatusBadRequest,
-			callBody:          jsonRPCErrorBody(1, CodeMissingRequiredClientCapabilities, "missing capability"),
-			disableBodyDecode: true,
-			fatalNewErrors:    true,
-			wantErrRejected:   false,
-			wantSessionAlive:  false,
 		},
 		{
 			// SEP-2575: server returns -32601 for an unimplemented
@@ -2206,11 +2180,6 @@ func TestStreamableClientHandlerErrorPropagation(t *testing.T) {
 			protocolVersion := test.protocolVersion
 			if protocolVersion == "" {
 				protocolVersion = protocolVersion20260728
-			}
-			if test.disableBodyDecode {
-				prev := noprotocolerrorbody
-				noprotocolerrorbody = "1"
-				t.Cleanup(func() { noprotocolerrorbody = prev })
 			}
 			if test.fatalNewErrors {
 				prev := fatalnewprotocolerrors
