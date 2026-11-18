@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/auth/extauth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
@@ -87,6 +88,7 @@ func init() {
 	for _, scenario := range authScenarios {
 		registerScenario(scenario, runAuthClient)
 	}
+	registerScenario("auth/client-credentials-basic", runClientCredentialsClient)
 }
 
 // ============================================================================
@@ -281,6 +283,43 @@ func runAuthClient(ctx context.Context, serverURL string, configCtx map[string]a
 	}
 
 	authHandler, err := auth.NewAuthorizationCodeHandler(authConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create auth handler: %w", err)
+	}
+
+	session, err := connectToServer(ctx, serverURL, withOAuthHandler(authHandler))
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		return fmt.Errorf("session.ListTools(): %v", err)
+	}
+
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "test-tool",
+		Arguments: map[string]any{},
+	}); err != nil {
+		return fmt.Errorf("session.CallTool('test-tool'): %v", err)
+	}
+
+	return nil
+}
+
+// runClientCredentialsClient authorizes with the client credentials grant
+// (SEP-1046), using the client ID and secret that the scenario provides.
+func runClientCredentialsClient(ctx context.Context, serverURL string, configCtx map[string]any) error {
+	clientID, _ := configCtx["client_id"].(string)
+	clientSecret, _ := configCtx["client_secret"].(string)
+	authHandler, err := extauth.NewClientCredentialsHandler(&extauth.ClientCredentialsHandlerConfig{
+		Credentials: &oauthex.ClientCredentials{
+			ClientID: clientID,
+			ClientSecretAuth: &oauthex.ClientSecretAuth{
+				ClientSecret: clientSecret,
+			},
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create auth handler: %w", err)
 	}

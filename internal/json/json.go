@@ -28,9 +28,29 @@ type Decoder struct {
 }
 
 func NewDecoder(r io.Reader) *Decoder {
+	return newDecoder(r, false)
+}
+
+// newDecoder returns a Decoder that decodes as every function of this
+// package does: field names match case-sensitively, and with useNumber,
+// numbers decode to json.Number. [parseFlags] must stay in step with it.
+func newDecoder(r io.Reader, useNumber bool) *Decoder {
 	dec := json.NewDecoder(r)
 	dec.DontMatchCaseInsensitiveStructFields()
+	if useNumber {
+		dec.UseNumber()
+	}
 	return &Decoder{dec: dec}
+}
+
+// parseFlags returns the [json.Parse] flags that decode as a Decoder from
+// [newDecoder] does.
+func parseFlags(useNumber bool) json.ParseFlags {
+	flags := json.DontMatchCaseInsensitiveStructFields
+	if useNumber {
+		flags |= json.UseNumber
+	}
+	return flags
 }
 
 func (d *Decoder) Decode(v any) error {
@@ -38,19 +58,29 @@ func (d *Decoder) Decode(v any) error {
 }
 
 func Unmarshal(data []byte, v any) error {
-	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
-		return err
-	}
-	return NewDecoder(bytes.NewReader(data)).Decode(v)
+	return unmarshal(data, v, false)
 }
 
 func UnmarshalUseNumber(data []byte, v any) error {
+	return unmarshal(data, v, true)
+}
+
+// unmarshal decodes the first JSON value in data into v exactly as a
+// [Decoder] reading data does, but without the Decoder's read buffer of at
+// least 32 KiB. Like the Decoder, it first finds the extent of the value,
+// here in place, then decodes just that value. Malformed input still goes
+// through a Decoder, so its error is exactly the Decoder's.
+func unmarshal(data []byte, v any, useNumber bool) error {
 	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
 		return err
 	}
-	dec := NewDecoder(bytes.NewReader(data))
-	dec.dec.UseNumber()
-	return dec.Decode(v)
+	flags := parseFlags(useNumber)
+	var value json.RawMessage
+	if _, err := json.Parse(data, &value, flags|json.DontCopyRawMessage); err != nil {
+		return newDecoder(bytes.NewReader(data), useNumber).Decode(v)
+	}
+	_, err := json.Parse(value, v, flags)
+	return err
 }
 
 // checkMaxDepth scans data once and reports [errMaxDepthExceeded] if the

@@ -128,13 +128,14 @@ through
 [`ClientOptions.ElicitationCompleteHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.ElicitationCompleteHandler).
 Send it from whatever endpoint the hosted flow redirects back to.
 
-The notification matters most when a handler rejects a request with
-[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError):
-the client parks the original request until a notification names that
-`ElicitationID`, and then retries it automatically. Until one arrives, the
-client waits.
-
 %include ../../mcp/client_example_test.go elicitationcomplete -
+
+A server can also refuse a request until a URL elicitation is done, with
+[`URLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#URLElicitationRequiredError).
+The client receives that `-32042` error from the call itself, not through its
+elicitation handler.
+[`ParseURLElicitationRequiredError`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ParseURLElicitationRequiredError)
+decodes the elicitations it carries.
 
 ## Multi Round-Trip Requests
 
@@ -240,19 +241,19 @@ are per-extension settings objects. Extensions require explicit opt-in.
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package provides typed calls for the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
-Call package-level functions with the connected session. This example connects to the server from the
+Register the methods with `skills.AddMethods` before connecting, then pass the session to each call. This example connects to the server from the
 [server example](server.md#skills-extension) over an in-memory transport:
 
 %include ../../skills/example_test.go skillsclient -
 
-`List`, `Get`, and `All` validate structure without imposing count or size caps.
+`ListPage`, `Get`, and `List` validate structure without imposing count or size caps.
 They support the required baseline of 512 files and 16 MiB per skill, as well as
 larger manifests. Application download budgets for dynamic content remain the
 host's responsibility.
 
 List calls reject invalid entries by default. To retain valid entries from a
-malformed page, pass `skills.ListOptions{SkipInvalidSkills: true}` to `List` or
-`All`. `List` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
+malformed page, pass `&skills.ListOptions{SkipInvalidSkills: true}` to `ListPage` or
+`List`. `ListPage` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
 report them during iteration. Missing/null lists, invalid cache hints, and
 invalid result types still fail. All entries with a duplicate URI are skipped,
 so no duplicate silently replaces another. Page cursors are preserved.

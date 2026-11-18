@@ -9,22 +9,30 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Request types for Skills server handlers.
+type (
+	ListSkillsRequest    = mcp.ServerRequest[*ListSkillsParams]
+	GetSkillRequest      = mcp.ServerRequest[*GetSkillParams]
+	ReadDirectoryRequest = mcp.ServerRequest[*ReadDirectoryParams]
+)
+
 // ListSkillsHandler handles skills/list requests.
-type ListSkillsHandler func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error)
+type ListSkillsHandler func(context.Context, *ListSkillsRequest) (*ListSkillsResult, error)
 
 // GetSkillHandler handles skills/get. Return (nil, nil) for an unknown skill;
 // [AddHandlers] translates it to JSON-RPC Invalid Params. Explicit JSON-RPC errors
 // are preserved; other errors become Internal Error.
-type GetSkillHandler func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error)
+type GetSkillHandler func(context.Context, *GetSkillRequest) (*GetSkillResult, error)
 
 // ReadDirectoryHandler handles resources/directory/read. Return (nil, nil) if
 // the URI does not exist or is not a directory. An empty directory has a non-nil result.
-type ReadDirectoryHandler func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*ReadDirectoryResult, error)
+type ReadDirectoryHandler func(context.Context, *ReadDirectoryRequest) (*ReadDirectoryResult, error)
 
 // ServerOptions configures the per-skill limits. Protocol validation always
 // runs; applications can perform additional checks in their handlers.
@@ -43,13 +51,43 @@ type Handlers struct {
 	ReadDirectory ReadDirectoryHandler
 }
 
+// Add serves a static catalog with URI-based lookup and pagination. Pass the
+// complete catalog in one call; subsequent registrations replace its handlers.
+// Entries and their manifests must remain immutable while the server serves them.
+func Add(server *mcp.Server, entries []*Skill, options *ServerOptions) error {
+	catalog := slices.Clone(entries)
+	byURI := make(map[string]*Skill, len(catalog))
+	var limits Limits
+	if options != nil {
+		limits = options.Limits
+	}
+	for _, entry := range catalog {
+		if err := validateSkill(entry, limits); err != nil {
+			return err
+		}
+		if byURI[entry.URI] != nil {
+			return fmt.Errorf("skills: duplicate URI %q", entry.URI)
+		}
+		byURI[entry.URI] = entry
+	}
+	return AddHandlers(server, &Handlers{
+		List: func(_ context.Context, req *ListSkillsRequest) (*ListSkillsResult, error) {
+			page, next, err := paginateSkills(catalog, req.Params.Cursor, 0)
+			return &ListSkillsResult{Skills: page, NextCursor: next}, err
+		},
+		Get: func(_ context.Context, req *GetSkillRequest) (*GetSkillResult, error) {
+			return &GetSkillResult{Skill: byURI[req.Params.URI]}, nil
+		},
+	}, options)
+}
+
 // AddHandlers registers the Skills extension. Register skill content separately
-// with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate] before calling
-// AddHandlers. These registrations also advertise
+// with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate] before connecting.
+// Advertise ExtensionID in the server options. Resource registrations advertise
 // the required resources capability. Configure the server before connecting.
 //
 // If options is nil, no manifest caps apply. Handlers own pagination; use
-// [PaginateSkills] or [PaginateDirectoryResources] to paginate in-memory slices.
+// [PaginateDirectoryResources] to paginate in-memory slices.
 // AddHandlers supplies resultType and default cache hints for the request's
 // protocol version. See [ListSkillsResult] and [GetSkillResult].
 //
@@ -62,9 +100,6 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 	if handlers == nil || handlers.List == nil || handlers.Get == nil {
 		return fmt.Errorf("skills: list and get handlers are required")
 	}
-	if server.Capabilities().Resources == nil {
-		return fmt.Errorf("skills: register resources or advertise the resources capability before AddHandlers")
-	}
 	h := *handlers
 	var limits Limits
 	if options != nil {
@@ -73,12 +108,16 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 	if err := limits.validate(); err != nil {
 		return err
 	}
-	if err := mcp.AddReceivingCustomMethod(server, MethodList,
-		func(ctx context.Context, session *mcp.ServerSession, params *ListSkillsParams) (*ListSkillsResult, error) {
+	if err := mcp.AddReceivingCustomRequestHandler(server, MethodList,
+		func(ctx context.Context, req *ListSkillsRequest) (*ListSkillsResult, error) {
+			params := req.Params
 			if params == nil {
 				params = &ListSkillsParams{}
+				copyReq := *req
+				copyReq.Params = params
+				req = &copyReq
 			}
-			result, err := h.List(ctx, session, params)
+			result, err := h.List(ctx, req)
 			if err != nil {
 				return nil, internalError(err)
 			}
@@ -100,15 +139,16 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 		}); err != nil {
 		return err
 	}
-	if err := mcp.AddReceivingCustomMethod(server, MethodGet,
-		func(ctx context.Context, session *mcp.ServerSession, params *GetSkillParams) (*GetSkillResult, error) {
+	if err := mcp.AddReceivingCustomRequestHandler(server, MethodGet,
+		func(ctx context.Context, req *GetSkillRequest) (*GetSkillResult, error) {
+			params := req.Params
 			if params == nil {
 				return nil, invalidParams("missing required uri")
 			}
 			if _, err := skillNameFromURI(params.URI); err != nil {
 				return nil, invalidParams(err.Error())
 			}
-			result, err := h.Get(ctx, session, params)
+			result, err := h.Get(ctx, req)
 			if err != nil {
 				return nil, internalError(err)
 			}
@@ -127,17 +167,18 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 		}); err != nil {
 		return err
 	}
-	settings := map[string]any{}
+
 	if h.ReadDirectory != nil {
-		if err := mcp.AddReceivingCustomMethod(server, MethodReadDirectory,
-			func(ctx context.Context, session *mcp.ServerSession, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+		if err := mcp.AddReceivingCustomRequestHandler(server, MethodReadDirectory,
+			func(ctx context.Context, req *ReadDirectoryRequest) (*ReadDirectoryResult, error) {
+				params := req.Params
 				if params == nil {
 					return nil, invalidParams("missing required uri")
 				}
 				if _, err := parseDirectoryURI(params.URI); err != nil {
 					return nil, invalidParams(err.Error())
 				}
-				result, err := h.ReadDirectory(ctx, session, params)
+				result, err := h.ReadDirectory(ctx, req)
 				if err != nil {
 					return nil, internalError(err)
 				}
@@ -149,7 +190,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 				if out.Resources == nil {
 					out.Resources = []*mcp.Resource{}
 				}
-				if err := ValidateDirectoryResult(params.URI, &out); err != nil {
+				if err := validateDirectoryResult(params.URI, &out); err != nil {
 					return nil, internalError(fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err))
 				}
 				if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
@@ -159,9 +200,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			}); err != nil {
 			return err
 		}
-		settings[capabilityDirectoryRead] = true
 	}
-	server.AddExtension(ExtensionID, settings)
 	return nil
 }
 

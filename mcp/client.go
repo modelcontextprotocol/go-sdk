@@ -125,7 +125,7 @@ type ClientOptions struct {
 	// Setting ElicitationHandler to a non-nil value automatically causes the
 	// client to advertise the elicitation capability, with default value
 	// &ElicitationCapabilities{}. If [ClientOptions.Capabilities] is set and has
-	// a non nil value for [ClientCapabilities.ELicitattion], that value
+	// a non nil value for [ClientCapabilities.Elicitation], that value
 	// overrides the inferred capability.
 	ElicitationHandler func(context.Context, *ElicitRequest) (*ElicitResult, error)
 	// Capabilities optionally configures the client's default capabilities,
@@ -330,7 +330,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 			if err == nil {
 				cs.state.InitializeResult = discRes
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
-					hc.sessionUpdated(cs.state)
+					hc.clientSessionUpdated(cs.state)
 				}
 				subscribeParams := &SubscriptionsListenParams{
 					Notifications: &NotificationSubscriptions{},
@@ -385,7 +385,12 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		Capabilities:    c.capabilities(protocolVersion),
 	}
 	req := &InitializeRequest{Session: cs, Params: params}
-	res, err := handleSend[*InitializeResult](ctx, methodInitialize, req)
+	// No version is negotiated yet, so this request has no version of its own to
+	// state; a caller's value must not stand in for one. Cleared rather than sent,
+	// since a header a peer does not support fails the handshake the body would
+	// have negotiated down.
+	initializeCtx := context.WithValue(ctx, protocolVersionContextKey{}, "")
+	res, err := handleSend[*InitializeResult](initializeCtx, methodInitialize, req)
 	if err != nil {
 		_ = cs.Close()
 		return nil, err
@@ -396,7 +401,7 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 	}
 	cs.state.InitializeResult = res
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
-		hc.sessionUpdated(cs.state)
+		hc.clientSessionUpdated(cs.state)
 	}
 	req2 := &initializedClientRequest{Session: cs, Params: &InitializedParams{}}
 	if err := handleNotify(ctx, notificationInitialized, req2); err != nil {
@@ -489,10 +494,6 @@ type ClientSession struct {
 	resourceTemplatesCache methodCache[*ListResourceTemplatesResult]
 	readResourceCache      methodCache[*ReadResourceResult]
 
-	// Pending URL elicitations waiting for completion notifications.
-	pendingElicitationsMu sync.Mutex
-	pendingElicitations   map[string]chan struct{}
-
 	// resourceSubsMu guards resourceSubs and nextResourceSubGen.
 	resourceSubsMu sync.Mutex
 	// resourceSubs maps a subscribed resource URI to the state of the
@@ -544,8 +545,11 @@ func injectRequestMeta[T any, P interface {
 	res := cs.state.InitializeResult
 	if params == nil {
 		params = new(T)
+	} else {
+		copy := *params
+		params = &copy
 	}
-	m := params.GetMeta()
+	m := maps.Clone(params.GetMeta())
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -621,46 +625,6 @@ func (cs *ClientSession) lookupTool(name string) *Tool {
 	return nil
 }
 
-// registerElicitationWaiter registers a waiter for an elicitation complete
-// notification with the given elicitation ID. It returns two functions: an await
-// function that waits for the notification or context cancellation, and a cleanup
-// function that must be called to unregister the waiter. This must be called before
-// triggering the elicitation to avoid a race condition where the notification
-// arrives before the waiter is registered.
-//
-// The cleanup function must be called even if the await function is never called,
-// to prevent leaking the registration.
-func (cs *ClientSession) registerElicitationWaiter(elicitationID string) (await func(context.Context) error, cleanup func()) {
-	// Create a channel for this elicitation.
-	ch := make(chan struct{}, 1)
-
-	// Register the channel.
-	cs.pendingElicitationsMu.Lock()
-	if cs.pendingElicitations == nil {
-		cs.pendingElicitations = make(map[string]chan struct{})
-	}
-	cs.pendingElicitations[elicitationID] = ch
-	cs.pendingElicitationsMu.Unlock()
-
-	// Return await and cleanup functions.
-	await = func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for elicitation completion: %w", ctx.Err())
-		case <-ch:
-			return nil
-		}
-	}
-
-	cleanup = func() {
-		cs.pendingElicitationsMu.Lock()
-		delete(cs.pendingElicitations, elicitationID)
-		cs.pendingElicitationsMu.Unlock()
-	}
-
-	return await, cleanup
-}
-
 // startKeepalive starts the keepalive mechanism for this client session.
 func (cs *ClientSession) startKeepalive(interval time.Duration) {
 	startKeepalive(cs, interval, cs.client.opts.KeepAliveFailureThreshold, &cs.keepaliveCancel, cs.client.opts.Logger)
@@ -727,18 +691,23 @@ func (c *Client) shouldSendListChangedNotification(notification string) bool {
 		if caps == nil {
 			return true
 		}
-		// Check RootsV2 first (preferred), then fall back to Roots.
-		if caps.RootsV2 != nil {
-			return caps.RootsV2.ListChanged
-		}
-		return caps.Roots.ListChanged
+		// Capabilities.Roots is ignored (#607); only RootsV2 is advertised.
+		return caps.RootsV2 != nil && caps.RootsV2.ListChanged
 	default:
 		// Unknown notification, allow by default.
 		return true
 	}
 }
 
+// rootsEnabled reports whether the client advertises the roots capability.
+func (c *Client) rootsEnabled() bool {
+	return c.opts.Capabilities == nil || c.opts.Capabilities.RootsV2 != nil
+}
+
 func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRootsResult, error) {
+	if !c.rootsEnabled() {
+		return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support roots"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	roots := slices.Collect(c.roots.all())
@@ -752,7 +721,11 @@ func (c *Client) listRoots(_ context.Context, req *ListRootsRequest) (*ListRoots
 
 func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsRequest) (*CreateMessageWithToolsResult, error) {
 	if c.opts.CreateMessageWithToolsHandler != nil {
-		return c.opts.CreateMessageWithToolsHandler(ctx, req)
+		res, err := c.opts.CreateMessageWithToolsHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageWithToolsHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	}
 	if c.opts.CreateMessageHandler != nil {
 		// Downconvert the request for the basic handler.
@@ -768,113 +741,12 @@ func (c *Client) createMessage(ctx context.Context, req *CreateMessageWithToolsR
 		if err != nil {
 			return nil, err
 		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: CreateMessageHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
 		return res.toWithTools(), nil
 	}
 	return nil, &jsonrpc.Error{Code: codeUnsupportedMethod, Message: "client does not support CreateMessage"}
-}
-
-// urlElicitationMiddleware returns middleware that automatically handles URL elicitation
-// required errors by executing the elicitation handler, waiting for completion notifications,
-// and retrying the operation.
-//
-// This middleware should be added to clients that want automatic URL elicitation handling:
-//
-//	client := mcp.NewClient(impl, opts)
-//	client.AddSendingMiddleware(mcp.urlElicitationMiddleware())
-//
-// TODO(rfindley): this isn't strictly necessary for the SEP, but may be
-// useful. Propose exporting it.
-func urlElicitationMiddleware() Middleware {
-	return func(next MethodHandler) MethodHandler {
-		return func(ctx context.Context, method string, req Request) (Result, error) {
-			// Call the underlying handler.
-			res, err := next(ctx, method, req)
-			if err == nil {
-				return res, nil
-			}
-
-			// Check if this is a URL elicitation required error.
-			var rpcErr *jsonrpc.Error
-			if !errors.As(err, &rpcErr) || rpcErr.Code != CodeURLElicitationRequired {
-				return res, err
-			}
-
-			// Notifications don't support retries.
-			if strings.HasPrefix(method, "notifications/") {
-				return res, err
-			}
-
-			// Extract the client session.
-			cs, ok := req.GetSession().(*ClientSession)
-			if !ok {
-				return res, err
-			}
-
-			// Check if the client has an elicitation handler.
-			if cs.client.opts.ElicitationHandler == nil {
-				return res, err
-			}
-
-			// Parse the elicitations from the error data.
-			var errorData struct {
-				Elicitations []*ElicitParams `json:"elicitations"`
-			}
-			if rpcErr.Data != nil {
-				if err := json.Unmarshal(rpcErr.Data, &errorData); err != nil {
-					return nil, fmt.Errorf("failed to parse URL elicitation error data: %w", err)
-				}
-			}
-
-			// Validate that all elicitations are URL mode.
-			for _, elicit := range errorData.Elicitations {
-				mode := elicit.Mode
-				if mode == "" {
-					mode = "form" // Default mode.
-				}
-				if mode != "url" {
-					return nil, fmt.Errorf("URLElicitationRequired error must only contain URL mode elicitations, got %q", mode)
-				}
-			}
-
-			// Register waiters for all elicitations before executing handlers
-			// to avoid race condition where notification arrives before waiter is registered.
-			type waiter struct {
-				await   func(context.Context) error
-				cleanup func()
-			}
-			waiters := make([]waiter, 0, len(errorData.Elicitations))
-			for _, elicitParams := range errorData.Elicitations {
-				await, cleanup := cs.registerElicitationWaiter(elicitParams.ElicitationID)
-				waiters = append(waiters, waiter{await: await, cleanup: cleanup})
-			}
-
-			// Ensure cleanup happens even if we return early.
-			defer func() {
-				for _, w := range waiters {
-					w.cleanup()
-				}
-			}()
-
-			// Execute the elicitation handler for each elicitation.
-			for _, elicitParams := range errorData.Elicitations {
-				elicitReq := newClientRequest(cs, elicitParams)
-				_, elicitErr := cs.client.elicit(ctx, elicitReq)
-				if elicitErr != nil {
-					return nil, fmt.Errorf("URL elicitation failed: %w", elicitErr)
-				}
-			}
-
-			// Wait for all elicitations to complete.
-			for _, w := range waiters {
-				if err := w.await(ctx); err != nil {
-					return nil, err
-				}
-			}
-
-			// All elicitations complete, retry the original operation.
-			return next(ctx, method, req)
-		}
-	}
 }
 
 func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult, error) {
@@ -901,6 +773,9 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if err != nil {
 			return nil, err
 		}
+		if res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
 		// Validate elicitation result content against requested schema.
 		if res.Action == "accept" && schema != nil && res.Content != nil {
 			resolved, err := schema.Resolve(nil)
@@ -923,8 +798,12 @@ func (c *Client) elicit(ctx context.Context, req *ElicitRequest) (*ElicitResult,
 		if req.Params.URL == "" {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "URL must be set for URL elicitation"}
 		}
-		// No schema validation for URL mode, just pass through to handler.
-		return c.opts.ElicitationHandler(ctx, req)
+		// No schema validation for URL mode.
+		res, err := c.opts.ElicitationHandler(ctx, req)
+		if err == nil && res == nil {
+			return nil, fmt.Errorf("%w: ElicitationHandler returned a nil result", jsonrpc2.ErrInternal)
+		}
+		return res, err
 	default:
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unsupported elicitation mode: %q", mode)}
 	}
@@ -1105,6 +984,9 @@ func validateElicitArrayProperty(propName string, propSchema *jsonschema.Schema)
 }
 
 func validateTitledEnumEntry(entry *jsonschema.Schema) error {
+	if entry == nil {
+		return fmt.Errorf("titled enum entries must be objects")
+	}
 	if entry.Const == nil {
 		return fmt.Errorf("const is required for titled enum entries")
 	}
@@ -1212,7 +1094,7 @@ var clientMethodInfosLegacyParams = func() map[string]methodInfo {
 func (cs *ClientSession) sendingMethodInfos() map[string]methodInfo {
 	cs.client.mu.Lock()
 	defer cs.client.mu.Unlock()
-	return maps.Clone(cs.client.sendMethods)
+	return cs.client.sendMethods
 }
 
 func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
@@ -1261,8 +1143,37 @@ func newClientRequest[P Params](cs *ClientSession, params P) *ClientRequest[P] {
 	return &ClientRequest[P]{Session: cs, Params: params}
 }
 
+// Discover makes an MCP "server/discover" request to the server and returns
+// its result unchanged, including the cache hints and the serverInfo carried
+// in the result's _meta.
+// It does not update [ClientSession.InitializeResult].
+//
+// On sessions negotiated below protocol version 2026-07-28, Discover returns
+// a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a round
+// trip: server/discover was introduced in 2026-07-28.
+func (cs *ClientSession) Discover(ctx context.Context, params *DiscoverParams) (*DiscoverResult, error) {
+	if !cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is only supported in protocol version >= %s", methodDiscover, protocolVersion20260728),
+		}
+	}
+	params = injectRequestMeta(cs, params)
+	return handleSend[*DiscoverResult](ctx, methodDiscover, newClientRequest(cs, orZero[Params](params)))
+}
+
 // Ping makes an MCP "ping" request to the server.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (cs *ClientSession) Ping(ctx context.Context, params *PingParams) error {
+	if cs.usesNewProtocol() {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
@@ -1283,7 +1194,7 @@ func (cs *ClientSession) ListPrompts(ctx context.Context, params *ListPromptsPar
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.promptsCache.put(params.Cursor, result)
+		cs.promptsCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
@@ -1318,21 +1229,73 @@ func (cs *ClientSession) ListTools(ctx context.Context, params *ListToolsParams)
 // CallTool calls the tool with the given parameters.
 //
 // The params.Arguments can be any value that marshals into a JSON object.
+//
+// If the server rejects the call with [CodeHeaderMismatch], CallTool refreshes
+// its definition of the tool with tools/list and retries once if the tool's
+// x-mcp-header annotations changed.
 func (cs *ClientSession) CallTool(ctx context.Context, params *CallToolParams) (*CallToolResult, error) {
 	if params == nil {
 		params = new(CallToolParams)
 	}
 	if params.Arguments == nil {
 		// Avoid sending nil over the wire.
+		copy := *params
+		params = &copy
 		params.Arguments = map[string]any{}
-	}
-	if tool := cs.lookupTool(params.Name); tool != nil {
-		ctx = context.WithValue(ctx, toolContextKey, tool)
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
-	return handleSend[*CallToolResult](ctx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+
+	call := func(tool *Tool) (*CallToolResult, error) {
+		callCtx := ctx
+		if tool != nil {
+			callCtx = context.WithValue(ctx, toolContextKey, tool)
+		}
+		return handleSend[*CallToolResult](callCtx, methodCallTool, newClientRequest(cs, orZero[Params](params)))
+	}
+
+	tool := cs.lookupTool(params.Name)
+	res, err := call(tool)
+	var wireErr *jsonrpc.Error
+	if cs.usesNewProtocol() && errors.As(err, &wireErr) && wireErr.Code == CodeHeaderMismatch {
+		if fresh := cs.refreshTool(ctx, params.Name); fresh != nil && !sameParamHeaders(tool, fresh) {
+			return call(fresh)
+		}
+	}
+	return res, err
+}
+
+// refreshTool clears the tools cache and re-lists tools until it finds the
+// named tool. It returns nil if the tool is not found or listing fails.
+func (cs *ClientSession) refreshTool(ctx context.Context, name string) *Tool {
+	cs.toolsCache.invalidate()
+	for t, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			return nil
+		}
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
+}
+
+// sameParamHeaders reports whether tool1 and tool2 produce the same
+// Mcp-Param-* headers for the same arguments.
+func sameParamHeaders(tool1, tool2 *Tool) bool {
+	return maps.EqualFunc(paramHeaderPaths(tool1), paramHeaderPaths(tool2), slices.Equal)
+}
+
+func paramHeaderPaths(tool *Tool) map[string][]string {
+	if tool == nil {
+		return nil
+	}
+	m := make(map[string][]string)
+	for _, binding := range extractParamHeaderAnnotations(tool) {
+		m[strings.ToLower(binding.Header)] = binding.Path
+	}
+	return m
 }
 
 // SetLoggingLevel sets the minimum severity level for log messages sent by
@@ -1361,7 +1324,7 @@ func (cs *ClientSession) ListResources(ctx context.Context, params *ListResource
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourcesCache.put(params.Cursor, result)
+		cs.resourcesCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
@@ -1379,14 +1342,20 @@ func (cs *ClientSession) ListResourceTemplates(ctx context.Context, params *List
 		return nil, err
 	}
 	if cs.usesNewProtocol() {
-		cs.resourceTemplatesCache.put(params.Cursor, result)
+		cs.resourceTemplatesCache.putCacheable(params.Cursor, result)
 	}
 	return result, nil
 }
 
 // ReadResource asks the server to read a resource and return its contents.
 func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceParams) (*ReadResourceResult, error) {
-	if cs.usesNewProtocol() {
+	// The cache is keyed by URI alone. A request that carries input responses
+	// or request state is a multi round-trip retry whose result depends on
+	// those inputs, so the caching specification keeps it out of the cache in
+	// both directions: it is not served from the cache and its result is not
+	// stored (2026-07-28, Caching, "Cache Key").
+	useCache := cs.usesNewProtocol() && !isMultiRoundTripRetry(params)
+	if useCache {
 		var uri string
 		if params != nil {
 			uri = params.URI
@@ -1394,16 +1363,27 @@ func (cs *ClientSession) ReadResource(ctx context.Context, params *ReadResourceP
 		if result, ok := cs.readResourceCache.get(uri); ok {
 			return result, nil
 		}
+	}
+	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)
 	}
 	result, err := handleSend[*ReadResourceResult](ctx, methodReadResource, newClientRequest(cs, orZero[Params](params)))
 	if err != nil {
 		return nil, err
 	}
-	if cs.usesNewProtocol() {
-		cs.readResourceCache.put(params.URI, result)
+	// A result the middleware obtained by retrying is excluded for the same
+	// reason, and an input-required result is an interim one that the
+	// specification declares not cacheable.
+	if useCache && !result.retried && !result.NeedsInput() {
+		cs.readResourceCache.putCacheable(params.URI, result)
 	}
 	return result, nil
+}
+
+// isMultiRoundTripRetry reports whether params carry the input responses or
+// request state of a multi round-trip retry. A nil params is a plain read.
+func isMultiRoundTripRetry(params *ReadResourceParams) bool {
+	return params != nil && (params.InputResponses != nil || params.RequestState != "")
 }
 
 func (cs *ClientSession) Complete(ctx context.Context, params *CompleteParams) (*CompleteResult, error) {
@@ -1603,20 +1583,6 @@ func (cs *ClientSession) callProgressNotificationHandler(ctx context.Context, pa
 }
 
 func (c *Client) callElicitationCompleteHandler(ctx context.Context, req *ElicitationCompleteNotificationRequest) (Result, error) {
-	// Check if there's a pending elicitation waiting for this notification.
-	if cs, ok := req.GetSession().(*ClientSession); ok {
-		cs.pendingElicitationsMu.Lock()
-		if ch, exists := cs.pendingElicitations[req.Params.ElicitationID]; exists {
-			select {
-			case ch <- struct{}{}:
-			default:
-				// Channel already signaled.
-			}
-		}
-		cs.pendingElicitationsMu.Unlock()
-	}
-
-	// Call the user's handler if provided.
 	if h := c.opts.ElicitationCompleteHandler; h != nil {
 		h(ctx, req)
 	}
@@ -1738,6 +1704,7 @@ func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sendMethods = maps.Clone(c.sendMethods)
 	c.sendMethods[method] = mi
 	return nil
 }
@@ -1745,33 +1712,21 @@ func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
 // CallCustomMethod sends a custom (non-standard) JSON-RPC method to the
 // server and decodes the response into R.
 //
-// The method is registered automatically on first use. An existing registration
-// is preserved and must decode into R. Standard MCP methods are rejected.
+// The method must have been registered on the session's client via
+// [AddSendingCustomMethod].
 func CallCustomMethod[P paramsPtr[PT], R Result, PT any](
 	ctx context.Context,
 	cs *ClientSession,
 	method string,
 	params P,
 ) (R, error) {
-	var zero R
-	if cs == nil {
-		return zero, fmt.Errorf("mcp: CallCustomMethod: nil session")
-	}
-	if _, ok := serverMethodInfos[method]; ok {
-		return zero, fmt.Errorf("mcp: CallCustomMethod: %q shadows a standard MCP method", method)
-	}
 	c := cs.client
 	c.mu.Lock()
-	mi, ok := c.sendMethods[method]
-	if !ok {
-		mi = methodInfo{newResult: func() Result {
-			return reflect.New(reflect.TypeFor[R]().Elem()).Interface().(R)
-		}}
-		c.sendMethods[method] = mi
-	}
+	_, ok := c.sendMethods[method]
 	c.mu.Unlock()
-	if _, ok := mi.newResult().(R); !ok {
-		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is registered with a different result type", method)
+	if !ok {
+		var zero R
+		return zero, fmt.Errorf("mcp: CallCustomMethod: %q is not registered; call AddSendingCustomMethod first", method)
 	}
 	if cs.usesNewProtocol() {
 		params = injectRequestMeta(cs, params)

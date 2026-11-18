@@ -5,7 +5,7 @@
 // Package skills implements the MCP [Skills extension].
 //
 // Servers opt in with [AddHandlers] and serve skill files through the ordinary
-// MCP resource APIs. Clients use [List], [Get], and [All] on a connected session
+// MCP resource APIs. Clients register [AddMethods] before connecting, then use [ListPage], [List], and [Get]
 // to discover entries. [VerifySkillMD] and [VerifyResource] check content
 // retrieved on demand against an entry from the same server.
 //
@@ -44,6 +44,12 @@ const (
 // Frontmatter is all of a SKILL.md's YAML frontmatter represented as JSON-compatible values.
 // JSON numbers are decoded as [json.Number] to preserve their precision.
 type Frontmatter map[string]any
+
+// Name returns the skill name from frontmatter.
+func (f Frontmatter) Name() string { name, _ := f["name"].(string); return name }
+
+// Description returns the skill description from frontmatter.
+func (f Frontmatter) Description() string { desc, _ := f["description"].(string); return desc }
 
 func (f *Frontmatter) UnmarshalJSON(data []byte) error {
 	var fields map[string]any

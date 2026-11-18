@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"golang.org/x/oauth2"
 )
 
@@ -71,6 +72,10 @@ type TokenExchangeRequest struct {
 //
 // The tokenEndpoint parameter should be the IdP's token endpoint (typically
 // obtained from the IdP's authorization server metadata).
+//
+// If httpClient is nil, http.DefaultClient is used. Unless httpClient sets
+// CheckRedirect, the request follows a redirect only within the origin of the
+// request and only if it keeps the method.
 //
 // Returns an oauth2.Token where:
 //   - Extra("issued_token_type") contains the type of the issued token (e.g., TokenTypeIDJAG)
@@ -142,11 +147,7 @@ func ExchangeToken(
 		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
 	}
 
-	// Use custom HTTP client if provided.
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, util.RestrictRedirects(httpClient))
 
 	// Build token exchange parameters per RFC 8693.
 	opts := []oauth2.AuthCodeOption{

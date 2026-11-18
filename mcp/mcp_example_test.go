@@ -26,12 +26,12 @@ func Example_lifecycle() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "server", Version: "v0.0.1"}, nil)
 
 	// Connect the server and client using in-memory transports.
-	t1, t2 := mcp.NewInMemoryTransports()
+	t1, t4 := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, t1, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	clientSession, err := client.Connect(ctx, t2, nil)
+	clientSession, err := client.Connect(ctx, t4, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

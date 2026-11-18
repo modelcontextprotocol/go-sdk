@@ -14,24 +14,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
-	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
-
-// nomethodnotfoundcodeinerror is a compatibility parameter that restores the
-// pre-fix behavior of [processResult], where wrapped [ErrNotHandled] or
-// [ErrMethodNotFound] errors returned by request handlers were not
-// recognized as "method not found" signals. The original switch statement
-// compared sentinel errors with ==, which never matched errors returned via
-// fmt.Errorf("%w: ...", ErrNotHandled, ...) — including the ones produced
-// by checkRequest. As a result the wire error response carried code 0
-// instead of code -32601. The fix uses errors.Is to recognize wrapped
-// sentinels and append the method name to the message.
-//
-// To restore the previous behavior, set MCPGODEBUG=nomethodnotfoundcodeinerror=1.
-// This option will be removed in a future SDK version.
-// See the documentation for the mcpgodebug package for instructions on how
-// to use it.
-var nomethodnotfoundcodeinerror = mcpgodebug.Value("nomethodnotfoundcodeinerror")
 
 // Connection manages the jsonrpc2 protocol, connecting responses back to their
 // calls. Connection is bidirectional; it does not have a designated server or
@@ -54,8 +37,9 @@ type Connection struct {
 	writer  Writer
 	handler Handler
 
-	onInternalError func(error)
-	onDone          func()
+	onInternalError      func(error)
+	onResponseWriteError func(*Request, error)
+	onDone               func()
 }
 
 // inFlightState records the state of the incoming and outgoing calls on a
@@ -199,6 +183,16 @@ type Writer interface {
 	Write(context.Context, Message) error
 }
 
+// ResponseDropper is an optional interface for a [Writer] that can drop the
+// response to a call the peer cancelled (see [Connection.CancelFromPeer]).
+type ResponseDropper interface {
+	// DropResponse reports, when the cancellation arrives, that the peer
+	// cancelled the incoming call with the given ID, so its response must not
+	// be sent. It is called with the Connection's internal lock held, so it
+	// must return quickly and must not call back into the Connection.
+	DropResponse(id ID)
+}
+
 // A ConnectionConfig configures a bidirectional jsonrpc2 connection.
 type ConnectionConfig struct {
 	Reader          Reader                    // required
@@ -208,6 +202,11 @@ type ConnectionConfig struct {
 	Bind            func(*Connection) Handler // required
 	OnDone          func()                    // optional
 	OnInternalError func(error)               // optional
+
+	// OnResponseWriteError, if set, is called when the response to an incoming
+	// call could not be written, for example because the peer went away before
+	// the handler finished. The response is lost: the peer never receives it.
+	OnResponseWriteError func(*Request, error) // optional
 
 	// PropagateCancellation controls whether cancellation of the context
 	// passed to [NewConnection] is observable by request handlers.
@@ -234,11 +233,12 @@ func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
 	}
 
 	c := &Connection{
-		state:           inFlightState{closer: cfg.Closer},
-		done:            make(chan struct{}),
-		writer:          cfg.Writer,
-		onDone:          cfg.OnDone,
-		onInternalError: cfg.OnInternalError,
+		state:                inFlightState{closer: cfg.Closer},
+		done:                 make(chan struct{}),
+		writer:               cfg.Writer,
+		onDone:               cfg.OnDone,
+		onInternalError:      cfg.OnInternalError,
+		onResponseWriteError: cfg.OnResponseWriteError,
 	}
 	c.handler = cfg.Bind(c)
 	c.start(ctx, cfg.Reader, cfg.Preempter)
@@ -280,7 +280,7 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 		// cannot increase once shutdown begins, and allowing outgoing notifications
 		// may permit notifications that will cancel in-flight calls.
 		if len(s.outgoingCalls) == 0 && len(s.incomingByID) == 0 {
-			err = s.shuttingDown(ErrClientClosing)
+			err = s.shuttingDown(ErrConnClosing)
 			if err != nil {
 				return
 			}
@@ -324,7 +324,7 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 	}
 
 	c.updateInFlight(func(s *inFlightState) {
-		err = s.shuttingDown(ErrClientClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -453,16 +453,39 @@ func (ac *AsyncCall) Await(ctx context.Context, result any) error {
 // will not cause any messages that have not arrived yet with that ID to be
 // cancelled.
 func (c *Connection) Cancel(id ID) {
-	c.CancelCause(id, nil)
+	c.cancelIncoming(id, nil, false)
 }
 
 // CancelCause is like [Connection.Cancel], but records cause as the reason
 // the Context was cancelled, so that the Handle call can read it back through
 // [context.Cause]. A nil cause reads as [context.Canceled].
 func (c *Connection) CancelCause(id ID, cause error) {
+	c.cancelIncoming(id, cause, false)
+}
+
+// CancelFromPeer is [Connection.CancelCause] for a cancellation the peer
+// requested, such as an MCP "notifications/cancelled": it also tells a writer
+// that is a [ResponseDropper] to drop the response, which the MCP
+// specification says a cancelled request gets none of.
+func (c *Connection) CancelFromPeer(id ID, cause error) {
+	c.cancelIncoming(id, cause, true)
+}
+
+// cancelIncoming cancels the inbound request with the given ID, recording the
+// cause, and tells the writer to drop the response if the peer asked for the
+// cancellation. A request already responded to is no longer in incomingByID,
+// so a late cancellation retracts nothing.
+func (c *Connection) cancelIncoming(id ID, cause error, fromPeer bool) {
 	var req *incomingRequest
 	c.updateInFlight(func(s *inFlightState) {
 		req = s.incomingByID[id]
+		if req != nil && fromPeer {
+			// Telling the writer under stateMu makes this atomic with processResult
+			// removing the request before it writes the response.
+			if d, ok := c.writer.(ResponseDropper); ok {
+				d.DropResponse(id)
+			}
+		}
 	})
 	if req != nil {
 		req.cancel(cause)
@@ -506,7 +529,7 @@ func (c *Connection) wait(fromWait bool) error {
 //
 // After the start of a Close, notification requests (that lack IDs and do not
 // receive responses) will continue to be passed to the Preempter, but calls
-// with IDs will receive immediate responses with ErrServerClosing, and no new
+// with IDs will receive immediate responses with ErrConnClosing, and no new
 // requests (not even notifications!) will be enqueued to the Handler.
 func (c *Connection) Close() error {
 	// Stop handling new requests, and interrupt the reader (by closing the
@@ -552,16 +575,15 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Retire any outgoing requests that were still in flight: with the Reader no
 		// longer being processed, they necessarily cannot receive a response.
 		for id, ac := range s.outgoingCalls {
-			ac.retire(&Response{ID: id, Error: err})
+			ac.retire(&Response{ID: id, Error: fmt.Errorf("%w: %w", ErrConnClosing, err)})
 		}
 		s.outgoingCalls = nil
 
 		// Cancel any incoming requests still in flight: with the reader gone we
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
-		// The read error (typically io.EOF from the peer disconnecting) is the
-		// cause, rather than a directional ErrServerClosing/ErrClientClosing
-		// sentinel: at this layer the connection has no designated end.
+		// The cause is the read error, typically io.EOF from the peer
+		// disconnecting.
 		for _, r := range s.incomingByID {
 			r.cancel(err)
 		}
@@ -602,7 +624,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 			// theoretically be handled by the preempter. The preempter could return
 			// ErrAsyncResponse, which would increase the amount of work in flight
 			// when we're trying to ensure that it strictly decreases.
-			err = s.shuttingDown(ErrServerClosing)
+			err = s.shuttingDown(ErrConnClosing)
 		}
 	})
 	if err != nil {
@@ -624,7 +646,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		// handler — not even notifications. That ensures that if the handler
 		// continues to make progress, it will eventually become idle and
 		// close the connection.
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -699,7 +721,7 @@ func (c *Connection) handleAsync() {
 
 // processResult processes the result of a request and, if appropriate, sends a response.
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
-	if nomethodnotfoundcodeinerror != "1" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
+	if errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound) {
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)
 	}
 
@@ -714,6 +736,10 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		}
 
 		response, respErr := NewResponse(req.ID, result, err)
+		if respErr != nil {
+			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+			response, _ = NewResponse(req.ID, nil, err)
+		}
 
 		// The caller could theoretically reuse the request's ID as soon as we've
 		// sent the response, so ensure that it is removed from the incoming map
@@ -721,13 +747,12 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		c.updateInFlight(func(s *inFlightState) {
 			delete(s.incomingByID, req.ID)
 		})
-		if respErr == nil {
-			writeErr := c.write(notDone{req.ctx}, response)
-			if err == nil {
-				err = writeErr
-			}
-		} else {
-			err = c.internalErrorf("%#v returned a malformed result for %q: %w", from, req.Method, respErr)
+		writeErr := c.write(notDone{req.ctx}, response)
+		if writeErr != nil && c.onResponseWriteError != nil {
+			c.onResponseWriteError(req.Request, writeErr)
+		}
+		if err == nil {
+			err = writeErr
 		}
 	} else { // req is a notification
 		if result != nil {
@@ -764,7 +789,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
 			return
 		}
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
@@ -785,7 +810,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 			if s.writeErr == nil {
 				s.writeErr = err
 				for _, r := range s.incomingByID {
-					r.cancel(fmt.Errorf("%w: %v", ErrServerClosing, err))
+					r.cancel(fmt.Errorf("%w: %v", ErrConnClosing, err))
 				}
 			}
 		})
@@ -813,10 +838,10 @@ func (c *Connection) internalErrorf(format string, args ...any) error {
 // which by default is wrapped in notDone so a transport-level cancellation
 // does not implicitly cancel every in-flight handler. Cancellation of an
 // in-flight handler is instead expected to flow only through the jsonrpc2
-// layer's explicit channels: the [Preempter] calling [Connection.Cancel] in
-// response to the peer's cancel notification, or the transport itself
-// failing (the read loop exits on EOF or a write fails) — both of which
-// cancel every in-flight incoming request in turn.
+// layer's explicit channels: the [Preempter] calling
+// [Connection.CancelFromPeer] in response to the peer's cancel notification,
+// or the transport itself failing (the read loop exits on EOF or a write
+// fails) — both of which cancel every in-flight incoming request in turn.
 type notDone struct{ ctx context.Context }
 
 func (ic notDone) Value(key any) any {

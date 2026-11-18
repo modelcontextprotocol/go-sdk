@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/yosida95/uritemplate/v3"
@@ -38,30 +37,19 @@ type serverResourceTemplate struct {
 // If it cannot find the resource, it should return the result of calling [ResourceNotFoundError].
 type ResourceHandler func(context.Context, *ReadResourceRequest) (*ReadResourceResult, error)
 
-// customresnotfounderrcode is a compatibility parameter that restores the
-// pre-1.7.0 behavior of [ResourceNotFoundError] and [CodeResourceNotFound],
-// where the error code was a custom -32002. See the documentation for the mcpgodebug
-// package for instructions on how to enable it.
-// The option will be removed in the future version of the SDK.
-var customresnotfounderrcode = mcpgodebug.Value("customresnotfounderrcode")
-
-func init() {
-	if customresnotfounderrcode == "1" {
-		CodeResourceNotFound = -32002
-	}
-}
-
 // ResourceNotFoundError returns an error indicating that a resource being read could
 // not be found.
 //
-// By default, the error code is -32602 (Invalid Params), as specified in the
-// MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
-// error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
+// The error code is -32602 (Invalid Params), as specified in the
+// MCP specification (SEP-2164).
 func ResourceNotFoundError(uri string) error {
+	data, _ := json.Marshal(struct {
+		URI string `json:"uri"`
+	}{uri})
 	return &jsonrpc.Error{
 		Code:    CodeResourceNotFound,
 		Message: "Resource not found",
-		Data:    json.RawMessage(fmt.Sprintf(`{"uri":%q}`, uri)),
+		Data:    json.RawMessage(data),
 	}
 }
 
@@ -104,9 +92,10 @@ func computeURIFilepath(rawURI, dirFilepath string, rootFilepaths []string) (str
 	}
 	// The URI's path is interpreted relative to dirFilepath, and in the local filesystem.
 	// It must not try to escape its directory.
-	uriFilepathRel, err := filepath.Localize(strings.TrimPrefix(uri.Path, "/"))
+	relPath := strings.TrimPrefix(uri.Path, "/")
+	uriFilepathRel, err := filepath.Localize(relPath)
 	if err != nil {
-		return "", fmt.Errorf("%q cannot be localized: %w", uriFilepathRel, err)
+		return "", fmt.Errorf("%q cannot be localized: %w", relPath, err)
 	}
 
 	// Check roots, if there are any.

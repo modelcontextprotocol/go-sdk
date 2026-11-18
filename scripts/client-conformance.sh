@@ -57,13 +57,17 @@ done
 # Set up the work directory.
 if [ -n "$RESULT_DIR" ]; then
     mkdir -p "$RESULT_DIR"
+    # Make the path absolute: the tests run from inside it (see below).
+    RESULT_DIR=$(cd "$RESULT_DIR" && pwd)
     WORKDIR="$RESULT_DIR"
 else
     WORKDIR=$(mktemp -d)
 fi
 
-# Build the conformance server.
-go build -o "$WORKDIR/conformance-client" ./conformance/everything-client
+# Build the conformance client. GOEXE is ".exe" on Windows, where the
+# conformance runner can only launch the client with that extension.
+CLIENT="$WORKDIR/conformance-client$(go env GOEXE)"
+go build -o "$CLIENT" ./conformance/everything-client
 
 # Run conformance tests from the work directory to avoid writing results to the repo.
 echo "Running conformance tests..."
@@ -71,13 +75,13 @@ if [ -n "$CONFORMANCE_REPO" ]; then
     # Run from local checkout using npm run start.
     (cd "$WORKDIR" && \
         npm --prefix "$CONFORMANCE_REPO" run start -- \
-            client --command "$WORKDIR/conformance-client" \
+            client --command "$CLIENT" \
             --suite "$SUITE" \
             ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 else
     (cd "$WORKDIR" && \
         npx @modelcontextprotocol/conformance@latest \
-        client --command "$WORKDIR/conformance-client" \
+        client --command "$CLIENT" \
         --suite "$SUITE" \
         ${RESULT_DIR:+--output-dir "$RESULT_DIR"}) || FINAL_EXIT_CODE=$?
 fi

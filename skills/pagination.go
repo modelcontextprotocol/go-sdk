@@ -62,9 +62,9 @@ func paginate[T any](items []T, cursor string, pageSize int, key func(T) string)
 	return page, next, nil
 }
 
-// PaginateSkills returns one URI-ordered page and an opaque cursor for the next page.
+// paginateSkills returns one URI-ordered page and an opaque cursor for the next page.
 // It does not modify skills. A zero page size uses [mcp.DefaultPageSize].
-func PaginateSkills(skills []*Skill, cursor string, pageSize int) ([]*Skill, string, error) {
+func paginateSkills(skills []*Skill, cursor string, pageSize int) ([]*Skill, string, error) {
 	return paginate(skills, cursor, pageSize, func(skill *Skill) string {
 		if skill == nil {
 			return ""

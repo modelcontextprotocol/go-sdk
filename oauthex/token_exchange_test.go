@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -216,6 +217,34 @@ func TestExchangeToken(t *testing.T) {
 
 		if err == nil {
 			t.Error("expected error for invalid audience URL scheme, got nil")
+		}
+	})
+
+	t.Run("cross-origin redirect not followed", func(t *testing.T) {
+		redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, server.URL, http.StatusTemporaryRedirect)
+		}))
+		defer redirector.Close()
+
+		req := &TokenExchangeRequest{
+			RequestedTokenType: TokenTypeIDJAG,
+			Audience:           "https://auth.mcpserver.example/",
+			Resource:           "https://mcp.mcpserver.example/",
+			SubjectToken:       "fake-id-token",
+			SubjectTokenType:   TokenTypeIDToken,
+		}
+		_, err := ExchangeToken(
+			context.Background(),
+			redirector.URL,
+			req,
+			&ClientCredentials{
+				ClientID:         "test-client-id",
+				ClientSecretAuth: &ClientSecretAuth{ClientSecret: "test-client-secret"},
+			},
+			redirector.Client(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "outside the origin") {
+			t.Errorf("ExchangeToken() error = %v, want redirect not followed", err)
 		}
 	})
 }

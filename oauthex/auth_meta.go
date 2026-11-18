@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/authutil"
 )
@@ -27,7 +26,7 @@ import (
 // prevent XSS attacks. If you add a new URL field, you must also add it to that
 // function.
 //
-// [RFC 8414]: https://tools.ietf.org/html/rfc8414)
+// [RFC 8414]: https://tools.ietf.org/html/rfc8414
 type AuthServerMeta struct {
 	// Issuer is the REQUIRED URL identifying the authorization server.
 	Issuer string `json:"issuer"`
@@ -132,9 +131,9 @@ type AuthServerMeta struct {
 //   - The metadataURL must use HTTPS or be a local address.
 //   - The Issuer field is checked against metadataURL.Issuer.
 //
-// It also verifies that the authorization server supports PKCE with the S256
-// code challenge method, which is the one this SDK's clients use, and that the
-// URLs in the metadata don't use dangerous schemes.
+// It also verifies that the URLs in the metadata don't use dangerous schemes.
+// It does not check for PKCE support, which only the authorization code flow
+// needs: the SDK's authorization code clients check it themselves.
 //
 // It returns an error if the request fails with a non-4xx status code or the fetched
 // metadata doesn't pass security validations.
@@ -158,13 +157,6 @@ func GetAuthServerMeta(ctx context.Context, metadataURL, issuer string, c *http.
 	}
 	if !authutil.IssuersEqual(asm.Issuer, issuer) {
 		return nil, fmt.Errorf("metadata issuer %q does not match issuer URL %q", asm.Issuer, issuer)
-	}
-
-	if len(asm.CodeChallengeMethodsSupported) == 0 {
-		return nil, fmt.Errorf("authorization server at %s does not implement PKCE", issuer)
-	}
-	if !slices.Contains(asm.CodeChallengeMethodsSupported, "S256") {
-		return nil, fmt.Errorf("authorization server at %s does not support the S256 PKCE method", issuer)
 	}
 
 	// Validate endpoint URLs to prevent XSS attacks (see #526).

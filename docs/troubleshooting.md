@@ -22,7 +22,12 @@ SDK, as well as inspecting MCP traffic.
 ## Collecting MCP logs
 
 For [stdio](protocol.md#stdio-transport) transport connections, you can also
-inspect MCP traffic using a `LoggingTransport`:
+inspect JSON-RPC messages using a `LoggingTransport`:
+
+`LoggingTransport` logs re-encoded JSON-RPC messages, not the original byte
+stream. Whitespace, JSON member order, and transport framing can differ from
+the transmitted bytes. To inspect the exact stdio bytes, record the underlying
+reads and writes, for example at the `Reader` and `Writer` of an `IOTransport`.
 
 ```go
 func ExampleLoggingTransport() {

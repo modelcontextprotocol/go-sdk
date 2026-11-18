@@ -5,8 +5,13 @@ on:
     paths:
       - 'internal/readme/**'
       - 'README.md'
+      - 'CONTRIBUTING.md'
       - 'internal/docs/**'
       - 'docs/**'
+      - '.github/workflows/docs-check.yml'
+      # Code that the *.src.md files %include into the generated docs.
+      - 'mcp/*_example_test.go'
+      - 'examples/server/completion/main.go'
 
 permissions:
   contents: read

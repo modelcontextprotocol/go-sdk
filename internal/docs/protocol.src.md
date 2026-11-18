@@ -232,8 +232,13 @@ tool over HTTP, the SDK serializes the matching argument(s) as
 `Mcp-Param-<HeaderName>` request headers (using `=?base64?...?=` encoding for
 non-ASCII values). On the server, the headers are validated against the body
 and either accepted or rejected with `-32020`. Properties so annotated must
-be typed `string`, `integer`, or `boolean`; tools that fail validation at
-registration time are silently dropped from `tools/list`.
+be typed `string`, `integer`, or `boolean`, and must be reached from the
+schema root through `properties` keys alone (not through `items`, `oneOf`,
+`anyOf`, `allOf`, `not`, `if`/`then`/`else`, `$ref`, or similar keywords);
+tools that fail validation at registration time are silently dropped from
+`tools/list`.
+If a `tools/call` is rejected with `-32020`, `ClientSession.CallTool` fetches 
+the tool's current definition with `tools/list` and retries once if the tool's `x-mcp-header` annotations changed.
 
 #### Resumability and Redelivery
 
@@ -607,6 +612,13 @@ When an RPC exits due to a cancellation error, there's a guarantee that the
 cancellation notification has been sent, but there's no guarantee that the
 server has observed it (see [concurrency](#concurrency)).
 
+On a session using protocol version 2026-07-28 or later over a stdio-style
+transport (`StdioTransport`, `CommandTransport`, `IOTransport` or
+`InMemoryTransport`), a server that receives a cancellation notification sends
+no response for the cancelled request, as the spec requires. Over the
+streamable HTTP transport, a 2026-07-28 request is cancelled by closing its
+HTTP request instead (see `StreamableHTTPOptions.PropagateRequestCancellation`).
+
 %include ../../mcp/mcp_example_test.go cancellation -
 
 ### Ping
@@ -628,9 +640,9 @@ or
 > **Note**: `ping` is removed from the protocol as of `2026-07-28` by
 > [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
 > The SDK preserves the API for backward compatibility with legacy clients;
-> when both peers negotiate `2026-07-28`, the server returns
-> `MethodNotFound` (`-32601`) for `ping` and `KeepAlive` should not be
-> enabled.
+> when a session negotiates `2026-07-28` or later, `Ping` returns
+> `MethodNotFound` (`-32601`) locally, without a round trip, and
+> `KeepAlive` should not be enabled.
 
 ### Progress
 

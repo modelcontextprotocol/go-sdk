@@ -61,6 +61,8 @@ trap cleanup EXIT
 # Set up the work directory.
 if [ -n "$RESULT_DIR" ]; then
     mkdir -p "$RESULT_DIR"
+    # Make the path absolute: the tests run from inside it (see below).
+    RESULT_DIR=$(cd "$RESULT_DIR" && pwd)
     WORKDIR="$RESULT_DIR"
 else
     WORKDIR=$(mktemp -d)

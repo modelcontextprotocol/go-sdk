@@ -220,7 +220,7 @@ The SDK ensures that a read succeeds only if the URI matches a registered resour
 or matches the URI pattern of a resource template.
 
 To list a server's resources and resource templates, use the 
-[`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
 and
 [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
 iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
@@ -402,6 +402,11 @@ Publish a change with
 which notifies every session subscribed to that URI. The notification carries
 only the URI, not the new contents, so a client that wants them reads the
 resource again.
+To notify a single session instead, call
+[`ServerSession.NotifyResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceUpdated).
+It only notifies sessions on protocol version `2026-07-28` or later, once on
+each of the session's
+[`subscriptions/listen`](protocol.md#subscriptions) streams that name the URI.
 
 ```go
 func Example_resourceSubscription() {
@@ -840,6 +845,16 @@ func Example_listChanged() {
 }
 ```
 
+To notify a single session instead, for example when only the tools visible to
+that session have changed, call
+[`ServerSession.NotifyToolListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyToolListChanged),
+[`NotifyPromptListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyPromptListChanged),
+or
+[`NotifyResourceListChanged`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceListChanged).
+These methods only notify sessions on protocol version `2026-07-28` or later:
+the notification is sent once on each of the session's
+[`subscriptions/listen`](protocol.md#subscriptions) streams that asked for it,
+and not at all if there are none. The capability rules above apply to them too.
 ## Multi Round-Trip Requests
 
 [SEP-2322](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2322)
@@ -854,9 +869,11 @@ The SDK supports this pattern from both sides without requiring callers to
 choose:
 
 - **Returning input requests from a handler.** Set `InputRequests` on the
-  result you return.
+  result you return. To have the client call again without asking it for
+  input, return only a `RequestState`; the client echoes it on the retry.
   Leave `Content` / `StructuredContent` empty — returning
-  both at once is a server bug and the SDK returns `-32603 InternalError`.
+  content together with `InputRequests` or `RequestState` is a server bug and
+  the SDK returns `-32603 InternalError`.
 - **Calling the legacy APIs.** `ServerSession.Elicit`,
   `ServerSession.CreateMessage(WithTools)`, and `ServerSession.ListRoots`
   remain available and work for both new and legacy clients.
@@ -868,7 +885,8 @@ clients on a protocol version earlier than `2026-07-28`, the middleware
 intercepts any `InputRequiredResult` your handler returns, fulfils each
 input request itself by calling the legacy server-initiated APIs
 (`Elicit`, `CreateMessage`, `ListRoots`), and re-invokes your handler
-with the responses already populated. If the handler asks for more input,
+with the responses already populated. A result with a `RequestState` and no
+input requests re-invokes it with that state and no responses. If the handler asks for more input,
 the middleware repeats this until the handler completes, up to the same
 limit of 10 rounds that the client-side middleware applies. This means a
 handler written in the MRTR style works against both old and new clients
@@ -1210,13 +1228,14 @@ per-extension settings objects. Extensions require explicit opt-in.
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package implements the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
-Use `skills.AddHandlers` for request-time
-`skills/list` and `skills/get` handlers. An optional directory handler enables
-`resources/directory/read` and advertises `directoryRead: true`.
+Use `skills.Add` to serve a static catalog with built-in listing and lookup.
+For request-dependent catalogs, use `skills.AddHandlers` with typed request handlers.
+Declare `skills.ExtensionID` in the server capabilities before creating the server.
+Include the setting `directoryRead: true` when providing a directory handler.
 
-Before calling `AddHandlers`, register the underlying content through `Server.AddResource` or
-`Server.AddResourceTemplate`; these also advertise the required `resources`
-capability. Registration fails if the effective resources capability is absent.
+Register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate` before connecting. Either registration advertises
+the required resources capability and may come before or after the Skills handlers.
 An entry's manifest includes every file, including `SKILL.md` and
 nested skills. Use `skills.DynamicResources()` when stable digests cannot be
 published, not simply because the catalog changes over time.
@@ -1226,7 +1245,9 @@ This example serves a complete static manifest and its content. The
 the resource bytes:
 
 ```go
-server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, nil)
+caps := &mcp.ServerCapabilities{}
+caps.AddExtension(skills.ExtensionID, nil)
+server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, &mcp.ServerOptions{Capabilities: caps})
 const uri = "skill://greeting/SKILL.md"
 const content = "---\nname: greeting\ndescription: Greet the user.\n---\n# Greeting\nSay hello to the user.\n"
 entry := &skills.Skill{
@@ -1246,18 +1267,7 @@ server.AddResource(&mcp.Resource{
 		URI: uri, MIMEType: "text/markdown", Text: content,
 	}}}, nil
 })
-err := skills.AddHandlers(server, &skills.Handlers{
-	List: func(_ context.Context, _ *mcp.ServerSession, params *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
-		page, next, err := skills.PaginateSkills([]*skills.Skill{entry}, params.Cursor, 0)
-		return &skills.ListSkillsResult{Skills: page, NextCursor: next}, err
-	},
-	Get: func(_ context.Context, _ *mcp.ServerSession, params *skills.GetSkillParams) (*skills.GetSkillResult, error) {
-		if params.URI != entry.URI {
-			return nil, nil
-		}
-		return &skills.GetSkillResult{Skill: entry}, nil
-	},
-}, nil)
+err := skills.Add(server, []*skills.Skill{entry}, nil)
 if err != nil {
 	log.Fatal(err)
 }
@@ -1268,10 +1278,9 @@ returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil res
 with an empty resource list. Explicit JSON-RPC errors retain their code and data;
 other handler errors and invalid results become Internal Error (`-32603`).
 
-Handlers own pagination. `skills.PaginateSkills` and
-`skills.PaginateDirectoryResources` sort by URI and return one page without
-modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
-`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+Custom handlers own pagination. `skills.PaginateDirectoryResources` sorts
+directory resources by URI and returns one page without modifying the input.
+A zero page size uses `mcp.DefaultPageSize`. Each skill
 entry contains its complete manifest, which is never split across pages.
 
 `skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
@@ -1306,7 +1315,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.

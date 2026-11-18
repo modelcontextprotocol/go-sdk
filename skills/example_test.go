@@ -14,9 +14,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/skills"
 )
 
-func ExampleAddHandlers() {
+func ExampleAdd() {
 	// !+skillsserver
-	server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, nil)
+	caps := &mcp.ServerCapabilities{}
+	caps.AddExtension(skills.ExtensionID, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "skills", Version: "v1.0.0"}, &mcp.ServerOptions{Capabilities: caps})
 	const uri = "skill://greeting/SKILL.md"
 	const content = "---\nname: greeting\ndescription: Greet the user.\n---\n# Greeting\nSay hello to the user.\n"
 	entry := &skills.Skill{
@@ -36,18 +38,7 @@ func ExampleAddHandlers() {
 			URI: uri, MIMEType: "text/markdown", Text: content,
 		}}}, nil
 	})
-	err := skills.AddHandlers(server, &skills.Handlers{
-		List: func(_ context.Context, _ *mcp.ServerSession, params *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
-			page, next, err := skills.PaginateSkills([]*skills.Skill{entry}, params.Cursor, 0)
-			return &skills.ListSkillsResult{Skills: page, NextCursor: next}, err
-		},
-		Get: func(_ context.Context, _ *mcp.ServerSession, params *skills.GetSkillParams) (*skills.GetSkillResult, error) {
-			if params.URI != entry.URI {
-				return nil, nil
-			}
-			return &skills.GetSkillResult{Skill: entry}, nil
-		},
-	}, nil)
+	err := skills.Add(server, []*skills.Skill{entry}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,6 +48,9 @@ func ExampleAddHandlers() {
 	ctx := context.Background()
 	client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
 
+	if err := skills.AddMethods(client); err != nil {
+		log.Fatal(err)
+	}
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {
@@ -69,11 +63,11 @@ func ExampleAddHandlers() {
 	}
 	defer session.Close()
 
-	for skill, err := range skills.All(ctx, session, nil) {
+	for skill, err := range skills.List(ctx, session, nil, nil) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(skill.URI, skill.Frontmatter["description"])
+		fmt.Println(skill.URI, skill.Frontmatter.Description())
 	}
 	// !-skillsclient
 

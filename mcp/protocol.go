@@ -49,7 +49,7 @@ func annotateResultType(res Result) {
 	case multiRoundTripResponse:
 		// These results are complete or input_required, so label them by
 		// whether the handler asked for more client input.
-		if r.inputRequests() != nil {
+		if asksForInput(r) {
 			r.setResultType(resultTypeInputRequired)
 		} else {
 			r.setResultType(resultTypeComplete)
@@ -105,8 +105,8 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	var rawMap map[string]*raw
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	var rawMap map[string]raw
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	if rawMap == nil {
@@ -117,20 +117,23 @@ func (m *InputRequestMap) UnmarshalJSON(data []byte) error {
 		switch raw.Method {
 		case methodElicit:
 			var p ElicitParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodCreateMessage:
 			var p CreateMessageWithToolsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
+			if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
 				return err
 			}
 			result[k] = &p
 		case methodListRoots:
+			// For a roots/list request, params are optional.
 			var p ListRootsParams
-			if err := json.Unmarshal(raw.Params, &p); err != nil {
-				return err
+			if len(raw.Params) > 0 {
+				if err := internaljson.Unmarshal(raw.Params, &p); err != nil {
+					return err
+				}
 			}
 			result[k] = &p
 		default:
@@ -153,7 +156,7 @@ type InputResponseMap map[string]InputResponse
 
 func (m *InputResponseMap) UnmarshalJSON(data []byte) error {
 	var rawMap map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawMap); err != nil {
+	if err := internaljson.Unmarshal(data, &rawMap); err != nil {
 		return err
 	}
 	result := make(InputResponseMap, len(rawMap))
@@ -176,25 +179,25 @@ func unmarshalInputResponse(data json.RawMessage) (InputResponse, error) {
 		Role   json.RawMessage `json:"role"`
 		Roots  json.RawMessage `json:"roots"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := internaljson.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
 	switch {
 	case probe.Roots != nil:
 		var p ListRootsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Action != nil:
 		var p ElicitResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
 	case probe.Role != nil:
 		var p CreateMessageWithToolsResult
-		if err := json.Unmarshal(data, &p); err != nil {
+		if err := internaljson.Unmarshal(data, &p); err != nil {
 			return nil, err
 		}
 		return &p, nil
@@ -1705,12 +1708,17 @@ type ReadResourceResult struct {
 	// resultType records whether the call finished or needs more client input.
 	// See [CallToolResult.NeedsInput].
 	resultType resultType
+	// retried records that the client middleware produced this result by
+	// retrying the request with input responses. Such a result depends on
+	// inputs that are not part of the cache key, so it must not be cached.
+	retried bool
 }
 
 func (*ReadResourceResult) isResult()     {}
 func (x *ReadResourceResult) isNil() bool { return x == nil }
 
 func (r *ReadResourceResult) setResultType(rt resultType) { r.resultType = rt }
+func (r *ReadResourceResult) markRetried()                { r.retried = true }
 func (r *ReadResourceResult) requestState() string        { return r.RequestState }
 func (r *ReadResourceResult) inputRequests() map[string]InputRequest {
 	if r == nil {
@@ -2046,13 +2054,6 @@ type Tool struct {
 	Icons []Icon `json:"icons,omitempty"`
 }
 
-// hintomitempty is a compatibility parameter that restores the pre-1.7.0
-// behavior of [ToolAnnotations] JSON marshaling, where false-valued bare bool
-// fields (ReadOnlyHint, IdempotentHint) were omitted from the output.
-// See the documentation for the mcpgodebug package for instructions on how to
-// enable it.
-var hintomitempty = mcpgodebug.Value("hintomitempty")
-
 // Additional properties describing a Tool to clients.
 //
 // NOTE: all properties in ToolAnnotations are hints. They are not
@@ -2091,20 +2092,7 @@ type ToolAnnotations struct {
 }
 
 // MarshalJSON implements [json.Marshaler] for ToolAnnotations.
-//
-// To restore the previous behavior where false-valued ReadOnlyHint and
-// IdempotentHint were omitted, set MCPGODEBUG=hintomitempty=1.
 func (t ToolAnnotations) MarshalJSON() ([]byte, error) {
-	if hintomitempty == "1" {
-		type compat struct {
-			DestructiveHint *bool  `json:"destructiveHint,omitempty"`
-			IdempotentHint  bool   `json:"idempotentHint,omitempty"`
-			OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
-			ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
-			Title           string `json:"title,omitempty"`
-		}
-		return json.Marshal(compat(t))
-	}
 	type nomethod ToolAnnotations
 	return json.Marshal(nomethod(t))
 }
