@@ -52,6 +52,10 @@ protocol.
     1. [Logging](server.md#logging)
     1. [Pagination](server.md#pagination)
 
+## Experimental Extensions
+
+1. [Server Cards](server_cards.md)
+
 # TroubleShooting
 
 See [troubleshooting.md](troubleshooting.md) for a troubleshooting guide.
