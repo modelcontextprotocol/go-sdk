@@ -96,6 +96,8 @@ type ServerOptions struct {
 	// Logger may be set to a non-nil value to enable logging of server activity.
 	Logger *slog.Logger
 	// If non-nil, called when "notifications/initialized" is received.
+	// It is not called for sessions negotiated at protocol version 2026-07-28
+	// or later, which have no initialization handshake (SEP-2575).
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
@@ -103,6 +105,11 @@ type ServerOptions struct {
 	// If zero, defaults to [DefaultPageSize].
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
+	//
+	// It is not called for sessions negotiated at protocol version 2026-07-28
+	// or later, whose schema removes the notification (SEP-2575); such
+	// sessions read roots on demand through a multi round-trip ListRoots
+	// request.
 	//
 	// Deprecated: the roots feature is deprecated as of protocol version
 	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
@@ -2254,13 +2261,18 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized, notificationRootsListChanged, methodSetLevel, methodSubscribe, methodUnsubscribe:
+	case methodInitialize, methodPing, methodSetLevel, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
 				Code:    jsonrpc.CodeMethodNotFound,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
 			}
+		}
+	case notificationInitialized, notificationRootsListChanged:
+		if ss.protocolVersion() >= protocolVersion20260728 {
+			ss.server.opts.Logger.Error("notification removed in the new protocol", "method", req.Method)
+			return nil, nil
 		}
 	case methodDiscover:
 		// In case of methodDiscover call the state.initializeParams is populated

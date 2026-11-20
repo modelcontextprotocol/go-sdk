@@ -1848,7 +1848,6 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 	}{
 		{"initialize", methodInitialize},
 		{"ping", methodPing},
-		{"notifications/initialized", notificationInitialized},
 	}
 
 	for _, tc := range tests {
@@ -1876,6 +1875,67 @@ func TestServerSessionHandle_RejectsRemovedMethodsOnNewProtocol(t *testing.T) {
 			}
 			if !strings.Contains(jerr.Message, tc.method) {
 				t.Errorf("method %q: message %q does not mention method name", tc.method, jerr.Message)
+			}
+		})
+	}
+}
+
+// TestServerIgnoresRootsListChangedOnNewProtocol verifies that the server does
+// not call RootsListChangedHandler for a notifications/roots/list_changed
+// received on a session negotiated at 2026-07-28, whose schema removes the
+// notification (SEP-2575), and still calls it on earlier versions.
+func TestServerIgnoresRootsListChangedOnNewProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion string
+		wantCalls       int
+	}{
+		{protocolVersion20260728, 0},
+		{protocolVersion20251125, 1},
+	} {
+		t.Run(tc.protocolVersion, func(t *testing.T) {
+			ctx := context.Background()
+
+			var mu sync.Mutex
+			calls := 0
+			s := NewServer(testImpl, &ServerOptions{
+				RootsListChangedHandler: func(context.Context, *RootsListChangedRequest) {
+					mu.Lock()
+					calls++
+					mu.Unlock()
+				},
+			})
+			ct, st := NewInMemoryTransports()
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+
+			cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: tc.protocolVersion})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+
+			// A call on the new protocol records the session's version on the server.
+			if _, err := cs.ListTools(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			// Send the notification directly, bypassing the client-side filter in
+			// Client.AddRoots, to simulate a non-conforming client.
+			if err := handleNotify(ctx, notificationRootsListChanged, newClientRequest(cs, &RootsListChangedParams{})); err != nil {
+				t.Fatal(err)
+			}
+			// The server handles incoming messages in order, so once this call
+			// returns the notification has been processed.
+			if _, err := cs.ListTools(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != tc.wantCalls {
+				t.Errorf("RootsListChangedHandler calls = %d, want %d", calls, tc.wantCalls)
 			}
 		})
 	}

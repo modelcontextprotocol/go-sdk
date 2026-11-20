@@ -434,6 +434,29 @@ func TestClientCapabilities(t *testing.T) {
 				RootsV2: &RootCapabilities{ListChanged: true},
 			},
 		},
+		{
+			name:            "default (new protocol)",
+			configureClient: func(s *Client) {},
+			protocolVersion: protocolVersion20260728,
+			wantCapabilities: &ClientCapabilities{
+				Roots:   RootCapabilities{},
+				RootsV2: &RootCapabilities{},
+			},
+		},
+		{
+			name:            "roots listChanged true (new protocol)",
+			configureClient: func(s *Client) {},
+			clientOpts: ClientOptions{
+				Capabilities: &ClientCapabilities{
+					RootsV2: &RootCapabilities{ListChanged: true},
+				},
+			},
+			protocolVersion: protocolVersion20260728,
+			wantCapabilities: &ClientCapabilities{
+				Roots:   RootCapabilities{},
+				RootsV2: &RootCapabilities{},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -442,7 +465,7 @@ func TestClientCapabilities(t *testing.T) {
 			tc.configureClient(client)
 			protocolVersion := tc.protocolVersion
 			if protocolVersion == "" {
-				protocolVersion = latestProtocolVersion
+				protocolVersion = protocolVersion20251125
 			}
 			gotCapabilities := client.capabilities(protocolVersion)
 			if diff := cmp.Diff(tc.wantCapabilities, gotCapabilities); diff != "" {
@@ -757,7 +780,7 @@ func TestClientCapabilitiesOverWire(t *testing.T) {
 			}
 			defer ss.Close()
 
-			cs, err := client.Connect(ctx, cTransport, nil)
+			cs, err := client.Connect(ctx, cTransport, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1045,6 +1068,46 @@ func TestClientRejectsIncomingPingOnNewProtocol(t *testing.T) {
 	var jsonrpcErr *jsonrpc.Error
 	if !errors.As(err, &jsonrpcErr) {
 		t.Fatalf("ping to a 2026-07-28 client = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+}
+
+// TestClientRejectsStandaloneListRootsOnNewProtocol verifies that a client
+// session negotiated at 2026-07-28 answers a standalone roots/list request
+// with CodeMethodNotFound, since the 2026-07-28 protocol schema removes it as
+// a top-level request (SEP-2575); servers must use a multi round-trip
+// ListRootsRequest instead.
+func TestClientRejectsStandaloneListRootsOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	c.AddRoots(&Root{URI: "file:///workspace"})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	// Send roots/list directly, bypassing the send-side guard in
+	// ServerSession.ListRoots, to simulate a non-conforming server.
+	_, err = handleSend[*ListRootsResult](ctx, methodListRoots, newServerRequest(ss, &ListRootsParams{}))
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("roots/list to a 2026-07-28 client = %v (%T), want *jsonrpc.Error", err, err)
 	}
 	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
 		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
