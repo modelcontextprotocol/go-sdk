@@ -3049,3 +3049,22 @@ func TestNegotiatedLegacyProtocol_NoHandshakeIsLegacy(t *testing.T) {
 		})
 	}
 }
+
+// TestServerPingRemovedOnNewProtocol verifies that ServerSession.Ping on a
+// session negotiated at 2026-07-28 returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the ping method, which the 2026-07-28
+// protocol schema removes.
+func TestServerPingRemovedOnNewProtocol(t *testing.T) {
+	ss := &ServerSession{state: ServerSessionState{NegotiatedProtocolVersion: protocolVersion20260728}}
+	err := ss.Ping(t.Context(), nil)
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("Ping on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if got, want := jsonrpcErr.Message, `"ping" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+}

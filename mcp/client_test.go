@@ -961,6 +961,134 @@ func TestClientPingRemovedOnNewProtocol(t *testing.T) {
 	}
 }
 
+// TestClientSetLoggingLevelRemovedOnNewProtocol verifies that SetLoggingLevel
+// on a session negotiated at 2026-07-28 or later returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the logging/setLevel method, which the
+// 2026-07-28 protocol schema removes.
+func TestClientSetLoggingLevelRemovedOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	var gotSetLevel bool
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	// Registered before Connect: the session caches its sending handler at
+	// connect time. The middleware asserts that no logging/setLevel request is sent.
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSetLevel {
+				gotSetLevel = true
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	err = cs.SetLoggingLevel(ctx, nil)
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("SetLoggingLevel on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if got, want := jsonrpcErr.Message, `"logging/setLevel" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+	if gotSetLevel {
+		t.Error("logging/setLevel request was sent despite the removed-method guard")
+	}
+}
+
+// TestClientRejectsIncomingPingOnNewProtocol verifies that a client session
+// negotiated at 2026-07-28 answers an incoming ping request with
+// CodeMethodNotFound, since the 2026-07-28 protocol schema removes ping in
+// both directions.
+func TestClientRejectsIncomingPingOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	// Send the ping directly, bypassing the send-side guard in
+	// ServerSession.Ping, to simulate a non-conforming server.
+	_, err = handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, &PingParams{}))
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("ping to a 2026-07-28 client = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+}
+
+// TestClientIncomingPingDuringInitialize verifies that a ping the server
+// sends while the legacy initialize handshake is still in flight is answered,
+// and that the client's ping handler reads the session state safely while
+// Client.Connect is writing it. Run with -race.
+func TestClientIncomingPingDuringInitialize(t *testing.T) {
+	ctx := context.Background()
+	pingErr := make(chan error, 1)
+
+	s := NewServer(testImpl, nil)
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodInitialize {
+				ss := req.GetSession().(*ServerSession)
+				// Not awaited, so the ping and the initialize response are in
+				// flight at the same time.
+				go func() { pingErr <- ss.Ping(context.Background(), nil) }()
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := <-pingErr; err != nil {
+		t.Errorf("ping during initialize: %v", err)
+	}
+}
+
 // TestClientConnectDiscover_RequestContents verifies that the server/discover
 // request sent by Client.Connect carries the SEP-2575 per-request _meta triple:
 // protocolVersion, clientInfo, and clientCapabilities.

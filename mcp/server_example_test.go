@@ -189,7 +189,7 @@ func Example_logging() {
 		log.Fatal(err)
 	}
 	defer ss.Close()
-	cs, err := c.Connect(ctx, t2, nil)
+	cs, err := c.Connect(ctx, t2, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
 	if err != nil {
 		log.Fatal(err)
 	}
