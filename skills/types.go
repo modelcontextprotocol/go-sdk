@@ -2,14 +2,14 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-// Package skills implements the MCP [Skills extension].
+// Package skills implements the Beta specification for the MCP [Skills extension].
 //
 // Servers opt in with [AddHandlers] and serve skill files through the ordinary
 // MCP resource APIs. Clients register [AddMethods] before connecting, then use [ListPage], [List], and [Get]
 // to discover entries. [VerifySkillMD] and [VerifyResource] check content
 // retrieved on demand against an entry from the same server.
 //
-// [Skills extension]: https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx
+// [Skills extension]: https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx
 package skills
 
 import (

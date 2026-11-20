@@ -1227,7 +1227,7 @@ per-extension settings objects. Extensions require explicit opt-in.
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package implements the
-[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
 Use `skills.Add` to serve a static catalog with built-in listing and lookup.
 For request-dependent catalogs, use `skills.AddHandlers` with typed request handlers.
 Declare `skills.ExtensionID` in the server capabilities before creating the server.

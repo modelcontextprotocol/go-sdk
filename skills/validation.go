@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func parseFrontmatter(data []byte) (Frontmatter, error) {
