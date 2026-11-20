@@ -328,7 +328,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		for range 2 {
 			discRes, err := c.discover(discoverCtx, cs)
 			if err == nil {
+				cs.stateMu.Lock()
 				cs.state.InitializeResult = discRes
+				cs.stateMu.Unlock()
 				if hc, ok := cs.mcpConn.(clientConnection); ok {
 					hc.clientSessionUpdated(cs.state)
 				}
@@ -399,7 +401,9 @@ func (c *Client) Connect(ctx context.Context, t Transport, opts *ClientSessionOp
 		_ = cs.Close()
 		return nil, unsupportedProtocolVersionError{res.ProtocolVersion}
 	}
+	cs.stateMu.Lock()
 	cs.state.InitializeResult = res
+	cs.stateMu.Unlock()
 	if hc, ok := cs.mcpConn.(clientConnection); ok {
 		hc.clientSessionUpdated(cs.state)
 	}
@@ -483,9 +487,10 @@ type ClientSession struct {
 	listenCancel    context.CancelFunc
 	mcpConn         Connection
 
-	// No mutex is (currently) required to guard the session state, because it is
-	// only set synchronously during Client.Connect.
-	state clientSessionState
+	// stateMu guards state.InitializeResult:
+	// Connect writes it while incoming requests such as ping may read it concurrently.
+	stateMu sync.Mutex
+	state   clientSessionState
 
 	// Per-method TTL caches for list results (SEP-2549).
 	toolsCache             methodCache[*ListToolsResult]
@@ -522,13 +527,17 @@ type clientSessionState struct {
 	InitializeResult *InitializeResult
 }
 
-func (cs *ClientSession) InitializeResult() *InitializeResult { return cs.state.InitializeResult }
+func (cs *ClientSession) InitializeResult() *InitializeResult {
+	cs.stateMu.Lock()
+	defer cs.stateMu.Unlock()
+	return cs.state.InitializeResult
+}
 
 // usesNewProtocol reports whether this session has negotiated a protocol
 // version >= 2026-07-28, which requires the SEP-2575 per-request `_meta`
 // triple on every outgoing request.
 func (cs *ClientSession) usesNewProtocol() bool {
-	res := cs.state.InitializeResult
+	res := cs.InitializeResult()
 	return res != nil && res.ProtocolVersion >= protocolVersion20260728
 }
 
@@ -542,7 +551,7 @@ func injectRequestMeta[T any, P interface {
 	*T
 	Params
 }](cs *ClientSession, params P) P {
-	res := cs.state.InitializeResult
+	res := cs.InitializeResult()
 	if params == nil {
 		params = new(T)
 	} else {
@@ -1105,6 +1114,12 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
+	if req.Method == methodPing && cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+		}
+	}
 	if req.IsCall() {
 		jsonrpc2.Async(ctx)
 	}
@@ -1127,12 +1142,6 @@ func (cs *ClientSession) receivingMethodHandler() MethodHandler {
 func (cs *ClientSession) getConn() *jsonrpc2.Connection { return cs.conn }
 
 func (cs *ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
-	if cs.usesNewProtocol() {
-		return nil, &jsonrpc.Error{
-			Code:    jsonrpc.CodeMethodNotFound,
-			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
-		}
-	}
 	return &emptyResult{}, nil
 }
 

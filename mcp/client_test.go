@@ -1051,6 +1051,44 @@ func TestClientRejectsIncomingPingOnNewProtocol(t *testing.T) {
 	}
 }
 
+// TestClientIncomingPingDuringInitialize verifies that a ping the server
+// sends while the legacy initialize handshake is still in flight is answered,
+// and that the client's ping handler reads the session state safely while
+// Client.Connect is writing it. Run with -race.
+func TestClientIncomingPingDuringInitialize(t *testing.T) {
+	ctx := context.Background()
+	pingErr := make(chan error, 1)
+
+	s := NewServer(testImpl, nil)
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodInitialize {
+				ss := req.GetSession().(*ServerSession)
+				// Not awaited, so the ping and the initialize response are in
+				// flight at the same time.
+				go func() { pingErr <- ss.Ping(context.Background(), nil) }()
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := <-pingErr; err != nil {
+		t.Errorf("ping during initialize: %v", err)
+	}
+}
+
 // TestClientConnectDiscover_RequestContents verifies that the server/discover
 // request sent by Client.Connect carries the SEP-2575 per-request _meta triple:
 // protocolVersion, clientInfo, and clientCapabilities.
