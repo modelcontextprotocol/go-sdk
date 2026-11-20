@@ -1126,7 +1126,13 @@ func (cs *ClientSession) receivingMethodHandler() MethodHandler {
 // getConn implements [Session.getConn].
 func (cs *ClientSession) getConn() *jsonrpc2.Connection { return cs.conn }
 
-func (*ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
+func (cs *ClientSession) ping(context.Context, *PingParams) (*emptyResult, error) {
+	if cs.usesNewProtocol() {
+		return nil, &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	return &emptyResult{}, nil
 }
 
@@ -1301,12 +1307,21 @@ func paramHeaderPaths(tool *Tool) map[string][]string {
 // SetLoggingLevel sets the minimum severity level for log messages sent by
 // the server.
 //
-// Deprecated: the logging feature is deprecated as of protocol version
-// 2026-07-28 (SEP-2577). It remains functional during the deprecation window
-// (at least twelve months). Migrate to consuming stderr output (for STDIO
+// Deprecated: the logging/setLevel method is removed in protocol version
+// 2026-07-28 (SEP-2575). On sessions negotiated at that version or later,
+// SetLoggingLevel returns a [jsonrpc.Error] with code
+// [jsonrpc.CodeMethodNotFound] without a round trip; set [MetaKeyLogLevel]
+// in each request's Meta instead. The logging feature itself is deprecated
+// as of 2026-07-28 (SEP-2577); migrate to consuming stderr output (for STDIO
 // servers) or OpenTelemetry. See
 // https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 func (cs *ClientSession) SetLoggingLevel(ctx context.Context, params *SetLoggingLevelParams) error {
+	if cs.usesNewProtocol() {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodSetLevel),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodSetLevel, newClientRequest(cs, orZero[Params](params)))
 	return err
 }
