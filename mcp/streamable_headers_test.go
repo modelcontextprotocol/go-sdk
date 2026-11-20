@@ -69,6 +69,13 @@ func TestExtractName(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name:     "tools/call with out-of-range JSON number in arguments",
+			method:   "tools/call",
+			params:   json.RawMessage(`{"name":"echo","arguments":{"n":1e1000}}`),
+			wantName: "echo",
+			wantOK:   true,
+		},
+		{
 			name:     "resource URI with special chars",
 			method:   "resources/read",
 			params:   mustMarshal(&ReadResourceParams{URI: "file:///path/to/file%20name.txt"}),

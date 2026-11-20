@@ -36,7 +36,7 @@ const (
 func extractName(method string, params json.RawMessage) (string, bool) {
 	switch method {
 	case "tools/call":
-		var p CallToolParams
+		var p CallToolParamsRaw
 		if err := internaljson.Unmarshal(params, &p); err == nil {
 			return p.Name, true
 		}
