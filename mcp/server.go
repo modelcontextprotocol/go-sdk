@@ -1572,6 +1572,10 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		s.opts.Logger.Error("server connect error", "error", err)
 		return nil, err
 	}
+	if st, ok := t.(*StreamableServerTransport); ok && st.connection != nil {
+		st.connection.server = s
+		st.connection.toolLookup = s.getServerTool
+	}
 
 	// Compute the protocol versions this session can serve, filtered by the
 	// transport's capabilities (if it implements [ProtocolVersionSupporter]).

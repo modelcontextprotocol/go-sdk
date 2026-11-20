@@ -5277,3 +5277,57 @@ func TestStreamableGetServerCalledOnceForNewPOST(t *testing.T) {
 		handler.closeAll()
 	})
 }
+
+func TestStreamableServerTransport_ServerConnectCustomMethod(t *testing.T) {
+	type customParams struct {
+		ParamsBase
+		Query string `json:"query"`
+	}
+	type customResult struct {
+		ResultBase
+		OK bool `json:"ok"`
+	}
+
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	var called bool
+	if err := AddReceivingCustomMethod(server, "acme/search", func(ctx context.Context, ss *ServerSession, params *customParams) (*customResult, error) {
+		called = true
+		return &customResult{OK: params.Query == "hello"}, nil
+	}); err != nil {
+		t.Fatalf("AddReceivingCustomMethod: %v", err)
+	}
+
+	transport := &StreamableServerTransport{
+		SessionID:    "direct-session",
+		jsonResponse: true,
+	}
+	ss, err := server.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("Server.Connect: %v", err)
+	}
+	defer ss.Close()
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(sessionIDHeader, "direct-session")
+		rec := httptest.NewRecorder()
+		transport.ServeHTTP(rec, req)
+		return rec
+	}
+
+	initRec := post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	if initRec.Code != http.StatusOK {
+		t.Fatalf("initialize status = %d, want %d: %s", initRec.Code, http.StatusOK, initRec.Body)
+	}
+
+	customRec := post(`{"jsonrpc":"2.0","id":2,"method":"acme/search","params":{"query":"hello"}}`)
+	if customRec.Code != http.StatusOK {
+		t.Fatalf("custom method status = %d, want %d: %s", customRec.Code, http.StatusOK, customRec.Body)
+	}
+	if !called {
+		t.Fatal("expected custom method handler acme/search to be called")
+	}
+}
