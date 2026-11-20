@@ -43,6 +43,15 @@ the list changed. Servers observe this through
 as with the server-side list-changed notifications, it reports only that
 something changed, so read the list back with `ServerSession.ListRoots`.
 
+> **Note**: `notifications/roots/list_changed` and the standalone
+> `roots/list` request are removed from the protocol as of `2026-07-28` by
+> [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
+> On sessions that negotiate `2026-07-28` or later, `AddRoots` and
+> `RemoveRoots` update the client's roots without notifying the server,
+> `RootsListChangedHandler` is not called, and the client rejects a
+> standalone `roots/list` request with `MethodNotFound` (`-32601`). Servers
+> read the current roots through a multi round-trip `ListRoots` request.
+
 %include ../../mcp/client_example_test.go rootslistchanged -
 
 ## Sampling
