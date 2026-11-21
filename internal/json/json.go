@@ -87,27 +87,11 @@ func unmarshal(data []byte, v any, useNumber bool) error {
 // nesting of JSON objects and arrays exceeds maxDepth. It is a lightweight pass which
 // tracks '{' and '[' against '}' and ']' while skipping over the contents of strings.
 func checkMaxDepth(data []byte, maxDepth int) error {
-	var (
-		depth    int
-		inString bool
-		escaped  bool
-	)
-	for _, b := range data {
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case b == '\\':
-				escaped = true
-			case b == '"':
-				inString = false
-			}
-			continue
-		}
-
-		switch b {
+	depth := 0
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
 		case '"':
-			inString = true
+			i = stringEnd(data, i+1)
 		case '{', '[':
 			depth++
 			if depth > maxDepth {
@@ -120,4 +104,44 @@ func checkMaxDepth(data []byte, maxDepth int) error {
 		}
 	}
 	return nil
+}
+
+// shortStringScan is how many bytes of a string [stringEnd] steps through
+// before it jumps with [bytes.IndexByte]. Each jump has a fixed cost that
+// pays off only on long contents, while keys and escaped JSON put quotes
+// every few bytes.
+const shortStringScan = 32
+
+// stringEnd returns the index of the quote that closes the string whose
+// contents start at data[start], or len(data) if the string is unterminated.
+func stringEnd(data []byte, start int) int {
+	i := start
+	for {
+		// No escape is pending at i.
+		for end := min(i+shortStringScan, len(data)); i < end; i++ {
+			switch data[i] {
+			case '\\':
+				i++
+			case '"':
+				return i
+			}
+		}
+		if i >= len(data) {
+			return len(data)
+		}
+		q := bytes.IndexByte(data[i:], '"')
+		if q < 0 {
+			return len(data)
+		}
+		q += i
+		// The quote is escaped when an odd number of backslashes precedes it.
+		j := q
+		for j > i && data[j-1] == '\\' {
+			j--
+		}
+		if (q-j)%2 == 0 {
+			return q
+		}
+		i = q + 1
+	}
 }
