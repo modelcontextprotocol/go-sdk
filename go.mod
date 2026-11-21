@@ -1,6 +1,6 @@
 module github.com/modelcontextprotocol/go-sdk
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -10,12 +10,12 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/oauth2 v0.35.0
+	golang.org/x/sync v0.20.0
 	golang.org/x/time v0.15.0
 	golang.org/x/tools v0.42.0
 )
 
 require (
 	github.com/segmentio/asm v1.1.3 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )

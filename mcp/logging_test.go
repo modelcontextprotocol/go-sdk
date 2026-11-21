@@ -46,7 +46,7 @@ func TestLoggingHandlerCustomLevel(t *testing.T) {
 	c := NewClient(testImpl, &ClientOptions{
 		LoggingMessageHandler: func(_ context.Context, r *LoggingMessageRequest) { got <- r.Params },
 	})
-	cs, err := c.Connect(ctx, ct, nil)
+	cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}

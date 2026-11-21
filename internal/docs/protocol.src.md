@@ -641,8 +641,9 @@ or
 > [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
 > The SDK preserves the API for backward compatibility with legacy clients;
 > when a session negotiates `2026-07-28` or later, `Ping` returns
-> `MethodNotFound` (`-32601`) locally, without a round trip, and
-> `KeepAlive` should not be enabled.
+> `MethodNotFound` (`-32601`) locally, without a round trip, an incoming
+> `ping` is rejected with the same error, and `KeepAlive` should not be
+> enabled.
 
 ### Progress
 

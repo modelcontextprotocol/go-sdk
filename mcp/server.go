@@ -1878,7 +1878,17 @@ func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) erro
 }
 
 // Ping pings the client.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
+	if ss.protocolVersion() >= protocolVersion20260728 {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
 	return err
 }

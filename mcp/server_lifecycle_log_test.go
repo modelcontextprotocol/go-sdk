@@ -51,13 +51,26 @@ func TestSessionLifecycleLogLevel(t *testing.T) {
 	run := func(t *testing.T, level slog.Level) string {
 		var buf syncBuffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level}))
-		cs, _, cleanup := basicConnection(t, func(s *Server) {
-			s.opts.Logger = logger
-		})
-		if err := cs.SetLoggingLevel(context.Background(), &SetLoggingLevelParams{Level: "warning"}); err != nil {
+		ctx := context.Background()
+		ct, st := NewInMemoryTransports()
+		server := NewServer(testImpl, nil)
+		server.opts.Logger = logger
+		ss, err := server.Connect(ctx, st, nil)
+		if err != nil {
 			t.Fatal(err)
 		}
-		cleanup()
+		t.Cleanup(func() { _ = ss.Close() })
+		client := NewClient(testImpl, nil)
+		cs, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+		if err := cs.SetLoggingLevel(ctx, &SetLoggingLevelParams{Level: "warning"}); err != nil {
+			t.Fatal(err)
+		}
+		cs.Close()
+		ss.Wait()
 		return buf.String()
 	}
 

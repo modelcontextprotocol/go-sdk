@@ -1026,7 +1026,7 @@ func TestKeepAlive(t *testing.T) {
 			KeepAlive: 100 * time.Millisecond,
 		}
 		c := NewClient(testImpl, clientOpts)
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1081,7 +1081,7 @@ func TestKeepAliveMethodNotFound(t *testing.T) {
 			KeepAlive: 50 * time.Millisecond,
 		}
 		c := NewClient(testImpl, clientOpts)
-		cs, err := c.Connect(ctx, ct, nil)
+		cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2672,7 +2672,7 @@ func TestToolErrorMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := NewClient(&Implementation{Name: "test-client"}, nil)
-	clientSession, err := client.Connect(ctx, ct, nil)
+	clientSession, err := client.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
 	if err != nil {
 		t.Fatal(err)
 	}
