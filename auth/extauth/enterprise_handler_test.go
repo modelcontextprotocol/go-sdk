@@ -303,6 +303,118 @@ func TestEnterpriseHandler_ConcurrentAuthorize(t *testing.T) {
 	wg.Wait()
 }
 
+// TestEnterpriseHandler_ServerWithoutPKCE verifies that the flow works when
+// neither the IdP nor the MCP authorization server advertises PKCE: token
+// exchange and the JWT bearer grant do not use it.
+func TestEnterpriseHandler_ServerWithoutPKCE(t *testing.T) {
+	const idJAGToken = "id-jag-token-from-idp"
+
+	idpServer := oauthtest.NewFakeIdPServer(oauthtest.IdPConfig{
+		OmitPKCEMethods: true,
+		PreregisteredClients: map[string]oauthtest.ClientInfo{
+			"idp_client_id": {Secret: "idp_secret"},
+		},
+		TokenExchangeConfig: &oauthtest.TokenExchangeConfig{
+			IDJAGToken: idJAGToken,
+		},
+	})
+	idpServer.Start(t)
+
+	mcpAuthServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		OmitPKCEMethods: true,
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"mcp_client_id": {Secret: "mcp_secret"},
+			},
+		},
+		JWTBearerConfig: &oauthtest.JWTBearerConfig{
+			ValidAssertions: []string{idJAGToken},
+		},
+	})
+	mcpAuthServer.Start(t)
+
+	config := validEnterpriseHandlerConfig()
+	config.IdPIssuerURL = idpServer.URL()
+	config.IdPCredentials.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: "idp_secret"}
+	config.MCPAuthServerURL = mcpAuthServer.URL()
+	config.MCPCredentials.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: "mcp_secret"}
+	config.IDTokenFetcher = func(ctx context.Context) (*oauth2.Token, error) {
+		token := &oauth2.Token{AccessToken: "mock_access_token", TokenType: "Bearer"}
+		return token.WithExtra(map[string]any{"id_token": "mock_id_token_from_user_login"}), nil
+	}
+
+	handler, err := NewEnterpriseHandler(config)
+	if err != nil {
+		t.Fatalf("NewEnterpriseHandler failed: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/api", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	if err := handler.Authorize(context.Background(), req, resp); err != nil {
+		t.Fatalf("Authorize failed: %v", err)
+	}
+}
+
+// TestEnterpriseHandler_Authorize_NotIDJAG checks that a token the IdP did not
+// issue as an ID-JAG is not sent on to the MCP Server's authorization server,
+// even one that would accept it.
+func TestEnterpriseHandler_Authorize_NotIDJAG(t *testing.T) {
+	const idpAccessToken = "idp-access-token"
+
+	idpServer := oauthtest.NewFakeIdPServer(oauthtest.IdPConfig{
+		PreregisteredClients: map[string]oauthtest.ClientInfo{
+			"idp_client_id": {Secret: "idp_secret"},
+		},
+		TokenExchangeConfig: &oauthtest.TokenExchangeConfig{
+			IDJAGToken:      idpAccessToken,
+			IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+		},
+	})
+	idpServer.Start(t)
+
+	mcpAuthServer := oauthtest.NewFakeAuthorizationServer(oauthtest.Config{
+		RegistrationConfig: &oauthtest.RegistrationConfig{
+			PreregisteredClients: map[string]oauthtest.ClientInfo{
+				"mcp_client_id": {Secret: "mcp_secret"},
+			},
+		},
+		JWTBearerConfig: &oauthtest.JWTBearerConfig{
+			ValidAssertions: []string{idpAccessToken},
+		},
+	})
+	mcpAuthServer.Start(t)
+
+	config := validEnterpriseHandlerConfig()
+	config.IdPIssuerURL = idpServer.URL()
+	config.IdPCredentials.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: "idp_secret"}
+	config.MCPAuthServerURL = mcpAuthServer.URL()
+	config.MCPCredentials.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: "mcp_secret"}
+
+	handler, err := NewEnterpriseHandler(config)
+	if err != nil {
+		t.Fatalf("NewEnterpriseHandler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/api", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
+	err = handler.Authorize(context.Background(), req, resp)
+	if err == nil || !strings.Contains(err.Error(), "token of type") {
+		t.Fatalf("Authorize error = %v, want an issued token type error", err)
+	}
+	if ts, _ := handler.TokenSource(context.Background()); ts != nil {
+		t.Error("TokenSource is set after the token exchange issued a token that is not an ID-JAG")
+	}
+}
+
 func TestEnterpriseHandler_Authorize_IDTokenFetcherError(t *testing.T) {
 	config := validEnterpriseHandlerConfig()
 	config.IDTokenFetcher = func(ctx context.Context) (*oauth2.Token, error) {

@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitChallenges(t *testing.T) {
@@ -68,6 +70,31 @@ func TestSplitChallenges(t *testing.T) {
 			input: "",
 			want:  []string{""},
 		},
+		{
+			name:  "challenges without params",
+			input: `Basic,Bearer`,
+			want:  []string{`Basic`, `Bearer`},
+		},
+		{
+			name:  "blank between token and equals",
+			input: "Bearer a=1, b \t=2",
+			want:  []string{"Bearer a=1, b \t=2"},
+		},
+		{
+			name:  "whitespace inside the name starts a new challenge",
+			input: `Basic realm="a", Bearer x y=1`,
+			want:  []string{`Basic realm="a"`, ` Bearer x y=1`},
+		},
+		{
+			name:  "non-blank whitespace before equals starts a new challenge",
+			input: "Basic, Bearer\u00a0=1",
+			want:  []string{"Basic", " Bearer\u00a0=1"},
+		},
+		{
+			name:  "comma inside the name starts a new challenge",
+			input: `Bearer x, a,b=c`,
+			want:  []string{`Bearer x`, ` a,b=c`},
+		},
 	}
 
 	for _, tt := range tests {
@@ -80,6 +107,28 @@ func TestSplitChallenges(t *testing.T) {
 				t.Errorf("splitChallenges() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// The lookahead after a comma must not rescan the rest of the header, or a
+// long header from a server takes quadratic time that no context deadline can
+// interrupt. The input is kept small: the test only needs the old code to take
+// several times longer than the deadline, and it must not load the machine,
+// because other packages' tests run in parallel with it.
+func TestParseWWWAuthenticateLinearTime(t *testing.T) {
+	header := "Bearer " + strings.Repeat(",", 100_000)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseWWWAuthenticate([]string{header})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ParseWWWAuthenticate did not finish within 2s on a %d byte header", len(header))
 	}
 }
 
@@ -143,6 +192,27 @@ func TestParseWWWAuthenticateEmptyListElements(t *testing.T) {
 			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
 		}},
 		{Scheme: "basic", Params: map[string]string{"realm": "other"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
+	}
+}
+
+// A challenge may carry a token68 instead of auth-params (RFC 9110,
+// section 11.6.1). It must not stop the Bearer challenge next to it from
+// being parsed.
+func TestParseWWWAuthenticateToken68(t *testing.T) {
+	got, err := ParseWWWAuthenticate([]string{
+		`Negotiate oYH1MIHyoAMKAQ, Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Challenge{
+		{Scheme: "negotiate"},
+		{Scheme: "bearer", Params: map[string]string{
+			"resource_metadata": "https://example.com/.well-known/oauth-protected-resource",
+		}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ParseWWWAuthenticate() = %+v, want %+v", got, want)
@@ -251,8 +321,18 @@ func TestParseSingleChallenge(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "malformed param - no value",
-			input:   "Bearer realm=",
+			name:  "token68",
+			input: "Negotiate oYH1MIHyoAMKAQ",
+			want:  Challenge{Scheme: "negotiate"},
+		},
+		{
+			name:  "token68 with padding",
+			input: "Basic dGVzdA==",
+			want:  Challenge{Scheme: "basic"},
+		},
+		{
+			name:    "malformed token68",
+			input:   "Negotiate abc def",
 			wantErr: true,
 		},
 		{

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 )
 
 // ClientRegistrationMetadata represents the client metadata fields for the DCR POST request (RFC 7591).
@@ -259,14 +260,16 @@ func (e *ClientRegistrationError) Error() string {
 const maxRegistrationResponseBytes = 1 << 20 // 1 MiB
 
 // RegisterClient performs Dynamic Client Registration according to RFC 7591.
+//
+// If c is nil, http.DefaultClient is used. Unless c sets CheckRedirect, the
+// request follows a redirect only within the origin of the request and only if
+// it keeps the method.
 func RegisterClient(ctx context.Context, registrationEndpoint string, clientMeta *ClientRegistrationMetadata, c *http.Client) (*ClientRegistrationResponse, error) {
 	if registrationEndpoint == "" {
 		return nil, fmt.Errorf("registration_endpoint is required")
 	}
 
-	if c == nil {
-		c = http.DefaultClient
-	}
+	c = util.RestrictRedirects(c)
 
 	payload, err := json.Marshal(clientMeta)
 	if err != nil {

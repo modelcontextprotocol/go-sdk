@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/internal/util"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
@@ -75,6 +76,8 @@ type EnterpriseHandlerConfig struct {
 
 	// HTTPClient is an optional HTTP client for customization.
 	// If nil, http.DefaultClient is used.
+	// Unless HTTPClient sets CheckRedirect, token requests follow a redirect
+	// only within the origin of the request and only if it keeps the method.
 	// OPTIONAL.
 	HTTPClient *http.Client
 }
@@ -192,6 +195,13 @@ func (h *EnterpriseHandler) Authorize(ctx context.Context, req *http.Request, re
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
+	// The token is sent on to the MCP Server's authorization server, a different
+	// party than the IdP. Only forward it if the IdP says it is an ID-JAG, so
+	// that any other token the IdP issued, such as an access token, does not
+	// leave it.
+	if issued, _ := idJAGToken.Extra("issued_token_type").(string); issued != oauthex.TokenTypeIDJAG {
+		return fmt.Errorf("token exchange issued a token of type %q, want %q", issued, oauthex.TokenTypeIDJAG)
+	}
 
 	// Step 4: Discover MCP Server token endpoint
 	mcpMeta, err := auth.GetAuthServerMetadata(ctx, h.config.MCPAuthServerURL, httpClient)
@@ -243,10 +253,7 @@ func exchangeJWTBearer(
 		cfg.ClientSecret = clientCreds.ClientSecretAuth.ClientSecret
 	}
 
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, util.RestrictRedirects(httpClient))
 
 	token, err := cfg.Exchange(
 		ctxWithClient,

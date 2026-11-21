@@ -33,6 +33,26 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
+// demotesessionlifecyclelog, when set to "1" via MCPGODEBUG, demotes routine
+// session bookkeeping records ("server connecting", "server session
+// connected", "server session disconnected", "session initialized", "client
+// log level set") from info to debug. On stateless streamable HTTP a session
+// is minted per request, so these fire constantly and drown out the server's
+// own logs (#1204). It is gated behind MCPGODEBUG because demoting them
+// changes log output that existing users may rely on.
+var demotesessionlifecyclelog = mcpgodebug.Value("demotesessionlifecyclelog")
+
+// logSessionLifecycle logs a routine session bookkeeping record at debug when
+// MCPGODEBUG=demotesessionlifecyclelog=1, and at info (the historical level)
+// otherwise.
+func logSessionLifecycle(l *slog.Logger, msg string, args ...any) {
+	if demotesessionlifecyclelog == "1" {
+		l.Debug(msg, args...)
+		return
+	}
+	l.Info(msg, args...)
+}
+
 // DefaultPageSize is the default for [ServerOptions.PageSize].
 const DefaultPageSize = 1000
 
@@ -57,11 +77,11 @@ type Server struct {
 	sessions                    []*ServerSession
 	sendingMethodHandler_       MethodHandler
 	receivingMethodHandler_     MethodHandler
-	toolChangeSubscriptions     map[*ServerSession]jsonrpc.ID            // session -> requestID for "tools/changed"
-	promptChangeSubscriptions   map[*ServerSession]jsonrpc.ID            // session -> requestID for "prompts/changed"
-	resourceChangeSubscriptions map[*ServerSession]jsonrpc.ID            // session -> requestID for "resources/changed"
-	resourceSubscriptions       map[string]map[*ServerSession]jsonrpc.ID // uri -> session -> requestID
-	pendingNotifications        map[string]*time.Timer                   // notification name -> timer for pending notification send
+	toolChangeSubscriptions     map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "tools/changed"
+	promptChangeSubscriptions   map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "prompts/changed"
+	resourceChangeSubscriptions map[*ServerSession][]jsonrpc.ID            // session -> requestID of each listen for "resources/changed"
+	resourceSubscriptions       map[string]map[*ServerSession][]jsonrpc.ID // uri -> session -> requestID of each subscription
+	pendingNotifications        map[string]*time.Timer                     // notification name -> timer for pending notification send
 	// receiveMethods is the merged map of methods this server may receive
 	// from a client: it always contains the standard server methods (from
 	// serverMethodInfos) plus any custom methods registered via
@@ -263,10 +283,10 @@ func NewServer(impl *Implementation, options *ServerOptions) *Server {
 		resourceTemplates:           newFeatureSet(func(t *serverResourceTemplate) string { return t.resourceTemplate.URITemplate }),
 		sendingMethodHandler_:       defaultSendingMethodHandler,
 		receivingMethodHandler_:     defaultReceivingMethodHandler[*ServerSession],
-		toolChangeSubscriptions:     make(map[*ServerSession]jsonrpc.ID),
-		promptChangeSubscriptions:   make(map[*ServerSession]jsonrpc.ID),
-		resourceChangeSubscriptions: make(map[*ServerSession]jsonrpc.ID),
-		resourceSubscriptions:       make(map[string]map[*ServerSession]jsonrpc.ID),
+		toolChangeSubscriptions:     make(map[*ServerSession][]jsonrpc.ID),
+		promptChangeSubscriptions:   make(map[*ServerSession][]jsonrpc.ID),
+		resourceChangeSubscriptions: make(map[*ServerSession][]jsonrpc.ID),
+		resourceSubscriptions:       make(map[string]map[*ServerSession][]jsonrpc.ID),
 		pendingNotifications:        make(map[string]*time.Timer),
 		receiveMethods:              receiveMethods,
 	}
@@ -709,22 +729,12 @@ func (s *Server) capabilities() *ServerCapabilities {
 	return caps
 }
 
-// disablecompleteparamsvalidation is a compatibility parameter that restores
-// the previous behavior of [Server.complete], where required fields on
-// [CompleteParams] were not validated before dispatching to the completion
-// handler. See the documentation for the mcpgodebug package for instructions
-// how to enable it.
-// The option will be removed in a future version of the SDK.
-var disablecompleteparamsvalidation = mcpgodebug.Value("disablecompleteparamsvalidation")
-
 func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
-	if disablecompleteparamsvalidation != "1" {
-		if req.Params.Ref == nil {
-			return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
-		}
-		if req.Params.Argument.Name == "" {
-			return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
-		}
+	if req.Params.Ref == nil {
+		return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
+	}
+	if req.Params.Argument.Name == "" {
+		return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
 	}
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
@@ -793,18 +803,18 @@ func (s *Server) notifySessions(n string) {
 	// shared session channel without opt-in; collect them while we hold the lock.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		}
 	}
-	var subscribers map[*ServerSession]jsonrpc.ID
+	var subscribers map[*ServerSession][]jsonrpc.ID
 	switch n {
 	case notificationToolListChanged:
-		subscribers = maps.Clone(s.toolChangeSubscriptions)
+		subscribers = cloneListens(s.toolChangeSubscriptions)
 	case notificationPromptListChanged:
-		subscribers = maps.Clone(s.promptChangeSubscriptions)
+		subscribers = cloneListens(s.promptChangeSubscriptions)
 	case notificationResourceListChanged:
-		subscribers = maps.Clone(s.resourceChangeSubscriptions)
+		subscribers = cloneListens(s.resourceChangeSubscriptions)
 	}
 	s.mu.Unlock() // Don't hold the lock during notification: it causes deadlock.
 
@@ -818,29 +828,31 @@ func (s *Server) notifySessions(n string) {
 }
 
 // notifySubscribedSessions delivers a list-changed or resource-updated
-// notification to each session in subscribers, stamping the session's
-// listen-request ID into the params' _meta so the receiving client can demultiplex
+// notification on each listen in subscribers, stamping the listen's
+// request ID into the params' _meta so the receiving client can demultiplex
 // notifications belonging to different concurrent listens.
-func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession]jsonrpc.ID, method string, makeParams func() Params) {
+func (s *Server) notifySubscribedSessions(subscribers map[*ServerSession][]jsonrpc.ID, method string, makeParams func() Params) {
 	if len(subscribers) == 0 {
 		return
 	}
-	// One goroutine per session, each with its own deadline, so a session
+	// One goroutine per notification, each with its own deadline, so a session
 	// whose write stalls neither delays nor fails the others (as in the
 	// notifySessions function in shared.go).
 	var wg sync.WaitGroup
-	for sess, reqID := range subscribers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
-			defer cancel()
-			params := makeParams()
-			injectMetaSubscriptionID(params, reqID)
-			if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
-				s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
-			}
-		}()
+	for sess, reqIDs := range subscribers {
+		for _, reqID := range reqIDs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+				defer cancel()
+				params := makeParams()
+				injectMetaSubscriptionID(params, reqID)
+				if err := handleNotify(ctx, method, newRequest(sess, params)); err != nil {
+					s.opts.Logger.Warn(fmt.Sprintf("calling %s: %v", method, err))
+				}
+			}()
+		}
 	}
 	wg.Wait()
 }
@@ -1237,30 +1249,41 @@ func (s *Server) ResourceUpdated(ctx context.Context, params *ResourceUpdatedNot
 	subscribedSessions := s.resourceSubscriptions[params.URI]
 	// Only add legacy sessions for the notification, new ones use the new notification mechanism.
 	var legacySessions []*ServerSession
-	newSessions := make(map[*ServerSession]jsonrpc.ID)
-	for sess, reqID := range subscribedSessions {
-		if sess.InitializeParams().isNil() || sess.InitializeParams().ProtocolVersion < protocolVersion20260728 {
+	newSessions := make(map[*ServerSession][]jsonrpc.ID)
+	listens := 0
+	for sess, reqIDs := range subscribedSessions {
+		if sess.negotiatedLegacyProtocol() {
 			legacySessions = append(legacySessions, sess)
 		} else {
-			newSessions[sess] = reqID
+			newSessions[sess] = slices.Clone(reqIDs)
+			listens += len(reqIDs)
 		}
 	}
 	s.mu.Unlock()
 
 	notifySessions(legacySessions, notificationResourceUpdated, params, s.opts.Logger)
 
-	// Notify modern sessions, injecting the per-session subscription ID into the notification's metadata.
+	// Notify modern sessions on each of their listens for the URI, injecting
+	// the listen's subscription ID into the notification's metadata.
 	s.notifySubscribedSessions(newSessions, notificationResourceUpdated, func() Params {
 		p := *params
 		return &p
 	})
 	s.opts.Logger.Info("resource updated notification sent",
 		"uri", params.URI,
-		"subscriber_count", len(legacySessions)+len(newSessions))
+		"subscriber_count", len(legacySessions)+listens)
 	return nil
 }
 
 func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyResult, error) {
+	return s.startSubscription(ctx, req, false)
+}
+
+// startSubscription subscribes the session to req.Params.URI under the request
+// ID in ctx. A listen adds its ID to those of the session's other listens on
+// the URI, since each listen is a subscription of its own; resources/subscribe
+// replaces whatever the session held, as before.
+func (s *Server) startSubscription(ctx context.Context, req *SubscribeRequest, listen bool) (*emptyResult, error) {
 	requestID, ok := ctx.Value(idContextKey{}).(jsonrpc.ID)
 	if !ok || !requestID.IsValid() {
 		return nil, fmt.Errorf("%w: subscribe requires a request ID", jsonrpc2.ErrInvalidRequest)
@@ -1275,9 +1298,13 @@ func (s *Server) subscribe(ctx context.Context, req *SubscribeRequest) (*emptyRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.resourceSubscriptions[req.Params.URI] == nil {
-		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession]jsonrpc.ID)
+		s.resourceSubscriptions[req.Params.URI] = make(map[*ServerSession][]jsonrpc.ID)
 	}
-	s.resourceSubscriptions[req.Params.URI][req.Session] = requestID
+	if listen {
+		addListen(s.resourceSubscriptions[req.Params.URI], req.Session, requestID)
+	} else {
+		s.resourceSubscriptions[req.Params.URI][req.Session] = []jsonrpc.ID{requestID}
+	}
 	s.opts.Logger.Info("resource subscribed", "uri", req.Params.URI, "session_id", req.Session.ID(), "request_id", requestID)
 
 	return &emptyResult{}, nil
@@ -1288,9 +1315,10 @@ func (s *Server) unsubscribe(ctx context.Context, req *UnsubscribeRequest) (*emp
 }
 
 // endSubscription ends the session's subscription to req.Params.URI. A zero
-// listenID removes the entry whichever request made it; a valid one removes it
-// only while the entry still records that listen, since a later listen on the
-// session may have replaced it. The UnsubscribeHandler is called either way.
+// listenID removes the session's entry whichever requests made it; a valid one
+// removes only that listen's ID, and the entry with the last of them, since
+// other listens on the session may hold the URI too. The UnsubscribeHandler is
+// called either way.
 func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, listenID jsonrpc.ID) (*emptyResult, error) {
 	if s.opts.UnsubscribeHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
@@ -1303,7 +1331,9 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if subscribedSessions, ok := s.resourceSubscriptions[req.Params.URI]; ok {
-		if !listenID.IsValid() || subscribedSessions[req.Session] == listenID {
+		if listenID.IsValid() {
+			removeListen(subscribedSessions, req.Session, listenID)
+		} else {
 			delete(subscribedSessions, req.Session)
 		}
 		if len(subscribedSessions) == 0 {
@@ -1313,6 +1343,34 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 	s.opts.Logger.Info("resource unsubscribed", "uri", req.Params.URI, "session_id", req.Session.ID())
 
 	return &emptyResult{}, nil
+}
+
+// addListen records a listen's request ID in the session's entry of a
+// subscription registry, once.
+func addListen(registry map[*ServerSession][]jsonrpc.ID, ss *ServerSession, id jsonrpc.ID) {
+	if !slices.Contains(registry[ss], id) {
+		registry[ss] = append(registry[ss], id)
+	}
+}
+
+// removeListen removes a listen's request ID from the session's entry of a
+// subscription registry, and the entry with its last ID.
+func removeListen(registry map[*ServerSession][]jsonrpc.ID, ss *ServerSession, id jsonrpc.ID) {
+	if ids := slices.DeleteFunc(registry[ss], func(x jsonrpc.ID) bool { return x == id }); len(ids) > 0 {
+		registry[ss] = ids
+	} else {
+		delete(registry, ss)
+	}
+}
+
+// cloneListens copies a subscription registry and its ID slices, which
+// removeListen edits in place, so the copy can be read without s.mu.
+func cloneListens(registry map[*ServerSession][]jsonrpc.ID) map[*ServerSession][]jsonrpc.ID {
+	listens := make(map[*ServerSession][]jsonrpc.ID, len(registry))
+	for ss, ids := range registry {
+		listens[ss] = slices.Clone(ids)
+	}
+	return listens
 }
 
 func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsListenRequest) (*SubscriptionsListenResult, error) {
@@ -1328,13 +1386,13 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 	allowed := s.allowedSubscriptions(req.Params.Notifications)
 	s.mu.Lock()
 	if allowed.ToolsListChanged {
-		s.toolChangeSubscriptions[req.Session] = requestID
+		addListen(s.toolChangeSubscriptions, req.Session, requestID)
 	}
 	if allowed.PromptsListChanged {
-		s.promptChangeSubscriptions[req.Session] = requestID
+		addListen(s.promptChangeSubscriptions, req.Session, requestID)
 	}
 	if allowed.ResourcesListChanged {
-		s.resourceChangeSubscriptions[req.Session] = requestID
+		addListen(s.resourceChangeSubscriptions, req.Session, requestID)
 	}
 	s.mu.Unlock()
 	defer func() {
@@ -1342,26 +1400,26 @@ func (s *Server) subscriptionsListen(ctx context.Context, req *SubscriptionsList
 		// several listens at once, and deleting by session alone retires a
 		// registration belonging to a listen that is still open.
 		s.mu.Lock()
-		if allowed.ToolsListChanged && s.toolChangeSubscriptions[req.Session] == requestID {
-			delete(s.toolChangeSubscriptions, req.Session)
+		if allowed.ToolsListChanged {
+			removeListen(s.toolChangeSubscriptions, req.Session, requestID)
 		}
-		if allowed.PromptsListChanged && s.promptChangeSubscriptions[req.Session] == requestID {
-			delete(s.promptChangeSubscriptions, req.Session)
+		if allowed.PromptsListChanged {
+			removeListen(s.promptChangeSubscriptions, req.Session, requestID)
 		}
-		if allowed.ResourcesListChanged && s.resourceChangeSubscriptions[req.Session] == requestID {
-			delete(s.resourceChangeSubscriptions, req.Session)
+		if allowed.ResourcesListChanged {
+			removeListen(s.resourceChangeSubscriptions, req.Session, requestID)
 		}
 		s.mu.Unlock()
 	}()
 
 	for _, uri := range allowed.ResourceSubscriptions {
-		_, err := s.subscribe(ctx, &SubscribeRequest{
+		_, err := s.startSubscription(ctx, &SubscribeRequest{
 			Session: req.Session,
 			Params: &SubscribeParams{
 				URI:  uri,
 				Meta: req.Params.GetMeta(),
 			},
-		})
+		}, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1462,7 +1520,7 @@ func (s *Server) bind(mcpConn Connection, conn *jsonrpc2.Connection, state *Serv
 	s.mu.Lock()
 	s.sessions = append(s.sessions, ss)
 	s.mu.Unlock()
-	s.opts.Logger.Info("server session connected", "session_id", ss.ID())
+	logSessionLifecycle(s.opts.Logger, "server session connected", "session_id", ss.ID())
 	return ss
 }
 
@@ -1482,7 +1540,7 @@ func (s *Server) disconnect(cc *ServerSession) {
 	delete(s.promptChangeSubscriptions, cc)
 	delete(s.resourceChangeSubscriptions, cc)
 
-	s.opts.Logger.Info("server session disconnected", "session_id", cc.ID())
+	logSessionLifecycle(s.opts.Logger, "server session disconnected", "session_id", cc.ID())
 }
 
 // ServerSessionOptions configures the server session.
@@ -1508,7 +1566,7 @@ func (s *Server) Connect(ctx context.Context, t Transport, opts *ServerSessionOp
 		onClose = opts.onClose
 	}
 
-	s.opts.Logger.Info("server connecting")
+	logSessionLifecycle(s.opts.Logger, "server connecting")
 	ss, err := connect(ctx, t, s, state, onClose, s.opts.Logger)
 	if err != nil {
 		s.opts.Logger.Error("server connect error", "error", err)
@@ -1566,7 +1624,7 @@ func (ss *ServerSession) initialized(ctx context.Context, params *InitializedPar
 	if h := ss.server.opts.InitializedHandler; h != nil {
 		h(ctx, serverRequestFor(ss, params))
 	}
-	ss.server.opts.Logger.Info("session initialized")
+	logSessionLifecycle(ss.server.opts.Logger, "session initialized")
 	return nil, nil
 }
 
@@ -1590,6 +1648,128 @@ func (ss *ServerSession) callProgressNotificationHandler(ctx context.Context, p 
 // that was initiated by the client.
 func (ss *ServerSession) NotifyProgress(ctx context.Context, params *ProgressNotificationParams) error {
 	return handleNotify(ctx, notificationProgress, newServerRequest(ss, orZero[Params](params)))
+}
+
+// NotifyToolListChanged sends a "notifications/tools/list_changed"
+// notification to the client of this session.
+//
+// The server already sends this notification to every session when tools are
+// added or removed. Use this method to notify a single session, for example
+// when only the tools visible to that session have changed.
+//
+// The notification is sent once on each of the session's open
+// subscriptions/listen streams that asked for tool list changes, and not at
+// all if there are none. Only clients on protocol version 2026-07-28 or later
+// open such streams, and only for lists the server advertises, so nothing is
+// sent to earlier sessions or if [ToolCapabilities.ListChanged] is false.
+//
+// params may be nil.
+func (ss *ServerSession) NotifyToolListChanged(ctx context.Context, params *ToolListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationToolListChanged, func() Params {
+		if params == nil {
+			return &ToolListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// NotifyPromptListChanged sends a "notifications/prompts/list_changed"
+// notification to the client of this session. It is like
+// [ServerSession.NotifyToolListChanged], but for prompts, and is governed by
+// [PromptCapabilities.ListChanged].
+func (ss *ServerSession) NotifyPromptListChanged(ctx context.Context, params *PromptListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationPromptListChanged, func() Params {
+		if params == nil {
+			return &PromptListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// NotifyResourceListChanged sends a "notifications/resources/list_changed"
+// notification to the client of this session. It is like
+// [ServerSession.NotifyToolListChanged], but for resources, and is governed by
+// [ResourceCapabilities.ListChanged].
+func (ss *ServerSession) NotifyResourceListChanged(ctx context.Context, params *ResourceListChangedParams) error {
+	return ss.notifyListChanged(ctx, notificationResourceListChanged, func() Params {
+		if params == nil {
+			return &ResourceListChangedParams{}
+		}
+		p := *params
+		return &p
+	})
+}
+
+// NotifyResourceUpdated sends a "notifications/resources/updated"
+// notification to the client of this session, about the resource identified
+// by params.URI. Unlike [Server.ResourceUpdated], other sessions subscribed
+// to the URI are not notified.
+//
+// The notification is sent once on each of the session's open
+// subscriptions/listen streams that name the URI, and not at all if there
+// are none. Only clients on protocol version 2026-07-28 or later open such
+// streams, so nothing is sent to earlier sessions.
+func (ss *ServerSession) NotifyResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
+	if params == nil {
+		return fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+	if params.URI == "" {
+		return fmt.Errorf("%w: URI cannot be empty", jsonrpc2.ErrInvalidParams)
+	}
+	if ss.negotiatedLegacyProtocol() {
+		return nil
+	}
+	server := ss.server
+
+	server.mu.Lock()
+	ids := slices.Clone(server.resourceSubscriptions[params.URI][ss])
+	server.mu.Unlock()
+
+	makeParams := func() Params {
+		p := *params
+		return &p
+	}
+	return ss.notifyListens(ctx, notificationResourceUpdated, ids, makeParams)
+}
+
+// notifyListChanged implements the Notify*ListChanged methods for the given
+// list-changed notification method.
+func (ss *ServerSession) notifyListChanged(ctx context.Context, method string, makeParams func() Params) error {
+	server := ss.server
+
+	server.mu.Lock()
+	var ids []jsonrpc.ID
+	switch method {
+	case notificationToolListChanged:
+		ids = slices.Clone(server.toolChangeSubscriptions[ss])
+	case notificationPromptListChanged:
+		ids = slices.Clone(server.promptChangeSubscriptions[ss])
+	case notificationResourceListChanged:
+		ids = slices.Clone(server.resourceChangeSubscriptions[ss])
+	}
+	server.mu.Unlock()
+
+	return ss.notifyListens(ctx, method, ids, makeParams)
+}
+
+// notifyListens sends method once on each of the given subscriptions/listen
+// requests of this session, stamping each listen's ID into _meta.
+// makeParams must return a new value on each call.
+func (ss *ServerSession) notifyListens(ctx context.Context, method string, ids []jsonrpc.ID, makeParams func() Params) error {
+	var errs []error
+	for _, id := range ids {
+		params := makeParams()
+		injectMetaSubscriptionID(params, id)
+		// Associate the notification with the listen request, so that it is
+		// sent on that listen's stream.
+		ctx := context.WithValue(ctx, idContextKey{}, id)
+		if err := handleNotify(ctx, method, newServerRequest(ss, params)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // notifySubscriptionAcked sends a "notifications/subscriptions/acknowledged"
@@ -1643,7 +1823,7 @@ func (ss *ServerSession) updateState(mut func(*ServerSessionState)) {
 	copy := ss.state
 	ss.mu.Unlock()
 	if c, ok := ss.mcpConn.(serverConnection); ok {
-		c.sessionUpdated(copy)
+		c.serverSessionUpdated(copy)
 	}
 }
 
@@ -1688,18 +1868,27 @@ func (ss *ServerSession) ID() string {
 // in an [InputRequiredResult] returned from a handler for one of the multi
 // round-trip methods (`tools/call`, `prompts/get`, `resources/read`).
 func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) error {
-	if iparams := ss.InitializeParams(); iparams != nil &&
-		iparams.ProtocolVersion >= protocolVersion20260728 {
+	if version := ss.protocolVersion(); version >= protocolVersion20260728 {
 		return fmt.Errorf(
 			"%q cannot be sent while serving a request on protocol version %s: "+
 				"return an InputRequests map instead (multi round-trip requests, SEP-2322)",
-			method, iparams.ProtocolVersion)
+			method, version)
 	}
 	return nil
 }
 
 // Ping pings the client.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
+	if ss.protocolVersion() >= protocolVersion20260728 {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
 	return err
 }
@@ -2189,6 +2378,28 @@ func (ss *ServerSession) InitializeParams() *InitializeParams {
 	return ss.state.InitializeParams
 }
 
+// protocolVersion returns the version the session speaks: the negotiated one,
+// or the declared one when the state recorded none (a caller-supplied State, or
+// state saved by an older release). It returns "" when neither is known.
+func (ss *ServerSession) protocolVersion() string {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if v := ss.state.NegotiatedProtocolVersion; v != "" {
+		return v
+	}
+	if ss.state.InitializeParams != nil {
+		return ss.state.InitializeParams.ProtocolVersion
+	}
+	return ""
+}
+
+// negotiatedLegacyProtocol reports whether the session speaks a version older
+// than protocolVersion20260728, a session with no recorded version included.
+func (ss *ServerSession) negotiatedLegacyProtocol() bool {
+	version := ss.protocolVersion()
+	return version < protocolVersion20260728
+}
+
 func (ss *ServerSession) initialize(ctx context.Context, params *InitializeParams) (*InitializeResult, error) {
 	if params == nil {
 		return nil, fmt.Errorf("%w: \"params\" must be be provided", jsonrpc2.ErrInvalidParams)
@@ -2238,7 +2449,7 @@ func (ss *ServerSession) setLevel(_ context.Context, params *SetLoggingLevelPara
 	ss.updateState(func(state *ServerSessionState) {
 		state.LogLevel = params.Level
 	})
-	ss.server.opts.Logger.Info("client log level set", "level", params.Level)
+	logSessionLifecycle(ss.server.opts.Logger, "client log level set", "level", params.Level)
 	return &emptyResult{}, nil
 }
 

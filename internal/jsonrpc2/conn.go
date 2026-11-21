@@ -14,24 +14,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/internal/json"
-	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
 )
-
-// nomethodnotfoundcodeinerror is a compatibility parameter that restores the
-// pre-fix behavior of [processResult], where wrapped [ErrNotHandled] or
-// [ErrMethodNotFound] errors returned by request handlers were not
-// recognized as "method not found" signals. The original switch statement
-// compared sentinel errors with ==, which never matched errors returned via
-// fmt.Errorf("%w: ...", ErrNotHandled, ...) — including the ones produced
-// by checkRequest. As a result the wire error response carried code 0
-// instead of code -32601. The fix uses errors.Is to recognize wrapped
-// sentinels and append the method name to the message.
-//
-// To restore the previous behavior, set MCPGODEBUG=nomethodnotfoundcodeinerror=1.
-// This option will be removed in a future SDK version.
-// See the documentation for the mcpgodebug package for instructions on how
-// to use it.
-var nomethodnotfoundcodeinerror = mcpgodebug.Value("nomethodnotfoundcodeinerror")
 
 // Connection manages the jsonrpc2 protocol, connecting responses back to their
 // calls. Connection is bidirectional; it does not have a designated server or
@@ -54,8 +37,9 @@ type Connection struct {
 	writer  Writer
 	handler Handler
 
-	onInternalError func(error)
-	onDone          func()
+	onInternalError      func(error)
+	onResponseWriteError func(*Request, error)
+	onDone               func()
 }
 
 // inFlightState records the state of the incoming and outgoing calls on a
@@ -219,6 +203,11 @@ type ConnectionConfig struct {
 	OnDone          func()                    // optional
 	OnInternalError func(error)               // optional
 
+	// OnResponseWriteError, if set, is called when the response to an incoming
+	// call could not be written, for example because the peer went away before
+	// the handler finished. The response is lost: the peer never receives it.
+	OnResponseWriteError func(*Request, error) // optional
+
 	// PropagateCancellation controls whether cancellation of the context
 	// passed to [NewConnection] is observable by request handlers.
 	//
@@ -244,11 +233,12 @@ func NewConnection(ctx context.Context, cfg ConnectionConfig) *Connection {
 	}
 
 	c := &Connection{
-		state:           inFlightState{closer: cfg.Closer},
-		done:            make(chan struct{}),
-		writer:          cfg.Writer,
-		onDone:          cfg.OnDone,
-		onInternalError: cfg.OnInternalError,
+		state:                inFlightState{closer: cfg.Closer},
+		done:                 make(chan struct{}),
+		writer:               cfg.Writer,
+		onDone:               cfg.OnDone,
+		onInternalError:      cfg.OnInternalError,
+		onResponseWriteError: cfg.OnResponseWriteError,
 	}
 	c.handler = cfg.Bind(c)
 	c.start(ctx, cfg.Reader, cfg.Preempter)
@@ -290,7 +280,7 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 		// cannot increase once shutdown begins, and allowing outgoing notifications
 		// may permit notifications that will cancel in-flight calls.
 		if len(s.outgoingCalls) == 0 && len(s.incomingByID) == 0 {
-			err = s.shuttingDown(ErrClientClosing)
+			err = s.shuttingDown(ErrConnClosing)
 			if err != nil {
 				return
 			}
@@ -334,7 +324,7 @@ func (c *Connection) Call(ctx context.Context, method string, params any) *Async
 	}
 
 	c.updateInFlight(func(s *inFlightState) {
-		err = s.shuttingDown(ErrClientClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -539,7 +529,7 @@ func (c *Connection) wait(fromWait bool) error {
 //
 // After the start of a Close, notification requests (that lack IDs and do not
 // receive responses) will continue to be passed to the Preempter, but calls
-// with IDs will receive immediate responses with ErrServerClosing, and no new
+// with IDs will receive immediate responses with ErrConnClosing, and no new
 // requests (not even notifications!) will be enqueued to the Handler.
 func (c *Connection) Close() error {
 	// Stop handling new requests, and interrupt the reader (by closing the
@@ -585,16 +575,15 @@ func (c *Connection) readIncoming(ctx context.Context, reader Reader, preempter 
 		// Retire any outgoing requests that were still in flight: with the Reader no
 		// longer being processed, they necessarily cannot receive a response.
 		for id, ac := range s.outgoingCalls {
-			ac.retire(&Response{ID: id, Error: err})
+			ac.retire(&Response{ID: id, Error: fmt.Errorf("%w: %w", ErrConnClosing, err)})
 		}
 		s.outgoingCalls = nil
 
 		// Cancel any incoming requests still in flight: with the reader gone we
 		// cannot receive cancellation notifications, and likely cannot write a
 		// response either, so parked handlers have nothing useful left to do.
-		// The read error (typically io.EOF from the peer disconnecting) is the
-		// cause, rather than a directional ErrServerClosing/ErrClientClosing
-		// sentinel: at this layer the connection has no designated end.
+		// The cause is the read error, typically io.EOF from the peer
+		// disconnecting.
 		for _, r := range s.incomingByID {
 			r.cancel(err)
 		}
@@ -635,7 +624,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 			// theoretically be handled by the preempter. The preempter could return
 			// ErrAsyncResponse, which would increase the amount of work in flight
 			// when we're trying to ensure that it strictly decreases.
-			err = s.shuttingDown(ErrServerClosing)
+			err = s.shuttingDown(ErrConnClosing)
 		}
 	})
 	if err != nil {
@@ -657,7 +646,7 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 		// handler — not even notifications. That ensures that if the handler
 		// continues to make progress, it will eventually become idle and
 		// close the connection.
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 		if err != nil {
 			return
 		}
@@ -732,7 +721,7 @@ func (c *Connection) handleAsync() {
 
 // processResult processes the result of a request and, if appropriate, sends a response.
 func (c *Connection) processResult(from any, req *incomingRequest, result any, err error) error {
-	if nomethodnotfoundcodeinerror != "1" && (errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound)) {
+	if errors.Is(err, ErrNotHandled) || errors.Is(err, ErrMethodNotFound) {
 		err = fmt.Errorf("%w: %q", ErrMethodNotFound, req.Method)
 	}
 
@@ -759,6 +748,9 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 			delete(s.incomingByID, req.ID)
 		})
 		writeErr := c.write(notDone{req.ctx}, response)
+		if writeErr != nil && c.onResponseWriteError != nil {
+			c.onResponseWriteError(req.Request, writeErr)
+		}
 		if err == nil {
 			err = writeErr
 		}
@@ -797,7 +789,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 		if req, ok := msg.(*Request); ok && !req.IsCall() && s.outgoingNotifications > 0 {
 			return
 		}
-		err = s.shuttingDown(ErrServerClosing)
+		err = s.shuttingDown(ErrConnClosing)
 	})
 	if err == nil {
 		err = c.writer.Write(ctx, msg)
@@ -818,7 +810,7 @@ func (c *Connection) write(ctx context.Context, msg Message) error {
 			if s.writeErr == nil {
 				s.writeErr = err
 				for _, r := range s.incomingByID {
-					r.cancel(fmt.Errorf("%w: %v", ErrServerClosing, err))
+					r.cancel(fmt.Errorf("%w: %v", ErrConnClosing, err))
 				}
 			}
 		})

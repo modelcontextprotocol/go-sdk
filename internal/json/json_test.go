@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -256,4 +257,138 @@ func FuzzUnmarshalFieldIsolation(f *testing.F) {
 			t.Errorf("Field 'safe' improperly modified by key %q (JSON: %s). Got %q, want %q", key, encodedKey, got.Safe, "value")
 		}
 	})
+}
+
+// decodeStream is how Unmarshal decoded before it parsed data in place:
+// through the package's Decoder, which allocates a read buffer of at least
+// 32 KiB for every call. Comparing with it also keeps [parseFlags] in step
+// with [newDecoder].
+func decodeStream(data []byte, v any, useNumber bool) error {
+	if err := checkMaxDepth(data, defaultMaxDepth); err != nil {
+		return err
+	}
+	return newDecoder(bytes.NewReader(data), useNumber).Decode(v)
+}
+
+type unmarshalTarget struct {
+	ID     any               `json:"id"`
+	Method string            `json:"method"`
+	Params map[string]any    `json:"params"`
+	Raw    json.RawMessage   `json:"raw"`
+	Nested *unmarshalTarget  `json:"nested"`
+	List   []int             `json:"list"`
+	Map    map[string]string `json:"map"`
+}
+
+// sameAsStream checks that Unmarshal and UnmarshalUseNumber decode data
+// exactly as the streaming Decoder did: the same value, and the same error,
+// by type and by text.
+func sameAsStream(t *testing.T, data []byte) {
+	t.Helper()
+	for _, useNumber := range []bool{false, true} {
+		for _, newTarget := range []func() any{
+			func() any { return new(any) },
+			func() any { return new(unmarshalTarget) },
+			func() any { return new(map[string]any) },
+			func() any { return new([]any) },
+			func() any { return new(string) },
+		} {
+			want, got := newTarget(), newTarget()
+			wantErr := decodeStream(data, want, useNumber)
+			var gotErr error
+			if useNumber {
+				gotErr = UnmarshalUseNumber(data, got)
+			} else {
+				gotErr = Unmarshal(data, got)
+			}
+			if fmt.Sprintf("%T %v", gotErr, gotErr) != fmt.Sprintf("%T %v", wantErr, wantErr) {
+				t.Fatalf("%q into %T (useNumber %v): error %T %v, want %T %v", data, got, useNumber, gotErr, gotErr, wantErr, wantErr)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%q into %T (useNumber %v): got %#v, want %#v", data, got, useNumber, got, want)
+			}
+		}
+	}
+}
+
+var unmarshalCases = []string{
+	``, ` `, "\n\t ", `{}`, `[]`, `null`, `true`, `1`, `-0.5e3`, `"s"`,
+	`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get","arguments":{"a":[1,2,{"b":null}]}}}`,
+	`  {"id":"x"}  `, `{"id":1} {"id":2}`, `{"id":1}garbage`, `{"id":1}]`, `[1,2]x`,
+	`{"id":`, `{"id":1`, `[1,2`, `"unterminated`, `{"id":1,}`, `{"id" 1}`, `{,}`, `]`, `}`, `x`, `nul`, `tru`, `1.`,
+	`{"list":[1,"two"]}`, `{"method":1}`, `{"nested":{"nested":{"method":[]}}}`, `{"raw":{"keep":"as is"}}`,
+	`{"Method":"case"}`, `{"METHOD":"case"}`, `{"map":{"a":"b","a":"c"}}`, `{"id":12345678901234567890}`,
+	`{"id":1.5}`, `{"params":{"n":1e400}}`, "{\"method\":\"nul\x00l\"}", `{"method":"é😀"}`,
+	`{"method":"\ud800"}`, "\xff", `{"method":"` + "\xff" + `"}`, `[[[[[]]]]]`, "\ufeff{}",
+}
+
+func TestUnmarshalSameAsStream(t *testing.T) {
+	for _, c := range unmarshalCases {
+		sameAsStream(t, []byte(c))
+	}
+}
+
+func FuzzUnmarshalSameAsStream(f *testing.F) {
+	for _, c := range unmarshalCases {
+		f.Add([]byte(c))
+	}
+	f.Fuzz(sameAsStream)
+}
+
+// UnmarshalUseNumber matches field names case-sensitively, like Unmarshal:
+// jsonrpc2.DecodeMessage decodes every message envelope with it, and a
+// case-insensitive match would let "Method" override "method".
+func TestUnmarshalUseNumberCaseSensitivity(t *testing.T) {
+	var got struct {
+		Method string `json:"method"`
+		ID     any    `json:"id"`
+	}
+	data := []byte(`{"method":"tools/list","Method":"tools/call","ID":2,"id":9007199254740993}`)
+	if err := UnmarshalUseNumber(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != "tools/list" || got.ID != json.Number("9007199254740993") {
+		t.Errorf("got method %q, id %#v; want \"tools/list\" and json.Number(\"9007199254740993\")", got.Method, got.ID)
+	}
+}
+
+// Decoded values never share memory with the input: Unmarshal finds the
+// value in place, and the caller may reuse the input buffer afterwards.
+func TestUnmarshalDoesNotAliasInput(t *testing.T) {
+	const input = `{"s":"hello","raw":{"a":"b"},"n":12345,"any":{"k":"v"}}`
+	data := []byte(input)
+	var v struct {
+		S   string          `json:"s"`
+		Raw json.RawMessage `json:"raw"`
+		N   json.Number     `json:"n"`
+		Any any             `json:"any"`
+	}
+	if err := UnmarshalUseNumber(data, &v); err != nil {
+		t.Fatal(err)
+	}
+	var whole json.RawMessage
+	if err := Unmarshal(data, &whole); err != nil {
+		t.Fatal(err)
+	}
+	for i := range data {
+		data[i] = 'X'
+	}
+	if v.S != "hello" || string(v.Raw) != `{"a":"b"}` || v.N != "12345" || string(whole) != input {
+		t.Errorf("decoded values changed with the input: %+v, %s", v, whole)
+	}
+	if m, ok := v.Any.(map[string]any); !ok || m["k"] != "v" {
+		t.Errorf("decoded map changed with the input: %v", v.Any)
+	}
+}
+
+// Unmarshal allocates in proportion to its input, not a stream buffer.
+func BenchmarkUnmarshal(b *testing.B) {
+	data := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_todo","arguments":{"name":"todos/1"}}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v unmarshalTarget
+		if err := Unmarshal(data, &v); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

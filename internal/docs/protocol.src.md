@@ -232,8 +232,13 @@ tool over HTTP, the SDK serializes the matching argument(s) as
 `Mcp-Param-<HeaderName>` request headers (using `=?base64?...?=` encoding for
 non-ASCII values). On the server, the headers are validated against the body
 and either accepted or rejected with `-32020`. Properties so annotated must
-be typed `string`, `integer`, or `boolean`; tools that fail validation at
-registration time are silently dropped from `tools/list`.
+be typed `string`, `integer`, or `boolean`, and must be reached from the
+schema root through `properties` keys alone (not through `items`, `oneOf`,
+`anyOf`, `allOf`, `not`, `if`/`then`/`else`, `$ref`, or similar keywords);
+tools that fail validation at registration time are silently dropped from
+`tools/list`.
+If a `tools/call` is rejected with `-32020`, `ClientSession.CallTool` fetches 
+the tool's current definition with `tools/list` and retries once if the tool's `x-mcp-header` annotations changed.
 
 #### Resumability and Redelivery
 
@@ -636,8 +641,9 @@ or
 > [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
 > The SDK preserves the API for backward compatibility with legacy clients;
 > when a session negotiates `2026-07-28` or later, `Ping` returns
-> `MethodNotFound` (`-32601`) locally, without a round trip, and
-> `KeepAlive` should not be enabled.
+> `MethodNotFound` (`-32601`) locally, without a round trip, an incoming
+> `ping` is rejected with the same error, and `KeepAlive` should not be
+> enabled.
 
 ### Progress
 

@@ -12,9 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -531,6 +535,143 @@ func TestLookupTool(t *testing.T) {
 	}
 }
 
+// cachedKeys returns the keys in mc, sorted.
+func cachedKeys[R CacheableResult](mc *methodCache[R]) []string {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return slices.Sorted(maps.Keys(mc.cachedValues))
+}
+
+// TestClientCachesOnlyCacheableResults verifies that the client keeps only the
+// results it can serve from its caches, except for tools/list results, which
+// lookupTool reads after they expire.
+func TestClientCachesOnlyCacheableResults(t *testing.T) {
+	var stableReads atomic.Int32
+	srv := NewServer(testImpl, nil)
+	srv.AddPrompt(&Prompt{Name: "prompt"}, func(context.Context, *GetPromptRequest) (*GetPromptResult, error) {
+		return &GetPromptResult{}, nil
+	})
+	srv.AddTool(&Tool{Name: "tool", InputSchema: map[string]any{"type": "object"}},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		})
+	srv.AddResourceTemplate(&ResourceTemplate{Name: "volatile", URITemplate: "test://volatile/{id}"},
+		func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+			return &ReadResourceResult{
+				Contents: []*ResourceContents{{URI: req.Params.URI, Text: "volatile"}},
+			}, nil
+		})
+	srv.AddResourceTemplate(&ResourceTemplate{Name: "stable", URITemplate: "test://stable/{id}"},
+		func(_ context.Context, req *ReadResourceRequest) (*ReadResourceResult, error) {
+			stableReads.Add(1)
+			return &ReadResourceResult{
+				Cacheable: Cacheable{TTLMs: 60_000},
+				Contents:  []*ResourceContents{{URI: req.Params.URI, Text: "stable"}},
+			}, nil
+		})
+	cs := mustConnect(t, srv, nil)
+
+	ctx := t.Context()
+	// The list results have no TTL, as the server sets none by default.
+	if _, err := cs.ListPrompts(ctx, nil); err != nil {
+		t.Fatalf("ListPrompts() error = %v", err)
+	}
+	if _, err := cs.ListTools(ctx, nil); err != nil {
+		t.Fatalf("ListTools() error = %v", err)
+	}
+	if _, err := cs.ListResources(ctx, nil); err != nil {
+		t.Fatalf("ListResources() error = %v", err)
+	}
+	if _, err := cs.ListResourceTemplates(ctx, nil); err != nil {
+		t.Fatalf("ListResourceTemplates() error = %v", err)
+	}
+	for range 2 {
+		for _, uri := range []string{"test://volatile/1", "test://volatile/2", "test://stable/1"} {
+			if _, err := cs.ReadResource(ctx, &ReadResourceParams{URI: uri}); err != nil {
+				t.Fatalf("ReadResource(%q) error = %v", uri, err)
+			}
+		}
+	}
+
+	if got := stableReads.Load(); got != 1 {
+		t.Errorf("the cacheable resource was read from the server %d times, want 1", got)
+	}
+	got := map[string][]string{
+		"prompts":            cachedKeys(&cs.promptsCache),
+		"tools":              cachedKeys(&cs.toolsCache),
+		"resources":          cachedKeys(&cs.resourcesCache),
+		"resource templates": cachedKeys(&cs.resourceTemplatesCache),
+		"read resource":      cachedKeys(&cs.readResourceCache),
+	}
+	want := map[string][]string{
+		"prompts":            nil,
+		"tools":              {""},
+		"resources":          nil,
+		"resource templates": nil,
+		"read resource":      {"test://stable/1"},
+	}
+	if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("cached keys mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMethodCachePutCacheable(t *testing.T) {
+	result := func(ttlMs int) *ReadResourceResult {
+		return &ReadResourceResult{Cacheable: Cacheable{TTLMs: ttlMs}}
+	}
+
+	t.Run("uncacheable result removes a cached one", func(t *testing.T) {
+		var mc methodCache[*ReadResourceResult]
+		mc.putCacheable("test://a", result(60_000))
+		mc.putCacheable("test://a", result(0))
+		if got := len(mc.cachedValues); got != 0 {
+			t.Errorf("cache holds %d entries after an uncacheable result, want 0", got)
+		}
+	})
+
+	t.Run("full cache removes expired entries", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			var mc methodCache[*ReadResourceResult]
+			for i := range maxCacheEntries {
+				mc.putCacheable(fmt.Sprintf("test://%d", i), result(1000))
+			}
+			time.Sleep(2 * time.Second)
+			mc.putCacheable("test://new", result(60_000))
+			if diff := cmp.Diff([]string{"test://new"}, cachedKeys(&mc)); diff != "" {
+				t.Errorf("cached keys mismatch (-want +got):\n%s", diff)
+			}
+		})
+	})
+
+	t.Run("full cache removes the oldest entry", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			var mc methodCache[*ReadResourceResult]
+			for i := range maxCacheEntries {
+				mc.putCacheable(fmt.Sprintf("test://%d", i), result(60_000))
+				time.Sleep(time.Millisecond)
+			}
+			mc.putCacheable("test://new", result(60_000))
+			if got := len(mc.cachedValues); got != maxCacheEntries {
+				t.Errorf("cache holds %d entries, want %d", got, maxCacheEntries)
+			}
+			if _, ok := mc.cachedValues["test://0"]; ok {
+				t.Error("cache kept the oldest entry")
+			}
+		})
+	})
+
+	t.Run("full cache keeps its entries when one is replaced", func(t *testing.T) {
+		var mc methodCache[*ReadResourceResult]
+		for i := range maxCacheEntries {
+			mc.putCacheable(fmt.Sprintf("test://%d", i), result(60_000))
+		}
+		mc.putCacheable("test://1", result(60_000))
+		if got := len(mc.cachedValues); got != maxCacheEntries {
+			t.Errorf("cache holds %d entries, want %d", got, maxCacheEntries)
+		}
+	})
+}
+
 func TestClientCapabilitiesOverWire(t *testing.T) {
 	testCases := []struct {
 		name             string
@@ -817,6 +958,134 @@ func TestClientPingRemovedOnNewProtocol(t *testing.T) {
 	}
 	if gotPing {
 		t.Error("ping request was sent despite the removed-method guard")
+	}
+}
+
+// TestClientSetLoggingLevelRemovedOnNewProtocol verifies that SetLoggingLevel
+// on a session negotiated at 2026-07-28 or later returns a jsonrpc.Error with
+// CodeMethodNotFound instead of sending the logging/setLevel method, which the
+// 2026-07-28 protocol schema removes.
+func TestClientSetLoggingLevelRemovedOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+	var gotSetLevel bool
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	c := NewClient(testImpl, nil)
+	// Registered before Connect: the session caches its sending handler at
+	// connect time. The middleware asserts that no logging/setLevel request is sent.
+	c.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodSetLevel {
+				gotSetLevel = true
+			}
+			return next(ctx, method, req)
+		}
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	err = cs.SetLoggingLevel(ctx, nil)
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("SetLoggingLevel on a 2026-07-28 session = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+	if got, want := jsonrpcErr.Message, `"logging/setLevel" is not supported in the new protocol`; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+	if gotSetLevel {
+		t.Error("logging/setLevel request was sent despite the removed-method guard")
+	}
+}
+
+// TestClientRejectsIncomingPingOnNewProtocol verifies that a client session
+// negotiated at 2026-07-28 answers an incoming ping request with
+// CodeMethodNotFound, since the 2026-07-28 protocol schema removes ping in
+// both directions.
+func TestClientRejectsIncomingPingOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	// Send the ping directly, bypassing the send-side guard in
+	// ServerSession.Ping, to simulate a non-conforming server.
+	_, err = handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, &PingParams{}))
+	var jsonrpcErr *jsonrpc.Error
+	if !errors.As(err, &jsonrpcErr) {
+		t.Fatalf("ping to a 2026-07-28 client = %v (%T), want *jsonrpc.Error", err, err)
+	}
+	if jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+		t.Errorf("code = %d, want %d", jsonrpcErr.Code, jsonrpc.CodeMethodNotFound)
+	}
+}
+
+// TestClientIncomingPingDuringInitialize verifies that a ping the server
+// sends while the legacy initialize handshake is still in flight is answered,
+// and that the client's ping handler reads the session state safely while
+// Client.Connect is writing it. Run with -race.
+func TestClientIncomingPingDuringInitialize(t *testing.T) {
+	ctx := context.Background()
+	pingErr := make(chan error, 1)
+
+	s := NewServer(testImpl, nil)
+	s.AddReceivingMiddleware(func(next MethodHandler) MethodHandler {
+		return func(ctx context.Context, method string, req Request) (Result, error) {
+			if method == methodInitialize {
+				ss := req.GetSession().(*ServerSession)
+				// Not awaited, so the ping and the initialize response are in
+				// flight at the same time.
+				go func() { pingErr <- ss.Ping(context.Background(), nil) }()
+			}
+			return next(ctx, method, req)
+		}
+	})
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	cs, err := NewClient(testImpl, nil).Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if err := <-pingErr; err != nil {
+		t.Errorf("ping during initialize: %v", err)
 	}
 }
 
@@ -1339,5 +1608,173 @@ func TestClientAllowMissingParamsCompat(t *testing.T) {
 	}
 	if got.Load() != 1 {
 		t.Errorf("handler called with nil params %d times, want 1", got.Load())
+	}
+}
+
+func TestListRootsCapabilityDisabled(t *testing.T) {
+	ctx := context.Background()
+	roots := []*Root{{URI: "file:///secret", Name: "secret"}}
+
+	tests := []struct {
+		name    string
+		caps    *ClientCapabilities
+		wantErr bool
+	}{
+		{"default", nil, false},
+		{"RootsV2 set", &ClientCapabilities{RootsV2: &RootCapabilities{}}, false},
+		{"disabled", &ClientCapabilities{}, true},
+		{"only deprecated Roots set", &ClientCapabilities{Roots: struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{ListChanged: true}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, st := NewInMemoryTransports()
+			s := NewServer(testImpl, nil)
+			ss, err := s.Connect(ctx, st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+
+			c := NewClient(testImpl, &ClientOptions{Capabilities: tc.caps})
+			c.AddRoots(roots...)
+			cs, err := c.Connect(ctx, ct, &ClientSessionOptions{ProtocolVersion: protocolVersion20251125})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			res, err := ss.ListRoots(ctx, nil)
+			if tc.wantErr {
+				var jerr *jsonrpc.Error
+				if !errors.As(err, &jerr) || jerr.Code != codeUnsupportedMethod {
+					t.Fatalf("ListRoots error = %v, want code %d", err, codeUnsupportedMethod)
+				}
+				if res != nil {
+					t.Errorf("ListRoots returned roots %v despite disabled capability", res.Roots)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(roots, res.Roots); diff != "" {
+				t.Errorf("roots mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestInjectRequestMetaPreservesParams(t *testing.T) {
+	cs := &ClientSession{
+		client: NewClient(testImpl, nil),
+		state: clientSessionState{InitializeResult: &InitializeResult{
+			ProtocolVersion: protocolVersion20260728,
+		}},
+	}
+	for _, meta := range []Meta{
+		nil,
+		{},
+		{"custom": "value"},
+		{MetaKeyProtocolVersion: "override", MetaKeyClientInfo: "client", MetaKeyClientCapabilities: "capabilities"},
+	} {
+		params := &GetPromptParams{Name: "prompt", Meta: meta}
+		wantMeta := maps.Clone(meta)
+		got := injectRequestMeta(cs, params)
+		if diff := cmp.Diff(wantMeta, params.Meta); diff != "" {
+			t.Errorf("caller metadata changed (-want +got):\n%s", diff)
+		}
+		if got == params {
+			t.Error("injectRequestMeta returned caller-owned params")
+		}
+		if got.Name != params.Name {
+			t.Error("prompt name changed")
+		}
+		for _, key := range []string{MetaKeyProtocolVersion, MetaKeyClientInfo, MetaKeyClientCapabilities} {
+			if _, ok := got.Meta[key]; !ok {
+				t.Errorf("missing metadata key %q", key)
+			}
+			if value, ok := wantMeta[key]; ok && !cmp.Equal(value, got.Meta[key]) {
+				t.Errorf("explicit metadata key %q was overwritten", key)
+			}
+		}
+		got.Meta["custom"] = "changed"
+		if diff := cmp.Diff(wantMeta, params.Meta); diff != "" {
+			t.Errorf("metadata map is shared (-want +got):\n%s", diff)
+		}
+	}
+	if got := injectRequestMeta(cs, (*GetPromptParams)(nil)); got == nil || got.Meta == nil {
+		t.Error("nil params did not receive metadata")
+	}
+}
+
+func TestCallToolPreservesSharedParams(t *testing.T) {
+	for _, version := range []string{protocolVersion20251125, protocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			ctx := t.Context()
+			s := NewServer(testImpl, nil)
+			s.AddTool(&Tool{Name: "ping", InputSchema: map[string]any{"type": "object"}},
+				func(_ context.Context, req *CallToolRequest) (*CallToolResult, error) {
+					name := "legacy"
+					if info, ok := req.Params.Meta[MetaKeyClientInfo].(map[string]any); ok {
+						name, _ = info["name"].(string)
+					}
+					return &CallToolResult{Content: []Content{&TextContent{Text: name}}}, nil
+				})
+			var clients []*ClientSession
+			for _, name := range []string{"client-a", "client-b"} {
+				ct, st := NewInMemoryTransports()
+				ss, err := s.Connect(ctx, st, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ss.Close() })
+				cs, err := NewClient(&Implementation{Name: name, Version: "1"}, nil).Connect(ctx, ct,
+					&ClientSessionOptions{ProtocolVersion: version})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cs.Close() })
+				clients = append(clients, cs)
+			}
+			call := func(cs *ClientSession, params *CallToolParams) {
+				t.Helper()
+				result, err := cs.CallTool(ctx, params)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				want := "legacy"
+				if version == protocolVersion20260728 {
+					want = cs.client.impl.Name
+				}
+				if got := result.Content[0].(*TextContent).Text; got != want {
+					t.Errorf("server received client name %q, want %q", got, want)
+				}
+			}
+			for _, concurrent := range []bool{false, true} {
+				for _, meta := range []Meta{nil, {"custom": "value"}} {
+					params := &CallToolParams{Name: "ping", Meta: meta}
+					want := &CallToolParams{Name: "ping", Meta: maps.Clone(meta)}
+					if concurrent {
+						var wg sync.WaitGroup
+						for range 4 {
+							for _, cs := range clients {
+								wg.Go(func() { call(cs, params) })
+							}
+						}
+						wg.Wait()
+					} else {
+						for _, cs := range clients {
+							call(cs, params)
+						}
+					}
+					if diff := cmp.Diff(want, params); diff != "" {
+						t.Errorf("caller params changed (-want +got):\n%s", diff)
+					}
+				}
+			}
+		})
 	}
 }

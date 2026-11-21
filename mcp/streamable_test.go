@@ -2165,6 +2165,14 @@ func TestStreamableMcpHeaderValidation(t *testing.T) {
 			wantStatusCode:     http.StatusBadRequest,
 			wantBodyContaining: "missing",
 		},
+		{
+			method: "POST",
+			headers: http.Header{
+				protocolVersionHeader: {minVersionForStandardHeaders},
+			},
+			messages:       []jsonrpc.Message{req(0, "notifications/cancelled", &CancelledParams{RequestID: 9})},
+			wantStatusCode: http.StatusAccepted,
+		},
 	})
 }
 
@@ -2259,6 +2267,78 @@ func TestStreamableMcpHeaderValidationErrorFormat(t *testing.T) {
 	}
 	if !strings.Contains(wireErr.Message, "Mcp-Method header value") {
 		t.Errorf("wireErr.Message = %q, want it to contain %q", wireErr.Message, "Mcp-Method header value")
+	}
+}
+
+// TestStreamableParamHeaderWithPointerField verifies that Mcp-Param-* headers
+// are mirrored and validated for a typed tool whose input struct has a pointer
+// field, for which jsonschema.For emits a type array.
+func TestStreamableParamHeaderWithPointerField(t *testing.T) {
+	type input struct {
+		Region string  `json:"region"`
+		Note   *string `json:"note,omitempty"`
+	}
+	schema, err := jsonschema.For[input](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema.Properties["region"].Extra = map[string]any{"x-mcp-header": "Region"}
+
+	server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, nil)
+	var handlerCalled atomic.Bool
+	AddTool(server, &Tool{Name: "query", InputSchema: schema},
+		func(ctx context.Context, req *CallToolRequest, in input) (*CallToolResult, any, error) {
+			handlerCalled.Store(true)
+			return &CallToolResult{}, nil, nil
+		})
+
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	var sentRegion string
+	var status int
+	customClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get(methodHeader) == "tools/call" {
+				sentRegion = req.Header.Get(paramHeaderPrefix + "Region")
+				req.Header.Set(paramHeaderPrefix+"Region", "eu-west1")
+			}
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err == nil && req.Header.Get(methodHeader) == "tools/call" {
+				status = resp.StatusCode
+			}
+			return resp, err
+		}),
+	}
+
+	client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, nil)
+	ctx := context.Background()
+	session, err := client.Connect(ctx, &StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: customClient},
+		&ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := session.CallTool(ctx, &CallToolParams{Name: "query", Arguments: map[string]any{"region": "us-west1"}}); err == nil {
+		t.Error("CallTool succeeded with mismatched Mcp-Param-Region header")
+	}
+	if sentRegion != "us-west1" {
+		t.Errorf("client sent Mcp-Param-Region %q, want %q", sentRegion, "us-west1")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status code = %d, want %d", status, http.StatusBadRequest)
+	}
+	if handlerCalled.Load() {
+		t.Error("tool handler ran despite mismatched Mcp-Param-Region header")
 	}
 }
 
@@ -2410,6 +2490,138 @@ func TestStreamableParamHeadersClientSetsHeaders(t *testing.T) {
 	}
 	if got := capturedHeaders.Get(paramHeaderPrefix + "Region"); got != "us-west1" {
 		t.Errorf("Mcp-Param-Region = %q, want %q", got, "us-west1")
+	}
+}
+
+// TestCallToolFallbackOnHeaderMismatch verifies that CallTool refreshes a
+// missing or stale tool definition and retries once when the server rejects
+// the call with CodeHeaderMismatch.
+func TestCallToolFallbackOnHeaderMismatch(t *testing.T) {
+	ctx := t.Context()
+
+	server := NewServer(&Implementation{Name: "s", Version: "v1"}, nil)
+	server.AddTool(
+		&Tool{
+			Name: "get_weather",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"region": map[string]any{
+						"type":         "string",
+						"x-mcp-header": "Region"},
+				},
+			},
+		},
+		func(context.Context, *CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		},
+	)
+	handler := NewStreamableHTTPHandler(func(req *http.Request) *Server { return server }, &StreamableHTTPOptions{
+		Stateless: true,
+	})
+	defer handler.closeAll()
+	httpServer := httptest.NewServer(mustNotPanic(t, handler))
+	defer httpServer.Close()
+
+	tests := []struct {
+		name         string
+		cached       *Tool
+		listFirst    bool
+		wantRequests []string
+	}{
+		{
+			name:         "empty cache",
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+		{
+			name:         "cached without annotation",
+			cached:       &Tool{Name: "get_weather", InputSchema: map[string]any{"type": "object"}},
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+		{
+			name:         "cache up to date",
+			listFirst:    true,
+			wantRequests: []string{"tools/call Region=us-east4"},
+		},
+		{
+			name: "cached with renamed header",
+			cached: &Tool{
+				Name: "get_weather",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"region": map[string]any{
+							"type":         "string",
+							"x-mcp-header": "Zone"},
+					},
+				},
+			},
+			wantRequests: []string{"tools/call Region=", "tools/list", "tools/call Region=us-east4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				mu       sync.Mutex
+				requests []string
+			)
+			httpClient := &http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					switch method := req.Header.Get(methodHeader); method {
+					case methodCallTool:
+						mu.Lock()
+						requests = append(requests, method+" Region="+req.Header.Get(paramHeaderPrefix+"Region"))
+						mu.Unlock()
+					case methodListTools:
+						mu.Lock()
+						requests = append(requests, method)
+						mu.Unlock()
+					}
+					return http.DefaultTransport.RoundTrip(req)
+				}),
+			}
+
+			client := NewClient(&Implementation{Name: "c", Version: "v1"}, nil)
+			session, err := client.Connect(ctx,
+				&StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: httpClient},
+				&ClientSessionOptions{ProtocolVersion: minVersionForStandardHeaders},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			if tt.listFirst {
+				if _, err := session.ListTools(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if tt.cached != nil {
+				session.toolsCache.put("", &ListToolsResult{
+					Cacheable: Cacheable{TTLMs: 60_000},
+					Tools:     []*Tool{tt.cached},
+				})
+			}
+			mu.Lock()
+			requests = nil
+			mu.Unlock()
+			_, err = session.CallTool(ctx, &CallToolParams{
+				Name:      "get_weather",
+				Arguments: map[string]any{"region": "us-east4"},
+			})
+			if err != nil {
+				t.Errorf("CallTool() failed: %v", err)
+			}
+
+			mu.Lock()
+			got := requests
+			mu.Unlock()
+			if diff := cmp.Diff(tt.wantRequests, got); diff != "" {
+				t.Errorf("requests mismatch (-want +got): \n%s", diff)
+			}
+		})
 	}
 }
 
@@ -3009,6 +3221,36 @@ func TestProcessStreamMaxEventSize(t *testing.T) {
 				t.Fatalf("failure() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestStreamableClientDefaultMaxEventSize verifies that a zero
+// StreamableClientTransport.MaxEventSize applies DefaultMaxEventSize rather
+// than disabling the cap.
+func TestStreamableClientDefaultMaxEventSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Mcp-Session-Id", "session")
+		io.WriteString(w, "event: message\ndata: ")
+		chunk := strings.Repeat("A", 1<<20)
+		for range 2 * DefaultMaxEventSize / len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(testImpl, nil)
+	transport := &StreamableClientTransport{Endpoint: srv.URL, DisableStandaloneSSE: true}
+	_, err := client.Connect(t.Context(), transport, nil)
+	want := fmt.Sprintf("SSE event exceeded %d bytes", DefaultMaxEventSize)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Connect() error = %v, want an error containing %q", err, want)
 	}
 }
 
