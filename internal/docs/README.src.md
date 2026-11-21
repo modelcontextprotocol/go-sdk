@@ -16,6 +16,11 @@ The SDK consists of several importable packages:
   [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
   package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
 
+- The
+  [`github.com/modelcontextprotocol/go-sdk/skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+  package provides opt-in Skills extension support for discovery, directory
+  browsing, and content verification.
+
 
 These docs mirror the [official MCP spec](https://modelcontextprotocol.io/specification/2026-07-28).
 Use the index below to learn how the SDK implements a particular aspect of the
@@ -40,12 +45,14 @@ protocol.
 1. [Roots](client.md#roots)
 1. [Sampling](client.md#sampling)
 1. [Elicitation](client.md#elicitation)
+1. [Skills extension](client.md#skills-extension)
 
 ## Server Features
 
 1. [Prompts](server.md#prompts)
 1. [Resources](server.md#resources)
 1. [Tools](server.md#tools)
+1. [Skills extension](server.md#skills-extension)
 1. [Utilities](server.md#utilities)
     1. [Completion](server.md#completion)
     1. [Logging](server.md#logging)
