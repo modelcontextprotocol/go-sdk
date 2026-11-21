@@ -31,17 +31,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-// nowrapinvalidparams is a compatibility parameter that restores the previous
-// behavior of [methodInfo.unmarshalParams]. When unset (the default), a
-// params-decoding failure is wrapped with [jsonrpc2.ErrInvalidParams] so the
-// wire response carries error code -32602 ("invalid params") rather than the
-// zero-value code 0. See:
-// https://github.com/modelcontextprotocol/go-sdk/issues/976#issuecomment-4829124838.
-//
-// See the documentation for the mcpgodebug package for instructions how to enable it.
-// The option will be removed in a future version of the SDK.
-var nowrapinvalidparams = mcpgodebug.Value("nowrapinvalidparams")
-
 // nointernalerrorcode is a compatibility parameter that restores the previous
 // behavior of [handleReceive]. When unset (the default), an error returned by
 // a request handler that carries no JSON-RPC error code is sent with code
@@ -367,13 +356,6 @@ func newMethodInfo[P paramsPtr[T], R Result, T any](flags methodFlags) methodInf
 			var p P
 			if m != nil {
 				if err := internaljson.Unmarshal(m, &p); err != nil {
-					// Legacy behavior: pre-fix versions surfaced this as a
-					// plain wrapped error, which caused the wire response to
-					// carry code 0 instead of -32602. Restore via
-					// MCPGODEBUG=nowrapinvalidparams=1.
-					if nowrapinvalidparams == "1" {
-						return nil, fmt.Errorf("unmarshaling %q into a %T: %w", m, p, err)
-					}
 					// Wrap jsonrpc2.ErrInvalidParams so toWireError surfaces
 					// code -32602 ("invalid params") while preserving the
 					// descriptive message.
@@ -452,8 +434,7 @@ const (
 // CodeResourceNotFound indicates that a requested resource could not be found.
 //
 // By default, the value is -32602 (Invalid Params), as specified in the
-// MCP specification (SEP-2164). To restore the pre-1.7.0 release behavior where the
-// error code was -32002, set MCPGODEBUG=customresnotfounderrcode=1.
+// MCP specification (SEP-2164).
 //
 // Deprecated: Use [jsonrpc.CodeInvalidParams] directly. This variable will be
 // removed in a future version.

@@ -729,22 +729,12 @@ func (s *Server) capabilities() *ServerCapabilities {
 	return caps
 }
 
-// disablecompleteparamsvalidation is a compatibility parameter that restores
-// the previous behavior of [Server.complete], where required fields on
-// [CompleteParams] were not validated before dispatching to the completion
-// handler. See the documentation for the mcpgodebug package for instructions
-// how to enable it.
-// The option will be removed in a future version of the SDK.
-var disablecompleteparamsvalidation = mcpgodebug.Value("disablecompleteparamsvalidation")
-
 func (s *Server) complete(ctx context.Context, req *CompleteRequest) (*CompleteResult, error) {
-	if disablecompleteparamsvalidation != "1" {
-		if req.Params.Ref == nil {
-			return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
-		}
-		if req.Params.Argument.Name == "" {
-			return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
-		}
+	if req.Params.Ref == nil {
+		return nil, fmt.Errorf("%w: missing required 'ref' field", jsonrpc2.ErrInvalidParams)
+	}
+	if req.Params.Argument.Name == "" {
+		return nil, fmt.Errorf("%w: missing required 'argument.name' field", jsonrpc2.ErrInvalidParams)
 	}
 	if s.opts.CompletionHandler == nil {
 		return nil, jsonrpc2.ErrMethodNotFound
@@ -1748,12 +1738,40 @@ func (ss *ServerSession) NotifyResourceListChanged(ctx context.Context, params *
 	})
 }
 
+// NotifyResourceUpdated sends a "notifications/resources/updated"
+// notification to the client of this session, about the resource identified
+// by params.URI. Unlike [Server.ResourceUpdated], other sessions subscribed
+// to the URI are not notified.
+//
+// The notification is sent once on each of the session's open
+// subscriptions/listen streams that name the URI, and not at all if there
+// are none. Only clients on protocol version 2026-07-28 or later open such
+// streams, so nothing is sent to earlier sessions.
+func (ss *ServerSession) NotifyResourceUpdated(ctx context.Context, params *ResourceUpdatedNotificationParams) error {
+	if params == nil {
+		return fmt.Errorf("%w: params cannot be nil", jsonrpc2.ErrInvalidParams)
+	}
+	if params.URI == "" {
+		return fmt.Errorf("%w: URI cannot be empty", jsonrpc2.ErrInvalidParams)
+	}
+	if ss.negotiatedLegacyProtocol() {
+		return nil
+	}
+	server := ss.server
+
+	server.mu.Lock()
+	ids := slices.Clone(server.resourceSubscriptions[params.URI][ss])
+	server.mu.Unlock()
+
+	makeParams := func() Params {
+		p := *params
+		return &p
+	}
+	return ss.notifyListens(ctx, notificationResourceUpdated, ids, makeParams)
+}
+
 // notifyListChanged implements the Notify*ListChanged methods for the given
 // list-changed notification method.
-//
-// makeParams is called once per notification sent and must return a new value
-// each time, because each notification carries the ID of the listen it is sent
-// on in its _meta (see [injectMetaSubscriptionID]).
 func (ss *ServerSession) notifyListChanged(ctx context.Context, method string, makeParams func() Params) error {
 	server := ss.server
 
@@ -1768,6 +1786,14 @@ func (ss *ServerSession) notifyListChanged(ctx context.Context, method string, m
 		ids = slices.Clone(server.resourceChangeSubscriptions[ss])
 	}
 	server.mu.Unlock()
+
+	return ss.notifyListens(ctx, method, ids, makeParams)
+}
+
+// notifyListens sends method once on each of the given subscriptions/listen
+// requests of this session, stamping each listen's ID into _meta.
+// makeParams must return a new value on each call.
+func (ss *ServerSession) notifyListens(ctx context.Context, method string, ids []jsonrpc.ID, makeParams func() Params) error {
 	var errs []error
 	for _, id := range ids {
 		params := makeParams()
@@ -1888,7 +1914,17 @@ func (ss *ServerSession) assertServerInitiatedRequestAllowed(method string) erro
 }
 
 // Ping pings the client.
+//
+// On sessions negotiated at protocol version 2026-07-28 or later, Ping
+// returns a [jsonrpc.Error] with code [jsonrpc.CodeMethodNotFound] without a
+// round trip: the 2026-07-28 protocol schema removes the ping method.
 func (ss *ServerSession) Ping(ctx context.Context, params *PingParams) error {
+	if ss.protocolVersion() >= protocolVersion20260728 {
+		return &jsonrpc.Error{
+			Code:    jsonrpc.CodeMethodNotFound,
+			Message: fmt.Sprintf("%q is not supported in the new protocol", methodPing),
+		}
+	}
 	_, err := handleSend[*emptyResult](ctx, methodPing, newServerRequest(ss, orZero[Params](params)))
 	return err
 }

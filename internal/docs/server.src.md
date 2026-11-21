@@ -140,6 +140,11 @@ Publish a change with
 which notifies every session subscribed to that URI. The notification carries
 only the URI, not the new contents, so a client that wants them reads the
 resource again.
+To notify a single session instead, call
+[`ServerSession.NotifyResourceUpdated`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerSession.NotifyResourceUpdated).
+It only notifies sessions on protocol version `2026-07-28` or later, once on
+each of the session's
+[`subscriptions/listen`](protocol.md#subscriptions) streams that name the URI.
 
 %include ../../mcp/server_example_test.go subscribe -
 
@@ -452,7 +457,7 @@ server produces logs that remain server-side, for use by server maintainers.)
 **Server-side**:
 The minimum log level is part of the server state.
 For stateful sessions, there is no default log level: no log messages will be sent
-until the client calls `SetLoggingLevel` (see below).
+until the client calls `SetLoggingLevel` (legacy protocol versions only; see below).
 For legacy stateless sessions the level defaults to "info".
 For sessionless 2026-07-28 requests there is no server-side default: each request
 carries its level in `_meta` (`io.modelcontextprotocol/logLevel`), and nothing is
@@ -474,6 +479,13 @@ Servers always report the logging capability.
 Set [`ClientOptions.LoggingMessageHandler`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientOptions.LoggingMessageHandler) to receive log messages.
 
 Call [`ClientSession.SetLoggingLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.SetLoggingLevel) to change the log level for a session.
+
+> **Note**: `logging/setLevel` is removed from the protocol as of `2026-07-28` by
+> [SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575).
+> When a session negotiates `2026-07-28` or later, `SetLoggingLevel` returns
+> `MethodNotFound` (`-32601`) locally, without a round trip. Instead, set
+> [`MetaKeyLogLevel`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#MetaKeyLogLevel)
+> in the `Meta` of each request that should receive log messages.
 
 %include ../../mcp/server_example_test.go logging -
 

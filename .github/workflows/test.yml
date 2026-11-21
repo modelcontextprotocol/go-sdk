@@ -34,13 +34,13 @@ jobs:
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
         with:
           install-go: false
-          version: "v0.6.1"
+          version: "v0.8.2"
 
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ["1.25", "1.26"]
+        go: ["1.26", "1.27"]
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,6 +59,6 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
       - name: Test with -race
         run: go test -v -race ./...
