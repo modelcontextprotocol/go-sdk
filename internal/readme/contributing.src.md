@@ -150,10 +150,10 @@ Note: you must run `npm install` in the conformance repo first.
 
 Run either script with `--help` for more options.
 
-Skills has a separate fixture and CI job covering enumeration, manifests, and
-directory reads on both `2025-11-25` stateful and `2026-07-28` stateless transports.
-Its scenarios are pending in [conformance #330](https://github.com/modelcontextprotocol/conformance/pull/330).
-Until they are released, CI pins the checkout below. To reproduce that run:
+Run Skills conformance locally with the scenarios from
+[conformance #330](https://github.com/modelcontextprotocol/conformance/pull/330).
+The runner covers enumeration, manifests, and directory reads on both
+`2025-11-25` stateful and `2026-07-28` stateless transports:
 
 ```sh
 git clone https://github.com/panyam/mcpconformance.git ../skills-conformance
