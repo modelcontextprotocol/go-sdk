@@ -249,7 +249,7 @@ are per-extension settings objects. Extensions require explicit opt-in.
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package provides typed calls for the
-[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
 Register the methods with `skills.AddMethods` before connecting, then pass the session to each call. This example connects to the server from the
 [server example](server.md#skills-extension) over an in-memory transport:
 
