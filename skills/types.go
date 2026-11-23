@@ -2,7 +2,14 @@
 // Use of this source code is governed by the license
 // that can be found in the LICENSE file.
 
-// Package skills implements the MCP Skills extension defined by SEP-2640.
+// Package skills implements the MCP [Skills extension].
+//
+// Servers opt in with [AddHandlers] and serve skill files through the ordinary
+// MCP resource APIs. Clients register [AddMethods] before connecting, then use
+// [Client] to discover entries. [VerifySkillMD] and [VerifyResource] check content
+// retrieved on demand against an entry from the same server.
+//
+// [Skills extension]: https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx
 package skills
 
 import (
@@ -26,23 +33,29 @@ const (
 	MethodReadDirectory = "resources/directory/read"
 )
 
-// Frontmatter is the verbatim YAML frontmatter of a SKILL.md represented as JSON values.
+// Frontmatter is all of a SKILL.md's YAML frontmatter represented as JSON-compatible values.
 type Frontmatter map[string]any
 
 // Resource identifies and fingerprints one file in a skill.
 type Resource struct {
-	URI    string `json:"uri"`
+	URI string `json:"uri"`
+	// Digest is the SHA-256 hash of the raw file bytes, as "sha256:" followed
+	// by 64 lowercase hexadecimal digits.
 	Digest string `json:"digest"`
-	Size   int64  `json:"size"`
+	// Size is the length of the raw file content in bytes.
+	Size int64 `json:"size"`
 }
 
 // Resources is either a complete static resource manifest or the dynamic marker.
+// Its zero value is invalid; use [StaticResources] or [DynamicResources].
 type Resources struct {
 	dynamic bool
 	entries []*Resource
 }
 
 // StaticResources constructs a complete static resource manifest.
+// It must include SKILL.md and every supporting file, including nested skills.
+// The resource slice and its entries are retained, not copied.
 func StaticResources(resources ...*Resource) Resources {
 	if resources == nil {
 		resources = []*Resource{}
@@ -57,6 +70,7 @@ func DynamicResources() Resources { return Resources{dynamic: true} }
 func (r Resources) IsDynamic() bool { return r.dynamic }
 
 // List returns the static manifest and true, or nil and false for dynamic or unset resources.
+// The returned slice and entries are shared with r.
 func (r Resources) List() ([]*Resource, bool) {
 	if r.entries == nil || r.dynamic {
 		return nil, false
@@ -104,7 +118,11 @@ type ListSkillsParams struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
-// ListSkillsResult is the result of skills/list.
+// ListSkillsResult is one page of skills/list. Each Skill is a complete entry;
+// its manifest is never split across pages.
+// [AddHandlers] sets ResultType and defaults CacheScope to "public"; a zero TTLMs
+// marks the response immediately stale. These fields are omitted before protocol
+// version 2026-07-28.
 type ListSkillsResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
@@ -134,13 +152,14 @@ type GetSkillParams struct {
 }
 
 // GetSkillResult is the result of skills/get.
+// Its result type and cache hints are handled as in [ListSkillsResult].
 type GetSkillResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	omitCache    bool
-	cachePresent bool
 	ResultType   string `json:"resultType,omitempty"`
 	Skill        *Skill `json:"skill"`
+	omitCache    bool
+	cachePresent bool
 }
 
 func (r *GetSkillResult) MarshalJSON() ([]byte, error) {
@@ -163,6 +182,7 @@ type ReadDirectoryParams struct {
 }
 
 // ReadDirectoryResult is the result of resources/directory/read.
+// [AddHandlers] sets ResultType for the request's protocol version.
 type ReadDirectoryResult struct {
 	mcp.ResultBase
 	ResultType string          `json:"resultType,omitempty"`

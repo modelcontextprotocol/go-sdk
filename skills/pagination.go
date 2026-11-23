@@ -33,7 +33,7 @@ func paginate[T any](items []T, cursor string, pageSize int, key func(T) string)
 	if cursor != "" {
 		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err != nil || len(decoded) == 0 {
-			return nil, "", fmt.Errorf("invalid cursor")
+			return nil, "", invalidParams("invalid cursor")
 		}
 		last := string(decoded)
 		start = len(items)
@@ -57,7 +57,7 @@ func paginate[T any](items []T, cursor string, pageSize int, key func(T) string)
 }
 
 // PaginateSkills returns one URI-ordered page and an opaque cursor for the next page.
-// It does not modify skills.
+// It does not modify skills. A zero page size uses [mcp.DefaultPageSize].
 func PaginateSkills(skills []*Skill, cursor string, pageSize int) ([]*Skill, string, error) {
 	return paginate(skills, cursor, pageSize, func(skill *Skill) string {
 		if skill == nil {
@@ -68,7 +68,7 @@ func PaginateSkills(skills []*Skill, cursor string, pageSize int) ([]*Skill, str
 }
 
 // PaginateDirectoryResources returns one URI-ordered directory page without
-// modifying resources. A zero page size uses mcp.DefaultPageSize.
+// modifying resources. A zero page size uses [mcp.DefaultPageSize].
 func PaginateDirectoryResources(resources []*mcp.Resource, cursor string, pageSize int) ([]*mcp.Resource, string, error) {
 	return paginate(resources, cursor, pageSize, func(resource *mcp.Resource) string {
 		if resource == nil {

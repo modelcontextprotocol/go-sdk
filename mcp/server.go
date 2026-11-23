@@ -223,7 +223,8 @@ type ServerOptions struct {
 //
 // Extensions should normally be added before the server accepts connections,
 // so that clients observe them during capability negotiation. If settings is
-// nil, an empty object is advertised.
+// nil, an empty object is advertised. The settings map is copied shallowly;
+// nested maps, slices, and pointers must not be modified after the call.
 func (s *Server) AddExtension(name string, settings map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

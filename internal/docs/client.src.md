@@ -243,34 +243,44 @@ client := mcp.NewClient(impl, &mcp.ClientOptions{
 adds an `extensions` map to `ClientCapabilities` and `ServerCapabilities` so
 that optional capabilities outside the core protocol can be declared on the
 wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
-are per-extension settings objects.
+are per-extension settings objects. Extensions require explicit opt-in.
+
+#### Skills extension
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package provides typed calls for the Skills extension. Register methods before
-connecting, then bind the skills client to the connected session:
+package provides typed calls for the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Register methods before connecting, then bind the skills client to the connected
+session. This example connects to the server from the
+[server example](server.md#skills-extension) over an in-memory transport:
 
-```go
-if err := skills.AddMethods(client); err != nil {
-    return err
-}
-// Connect client using the usual MCP transport, obtaining session.
-skillClient := &skills.Client{Session: session}
-for skill, err := range skillClient.All(ctx, nil) {
-    if err != nil {
-        return err
-    }
-    fmt.Println(skill.URI, skill.Frontmatter["description"])
-}
-```
+%include ../../skills/example_test.go skillsclient -
 
 `List`, `Get`, and `All` share `skillClient.Limits`. Zero fields use the standard
 512-resource and 16 MiB per-skill defaults; larger values allow larger skills
 without disabling protocol validation. Servers and clients configure these
 limits independently. `ReadDirectory` and `DirectoryEntries` expose optional
-directory browsing. Iterators follow cursors without modifying request parameters.
+directory browsing when the server advertises `directoryRead: true`. Calls fail
+if the required server capabilities are absent. Iterators follow cursors without
+modifying request parameters and stop after the first error. Configure the
+client's session and limits before concurrent use.
 
 Listing does not fetch content. Read files on demand with `session.ReadResource`
 and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use.
+A listed entry is complete; `Get` also retrieves a skill directly by URI even
+when it was not listed. For example, when the user chooses to load a known skill:
+
+%include ../../skills/example_test.go skillsverify -
+
 Keep skill entries scoped to their originating session: equal URIs from different
-servers are different skills. Dynamic manifests return `skills.ErrDynamicResources`
-from verification; the application must decide whether to accept unverifiable content.
+servers are different skills. Use a host-assigned server identity when persisting
+entries or approvals. Directory results are live observations; they do not expand
+the files authorized by a held manifest.
+
+`VerifyResource` checks manifest membership, byte length, and SHA-256 digest.
+`VerifySkillMD` also compares every frontmatter field. For dynamic manifests,
+`VerifySkillMD` still checks frontmatter and returns `skills.ErrDynamicResources`
+only when it matches; malformed or mismatched frontmatter returns a different error.
+Applications decide whether to accept content without integrity verification and
+own skill approval and execution policy. A digest match alone does not make remote
+instructions trustworthy.

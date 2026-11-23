@@ -116,6 +116,35 @@ func TestPaginateSkills(t *testing.T) {
 	}
 }
 
+func TestVerifyDynamicSkillMD(t *testing.T) {
+	skill := &Skill{
+		URI:         "skill://demo/SKILL.md",
+		Frontmatter: Frontmatter{"name": "demo", "description": "A demo skill.", "metadata": map[string]string{"author": "go-sdk"}},
+		Resources:   DynamicResources(),
+	}
+	for _, test := range []struct {
+		name    string
+		content string
+		matches bool
+	}{
+		{"matching", "---\nname: demo\ndescription: A demo skill.\nmetadata:\n  author: go-sdk\n---\n# Demo\n", true},
+		{"changed-description", "---\nname: demo\ndescription: Different instructions.\nmetadata:\n  author: go-sdk\n---\n", false},
+		{"missing-metadata", "---\nname: demo\ndescription: A demo skill.\n---\n", false},
+		{"extra-field", "---\nname: demo\ndescription: A demo skill.\nmetadata:\n  author: go-sdk\nallowed-tools: Bash\n---\n", false},
+		{"malformed", "---\nname: [\n---\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := VerifySkillMD(skill, []byte(test.content))
+			if err == nil {
+				t.Fatal("dynamic content passed integrity verification")
+			}
+			if got := errors.Is(err, ErrDynamicResources); got != test.matches {
+				t.Fatalf("VerifySkillMD() = %v; want ErrDynamicResources only for matching frontmatter", err)
+			}
+		})
+	}
+}
+
 func TestAllPagesReusable(t *testing.T) {
 	seq := allPages("", func(cursor string) ([]string, string, error) {
 		switch cursor {
@@ -191,9 +220,9 @@ func TestGenericHandlersSupportDynamicResources(t *testing.T) {
 	}
 }
 
-func TestValidateListResponseRejectsMissingSkills(t *testing.T) {
+func TestValidateListResultRejectsMissingSkills(t *testing.T) {
 	if err := validateListResult(&ListSkillsResult{}, Limits{}); err == nil {
-		t.Fatal("validateListResponse accepted missing skills")
+		t.Fatal("validateListResult accepted missing skills")
 	}
 }
 

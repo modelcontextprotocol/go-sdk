@@ -369,6 +369,36 @@ func TestPaginationAndIteratorOwnership(t *testing.T) {
 	}
 }
 
+func TestInvalidPaginationCursors(t *testing.T) {
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		t.Run(version, func(t *testing.T) {
+			server := testServer()
+			skill := testSkill()
+			h := fixedHandlers(skill)
+			h.List = func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*ListSkillsResult, error) {
+				page, next, err := PaginateSkills([]*Skill{skill}, p.Cursor, 0)
+				return &ListSkillsResult{Skills: page, NextCursor: next}, err
+			}
+			h.ReadDirectory = func(_ context.Context, _ *mcp.ServerSession, p *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+				page, next, err := PaginateDirectoryResources([]*mcp.Resource{{URI: skill.URI, Name: "demo"}}, p.Cursor, 0)
+				return &ReadDirectoryResult{Resources: page, NextCursor: next}, err
+			}
+			if err := AddHandlers(server, h, nil); err != nil {
+				t.Fatal(err)
+			}
+			c := connectSkills(t, server, version)
+			_, listErr := c.List(t.Context(), &ListSkillsParams{Cursor: "%"})
+			_, directoryErr := c.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://demo", Cursor: "%"})
+			for method, err := range map[string]error{MethodList: listErr, MethodReadDirectory: directoryErr} {
+				var rpc *jsonrpc.Error
+				if !errors.As(err, &rpc) || rpc.Code != jsonrpc.CodeInvalidParams {
+					t.Errorf("%s: got %v, want JSON-RPC Invalid Params", method, err)
+				}
+			}
+		})
+	}
+}
+
 func TestURIAndVerificationBoundaries(t *testing.T) {
 	for _, uri := range []string{"skill://demo/../bad", "skill://demo/%2e%2e", "skill://demo/%2e", "skill://demo/file?", "skill://demo/file#", "skill:opaque"} {
 		if _, err := parseURI(uri); err == nil {

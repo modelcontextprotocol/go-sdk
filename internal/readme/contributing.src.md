@@ -276,7 +276,7 @@ change therefore cannot reach existing users by accident; they have to change
 their import path to receive one.
 
 This policy covers the exported API of the SDK's importable packages — `mcp`,
-`jsonrpc`, `auth`, `auth/extauth` and `oauthex`. Everything under `internal/`
+`jsonrpc`, `auth`, `auth/extauth`, `oauthex` and `skills`. Everything under `internal/`
 is not importable outside the module and may change in any release.
 
 Which MCP spec revisions each SDK version speaks is documented in the

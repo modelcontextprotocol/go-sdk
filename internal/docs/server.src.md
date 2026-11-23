@@ -542,12 +542,14 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 adds an `extensions` map to `ServerCapabilities` so that optional
 capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
-per-extension settings objects.
+per-extension settings objects. Extensions require explicit opt-in.
 
 #### Skills extension
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package implements the Skills extension. Use `skills.AddHandlers` for request-time
+package implements the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
+Use `skills.AddHandlers` for request-time
 `skills/list` and `skills/get` handlers. An optional directory handler enables
 `resources/directory/read` and advertises `directoryRead: true`.
 
@@ -557,9 +559,21 @@ capability. An entry's manifest includes every file, including `SKILL.md` and
 nested skills. Use `skills.DynamicResources()` when stable digests cannot be
 published, not simply because the catalog changes over time.
 
+This example serves a complete static manifest and its content. The
+[client example](client.md#skills-extension) connects to this server and verifies
+the resource bytes:
+
+%include ../../skills/example_test.go skillsserver -
+
 Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
 returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
 with an empty resource list. Other handler errors pass through unchanged.
+
+Handlers own pagination. `skills.PaginateSkills` and
+`skills.PaginateDirectoryResources` sort by URI and return one page without
+modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
+`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+entry contains its complete manifest, which is never split across pages.
 
 `skills.ServerOptions.Limits` configures manifest limits. Zero fields use the
 512-resource and 16 MiB per-skill defaults. A server serving larger skills is not
@@ -585,7 +599,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.
@@ -595,7 +609,7 @@ indicates whether page retrieval failed.
 The `ClientSession` also exposes `ListXXX` methods for fine-grained control
 over pagination.
 
-**Server-side**: pagination is on by default, so in general nothing is required
-server-side. However, you may use
+**Server-side**: pagination is on by default for core feature lists, so in general
+nothing is required server-side. However, you may use
 [`ServerOptions.PageSize`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ServerOptions.PageSize)
 to customize the page size.

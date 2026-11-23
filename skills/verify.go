@@ -16,7 +16,9 @@ import (
 // the skill declares dynamic resources.
 var ErrDynamicResources = errors.New("skills: dynamic resources cannot be integrity-verified")
 
-// VerifyResource checks content against a resource in the held skill entry.
+// VerifyResource checks membership, size, and digest against the held skill entry.
+// It returns [ErrDynamicResources] for a dynamic manifest. It checks the entry's
+// structure without reapplying size limits configured during discovery.
 func VerifyResource(skill *Skill, uri string, content []byte) error {
 	// Content verification must not reimpose default limits on an accepted entry.
 	if err := validateSkill(skill, Limits{}); err != nil {
@@ -46,13 +48,16 @@ func VerifyResource(skill *Skill, uri string, content []byte) error {
 	return fmt.Errorf("skills: resource %q is not in the held skill manifest", uri)
 }
 
-// VerifySkillMD verifies both the content digest and the advertised frontmatter.
+// VerifySkillMD verifies SKILL.md with [VerifyResource] and compares every
+// frontmatter field with the held entry. For a dynamic manifest it still checks
+// frontmatter, returning [ErrDynamicResources] only if the frontmatter matches.
 func VerifySkillMD(skill *Skill, content []byte) error {
 	if skill == nil {
 		return fmt.Errorf("skills: nil skill")
 	}
-	if err := VerifyResource(skill, skill.URI, content); err != nil {
-		return err
+	verificationErr := VerifyResource(skill, skill.URI, content)
+	if verificationErr != nil && !errors.Is(verificationErr, ErrDynamicResources) {
+		return verificationErr
 	}
 	frontmatter, err := parseFrontmatter(content)
 	if err != nil {
@@ -69,5 +74,5 @@ func VerifySkillMD(skill *Skill, content []byte) error {
 	if !bytes.Equal(got, want) {
 		return fmt.Errorf("skills: SKILL.md frontmatter does not match the skill entry")
 	}
-	return nil
+	return verificationErr
 }

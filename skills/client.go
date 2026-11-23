@@ -14,6 +14,7 @@ import (
 )
 
 // AddMethods registers the Skills extension methods that client may send.
+// Call it before connecting the client to a server.
 func AddMethods(client *mcp.Client) error {
 	if client == nil {
 		return fmt.Errorf("skills: nil client")
@@ -27,18 +28,22 @@ func AddMethods(client *mcp.Client) error {
 	return mcp.AddSendingCustomMethod[*ReadDirectoryParams, *ReadDirectoryResult](client, MethodReadDirectory)
 }
 
-// Client calls the Skills extension on Session. Configure Limits before use;
-// its zero value uses the standard per-skill limits. Call AddMethods on the
-// underlying mcp.Client before connecting.
+// Client calls the Skills extension on a connected [mcp.ClientSession].
+// Call [AddMethods] on the underlying [mcp.Client] before connecting.
+// A Client may be used concurrently; do not modify its fields during use.
 //
 // Client does not prefetch content or cache entries. Keep entries scoped to
 // their originating session and verify resource bytes before using them.
 type Client struct {
+	// Session is the connected MCP session. It must be non-nil.
 	Session *mcp.ClientSession
-	Limits  Limits
+	// Limits bounds each manifest returned by List, Get, or All.
+	// Zero fields use the standard per-skill defaults.
+	Limits Limits
 }
 
-// List calls skills/list and validates the response.
+// List calls skills/list and validates the response using c.Limits.
+// If params is nil, List requests the first page.
 func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkillsResult, error) {
 	if err := c.requireCapability(false); err != nil {
 		return nil, err
@@ -61,7 +66,8 @@ func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkill
 	return result, nil
 }
 
-// Get calls skills/get and validates the response.
+// Get calls skills/get and validates the response using c.Limits.
+// The URI in params must identify a SKILL.md, whether or not it was listed.
 func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResult, error) {
 	if err := c.requireCapability(false); err != nil {
 		return nil, err
@@ -85,6 +91,7 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 }
 
 // ReadDirectory calls resources/directory/read and validates the response.
+// The server must advertise directoryRead, and params must specify a directory URI.
 func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
 	if err := c.requireCapability(true); err != nil {
 		return nil, err
@@ -107,7 +114,9 @@ func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams)
 	return result, nil
 }
 
-// All returns an iterator that follows every page of skills/list.
+// All returns an iterator over skills/list, starting at params.Cursor.
+// A nil params starts at the first page. Each page is validated as in [Client.List].
+// The iterator stops after yielding its first error.
 func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*Skill, error] {
 	client := Client{}
 	if c != nil {
@@ -120,7 +129,6 @@ func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*S
 	}
 	return func(yield func(*Skill, error) bool) {
 		request := initial
-		request.Meta = maps.Clone(initial.Meta)
 		allPages(initial.Cursor, func(cursor string) ([]*Skill, string, error) {
 			request.Cursor = cursor
 			result, err := client.List(ctx, &request)
@@ -132,7 +140,9 @@ func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*S
 	}
 }
 
-// DirectoryEntries returns an iterator that follows every page of a directory read.
+// DirectoryEntries returns an iterator over a directory read, starting at params.Cursor.
+// Each page is validated as in [Client.ReadDirectory].
+// The iterator stops after yielding its first error.
 func (c *Client) DirectoryEntries(ctx context.Context, params *ReadDirectoryParams) iter.Seq2[*mcp.Resource, error] {
 	client := Client{}
 	if c != nil {
@@ -145,7 +155,6 @@ func (c *Client) DirectoryEntries(ctx context.Context, params *ReadDirectoryPara
 	}
 	return func(yield func(*mcp.Resource, error) bool) {
 		request := initial
-		request.Meta = maps.Clone(initial.Meta)
 		allPages(initial.Cursor, func(cursor string) ([]*mcp.Resource, string, error) {
 			request.Cursor = cursor
 			result, err := client.ReadDirectory(ctx, &request)

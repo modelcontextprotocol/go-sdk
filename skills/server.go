@@ -17,7 +17,7 @@ import (
 type ListSkillsHandler func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error)
 
 // GetSkillHandler handles skills/get. Return (nil, nil) for an unknown skill;
-// AddHandlers translates it to JSON-RPC Invalid Params. Other errors pass through.
+// [AddHandlers] translates it to JSON-RPC Invalid Params. Other errors pass through.
 type GetSkillHandler func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error)
 
 // ReadDirectoryHandler handles resources/directory/read. Return (nil, nil) if
@@ -30,7 +30,8 @@ type ServerOptions struct {
 	Limits Limits
 }
 
-// Handlers contains the required and optional Skills extension handlers.
+// Handlers contains the Skills extension handlers.
+// List and Get are required; ReadDirectory is optional.
 type Handlers struct {
 	List          ListSkillsHandler
 	Get           GetSkillHandler
@@ -38,8 +39,13 @@ type Handlers struct {
 }
 
 // AddHandlers registers the Skills extension. Register skill content separately
-// with Server.AddResource or Server.AddResourceTemplate, which also advertises
+// with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate], which also advertises
 // the required resources capability. Configure the server before connecting.
+//
+// If options is nil, the default limits apply. Handlers own pagination; use
+// [PaginateSkills] or [PaginateDirectoryResources] to paginate in-memory slices.
+// AddHandlers supplies resultType and default cache hints for the request's
+// protocol version. See [ListSkillsResult] and [GetSkillResult].
 //
 // Options and handler functions are copied. Results are validated without
 // modifying handler-owned values; handlers must synchronize their own state.
