@@ -57,7 +57,7 @@ func TestValidateSkill(t *testing.T) {
 		{name: "negative size", skill: skillWith(resources(&Resource{URI: self.URI, Digest: testDigest, Size: -1})), wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := ValidateSkill(test.skill); (err != nil) != test.wantErr {
+			if err := validateSkill(test.skill, Limits{}); (err != nil) != test.wantErr {
 				t.Fatalf("ValidateSkill() = %v, want error = %v", err, test.wantErr)
 			}
 		})
@@ -81,7 +81,7 @@ func TestSkillNames(t *testing.T) {
 				Frontmatter: Frontmatter{"name": test.name, "description": "Demo"},
 				Resources:   DynamicResources(),
 			}
-			if err := ValidateSkill(skill); (err == nil) != test.ok {
+			if err := validateSkill(skill, Limits{}); (err == nil) != test.ok {
 				t.Fatalf("ValidateSkill() = %v, want success = %v", err, test.ok)
 			}
 		})
@@ -143,8 +143,8 @@ func TestValidateDirectoryResult(t *testing.T) {
 			if !test.nilResult {
 				result = &ReadDirectoryResult{Resources: test.resources}
 			}
-			if err := ValidateDirectoryResult(test.uri, result); (err != nil) != test.wantErr {
-				t.Fatalf("ValidateDirectoryResult() = %v, want error = %v", err, test.wantErr)
+			if err := validateDirectoryResult(test.uri, result); (err != nil) != test.wantErr {
+				t.Fatalf("validateDirectoryResult() = %v, want error = %v", err, test.wantErr)
 			}
 		})
 	}
@@ -209,7 +209,7 @@ func TestResourceSizeRequired(t *testing.T) {
 			var skill Skill
 			err := json.Unmarshal([]byte(data), &skill)
 			if err == nil {
-				err = ValidateSkill(&skill)
+				err = validateSkill(&skill, Limits{})
 			}
 			if (err == nil) != test.ok {
 				t.Fatalf("decode and validate: %v, want success = %v", err, test.ok)
@@ -329,11 +329,15 @@ func TestVerify(t *testing.T) {
 	})
 }
 
-func TestVerifyFrontmatterNumbers(t *testing.T) {
+func TestVerifyFrontmatterScalars(t *testing.T) {
 	for _, test := range []struct {
 		name, advertised, yaml string
 		matches                bool
 	}{
+		{"yes", `"yes"`, "yes", true},
+		{"no", `"no"`, "no", true},
+		{"date", `"2024-01-01"`, "2024-01-01", true},
+		{"date-mismatch", `"2024-01-02"`, "2024-01-01", false},
 		{"large-integer", "9007199254740993", "9007199254740993", true},
 		{"changed-large-integer", "9007199254740992", "9007199254740993", false},
 		{"uint64", "18446744073709551615", "18446744073709551615", true},

@@ -13,28 +13,39 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// AddMethods registers the Skills requests on a client before it connects.
+func AddMethods(client *mcp.Client) error {
+	if client == nil {
+		return fmt.Errorf("skills: nil client")
+	}
+	if err := mcp.AddSendingCustomMethod[*ListSkillsParams, *ListSkillsResult](client, MethodList); err != nil {
+		return err
+	}
+	if err := mcp.AddSendingCustomMethod[*GetSkillParams, *GetSkillResult](client, MethodGet); err != nil {
+		return err
+	}
+	return mcp.AddSendingCustomMethod[*ReadDirectoryParams, *ReadDirectoryResult](client, MethodReadDirectory)
+}
+
 // ListOptions controls how list calls handle malformed entries.
 type ListOptions struct {
 	// SkipInvalidSkills omits invalid entries instead of rejecting the page.
 	// Invalid response envelopes always fail. Skipped entries are reported in
 	// ListSkillsResult.InvalidSkills and, if set, to OnInvalidSkill.
 	SkipInvalidSkills bool
-	// OnInvalidSkill receives each skipped entry, including during All.
+	// OnInvalidSkill receives each skipped entry, including during List.
 	OnInvalidSkill func(InvalidSkill)
 }
 
-// List calls skills/list and validates the response without imposing manifest size caps.
-// If params is nil, List requests the first page.
-func List(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams, options ...ListOptions) (*ListSkillsResult, error) {
+// ListPage calls skills/list and validates the response without imposing manifest size caps.
+// If params is nil, ListPage requests the first page.
+func ListPage(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams, options *ListOptions) (*ListSkillsResult, error) {
 	if _, err := requireExtension(session); err != nil {
 		return nil, err
 	}
-	if len(options) > 1 {
-		return nil, fmt.Errorf("skills: at most one ListOptions is allowed")
-	}
 	var opts ListOptions
-	if len(options) == 1 {
-		opts = options[0]
+	if options != nil {
+		opts = *options
 	}
 	if params == nil {
 		params = &ListSkillsParams{}
@@ -94,7 +105,7 @@ func ReadDirectory(ctx context.Context, session *mcp.ClientSession, params *Read
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateDirectoryResult(params.URI, result); err != nil {
+	if err := validateDirectoryResult(params.URI, result); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid directory result: %w", err)
 	}
 	if err := validateEnvelope(session, result.ResultType, result.Cacheable, result.cachePresent); err != nil {
@@ -103,12 +114,15 @@ func ReadDirectory(ctx context.Context, session *mcp.ClientSession, params *Read
 	return result, nil
 }
 
-// All returns an iterator over skills/list, starting at params.Cursor.
-// A nil params starts at the first page. Each page is validated as in [List].
-// The session, options, and parameters are captured when All is called.
+// List returns an iterator over skills/list, starting at params.Cursor.
+// A nil params starts at the first page. Each page is validated as in [ListPage].
+// The session, options, and parameters are captured when List is called.
 // The iterator stops after yielding its first error.
-func All(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams, options ...ListOptions) iter.Seq2[*Skill, error] {
-	options = append([]ListOptions(nil), options...)
+func List(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams, options *ListOptions) iter.Seq2[*Skill, error] {
+	var opts ListOptions
+	if options != nil {
+		opts = *options
+	}
 	var initial ListSkillsParams
 	if params != nil {
 		initial = *params
@@ -118,7 +132,7 @@ func All(ctx context.Context, session *mcp.ClientSession, params *ListSkillsPara
 		request := initial
 		allPages(initial.Cursor, func(cursor string) ([]*Skill, string, error) {
 			request.Cursor = cursor
-			result, err := List(ctx, session, &request, options...)
+			result, err := ListPage(ctx, session, &request, &opts)
 			if err != nil {
 				return nil, "", err
 			}

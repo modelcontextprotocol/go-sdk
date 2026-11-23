@@ -30,8 +30,13 @@ func parseFrontmatter(data []byte) (Frontmatter, error) {
 	if end < 0 {
 		return nil, fmt.Errorf("SKILL.md frontmatter has no closing delimiter")
 	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(normalized[4:4+end], &doc); err != nil {
+		return nil, err
+	}
+	preserveTimestampStrings(&doc)
 	var fields map[string]any
-	if err := yaml.Unmarshal(normalized[4:4+end], &fields); err != nil {
+	if err := doc.Decode(&fields); err != nil {
 		return nil, err
 	}
 	if fields == nil {
@@ -46,6 +51,16 @@ func parseFrontmatter(data []byte) (Frontmatter, error) {
 		frontmatter[key] = normalized
 	}
 	return frontmatter, nil
+}
+
+// JSON has no timestamp type. Preserve the original YAML spelling, including date-only values.
+func preserveTimestampStrings(node *yaml.Node) {
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!timestamp" {
+		node.Tag = "!!str"
+	}
+	for _, child := range node.Content {
+		preserveTimestampStrings(child)
+	}
 }
 
 func normalizeYAML(value any) (any, error) {
@@ -114,20 +129,6 @@ func BaselineLimits() Limits {
 	}
 }
 
-// ValidateSkill checks a skill's structure without imposing manifest caps.
-func ValidateSkill(skill *Skill) error {
-	return validateSkill(skill, Limits{})
-}
-
-// ValidateSkillWithLimits validates a skill using exactly the supplied limits.
-// Zero fields impose no cap on that dimension; structural validation always runs.
-func ValidateSkillWithLimits(skill *Skill, limits Limits) error {
-	if err := limits.validate(); err != nil {
-		return err
-	}
-	return validateSkill(skill, limits)
-}
-
 func (l Limits) validate() error {
 	if l.MaxResourcesPerSkill < 0 || l.MaxTotalSize < 0 {
 		return fmt.Errorf("skills: limits must not be negative")
@@ -136,6 +137,9 @@ func (l Limits) validate() error {
 }
 
 func validateSkill(skill *Skill, limits Limits) error {
+	if err := limits.validate(); err != nil {
+		return err
+	}
 	if skill == nil {
 		return fmt.Errorf("skill is nil")
 	}
@@ -238,8 +242,8 @@ func validateSkill(skill *Skill, limits Limits) error {
 	return nil
 }
 
-// ValidateDirectoryResult validates that result contains direct children of uri.
-func ValidateDirectoryResult(uri string, result *ReadDirectoryResult) error {
+// validateDirectoryResult validates that result contains direct children of uri.
+func validateDirectoryResult(uri string, result *ReadDirectoryResult) error {
 	if result == nil {
 		return fmt.Errorf("directory result is nil")
 	}
@@ -414,7 +418,7 @@ func validateClientList(result *ListSkillsResult, options ListOptions) error {
 			if skill != nil {
 				invalid.URI = skill.URI
 			}
-			invalid.Err = ValidateSkill(skill)
+			invalid.Err = validateSkill(skill, Limits{})
 			if invalid.Err == nil && counts[skill.URI] > 1 {
 				invalid.Err = fmt.Errorf("skill URI %q occurs more than once", skill.URI)
 			}

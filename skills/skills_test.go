@@ -36,9 +36,17 @@ func skillWith(mutate func(*Skill)) *Skill {
 	return skill
 }
 
-func testServer() *mcp.Server {
+func testServer() *mcp.Server { return testServerWithDirectory(false) }
+
+func testServerWithDirectory(directory bool) *mcp.Server {
+	caps := &mcp.ServerCapabilities{Resources: &mcp.ResourceCapabilities{}}
+	settings := map[string]any{}
+	if directory {
+		settings[capabilityDirectoryRead] = true
+	}
+	caps.AddExtension(ExtensionID, settings)
 	return mcp.NewServer(&mcp.Implementation{Name: "skills-test", Version: "v1"}, &mcp.ServerOptions{
-		Capabilities: &mcp.ServerCapabilities{Resources: &mcp.ResourceCapabilities{}},
+		Capabilities: caps,
 	})
 }
 
@@ -47,6 +55,9 @@ func connectSkills(t *testing.T, server *mcp.Server, version string) *mcp.Client
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: version >= protocolVersionCaching}))
 	t.Cleanup(httpServer.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1"}, nil)
+	if err := AddMethods(client); err != nil {
+		t.Fatal(err)
+	}
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: httpServer.URL}, &mcp.ClientSessionOptions{ProtocolVersion: version})
 	if err != nil {
 		t.Fatal(err)
@@ -57,11 +68,11 @@ func connectSkills(t *testing.T, server *mcp.Server, version string) *mcp.Client
 
 func fixedHandlers(skill *Skill) *Handlers {
 	return &Handlers{
-		List: func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
+		List: func(context.Context, *ListSkillsRequest) (*ListSkillsResult, error) {
 			return &ListSkillsResult{Skills: []*Skill{skill}}, nil
 		},
-		Get: func(_ context.Context, _ *mcp.ServerSession, p *GetSkillParams) (*GetSkillResult, error) {
-			if p.URI != skill.URI {
+		Get: func(_ context.Context, p *GetSkillRequest) (*GetSkillResult, error) {
+			if p.Params.URI != skill.URI {
 				return nil, nil
 			}
 			return &GetSkillResult{Skill: skill}, nil
@@ -143,9 +154,9 @@ func TestPaginate(t *testing.T) {
 		{name: "duplicate uri", input: []*Skill{a, a}, pageSize: 1, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			page, next, err := PaginateSkills(test.input, test.cursor, test.pageSize)
+			page, next, err := paginateSkills(test.input, test.cursor, test.pageSize)
 			if (err != nil) != test.wantErr {
-				t.Fatalf("PaginateSkills() error = %v, want error = %v", err, test.wantErr)
+				t.Fatalf("paginateSkills() error = %v, want error = %v", err, test.wantErr)
 			}
 			if err != nil {
 				return
@@ -155,12 +166,12 @@ func TestPaginate(t *testing.T) {
 				got = append(got, skill.URI)
 			}
 			if !slices.Equal(got, test.want) || next != test.wantNext || page == nil {
-				t.Fatalf("PaginateSkills() = %v, %q, want %v, %q", got, next, test.want, test.wantNext)
+				t.Fatalf("paginateSkills() = %v, %q, want %v, %q", got, next, test.want, test.wantNext)
 			}
 		})
 	}
 	if unsorted[0] != c {
-		t.Error("PaginateSkills modified its input")
+		t.Error("paginateSkills modified its input")
 	}
 
 	// PaginateDirectoryResources shares paginate; check only its key function.

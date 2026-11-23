@@ -66,7 +66,7 @@ The SDK ensures that a read succeeds only if the URI matches a registered resour
 or matches the URI pattern of a resource template.
 
 To list a server's resources and resource templates, use the 
-[`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+[`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
 and
 [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
 iterators, or the lower-level `ListXXX` calls (see [pagination](#pagination)).
@@ -549,13 +549,14 @@ per-extension settings objects. Extensions require explicit opt-in.
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package implements the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
-Use `skills.AddHandlers` for request-time
-`skills/list` and `skills/get` handlers. An optional directory handler enables
-`resources/directory/read` and advertises `directoryRead: true`.
+Use `skills.Add` to serve a static catalog with built-in listing and lookup.
+For request-dependent catalogs, use `skills.AddHandlers` with typed request handlers.
+Declare `skills.ExtensionID` in the server capabilities before creating the server.
+Include the setting `directoryRead: true` when providing a directory handler.
 
-Before calling `AddHandlers`, register the underlying content through `Server.AddResource` or
-`Server.AddResourceTemplate`; these also advertise the required `resources`
-capability. Registration fails if the effective resources capability is absent.
+Register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate` before connecting. Either registration advertises
+the required resources capability and may come before or after the Skills handlers.
 An entry's manifest includes every file, including `SKILL.md` and
 nested skills. Use `skills.DynamicResources()` when stable digests cannot be
 published, not simply because the catalog changes over time.
@@ -571,10 +572,9 @@ returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil res
 with an empty resource list. Explicit JSON-RPC errors retain their code and data;
 other handler errors and invalid results become Internal Error (`-32603`).
 
-Handlers own pagination. `skills.PaginateSkills` and
-`skills.PaginateDirectoryResources` sort by URI and return one page without
-modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
-`mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
+Custom handlers own pagination. `skills.PaginateDirectoryResources` sorts
+directory resources by URI and returns one page without modifying the input.
+A zero page size uses `mcp.DefaultPageSize`. Each skill
 entry contains its complete manifest, which is never split across pages.
 
 `skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
@@ -609,7 +609,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.

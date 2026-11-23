@@ -30,11 +30,11 @@ func oversized(kind string) *Skill {
 // checkLimitCalls exercises every client entry point that validates a manifest.
 func checkLimitCalls(t *testing.T, client *mcp.ClientSession, skill *Skill, wantOK bool) {
 	t.Helper()
-	_, listErr := List(t.Context(), client, nil)
+	_, listErr := ListPage(t.Context(), client, nil, nil)
 	_, getErr := Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 	var allErr error
 	count := 0
-	for _, err := range All(t.Context(), client, nil) {
+	for _, err := range List(t.Context(), client, nil, nil) {
 		if err != nil {
 			allErr = err
 			break
@@ -51,10 +51,10 @@ func checkLimitCalls(t *testing.T, client *mcp.ClientSession, skill *Skill, want
 	}
 }
 
-// TestValidateSkillWithLimits covers the limit matrix by calling validation
+// TestManifestLimits covers the limit matrix by calling validation
 // directly. Limits are SDK policy rather than protocol, so the conformance suite
 // cannot observe them; TestServerLimits checks that requests reach this code.
-func TestValidateSkillWithLimits(t *testing.T) {
+func TestManifestLimits(t *testing.T) {
 	baseline := BaselineLimits()
 	for _, kind := range []string{"count", "bytes"} {
 		skill := oversized(kind)
@@ -73,12 +73,12 @@ func TestValidateSkillWithLimits(t *testing.T) {
 			{"negative bytes", Limits{MaxTotalSize: -1}, false},
 		} {
 			t.Run(kind+"/"+test.name, func(t *testing.T) {
-				if err := ValidateSkillWithLimits(skill, test.limits); (err == nil) != test.wantOK {
-					t.Fatalf("ValidateSkillWithLimits() = %v, want success = %v", err, test.wantOK)
+				if err := validateSkill(skill, test.limits); (err == nil) != test.wantOK {
+					t.Fatalf("validateSkill() = %v, want success = %v", err, test.wantOK)
 				}
 			})
 		}
-		if err := ValidateSkill(skill); err != nil {
+		if err := validateSkill(skill, Limits{}); err != nil {
 			t.Errorf("%s: ValidateSkill imposed a manifest cap: %v", kind, err)
 		}
 	}
@@ -101,8 +101,8 @@ func TestValidateSkillWithLimits(t *testing.T) {
 		}), Limits{MaxTotalSize: math.MaxInt64}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := ValidateSkillWithLimits(test.skill, test.limits); (err == nil) != test.wantOK {
-				t.Fatalf("ValidateSkillWithLimits() = %v, want success = %v", err, test.wantOK)
+			if err := validateSkill(test.skill, test.limits); (err == nil) != test.wantOK {
+				t.Fatalf("validateSkill() = %v, want success = %v", err, test.wantOK)
 			}
 		})
 	}

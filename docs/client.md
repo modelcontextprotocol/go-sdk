@@ -561,13 +561,16 @@ are per-extension settings objects. Extensions require explicit opt-in.
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
 package provides typed calls for the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx).
-Call package-level functions with the connected session. This example connects to the server from the
+Register the methods with `skills.AddMethods` before connecting, then pass the session to each call. This example connects to the server from the
 [server example](server.md#skills-extension) over an in-memory transport:
 
 ```go
 ctx := context.Background()
 client := mcp.NewClient(&mcp.Implementation{Name: "skills-client", Version: "v1.0.0"}, nil)
 
+if err := skills.AddMethods(client); err != nil {
+	log.Fatal(err)
+}
 serverTransport, clientTransport := mcp.NewInMemoryTransports()
 serverSession, err := server.Connect(ctx, serverTransport, nil)
 if err != nil {
@@ -580,22 +583,22 @@ if err != nil {
 }
 defer session.Close()
 
-for skill, err := range skills.All(ctx, session, nil) {
+for skill, err := range skills.List(ctx, session, nil, nil) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(skill.URI, skill.Frontmatter["description"])
+	fmt.Println(skill.URI, skill.Frontmatter.Description())
 }
 ```
 
-`List`, `Get`, and `All` validate structure without imposing count or size caps.
+`ListPage`, `Get`, and `List` validate structure without imposing count or size caps.
 They support the required baseline of 512 files and 16 MiB per skill, as well as
 larger manifests. Application download budgets for dynamic content remain the
 host's responsibility.
 
 List calls reject invalid entries by default. To retain valid entries from a
-malformed page, pass `skills.ListOptions{SkipInvalidSkills: true}` to `List` or
-`All`. `List` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
+malformed page, pass `&skills.ListOptions{SkipInvalidSkills: true}` to `ListPage` or
+`List`. `ListPage` reports skipped entries in `InvalidSkills`; `OnInvalidSkill` can
 report them during iteration. Missing/null lists, invalid cache hints, and
 invalid result types still fail. All entries with a duplicate URI are skipped,
 so no duplicate silently replaces another. Page cursors are preserved.

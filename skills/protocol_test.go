@@ -36,17 +36,17 @@ func wantRPCCode(t *testing.T, context string, err error, code int64) *jsonrpc.E
 // conformance scenarios (sep-2640-skills-*) also check. Once those scenarios
 // run in CI against ./conformance/skills-server, this test can be deleted.
 func TestSpecErrorScenarios(t *testing.T) {
-	server := testServer()
+	server := testServerWithDirectory(true)
 	skill := testSkill()
 	handlers := fixedHandlers(skill)
-	handlers.List = func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*ListSkillsResult, error) {
-		page, next, err := PaginateSkills([]*Skill{skill}, p.Cursor, 0)
+	handlers.List = func(_ context.Context, p *ListSkillsRequest) (*ListSkillsResult, error) {
+		page, next, err := paginateSkills([]*Skill{skill}, p.Params.Cursor, 0)
 		return &ListSkillsResult{Skills: page, NextCursor: next}, err
 	}
-	handlers.ReadDirectory = func(_ context.Context, _ *mcp.ServerSession, p *ReadDirectoryParams) (*ReadDirectoryResult, error) {
-		switch p.URI {
+	handlers.ReadDirectory = func(_ context.Context, p *ReadDirectoryRequest) (*ReadDirectoryResult, error) {
+		switch p.Params.URI {
 		case "skill://demo":
-			page, next, err := PaginateDirectoryResources([]*mcp.Resource{{URI: skill.URI, Name: "demo"}}, p.Cursor, 0)
+			page, next, err := PaginateDirectoryResources([]*mcp.Resource{{URI: skill.URI, Name: "demo"}}, p.Params.Cursor, 0)
 			return &ReadDirectoryResult{Resources: page, NextCursor: next}, err
 		case "skill://empty":
 			return &ReadDirectoryResult{}, nil
@@ -88,7 +88,7 @@ func TestSpecErrorScenarios(t *testing.T) {
 	})
 
 	t.Run("invalid cursor", func(t *testing.T) {
-		_, listErr := List(t.Context(), client, &ListSkillsParams{Cursor: "%"})
+		_, listErr := ListPage(t.Context(), client, &ListSkillsParams{Cursor: "%"}, nil)
 		_, directoryErr := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo", Cursor: "%"})
 		for method, err := range map[string]error{MethodList: listErr, MethodReadDirectory: directoryErr} {
 			wantRPCCode(t, method, err, jsonrpc.CodeInvalidParams)
@@ -114,19 +114,19 @@ func TestHandlerErrorMapping(t *testing.T) {
 		{name: "wrapped coded error is preserved", err: fmt.Errorf("handler: %w", coded), code: jsonrpc.CodeInvalidParams, wantData: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := testServer()
+			server := testServerWithDirectory(true)
 			skill := testSkill()
 			if test.invalid || test.err == nil {
 				skill.Frontmatter["description"] = false // fails validateSkill
 			}
 			handlers := &Handlers{
-				List: func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
+				List: func(context.Context, *ListSkillsRequest) (*ListSkillsResult, error) {
 					return &ListSkillsResult{Skills: []*Skill{skill}}, test.err
 				},
-				Get: func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error) {
+				Get: func(context.Context, *GetSkillRequest) (*GetSkillResult, error) {
 					return &GetSkillResult{Skill: skill}, test.err
 				},
-				ReadDirectory: func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+				ReadDirectory: func(context.Context, *ReadDirectoryRequest) (*ReadDirectoryResult, error) {
 					return &ReadDirectoryResult{Resources: []*mcp.Resource{{URI: skill.URI}}}, test.err
 				},
 			}
@@ -134,7 +134,7 @@ func TestHandlerErrorMapping(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := connectSkills(t, server, protocolVersionCaching)
-			_, listErr := List(t.Context(), client, nil)
+			_, listErr := ListPage(t.Context(), client, nil, nil)
 			_, getErr := Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 			_, directoryErr := ReadDirectory(t.Context(), client, &ReadDirectoryParams{URI: "skill://demo"})
 			for method, err := range map[string]error{MethodList: listErr, MethodGet: getErr, MethodReadDirectory: directoryErr} {
@@ -149,13 +149,13 @@ func TestHandlerErrorMapping(t *testing.T) {
 	t.Run("nil list result", func(t *testing.T) {
 		server := testServer()
 		handlers := fixedHandlers(testSkill())
-		handlers.List = func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
+		handlers.List = func(context.Context, *ListSkillsRequest) (*ListSkillsResult, error) {
 			return nil, nil
 		}
 		if err := AddHandlers(server, handlers, nil); err != nil {
 			t.Fatal(err)
 		}
-		_, err := List(t.Context(), connectSkills(t, server, protocolVersionCaching), nil)
+		_, err := ListPage(t.Context(), connectSkills(t, server, protocolVersionCaching), nil, nil)
 		wantRPCCode(t, MethodList, err, jsonrpc.CodeInternalError)
 	})
 }
@@ -165,11 +165,11 @@ func TestHandlerErrorMapping(t *testing.T) {
 // rejected locally rather than called.
 func TestClientRequiresCapabilities(t *testing.T) {
 	ctx := t.Context()
-	if _, err := List(ctx, nil, nil); err == nil {
+	if _, err := ListPage(ctx, nil, nil, nil); err == nil {
 		t.Error("client without a session accepted List")
 	}
 	// A server with no Skills handlers does not advertise the extension.
-	if _, err := List(ctx, connectSkills(t, testServer(), protocolVersionCaching), nil); err == nil {
+	if _, err := ListPage(ctx, connectSkills(t, mcp.NewServer(&mcp.Implementation{Name: "empty", Version: "1"}, nil), protocolVersionCaching), nil, nil); err == nil {
 		t.Error("client called a server that does not advertise the extension")
 	}
 	// Handlers without ReadDirectory advertise the extension but not directoryRead.
@@ -192,17 +192,17 @@ func TestClientRequiresCapabilities(t *testing.T) {
 // results and caller parameters are copied, never modified in place, even under
 // concurrent use across two protocol versions.
 func TestResponsesAndParamsAreNotMutated(t *testing.T) {
-	server := testServer()
+	server := testServerWithDirectory(true)
 	skill := testSkill()
 	list := &ListSkillsResult{Skills: []*Skill{skill}, ResultBase: mcp.ResultBase{Meta: mcp.Meta{"owner": "app"}}}
 	get := &GetSkillResult{Skill: skill, ResultBase: mcp.ResultBase{Meta: mcp.Meta{"owner": "app"}}, Cacheable: mcp.Cacheable{TTLMs: 123, CacheScope: "private"}}
 	dir := &ReadDirectoryResult{Cacheable: mcp.Cacheable{TTLMs: 456, CacheScope: "private"}}
 	handlers := &Handlers{
-		List: func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
+		List: func(context.Context, *ListSkillsRequest) (*ListSkillsResult, error) {
 			return list, nil
 		},
-		Get: func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error) { return get, nil },
-		ReadDirectory: func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+		Get: func(context.Context, *GetSkillRequest) (*GetSkillResult, error) { return get, nil },
+		ReadDirectory: func(context.Context, *ReadDirectoryRequest) (*ReadDirectoryResult, error) {
 			return dir, nil
 		},
 	}
@@ -221,7 +221,7 @@ func TestResponsesAndParamsAreNotMutated(t *testing.T) {
 		wg.Go(func() {
 			for range 4 {
 				params := &ListSkillsParams{ParamsBase: mcp.ParamsBase{Meta: mcp.Meta{"owner": "caller"}}}
-				listResult, err := List(t.Context(), client, params)
+				listResult, err := ListPage(t.Context(), client, params, nil)
 				if err != nil {
 					t.Error(err)
 					return
@@ -302,8 +302,7 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 		{"dir/missing-scope", MethodReadDirectory, `{"resources":[],"resultType":"complete","ttlMs":0}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := testServer()
-			server.AddExtension(ExtensionID, map[string]any{capabilityDirectoryRead: true})
+			server := testServerWithDirectory(true)
 			raw := &rawResult{data: json.RawMessage(test.body)}
 			// Register only the method under test, bypassing AddHandlers so that
 			// the body reaches the client exactly as written.
@@ -326,7 +325,7 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 			case MethodGet:
 				_, err = Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 			default:
-				_, err = List(t.Context(), client, nil)
+				_, err = ListPage(t.Context(), client, nil, nil)
 			}
 			if err == nil {
 				t.Fatalf("accepted malformed %s response", test.method)
@@ -344,8 +343,8 @@ func TestIteratorOwnership(t *testing.T) {
 		s.URI, s.Frontmatter, s.Resources = "skill://other/SKILL.md", Frontmatter{"name": "other", "description": "Other"}, DynamicResources()
 	})
 	handlers := fixedHandlers(one)
-	handlers.List = func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*ListSkillsResult, error) {
-		page, next, err := PaginateSkills([]*Skill{two, one}, p.Cursor, 1)
+	handlers.List = func(_ context.Context, p *ListSkillsRequest) (*ListSkillsResult, error) {
+		page, next, err := paginateSkills([]*Skill{two, one}, p.Params.Cursor, 1)
 		return &ListSkillsResult{Skills: page, NextCursor: next}, err
 	}
 	if err := AddHandlers(server, handlers, nil); err != nil {
@@ -353,7 +352,7 @@ func TestIteratorOwnership(t *testing.T) {
 	}
 	client := connectSkills(t, server, protocolVersionCaching)
 	params := &ListSkillsParams{ParamsBase: mcp.ParamsBase{Meta: mcp.Meta{"key": "value"}}}
-	seq := All(t.Context(), client, params)
+	seq := List(t.Context(), client, params, nil)
 	for range 2 {
 		count := 0
 		for _, err := range seq {
@@ -381,7 +380,6 @@ func TestListSkipsInvalidSkills(t *testing.T) {
 		} {
 			t.Run(version+"/"+bad, func(t *testing.T) {
 				server := testServer()
-				server.AddExtension(ExtensionID, nil)
 				if err := mcp.AddReceivingCustomMethod(server, MethodList, func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*rawResult, error) {
 					envelope := `,"resultType":"complete","ttlMs":0,"cacheScope":"public"`
 					if version < protocolVersionCaching {
@@ -395,12 +393,12 @@ func TestListSkipsInvalidSkills(t *testing.T) {
 					t.Fatal(err)
 				}
 				client := connectSkills(t, server, version)
-				if result, err := List(t.Context(), client, nil); err == nil || result != nil {
+				if result, err := ListPage(t.Context(), client, nil, nil); err == nil || result != nil {
 					t.Fatalf("strict List = %+v, %v", result, err)
 				}
 				var rejected []InvalidSkill
 				options := ListOptions{SkipInvalidSkills: true, OnInvalidSkill: func(s InvalidSkill) { rejected = append(rejected, s) }}
-				result, err := List(t.Context(), client, nil, options)
+				result, err := ListPage(t.Context(), client, nil, &options)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -409,7 +407,7 @@ func TestListSkipsInvalidSkills(t *testing.T) {
 				}
 				rejected = nil
 				count := 0
-				for skill, err := range All(t.Context(), client, nil, options) {
+				for skill, err := range List(t.Context(), client, nil, &options) {
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -437,13 +435,12 @@ func TestSkipRejectsInvalidEnvelopesAndDuplicateIdentities(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			server := testServer()
-			server.AddExtension(ExtensionID, nil)
 			if err := mcp.AddReceivingCustomMethod(server, MethodList, func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*rawResult, error) {
 				return &rawResult{data: json.RawMessage(body)}, nil
 			}); err != nil {
 				t.Fatal(err)
 			}
-			result, err := List(t.Context(), connectSkills(t, server, protocolVersionCaching), nil, ListOptions{SkipInvalidSkills: true})
+			result, err := ListPage(t.Context(), connectSkills(t, server, protocolVersionCaching), nil, &ListOptions{SkipInvalidSkills: true})
 			if strings.Contains(body, `"nextCursor"`) {
 				if err != nil || len(result.Skills) != 0 || len(result.InvalidSkills) != 2 || result.NextCursor != "next" {
 					t.Fatalf("duplicate identities = %+v, %v", result, err)
@@ -455,24 +452,19 @@ func TestSkipRejectsInvalidEnvelopesAndDuplicateIdentities(t *testing.T) {
 	}
 }
 
-func TestAddHandlersRequiresResources(t *testing.T) {
-	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	if err := AddHandlers(server, fixedHandlers(testSkill()), nil); err == nil {
-		t.Fatal("registered without resources")
-	}
-	if _, ok := server.Capabilities().Extensions[ExtensionID]; ok {
-		t.Fatal("failed registration advertised extension")
-	}
-	server.AddResourceTemplate(&mcp.ResourceTemplate{Name: "skills", URITemplate: "skill://{authority}/{+path}"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) { return nil, nil })
+func TestResourceRegistrationAfterHandlers(t *testing.T) {
+	caps := &mcp.ServerCapabilities{}
+	caps.AddExtension(ExtensionID, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, &mcp.ServerOptions{Capabilities: caps})
 	if err := AddHandlers(server, fixedHandlers(testSkill()), nil); err != nil {
 		t.Fatal(err)
 	}
+	server.AddResourceTemplate(&mcp.ResourceTemplate{Name: "skills", URITemplate: "skill://{authority}/{+path}"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) { return nil, nil })
 	checkLimitCalls(t, connectSkills(t, server, protocolVersionCaching), testSkill(), true)
 }
 
 func TestAllContinuesAfterEntirelyInvalidPage(t *testing.T) {
 	server := testServer()
-	server.AddExtension(ExtensionID, nil)
 	valid, _ := json.Marshal(testSkill())
 	var cursors []string
 	if err := mcp.AddReceivingCustomMethod(server, MethodList, func(_ context.Context, _ *mcp.ServerSession, p *ListSkillsParams) (*rawResult, error) {
@@ -486,10 +478,10 @@ func TestAllContinuesAfterEntirelyInvalidPage(t *testing.T) {
 	}
 	client := connectSkills(t, server, protocolVersionCaching)
 	var rejected []InvalidSkill
-	options := []ListOptions{{SkipInvalidSkills: true, OnInvalidSkill: func(s InvalidSkill) { rejected = append(rejected, s) }}}
+	options := ListOptions{SkipInvalidSkills: true, OnInvalidSkill: func(s InvalidSkill) { rejected = append(rejected, s) }}
 	params := &ListSkillsParams{}
-	seq := All(t.Context(), client, params, options...)
-	options[0].SkipInvalidSkills = false
+	seq := List(t.Context(), client, params, &options)
+	options.SkipInvalidSkills = false
 	count := 0
 	for skill, err := range seq {
 		if err != nil {
@@ -502,5 +494,24 @@ func TestAllContinuesAfterEntirelyInvalidPage(t *testing.T) {
 	}
 	if count != 1 || len(rejected) != 1 || !reflect.DeepEqual(cursors, []string{"", "next"}) || params.Cursor != "" {
 		t.Fatalf("count=%d rejected=%+v cursors=%v params=%+v", count, rejected, cursors, params)
+	}
+}
+
+func TestListHandlerReceivesHTTPExtra(t *testing.T) {
+	handlers := fixedHandlers(testSkill())
+	handlers.List = func(_ context.Context, req *ListSkillsRequest) (*ListSkillsResult, error) {
+		if req.Extra == nil || req.Extra.Header.Get("Content-Type") == "" {
+			return nil, fmt.Errorf("missing HTTP request headers")
+		}
+		return &ListSkillsResult{}, nil
+	}
+	server := testServer()
+	if err := AddHandlers(server, handlers, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"2025-11-25", protocolVersionCaching} {
+		if _, err := ListPage(t.Context(), connectSkills(t, server, version), nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

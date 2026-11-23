@@ -219,23 +219,6 @@ type ServerOptions struct {
 	SupportedProtocolVersions []string
 }
 
-// AddExtension adds an extension capability to the server.
-//
-// Extensions should normally be added before the server accepts connections,
-// so that clients observe them during capability negotiation. If settings is
-// nil, an empty object is advertised. The settings map is copied shallowly;
-// nested maps, slices, and pointers must not be modified after the call.
-func (s *Server) AddExtension(name string, settings map[string]any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.opts.Capabilities == nil {
-		s.opts.Capabilities = defaultCapabilities()
-	} else {
-		s.opts.Capabilities = s.opts.Capabilities.clone()
-	}
-	s.opts.Capabilities.AddExtension(name, maps.Clone(settings))
-}
-
 // NewServer creates a new MCP server. The resulting server has no features:
 // add features using the various Server.AddXXX methods, and the [AddTool] function.
 //
@@ -695,19 +678,6 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 	s.changeAndNotify(notificationResourceListChanged, func() bool { return s.resourceTemplates.remove(uriTemplates...) })
 }
 
-// defaultCapabilities returns the capabilities of a server whose options do not
-// set any: only logging.
-func defaultCapabilities() *ServerCapabilities {
-	return &ServerCapabilities{
-		Logging: &LoggingCapabilities{},
-	}
-}
-
-// Capabilities returns a snapshot of the server's effective capabilities,
-// including capabilities inferred from registered handlers and resources.
-// Changes to the returned value do not affect the server.
-func (s *Server) Capabilities() *ServerCapabilities { return s.capabilities() }
-
 func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -718,7 +688,10 @@ func (s *Server) capabilities() *ServerCapabilities {
 		// Deep copy the user-provided capabilities to avoid mutation.
 		caps = s.opts.Capabilities.clone()
 	} else {
-		caps = defaultCapabilities()
+		// SDK defaults: only logging capability.
+		caps = &ServerCapabilities{
+			Logging: &LoggingCapabilities{},
+		}
 	}
 
 	// Augment with tools capability if tools exist or legacy HasTools is set.
@@ -2648,13 +2621,19 @@ func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
 	method string,
 	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
 ) error {
+	return AddReceivingCustomRequestHandler(s, method, func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+}
+
+// AddReceivingCustomRequestHandler registers a custom method with access to
+// the full request, including transport-specific request information.
+func AddReceivingCustomRequestHandler[P paramsPtr[T], R Result, T any](s *Server, method string, handler func(context.Context, *ServerRequest[P]) (R, error)) error {
 	if _, ok := serverMethodInfos[method]; ok {
 		return fmt.Errorf("mcp: AddReceivingCustomMethod: %q shadows a standard MCP method", method)
 	}
 
-	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
-		return handler(ctx, req.Session, req.Params)
-	})
+	typed := typedServerMethodHandler[P, R](handler)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
