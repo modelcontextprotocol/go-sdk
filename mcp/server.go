@@ -96,8 +96,6 @@ type ServerOptions struct {
 	// Logger may be set to a non-nil value to enable logging of server activity.
 	Logger *slog.Logger
 	// If non-nil, called when "notifications/initialized" is received.
-	// It is not called for sessions negotiated at protocol version 2026-07-28
-	// or later, which have no initialization handshake (SEP-2575).
 	InitializedHandler func(context.Context, *InitializedRequest)
 	// PageSize is the maximum number of items to return in a single page for
 	// list methods (e.g. ListTools).
@@ -110,12 +108,6 @@ type ServerOptions struct {
 	// or later, whose schema removes the notification (SEP-2575); such
 	// sessions read roots on demand through a multi round-trip ListRoots
 	// request.
-	//
-	// Deprecated: the roots feature is deprecated as of protocol version
-	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
-	// window (at least twelve months). Migrate to passing paths via tool
-	// parameters, resource URIs, or configuration. See
-	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
@@ -2270,7 +2262,11 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 			}
 		}
 	case notificationInitialized, notificationRootsListChanged:
-		if ss.protocolVersion() >= protocolVersion20260728 {
+		version := ss.protocolVersion()
+		if extra, ok := req.Extra.(*RequestExtra); version == "" && ok && extra != nil {
+			version = extra.Header.Get(protocolVersionHeader)
+		}
+		if version >= protocolVersion20260728 {
 			ss.server.opts.Logger.Error("notification removed in the new protocol", "method", req.Method)
 			return nil, nil
 		}
