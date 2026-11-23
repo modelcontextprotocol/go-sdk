@@ -173,18 +173,6 @@ Note: you must run `npm install` in the conformance repo first.
 
 Run either script with `--help` for more options.
 
-Run Skills conformance locally with the scenarios from
-[conformance #330](https://github.com/modelcontextprotocol/conformance/pull/330).
-The runner covers enumeration, manifests, and directory reads on both
-`2025-11-25` stateful and `2026-07-28` stateless transports:
-
-```sh
-git clone https://github.com/panyam/mcpconformance.git ../skills-conformance
-git -C ../skills-conformance checkout 73ac2c4d0f40505fbd597c23399aebd7545900ed
-(cd ../skills-conformance && npm ci --ignore-scripts && npm run build)
-./scripts/skills-conformance.sh --conformance_repo ../skills-conformance --result_dir /tmp/skills-conformance-results
-```
-
 ## Filing issues
 
 This project uses the [GitHub issue
