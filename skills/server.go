@@ -152,7 +152,9 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 				if err := ValidateDirectoryResult(params.URI, &out); err != nil {
 					return nil, internalError(fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err))
 				}
-				out.ResultType = resultType(params.Meta)
+				if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
+					return nil, internalError(err)
+				}
 				return &out, nil
 			}); err != nil {
 			return err
@@ -168,13 +170,6 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 func supportsCaching(meta mcp.Meta) bool {
 	version, _ := meta[mcp.MetaKeyProtocolVersion].(string)
 	return version >= protocolVersionCaching
-}
-
-func resultType(meta mcp.Meta) string {
-	if supportsCaching(meta) {
-		return resultTypeComplete
-	}
-	return ""
 }
 
 // stampEnvelope fills in the result type and cache hints that the request's

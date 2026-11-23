@@ -154,6 +154,9 @@ type Skill struct {
 	URI         string      `json:"uri"`
 	Frontmatter Frontmatter `json:"frontmatter"`
 	Resources   Resources   `json:"resources"`
+	// Meta is reserved for protocol metadata. Keys defined by the Skills
+	// extension use the io.modelcontextprotocol.skills/ prefix.
+	Meta mcp.Meta `json:"_meta,omitempty"`
 }
 
 // ListSkillsParams contains parameters for skills/list.
@@ -261,12 +264,41 @@ type ReadDirectoryParams struct {
 }
 
 // ReadDirectoryResult is the result of resources/directory/read.
-// [AddHandlers] sets ResultType for the request's protocol version.
+// Its result type and cache hints are handled as in [ListSkillsResult]. The
+// hints describe the freshness of the listing, not of a held skill entry.
 type ReadDirectoryResult struct {
 	mcp.ResultBase
-	ResultType string          `json:"resultType,omitempty"`
-	NextCursor string          `json:"nextCursor,omitempty"`
-	Resources  []*mcp.Resource `json:"resources"`
+	mcp.Cacheable
+	ResultType   string          `json:"resultType,omitempty"`
+	NextCursor   string          `json:"nextCursor,omitempty"`
+	Resources    []*mcp.Resource `json:"resources"`
+	omitCache    bool
+	cachePresent bool
+}
+
+func (r *ReadDirectoryResult) MarshalJSON() ([]byte, error) {
+	type wire ReadDirectoryResult
+	if !r.omitCache {
+		return json.Marshal((*wire)(r))
+	}
+	return json.Marshal(struct {
+		*wire
+		omittedCache
+	}{wire: (*wire)(r)})
+}
+
+func (r *ReadDirectoryResult) UnmarshalJSON(data []byte) error {
+	type wire ReadDirectoryResult
+	var decoded struct {
+		wire
+		decodedCache
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = ReadDirectoryResult(decoded.wire)
+	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
+	return nil
 }
 
 func (r *ListSkillsResult) UnmarshalJSON(data []byte) error {
