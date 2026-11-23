@@ -24,9 +24,6 @@ The SDK consists of several importable packages:
   [`github.com/modelcontextprotocol/go-sdk/auth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth)
   package provides some primitives for supporting OAuth.
 - The
-  [`github.com/modelcontextprotocol/go-sdk/auth/extauth`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/auth/extauth)
-  package provides OAuth handlers for authorization extensions.
-- The
   [`github.com/modelcontextprotocol/go-sdk/oauthex`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/oauthex)
   package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
 - The

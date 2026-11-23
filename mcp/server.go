@@ -703,6 +703,11 @@ func defaultCapabilities() *ServerCapabilities {
 	}
 }
 
+// Capabilities returns a snapshot of the server's effective capabilities,
+// including capabilities inferred from registered handlers and resources.
+// Changes to the returned value do not affect the server.
+func (s *Server) Capabilities() *ServerCapabilities { return s.capabilities() }
+
 func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()

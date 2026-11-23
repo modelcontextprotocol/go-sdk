@@ -5,10 +5,8 @@
 package skills
 
 import (
-	"context"
 	"fmt"
 	"math"
-	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -30,13 +28,13 @@ func oversized(kind string) *Skill {
 }
 
 // checkLimitCalls exercises every client entry point that validates a manifest.
-func checkLimitCalls(t *testing.T, client *Client, skill *Skill, wantOK bool) {
+func checkLimitCalls(t *testing.T, client *mcp.ClientSession, skill *Skill, wantOK bool) {
 	t.Helper()
-	_, listErr := client.List(t.Context(), nil)
-	_, getErr := client.Get(t.Context(), &GetSkillParams{URI: skill.URI})
+	_, listErr := List(t.Context(), client, nil)
+	_, getErr := Get(t.Context(), client, &GetSkillParams{URI: skill.URI})
 	var allErr error
 	count := 0
-	for _, err := range client.All(t.Context(), nil) {
+	for _, err := range All(t.Context(), client, nil) {
 		if err != nil {
 			allErr = err
 			break
@@ -55,7 +53,7 @@ func checkLimitCalls(t *testing.T, client *Client, skill *Skill, wantOK bool) {
 
 // TestValidateSkillWithLimits covers the limit matrix by calling validation
 // directly. Limits are SDK policy rather than protocol, so the conformance suite
-// cannot observe them; TestLimitsArePlumbed checks that requests reach this code.
+// cannot observe them; TestServerLimits checks that requests reach this code.
 func TestValidateSkillWithLimits(t *testing.T) {
 	baseline := BaselineLimits()
 	for _, kind := range []string{"count", "bytes"} {
@@ -110,105 +108,62 @@ func TestValidateSkillWithLimits(t *testing.T) {
 	}
 }
 
-// TestLimitsArePlumbed checks that Client.Limits and ServerOptions.Limits reach
-// validation over a connection, and that invalid limits fail before a request is
-// sent. The matrix itself lives in TestValidateSkillWithLimits.
-func TestLimitsArePlumbed(t *testing.T) {
-	skill := oversized("count")
-	var calls atomic.Int32
-	counted := func(skill *Skill) *Handlers {
-		h := fixedHandlers(skill)
-		list, get := h.List, h.Get
-		h.List = func(ctx context.Context, s *mcp.ServerSession, p *ListSkillsParams) (*ListSkillsResult, error) {
-			calls.Add(1)
-			return list(ctx, s, p)
-		}
-		h.Get = func(ctx context.Context, s *mcp.ServerSession, p *GetSkillParams) (*GetSkillResult, error) {
-			calls.Add(1)
-			return get(ctx, s, p)
-		}
-		return h
-	}
-
-	for _, side := range []string{"client", "server"} {
-		for _, test := range []struct {
-			name   string
-			limits Limits
-			wantOK bool
-		}{
-			{"unlimited", Limits{}, true},
-			{"baseline", BaselineLimits(), false},
-		} {
-			t.Run(side+"/"+test.name, func(t *testing.T) {
+func TestServerLimits(t *testing.T) {
+	for _, kind := range []string{"count", "bytes"} {
+		for _, limited := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/limited=%v", kind, limited), func(t *testing.T) {
 				server := testServer()
 				var options *ServerOptions
-				if side == "server" {
-					options = &ServerOptions{Limits: test.limits}
+				if limited {
+					options = &ServerOptions{Limits: BaselineLimits()}
 				}
+				skill := oversized(kind)
 				if err := AddHandlers(server, fixedHandlers(skill), options); err != nil {
 					t.Fatal(err)
 				}
-				client := connectSkills(t, server, protocolVersionCaching)
-				if side == "client" {
-					client.Limits = test.limits
-				}
-				checkLimitCalls(t, client, skill, test.wantOK)
+				checkLimitCalls(t, connectSkills(t, server, protocolVersionCaching), skill, !limited)
 			})
 		}
 	}
-
-	t.Run("negative limits fail before sending", func(t *testing.T) {
-		valid := testSkill()
-		server := testServer()
-		if err := AddHandlers(server, counted(valid), nil); err != nil {
-			t.Fatal(err)
+	for _, limits := range []Limits{{MaxResourcesPerSkill: -1}, {MaxTotalSize: -1}} {
+		if err := AddHandlers(testServer(), fixedHandlers(testSkill()), &ServerOptions{Limits: limits}); err == nil {
+			t.Fatal("accepted negative server limits")
 		}
-		client := connectSkills(t, server, protocolVersionCaching)
-		for _, limits := range []Limits{{MaxResourcesPerSkill: -1}, {MaxTotalSize: -1}} {
-			if err := AddHandlers(testServer(), counted(valid), &ServerOptions{Limits: limits}); err == nil {
-				t.Error("AddHandlers accepted a negative limit")
-			}
-			client.Limits = limits
-			checkLimitCalls(t, client, valid, false)
-		}
-		if got := calls.Load(); got != 0 {
-			t.Fatalf("invalid client limits sent %d requests", got)
-		}
-	})
+	}
 }
 
-// TestLimitOwnership checks that limits are captured at registration and at
-// iterator creation, so later mutation of the caller's value has no effect.
-func TestLimitOwnership(t *testing.T) {
-	skill := skillWith(func(s *Skill) {
-		s.Resources = StaticResources(
-			&Resource{URI: "skill://demo/SKILL.md", Digest: testDigest, Size: 1},
-			&Resource{URI: "skill://demo/helper.txt", Digest: testDigest, Size: 1})
-	})
+func TestServerLimitOwnership(t *testing.T) {
 	server := testServer()
-	options := &ServerOptions{Limits: Limits{MaxResourcesPerSkill: 2}}
+	options := &ServerOptions{Limits: BaselineLimits()}
+	skill := testSkill()
 	if err := AddHandlers(server, fixedHandlers(skill), options); err != nil {
 		t.Fatal(err)
 	}
-	options.Limits = Limits{MaxTotalSize: 1} // must not affect the registered handlers
+	options.Limits = Limits{MaxTotalSize: -1}
+	checkLimitCalls(t, connectSkills(t, server, protocolVersionCaching), skill, true)
+}
 
-	client := connectSkills(t, server, protocolVersionCaching)
-	client.Limits = Limits{MaxResourcesPerSkill: 2}
-	checkLimitCalls(t, client, skill, true)
-
-	seq := client.All(t.Context(), nil)
-	client.Limits.MaxResourcesPerSkill = 1
-	checkLimitCalls(t, client, skill, false)
-	for range 2 {
-		count := 0
-		for _, err := range seq {
-			if err != nil {
-				t.Fatal(err)
+func TestClientSupportsBaselineAndLargerSkills(t *testing.T) {
+	for _, version := range []string{"2025-11-25", protocolVersionCaching} {
+		for _, kind := range []string{"count", "bytes"} {
+			for _, above := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/above=%v", version, kind, above), func(t *testing.T) {
+					skill := oversized(kind)
+					if !above {
+						entries, _ := skill.Resources.List()
+						if kind == "count" {
+							skill.Resources = StaticResources(entries[:512]...)
+						} else {
+							entries[0].Size = 16 << 20
+						}
+					}
+					server := testServer()
+					if err := AddHandlers(server, fixedHandlers(skill), nil); err != nil {
+						t.Fatal(err)
+					}
+					checkLimitCalls(t, connectSkills(t, server, version), skill, true)
+				})
 			}
-			count++
-		}
-		if count != 1 {
-			t.Fatalf("captured iterator yielded %d skills, want 1", count)
 		}
 	}
 }

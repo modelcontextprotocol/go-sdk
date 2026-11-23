@@ -391,6 +391,50 @@ func validateListResult(result *ListSkillsResult, limits Limits) error {
 	return nil
 }
 
+func validateClientList(result *ListSkillsResult, options ListOptions) error {
+	if result == nil || result.Skills == nil {
+		return fmt.Errorf("skills is missing or null")
+	}
+	counts := make(map[string]int)
+	for _, skill := range result.Skills {
+		if skill != nil {
+			counts[skill.URI]++
+		}
+	}
+	for _, invalid := range result.entryErrors {
+		if invalid.URI != "" {
+			counts[invalid.URI]++
+		}
+	}
+	valid := make([]*Skill, 0, len(result.Skills))
+	for i, skill := range result.Skills {
+		invalid, decodeFailed := result.entryErrors[i]
+		if !decodeFailed {
+			invalid.Index = i
+			if skill != nil {
+				invalid.URI = skill.URI
+			}
+			invalid.Err = ValidateSkill(skill)
+			if invalid.Err == nil && counts[skill.URI] > 1 {
+				invalid.Err = fmt.Errorf("skill URI %q occurs more than once", skill.URI)
+			}
+		}
+		if invalid.Err != nil {
+			if !options.SkipInvalidSkills {
+				return fmt.Errorf("entry %d (%q): %w", i, invalid.URI, invalid.Err)
+			}
+			result.InvalidSkills = append(result.InvalidSkills, invalid)
+			if options.OnInvalidSkill != nil {
+				options.OnInvalidSkill(invalid)
+			}
+			continue
+		}
+		valid = append(valid, skill)
+	}
+	result.Skills = valid
+	return nil
+}
+
 func validateGetResult(uri string, result *GetSkillResult, limits Limits) error {
 	if result == nil || result.Skill == nil {
 		return fmt.Errorf("skill is missing or null")

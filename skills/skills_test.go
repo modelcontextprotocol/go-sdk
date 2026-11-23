@@ -41,20 +41,17 @@ func testServer() *mcp.Server {
 	})
 }
 
-func connectSkills(t *testing.T, server *mcp.Server, version string) *Client {
+func connectSkills(t *testing.T, server *mcp.Server, version string) *mcp.ClientSession {
 	t.Helper()
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: version >= protocolVersionCaching}))
 	t.Cleanup(httpServer.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1"}, nil)
-	if err := AddMethods(client); err != nil {
-		t.Fatal(err)
-	}
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: httpServer.URL}, &mcp.ClientSessionOptions{ProtocolVersion: version})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
-	return &Client{Session: session}
+	return session
 }
 
 func fixedHandlers(skill *Skill) *Handlers {

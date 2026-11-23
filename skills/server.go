@@ -44,7 +44,8 @@ type Handlers struct {
 }
 
 // AddHandlers registers the Skills extension. Register skill content separately
-// with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate], which also advertises
+// with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate] before calling
+// AddHandlers. These registrations also advertise
 // the required resources capability. Configure the server before connecting.
 //
 // If options is nil, no manifest caps apply. Handlers own pagination; use
@@ -60,6 +61,9 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 	}
 	if handlers == nil || handlers.List == nil || handlers.Get == nil {
 		return fmt.Errorf("skills: list and get handlers are required")
+	}
+	if server.Capabilities().Resources == nil {
+		return fmt.Errorf("skills: register resources or advertise the resources capability before AddHandlers")
 	}
 	h := *handlers
 	var limits Limits
