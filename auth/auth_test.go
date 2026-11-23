@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,10 @@ func TestVerify(t *testing.T) {
 			return &TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
 		case "invalid":
 			return nil, ErrInvalidToken
+		case "forbidden":
+			return nil, ErrForbidden
+		case "forbidden-wrapped":
+			return nil, fmt.Errorf("token not issued for an allowed client: %w", ErrForbidden)
 		case "oauth":
 			return nil, ErrOAuth
 		case "noexp":
@@ -58,6 +63,18 @@ func TestVerify(t *testing.T) {
 		{
 			"oauth error", nil, "Bearer oauth",
 			"oauth error", 400, "",
+		},
+		{
+			"forbidden", nil, "Bearer forbidden",
+			"forbidden", 403, "insufficient_scope",
+		},
+		{
+			"forbidden wrapped", nil, "Bearer forbidden-wrapped",
+			"token not issued for an allowed client: forbidden", 403, "insufficient_scope",
+		},
+		{
+			"unknown verifier error", nil, "Bearer unknown",
+			"unknown", 500, "",
 		},
 		{
 			"no expiration", nil, "Bearer noexp",
@@ -206,10 +223,16 @@ func TestProtectedResourceMetadataHandler(t *testing.T) {
 
 func TestRequireBearerToken(t *testing.T) {
 	verifier := func(_ context.Context, token string, _ *http.Request) (*TokenInfo, error) {
-		if token == "valid" {
+		switch token {
+		case "valid":
 			return &TokenInfo{Expiration: time.Now().Add(time.Hour), Scopes: []string{"read"}}, nil
+		case "forbidden":
+			return nil, fmt.Errorf("token not issued for an allowed client: %w", ErrForbidden)
+		case "unknown":
+			return nil, errors.New("verifier is broken")
+		default:
+			return nil, ErrInvalidToken
 		}
-		return nil, ErrInvalidToken
 	}
 
 	tests := []struct {
@@ -276,6 +299,30 @@ func TestRequireBearerToken(t *testing.T) {
 			authHeader: "Bearer valid", // Has "read", needs "admin" -> 403
 			wantHeader: "Bearer error=\"insufficient_scope\", scope=\"admin\"",
 			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "forbidden from verifier",
+			opts:       nil,
+			authHeader: "Bearer forbidden",
+			wantHeader: "Bearer error=\"insufficient_scope\"",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "forbidden from verifier with metadata and scopes",
+			opts: &RequireBearerTokenOptions{
+				ResourceMetadataURL: "https://example.com/resource-metadata",
+				Scopes:              []string{"read", "write"},
+			},
+			authHeader: "Bearer forbidden",
+			wantHeader: "Bearer error=\"insufficient_scope\", resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unknown verifier error stays a server error",
+			opts:       nil,
+			authHeader: "Bearer unknown",
+			wantHeader: "",
+			wantStatus: http.StatusInternalServerError,
 		},
 		{
 			name: "success",
