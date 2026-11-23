@@ -30,8 +30,7 @@ func AddMethods(client *mcp.Client) error {
 
 // Client calls the Skills extension on a connected [mcp.ClientSession].
 // Call [AddMethods] on the underlying [mcp.Client] before connecting.
-// A Client may be used concurrently; do not modify its fields or the referenced
-// Limits value during use.
+// A Client may be used concurrently; do not modify its fields during use.
 //
 // Client does not prefetch content or cache entries. Keep entries scoped to
 // their originating session and verify resource bytes before using them.
@@ -39,9 +38,9 @@ type Client struct {
 	// Session is the connected MCP session. It must be non-nil.
 	Session *mcp.ClientSession
 	// Limits bounds each manifest returned by List, Get, or All.
-	// Nil uses [DefaultLimits]; a non-nil value supplies exact caps, with
-	// zero fields meaning unlimited.
-	Limits *Limits
+	// The zero value imposes no caps. Use [BaselineLimits] to opt into
+	// the spec's interoperability baseline.
+	Limits Limits
 }
 
 // List calls skills/list and validates the response using c.Limits.
@@ -50,8 +49,8 @@ func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkill
 	if err := c.requireCapability(false); err != nil {
 		return nil, err
 	}
-	limits, err := c.Limits.resolve()
-	if err != nil {
+	limits := c.Limits
+	if err := limits.validate(); err != nil {
 		return nil, err
 	}
 	if params == nil {
@@ -78,8 +77,8 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 	if err := c.requireCapability(false); err != nil {
 		return nil, err
 	}
-	limits, err := c.Limits.resolve()
-	if err != nil {
+	limits := c.Limits
+	if err := limits.validate(); err != nil {
 		return nil, err
 	}
 	if params == nil || params.URI == "" {
@@ -132,10 +131,6 @@ func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*S
 	client := Client{}
 	if c != nil {
 		client = *c
-		if c.Limits != nil {
-			limits := *c.Limits
-			client.Limits = &limits
-		}
 	}
 	var initial ListSkillsParams
 	if params != nil {

@@ -6,6 +6,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 
@@ -17,7 +18,8 @@ import (
 type ListSkillsHandler func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error)
 
 // GetSkillHandler handles skills/get. Return (nil, nil) for an unknown skill;
-// [AddHandlers] translates it to JSON-RPC Invalid Params. Other errors pass through.
+// [AddHandlers] translates it to JSON-RPC Invalid Params. Explicit JSON-RPC errors
+// are preserved; other errors become Internal Error.
 type GetSkillHandler func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error)
 
 // ReadDirectoryHandler handles resources/directory/read. Return (nil, nil) if
@@ -27,10 +29,10 @@ type ReadDirectoryHandler func(context.Context, *mcp.ServerSession, *ReadDirecto
 // ServerOptions configures the per-skill limits. Protocol validation always
 // runs; applications can perform additional checks in their handlers.
 type ServerOptions struct {
-	// Limits bounds static manifests. Nil uses [DefaultLimits]; a non-nil
-	// value supplies exact caps, with zero fields meaning unlimited.
+	// Limits optionally bounds static manifests; zero fields impose no caps.
+	// Use [BaselineLimits] to opt into the spec's interoperability baseline.
 	// AddHandlers copies the value during registration.
-	Limits *Limits
+	Limits Limits
 }
 
 // Handlers contains the Skills extension handlers.
@@ -45,7 +47,7 @@ type Handlers struct {
 // with [mcp.Server.AddResource] or [mcp.Server.AddResourceTemplate], which also advertises
 // the required resources capability. Configure the server before connecting.
 //
-// If options is nil, the default limits apply. Handlers own pagination; use
+// If options is nil, no manifest caps apply. Handlers own pagination; use
 // [PaginateSkills] or [PaginateDirectoryResources] to paginate in-memory slices.
 // AddHandlers supplies resultType and default cache hints for the request's
 // protocol version. See [ListSkillsResult] and [GetSkillResult].
@@ -60,12 +62,11 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 		return fmt.Errorf("skills: list and get handlers are required")
 	}
 	h := *handlers
-	var configuredLimits *Limits
+	var limits Limits
 	if options != nil {
-		configuredLimits = options.Limits
+		limits = options.Limits
 	}
-	limits, err := configuredLimits.resolve()
-	if err != nil {
+	if err := limits.validate(); err != nil {
 		return err
 	}
 	if err := mcp.AddReceivingCustomMethod(server, MethodList,
@@ -75,10 +76,10 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			}
 			result, err := h.List(ctx, session, params)
 			if err != nil {
-				return nil, err
+				return nil, internalError(err)
 			}
 			if result == nil {
-				return nil, fmt.Errorf("skills/list handler returned a nil result")
+				return nil, internalError(fmt.Errorf("skills/list handler returned a nil result"))
 			}
 			out := *result
 			out.Meta = maps.Clone(result.Meta)
@@ -86,13 +87,13 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 				out.Skills = []*Skill{}
 			}
 			if err := validateListResult(&out, limits); err != nil {
-				return nil, fmt.Errorf("skills/list handler returned an invalid result: %w", err)
+				return nil, internalError(fmt.Errorf("skills/list handler returned an invalid result: %w", err))
 			}
 			out.omitCache = !supportsCaching(params.Meta)
 			out.ResultType = resultType(params.Meta)
 			normalizeCache(&out.Cacheable)
 			if err := validateCache(out.Cacheable); err != nil {
-				return nil, err
+				return nil, internalError(err)
 			}
 			return &out, nil
 		}); err != nil {
@@ -108,13 +109,13 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			}
 			result, err := h.Get(ctx, session, params)
 			if err != nil {
-				return nil, err
+				return nil, internalError(err)
 			}
 			if result == nil || result.Skill == nil {
 				return nil, invalidParams("unknown skill: " + params.URI)
 			}
 			if err := validateGetResult(params.URI, result, limits); err != nil {
-				return nil, fmt.Errorf("skills/get handler returned an invalid result: %w", err)
+				return nil, internalError(fmt.Errorf("skills/get handler returned an invalid result: %w", err))
 			}
 			out := *result
 			out.Meta = maps.Clone(result.Meta)
@@ -122,7 +123,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			out.ResultType = resultType(params.Meta)
 			normalizeCache(&out.Cacheable)
 			if err := validateCache(out.Cacheable); err != nil {
-				return nil, err
+				return nil, internalError(err)
 			}
 			return &out, nil
 		}); err != nil {
@@ -140,7 +141,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 				}
 				result, err := h.ReadDirectory(ctx, session, params)
 				if err != nil {
-					return nil, err
+					return nil, internalError(err)
 				}
 				if result == nil {
 					return nil, invalidParams("unknown directory: " + params.URI)
@@ -151,7 +152,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 					out.Resources = []*mcp.Resource{}
 				}
 				if err := ValidateDirectoryResult(params.URI, &out); err != nil {
-					return nil, fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err)
+					return nil, internalError(fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err))
 				}
 				out.ResultType = resultType(params.Meta)
 				return &out, nil
@@ -186,4 +187,12 @@ func normalizeCache(cache *mcp.Cacheable) {
 
 func invalidParams(message string) error {
 	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: message}
+}
+
+func internalError(err error) error {
+	var rpc *jsonrpc.Error
+	if errors.As(err, &rpc) {
+		return &jsonrpc.Error{Code: rpc.Code, Message: err.Error(), Data: rpc.Data}
+	}
+	return &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: err.Error()}
 }

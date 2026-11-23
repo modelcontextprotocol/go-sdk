@@ -7,6 +7,7 @@ package skills
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -37,36 +38,35 @@ func checkLimitCalls(t *testing.T, client *Client, skill *Skill, wantOK bool) {
 }
 
 func TestLimitsRoundTrip(t *testing.T) {
-	defaults := DefaultLimits()
+	baseline := BaselineLimits()
 	for _, kind := range []string{"count", "bytes"} {
 		t.Run(kind, func(t *testing.T) {
 			skill := testSkill()
 			entries, _ := skill.Resources.List()
 			if kind == "count" {
-				for i := 1; i <= DefaultMaxResourcesPerSkill; i++ {
+				for i := 1; i <= baseline.MaxResourcesPerSkill; i++ {
 					entries = append(entries, &Resource{URI: fmt.Sprintf("skill://demo/%d.txt", i), Digest: entries[0].Digest, Size: 1})
 				}
 			} else {
-				entries[0].Size = DefaultMaxTotalSize + 1
+				entries[0].Size = baseline.MaxTotalSize + 1
 			}
 			skill.Resources = StaticResources(entries...)
 			for _, test := range []struct {
 				name   string
-				limits *Limits
+				limits Limits
 				wantOK bool
 			}{
-				{"defaults", nil, false},
-				{"explicit-defaults", &defaults, false},
-				{"unlimited", &Limits{}, true},
-				{"count-only", &Limits{MaxResourcesPerSkill: DefaultMaxResourcesPerSkill}, kind == "bytes"},
-				{"bytes-only", &Limits{MaxTotalSize: DefaultMaxTotalSize}, kind == "count"},
-				{"raised-count", &Limits{MaxResourcesPerSkill: DefaultMaxResourcesPerSkill + 1}, true},
-				{"raised-bytes", &Limits{MaxTotalSize: DefaultMaxTotalSize + 1}, true},
+				{"zero-value", Limits{}, true},
+				{"baseline", baseline, false},
+				{"count-only", Limits{MaxResourcesPerSkill: baseline.MaxResourcesPerSkill}, kind == "bytes"},
+				{"bytes-only", Limits{MaxTotalSize: baseline.MaxTotalSize}, kind == "count"},
+				{"raised-count", Limits{MaxResourcesPerSkill: baseline.MaxResourcesPerSkill + 1}, true},
+				{"raised-bytes", Limits{MaxTotalSize: baseline.MaxTotalSize + 1}, true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					t.Run("client", func(t *testing.T) {
 						server := testServer()
-						if err := AddHandlers(server, fixedHandlers(skill), &ServerOptions{Limits: &Limits{}}); err != nil {
+						if err := AddHandlers(server, fixedHandlers(skill), nil); err != nil {
 							t.Fatal(err)
 						}
 						client := connectSkills(t, server, "2026-07-28")
@@ -79,16 +79,16 @@ func TestLimitsRoundTrip(t *testing.T) {
 							t.Fatal(err)
 						}
 						client := connectSkills(t, server, "2026-07-28")
-						client.Limits = &Limits{}
+						client.Limits = Limits{}
 						checkLimitCalls(t, client, skill, test.wantOK)
 					})
 				})
 			}
-			if err := ValidateSkill(skill); err == nil {
-				t.Fatal("ValidateSkill accepted an oversized manifest")
+			if err := ValidateSkill(skill); err != nil {
+				t.Fatalf("ValidateSkill imposed a manifest cap: %v", err)
 			}
-			if err := ValidateSkillWithLimits(skill, Limits{}); err != nil {
-				t.Fatalf("explicit unlimited validation: %v", err)
+			if err := ValidateSkillWithLimits(skill, baseline); err == nil {
+				t.Fatal("baseline validation accepted an oversized manifest")
 			}
 		})
 	}
@@ -116,10 +116,10 @@ func TestNegativeLimits(t *testing.T) {
 		if err := ValidateSkillWithLimits(skill, limits); err == nil {
 			t.Fatal("negative validation limit accepted")
 		}
-		if err := AddHandlers(testServer(), handlers, &ServerOptions{Limits: &limits}); err == nil {
+		if err := AddHandlers(testServer(), handlers, &ServerOptions{Limits: limits}); err == nil {
 			t.Fatal("negative server limit accepted")
 		}
-		client.Limits = &limits
+		client.Limits = limits
 		checkLimitCalls(t, client, skill, false)
 	}
 	if got := calls.Load(); got != 0 {
@@ -132,19 +132,16 @@ func TestLimitOwnership(t *testing.T) {
 	entries, _ := skill.Resources.List()
 	skill.Resources = StaticResources(entries[0], &Resource{URI: "skill://demo/helper.txt", Digest: entries[0].Digest, Size: 1})
 	server := testServer()
-	serverLimits := Limits{MaxResourcesPerSkill: 2}
-	options := &ServerOptions{Limits: &serverLimits}
+	options := &ServerOptions{Limits: Limits{MaxResourcesPerSkill: 2}}
 	if err := AddHandlers(server, fixedHandlers(skill), options); err != nil {
 		t.Fatal(err)
 	}
-	serverLimits.MaxResourcesPerSkill = 1
-	options.Limits = &Limits{MaxTotalSize: 1}
+	options.Limits = Limits{MaxTotalSize: 1}
 	client := connectSkills(t, server, "2026-07-28")
-	clientLimits := Limits{MaxResourcesPerSkill: 2}
-	client.Limits = &clientLimits
+	client.Limits = Limits{MaxResourcesPerSkill: 2}
 	checkLimitCalls(t, client, skill, true)
 	seq := client.All(t.Context(), nil)
-	clientLimits.MaxResourcesPerSkill = 1
+	client.Limits.MaxResourcesPerSkill = 1
 	checkLimitCalls(t, client, skill, false)
 	for range 2 {
 		count := 0
@@ -167,10 +164,38 @@ func TestUnlimitedLimitsKeepStructuralValidation(t *testing.T) {
 		t.Fatal("unlimited validation accepted malformed frontmatter")
 	}
 	server := testServer()
-	if err := AddHandlers(server, fixedHandlers(skill), &ServerOptions{Limits: &Limits{}}); err != nil {
+	if err := AddHandlers(server, fixedHandlers(skill), nil); err != nil {
 		t.Fatal(err)
 	}
 	client := connectSkills(t, server, "2026-07-28")
-	client.Limits = &Limits{}
+	client.Limits = Limits{}
 	checkLimitCalls(t, client, skill, false)
+}
+
+func TestUnlimitedTotalSize(t *testing.T) {
+	skill := testSkill()
+	entries, _ := skill.Resources.List()
+	entries[0].Size = math.MaxInt64
+	skill.Resources = StaticResources(entries[0], &Resource{
+		URI: "skill://demo/helper.txt", Digest: entries[0].Digest, Size: 1,
+	})
+	if err := ValidateSkill(skill); err != nil {
+		t.Fatalf("unlimited validation accumulated a total size: %v", err)
+	}
+	if err := ValidateSkillWithLimits(skill, Limits{MaxTotalSize: math.MaxInt64}); err == nil {
+		t.Fatal("total size overflow bypassed the configured cap")
+	}
+}
+
+func TestDynamicLimits(t *testing.T) {
+	skill := testSkill()
+	skill.Resources = DynamicResources()
+	limits := Limits{MaxResourcesPerSkill: 1, MaxTotalSize: 1}
+	server := testServer()
+	if err := AddHandlers(server, fixedHandlers(skill), &ServerOptions{Limits: limits}); err != nil {
+		t.Fatal(err)
+	}
+	client := connectSkills(t, server, "2026-07-28")
+	client.Limits = limits
+	checkLimitCalls(t, client, skill, true)
 }

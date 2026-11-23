@@ -1289,7 +1289,8 @@ if err != nil {
 
 Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
 returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
-with an empty resource list. Other handler errors pass through unchanged.
+with an empty resource list. Explicit JSON-RPC errors retain their code and data;
+other handler errors and invalid results become Internal Error (`-32603`).
 
 Handlers own pagination. `skills.PaginateSkills` and
 `skills.PaginateDirectoryResources` sort by URI and return one page without
@@ -1297,23 +1298,25 @@ modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
 `mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
 entry contains its complete manifest, which is never split across pages.
 
-`skills.ServerOptions.Limits` is an optional `*skills.Limits`. Nil uses the SDK
-defaults, currently 512 resources and 16 MiB per skill. A supplied value uses exact
-caps: zero fields are unlimited and negative fields are invalid. Pass
-`&skills.Limits{}` for no manifest caps, or modify a value from
-`skills.DefaultLimits()` to retain defaults for fields you do not override.
-The [client documentation](client.md#skills-extension) shows the configuration
-semantics and how to pin values across SDK upgrades.
+`skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
+manifest caps. Positive fields set exact caps, zero fields are unlimited, and
+negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
+the spec's interoperability baseline of 512 resources and 16 MiB per skill.
+Servers should stay within this baseline for broad compatibility; serving larger
+skills is allowed but some clients may decline them. The
+[client documentation](client.md#skills-extension) explains how to customize caps
+and pin application policy across SDK upgrades.
 
-A server serving larger skills is not guaranteed to interoperate with default
-clients. Structural validation always runs; put additional application policy
-in the handlers themselves. The SDK copies the limits during registration and
+Structural validation always runs; put additional application policy in the
+handlers themselves. Dynamic content budgets belong to the application; the SDK
+does not accumulate sizes across resource reads. It copies options at registration and
 prepares outgoing results without mutating handler-owned data.
 
 On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
 `cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
-through the result's `mcp.Cacheable` field. Earlier protocols omit cache fields
-and `resultType`. The extension does not prefetch files or start background work.
+through the result's `mcp.Cacheable` field. The SDK also supports the extension on
+earlier protocols as a compatibility backport, omitting cache fields and
+`resultType`. The extension does not prefetch files or start background work.
 
 ### Pagination
 

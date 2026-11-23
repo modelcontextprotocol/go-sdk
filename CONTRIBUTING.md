@@ -148,20 +148,17 @@ go work init ./project ./go-sdk
 
 ### Conformance tests
 
-The SDK includes scripts to run the official MCP conformance tests against the
-SDK's conformance server and client:
+The SDK includes scripts to run the official MCP server and client conformance tests:
 
 ```sh
 ./scripts/server-conformance.sh
 ./scripts/client-conformance.sh
 ```
 
-By default, results are cleaned up after the script runs. To save results to a
-specific directory:
+To save server results to a specific directory:
 
 ```sh
 ./scripts/server-conformance.sh --result_dir ./conformance-results
-./scripts/client-conformance.sh --result_dir ./conformance-results
 ```
 
 To run against a local checkout of the
@@ -170,12 +167,23 @@ of the latest npm release:
 
 ```sh
 ./scripts/server-conformance.sh --conformance_repo ~/src/conformance
-./scripts/client-conformance.sh --conformance_repo ~/src/conformance
 ```
 
 Note: you must run `npm install` in the conformance repo first.
 
 Run either script with `--help` for more options.
+
+Skills has a separate fixture and CI job covering enumeration, manifests, and
+directory reads on both `2025-11-25` stateful and `2026-07-28` stateless transports.
+Its scenarios are pending in [conformance #330](https://github.com/modelcontextprotocol/conformance/pull/330).
+Until they are released, CI pins the checkout below. To reproduce that run:
+
+```sh
+git clone https://github.com/panyam/mcpconformance.git ../skills-conformance
+git -C ../skills-conformance checkout 73ac2c4d0f40505fbd597c23399aebd7545900ed
+(cd ../skills-conformance && npm ci --ignore-scripts && npm run build)
+./scripts/skills-conformance.sh --conformance_repo ../skills-conformance --result_dir /tmp/skills-conformance-results
+```
 
 ## Filing issues
 

@@ -97,7 +97,7 @@ func TestUnknownURIsAndHandlerErrors(t *testing.T) {
 	for _, uri := range []string{"skill://backend/SKILL.md", "skill://wrong/SKILL.md"} {
 		_, err := c.Get(t.Context(), &GetSkillParams{URI: uri})
 		var rpc *jsonrpc.Error
-		if err == nil || errors.As(err, &rpc) && rpc.Code == jsonrpc.CodeInvalidParams {
+		if !errors.As(err, &rpc) || rpc.Code != jsonrpc.CodeInternalError {
 			t.Fatalf("handler bug mislabeled: %v", err)
 		}
 	}
@@ -112,6 +112,56 @@ func TestUnknownURIsAndHandlerErrors(t *testing.T) {
 	empty, err := c.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://empty"})
 	if err != nil || empty.Resources == nil || len(empty.Resources) != 0 {
 		t.Fatalf("empty directory: %+v, %v", empty, err)
+	}
+}
+
+func TestHandlerErrorCodes(t *testing.T) {
+	coded := &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "invalid request", Data: json.RawMessage(`{"reason":"test"}`)}
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		for _, test := range []struct {
+			name string
+			err  error
+			code int64
+		}{
+			{"backend", errors.New("backend unavailable"), jsonrpc.CodeInternalError},
+			{"invalid-result", nil, jsonrpc.CodeInternalError},
+			{"coded", coded, jsonrpc.CodeInvalidParams},
+			{"wrapped-coded", fmt.Errorf("handler: %w", coded), jsonrpc.CodeInvalidParams},
+		} {
+			t.Run(version+"/"+test.name, func(t *testing.T) {
+				server := testServer()
+				skill := testSkill()
+				skill.Frontmatter["description"] = false
+				h := &Handlers{
+					List: func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error) {
+						return &ListSkillsResult{Skills: []*Skill{skill}}, test.err
+					},
+					Get: func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error) {
+						return &GetSkillResult{Skill: skill}, test.err
+					},
+					ReadDirectory: func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+						return &ReadDirectoryResult{Resources: []*mcp.Resource{{URI: skill.URI}}}, test.err
+					},
+				}
+				if err := AddHandlers(server, h, nil); err != nil {
+					t.Fatal(err)
+				}
+				client := connectSkills(t, server, version)
+				_, listErr := client.List(t.Context(), nil)
+				_, getErr := client.Get(t.Context(), &GetSkillParams{URI: skill.URI})
+				_, directoryErr := client.ReadDirectory(t.Context(), &ReadDirectoryParams{URI: "skill://demo"})
+				for method, err := range map[string]error{MethodList: listErr, MethodGet: getErr, MethodReadDirectory: directoryErr} {
+					var rpc *jsonrpc.Error
+					if !errors.As(err, &rpc) || rpc.Code != test.code {
+						t.Errorf("%s: error = %v, want code %d", method, err, test.code)
+						continue
+					}
+					if test.code == coded.Code && string(rpc.Data) != string(coded.Data) {
+						t.Errorf("%s: error data = %s, want %s", method, rpc.Data, coded.Data)
+					}
+				}
+			})
+		}
 	}
 }
 

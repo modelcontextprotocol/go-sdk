@@ -8,10 +8,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -87,19 +87,12 @@ func normalizeYAML(value any) (any, error) {
 	}
 }
 
-const (
-	// DefaultMaxResourcesPerSkill is the SEP-2640 per-skill resource limit.
-	DefaultMaxResourcesPerSkill = 512
-	// DefaultMaxTotalSize is the SEP-2640 per-skill byte limit.
-	DefaultMaxTotalSize = 16 * 1024 * 1024
-)
-
 // Limits bounds a static skill manifest. Positive fields are exact caps; zero
 // fields are unlimited, and negative fields are invalid. The zero value imposes
 // no manifest caps. Limits never disable structural validation.
 //
-// A nil *Limits in [Client] or [ServerOptions] uses [DefaultLimits]. To customize
-// one default while retaining the others, start with the value from DefaultLimits.
+// Limits are optional application policy. [BaselineLimits] provides the spec's
+// interoperability baseline. Applications manage budgets for dynamic content.
 type Limits struct {
 	// MaxResourcesPerSkill limits the number of files, including SKILL.md.
 	MaxResourcesPerSkill int
@@ -107,42 +100,39 @@ type Limits struct {
 	MaxTotalSize int64
 }
 
-var skillNameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// DefaultLimits returns a fresh value containing the SDK's current defaults:
-// [DefaultMaxResourcesPerSkill] and [DefaultMaxTotalSize]. To pin application
-// policy across SDK upgrades, supply explicit numeric limits instead.
-func DefaultLimits() Limits {
+// BaselineLimits returns the Skills spec's interoperability baseline: 512 files
+// and 16 MiB per skill. Hosts must support at least this much and may support
+// more; servers should stay within it for broad compatibility. The SDK does not
+// impose these caps by default. Use explicit numeric limits to pin application
+// policy independently of future spec revisions.
+func BaselineLimits() Limits {
 	return Limits{
-		MaxResourcesPerSkill: DefaultMaxResourcesPerSkill,
-		MaxTotalSize:         DefaultMaxTotalSize,
+		MaxResourcesPerSkill: 512,
+		MaxTotalSize:         16 * 1024 * 1024,
 	}
 }
 
-// ValidateSkill validates a skill using the Agent Skills and SEP-2640 defaults.
+// ValidateSkill checks a skill's structure without imposing manifest caps.
 func ValidateSkill(skill *Skill) error {
-	return ValidateSkillWithLimits(skill, DefaultLimits())
+	return validateSkill(skill, Limits{})
 }
 
 // ValidateSkillWithLimits validates a skill using exactly the supplied limits.
 // Zero fields impose no cap on that dimension; structural validation always runs.
 func ValidateSkillWithLimits(skill *Skill, limits Limits) error {
-	limits, err := limits.resolve()
-	if err != nil {
+	if err := limits.validate(); err != nil {
 		return err
 	}
 	return validateSkill(skill, limits)
 }
 
-func (limits *Limits) resolve() (Limits, error) {
-	if limits == nil {
-		return DefaultLimits(), nil
+func (l Limits) validate() error {
+	if l.MaxResourcesPerSkill < 0 || l.MaxTotalSize < 0 {
+		return fmt.Errorf("skills: limits must not be negative")
 	}
-	if limits.MaxResourcesPerSkill < 0 || limits.MaxTotalSize < 0 {
-		return Limits{}, fmt.Errorf("skills: limits must not be negative")
-	}
-	return *limits, nil
+	return nil
 }
 
 func validateSkill(skill *Skill, limits Limits) error {
@@ -162,9 +152,6 @@ func validateSkill(skill *Skill, limits Limits) error {
 	frontmatterName, ok := skill.Frontmatter["name"].(string)
 	if !ok {
 		return fmt.Errorf("skill %q frontmatter name must be a string", skill.URI)
-	}
-	if err := validateName(frontmatterName); err != nil {
-		return fmt.Errorf("skill %q: %w", skill.URI, err)
 	}
 	if frontmatterName != name {
 		return fmt.Errorf("skill %q frontmatter name %q does not match URI name %q", skill.URI, frontmatterName, name)
@@ -238,16 +225,15 @@ func validateSkill(skill *Skill, limits Limits) error {
 		if resource.Size < 0 {
 			return fmt.Errorf("skill %q resource %q has a negative size", skill.URI, resource.URI)
 		}
-		if resource.Size > math.MaxInt64-total {
-			return fmt.Errorf("skill %q resource sizes overflow int64", skill.URI)
+		if limits.MaxTotalSize > 0 {
+			if resource.Size > limits.MaxTotalSize-total {
+				return fmt.Errorf("skill %q resource sizes exceed the limit of %d bytes", skill.URI, limits.MaxTotalSize)
+			}
+			total += resource.Size
 		}
-		total += resource.Size
 	}
 	if !seen[skill.URI] {
 		return fmt.Errorf("skill %q resources does not include its SKILL.md", skill.URI)
-	}
-	if limits.MaxTotalSize > 0 && total > limits.MaxTotalSize {
-		return fmt.Errorf("skill %q has %d bytes, exceeding the limit of %d", skill.URI, total, limits.MaxTotalSize)
 	}
 	return nil
 }
@@ -292,8 +278,17 @@ func ValidateDirectoryResult(uri string, result *ReadDirectoryResult) error {
 }
 
 func validateName(name string) error {
-	if len(name) < 1 || len(name) > 64 || !skillNameRE.MatchString(name) {
-		return fmt.Errorf("name %q must contain 1 to 64 lowercase ASCII letters, digits, or non-consecutive hyphens", name)
+	length := utf8.RuneCountInString(name)
+	valid := utf8.ValidString(name) && length >= 1 && length <= 64 && name == strings.ToLower(name) &&
+		!strings.HasPrefix(name, "-") && !strings.HasSuffix(name, "-") && !strings.Contains(name, "--")
+	for _, r := range name {
+		if r != '-' && !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+			valid = false
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("name %q must contain 1 to 64 lowercase Unicode letters, numbers, or non-consecutive hyphens, with no leading or trailing hyphen", name)
 	}
 	return nil
 }

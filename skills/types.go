@@ -34,7 +34,19 @@ const (
 )
 
 // Frontmatter is all of a SKILL.md's YAML frontmatter represented as JSON-compatible values.
+// JSON numbers are decoded as [json.Number] to preserve their precision.
 type Frontmatter map[string]any
+
+func (f *Frontmatter) UnmarshalJSON(data []byte) error {
+	var fields map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	*f = fields
+	return nil
+}
 
 // Resource identifies and fingerprints one file in a skill.
 type Resource struct {
@@ -44,6 +56,23 @@ type Resource struct {
 	Digest string `json:"digest"`
 	// Size is the length of the raw file content in bytes.
 	Size int64 `json:"size"`
+}
+
+func (r *Resource) UnmarshalJSON(data []byte) error {
+	type wire Resource
+	var decoded struct {
+		wire
+		Size *int64 `json:"size"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Size == nil {
+		return fmt.Errorf("skills: resource size is missing or null")
+	}
+	*r = Resource(decoded.wire)
+	r.Size = *decoded.Size
+	return nil
 }
 
 // Resources is either a complete static resource manifest or the dynamic marker.
@@ -90,7 +119,14 @@ func (r Resources) MarshalJSON() ([]byte, error) {
 
 func (r *Resources) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
-	if bytes.Equal(data, []byte(`"dynamic"`)) {
+	if len(data) > 0 && data[0] == '"' {
+		var marker string
+		if err := json.Unmarshal(data, &marker); err != nil {
+			return err
+		}
+		if marker != "dynamic" {
+			return fmt.Errorf("skills: unknown resources marker %q", marker)
+		}
 		*r = DynamicResources()
 		return nil
 	}

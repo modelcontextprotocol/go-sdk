@@ -82,9 +82,9 @@ func ExampleAddHandlers() {
 	// !-skillsclient
 
 	// !+skillslimits
-	limits := skills.DefaultLimits()
+	limits := skills.BaselineLimits()
 	limits.MaxTotalSize = 32 << 20
-	skillClient = &skills.Client{Session: session, Limits: &limits}
+	skillClient = &skills.Client{Session: session, Limits: limits}
 	// !-skillslimits
 
 	// !+skillsverify

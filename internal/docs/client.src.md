@@ -260,25 +260,30 @@ session. This example connects to the server from the
 
 | Configuration | Manifest limits |
 | --- | --- |
-| `Limits: nil` | SDK defaults: currently 512 resources and 16 MiB per skill |
-| `Limits: &skills.Limits{}` | No count or size caps |
+| Omitted or `Limits: skills.Limits{}` | No count or size caps |
+| `Limits: skills.BaselineLimits()` | 512 resources and 16 MiB per skill |
 | Positive fields in a supplied `Limits` | Exact caps for those dimensions |
 | Zero fields in a supplied `Limits` | Those dimensions are unlimited |
 | Negative fields | Configuration error |
 
-Structural validation always runs. To change one default while retaining the
-others, start from `skills.DefaultLimits()`, which returns a fresh value:
+Structural validation always runs. The spec's limits are an interoperability
+baseline: hosts must support at least that much and may support more. They are
+not mandatory rejection thresholds. To opt into caps based on that baseline:
 
 %include ../../skills/example_test.go skillslimits -
 
 A literal containing only `MaxTotalSize` leaves resource count unlimited.
-`DefaultLimits()` and the exported `DefaultMaxResourcesPerSkill` and
-`DefaultMaxTotalSize` constants follow the installed SDK version. Supply explicit
-numeric values for all desired caps to pin application policy across upgrades.
+`BaselineLimits()` follows the spec supported by the installed SDK version.
+Supply explicit numeric values to pin application policy across upgrades.
+Caps below the baseline reduce what the host can accept.
 
 Servers and clients configure these limits independently. Each call captures the
 configured limits before sending its request, and `All` captures them when the
-iterator is created. Do not mutate the client or its referenced limits during use.
+iterator is created. Do not mutate the client during use.
+
+These caps apply to static manifests. For dynamic skills, applications manage
+their own download, storage, and context budgets; the SDK does not retrieve files
+or maintain cumulative size or file counts.
 
 `ReadDirectory` and `DirectoryEntries` expose optional
 directory browsing when the server advertises `directoryRead: true`. Calls fail
@@ -298,7 +303,8 @@ entries or approvals. Directory results are live observations; they do not expan
 the files authorized by a held manifest.
 
 `VerifyResource` checks manifest membership, byte length, and SHA-256 digest.
-`VerifySkillMD` also compares every frontmatter field. For dynamic manifests,
+`VerifySkillMD` also compares every frontmatter field. JSON frontmatter numbers
+are decoded as `json.Number` to preserve integer precision. For dynamic manifests,
 `VerifySkillMD` still checks frontmatter and returns `skills.ErrDynamicResources`
 only when it matches; malformed or mismatched frontmatter returns a different error.
 Applications decide whether to accept content without integrity verification and
