@@ -246,7 +246,31 @@ wire. Keys are namespaced as `"{vendor-prefix}/{extension-name}"`; values
 are per-extension settings objects.
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package provides typed clients for SEP-2640. Call `skills.AddClient` before
-connecting, then use `skills.List`, `skills.Get`, or `skills.ReadDirectory`.
-The `skills.All` and `skills.DirectoryEntries` iterators follow pagination
-cursors automatically without modifying caller-owned parameters.
+package provides typed calls for the Skills extension. Register methods before
+connecting, then bind the skills client to the connected session:
+
+```go
+if err := skills.AddMethods(client); err != nil {
+    return err
+}
+// Connect client using the usual MCP transport, obtaining session.
+skillClient := &skills.Client{Session: session}
+for skill, err := range skillClient.All(ctx, nil) {
+    if err != nil {
+        return err
+    }
+    fmt.Println(skill.URI, skill.Frontmatter["description"])
+}
+```
+
+`List`, `Get`, and `All` share `skillClient.Limits`. Zero fields use the standard
+512-resource and 16 MiB per-skill defaults; larger values allow larger skills
+without disabling protocol validation. Servers and clients configure these
+limits independently. `ReadDirectory` and `DirectoryEntries` expose optional
+directory browsing. Iterators follow cursors without modifying request parameters.
+
+Listing does not fetch content. Read files on demand with `session.ReadResource`
+and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use.
+Keep skill entries scoped to their originating session: equal URIs from different
+servers are different skills. Dynamic manifests return `skills.ErrDynamicResources`
+from verification; the application must decide whether to accept unverifiable content.

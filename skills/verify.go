@@ -18,7 +18,8 @@ var ErrDynamicResources = errors.New("skills: dynamic resources cannot be integr
 
 // VerifyResource checks content against a resource in the held skill entry.
 func VerifyResource(skill *Skill, uri string, content []byte) error {
-	if err := ValidateSkillWithLimits(skill, Limits{}); err != nil {
+	// Content verification must not reimpose default limits on an accepted entry.
+	if err := validateSkill(skill, Limits{}); err != nil {
 		return err
 	}
 	if err := validateResourceURI(skill.URI, uri); err != nil {
@@ -47,6 +48,9 @@ func VerifyResource(skill *Skill, uri string, content []byte) error {
 
 // VerifySkillMD verifies both the content digest and the advertised frontmatter.
 func VerifySkillMD(skill *Skill, content []byte) error {
+	if skill == nil {
+		return fmt.Errorf("skills: nil skill")
+	}
 	if err := VerifyResource(skill, skill.URI, content); err != nil {
 		return err
 	}

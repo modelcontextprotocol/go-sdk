@@ -7,6 +7,7 @@ package skills
 import (
 	"encoding/base64"
 	"fmt"
+	"iter"
 	"slices"
 	"strings"
 
@@ -14,6 +15,20 @@ import (
 )
 
 func paginate[T any](items []T, cursor string, pageSize int, key func(T) string) ([]T, string, error) {
+	if pageSize < 0 {
+		return nil, "", fmt.Errorf("skills: invalid page size %d", pageSize)
+	}
+	if pageSize == 0 {
+		pageSize = mcp.DefaultPageSize
+	}
+	items = slices.Clone(items)
+	slices.SortFunc(items, func(a, b T) int { return strings.Compare(key(a), key(b)) })
+	for i, item := range items {
+		uri := key(item)
+		if uri == "" || i > 0 && uri == key(items[i-1]) {
+			return nil, "", fmt.Errorf("skills: missing or duplicate pagination key %q", uri)
+		}
+	}
 	start := 0
 	if cursor != "" {
 		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
@@ -44,27 +59,54 @@ func paginate[T any](items []T, cursor string, pageSize int, key func(T) string)
 // PaginateSkills returns one URI-ordered page and an opaque cursor for the next page.
 // It does not modify skills.
 func PaginateSkills(skills []*Skill, cursor string, pageSize int) ([]*Skill, string, error) {
-	if pageSize < 0 {
-		return nil, "", fmt.Errorf("skills: invalid page size %d", pageSize)
-	}
-	if pageSize == 0 {
-		pageSize = mcp.DefaultPageSize
-	}
-	ordered := slices.Clone(skills)
-	slices.SortFunc(ordered, func(a, b *Skill) int { return strings.Compare(a.URI, b.URI) })
-	return paginate(ordered, cursor, pageSize, func(skill *Skill) string { return skill.URI })
+	return paginate(skills, cursor, pageSize, func(skill *Skill) string {
+		if skill == nil {
+			return ""
+		}
+		return skill.URI
+	})
 }
 
-// PaginateDirectoryResources returns one URI-ordered directory page and an
-// opaque cursor for the next page. It does not modify resources.
+// PaginateDirectoryResources returns one URI-ordered directory page without
+// modifying resources. A zero page size uses mcp.DefaultPageSize.
 func PaginateDirectoryResources(resources []*mcp.Resource, cursor string, pageSize int) ([]*mcp.Resource, string, error) {
-	if pageSize < 0 {
-		return nil, "", fmt.Errorf("skills: invalid page size %d", pageSize)
+	return paginate(resources, cursor, pageSize, func(resource *mcp.Resource) string {
+		if resource == nil {
+			return ""
+		}
+		return resource.URI
+	})
+}
+
+func allPages[T any](initialCursor string, fetch func(string) ([]T, string, error)) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		cursor := initialCursor
+		seen := map[string]bool{}
+		if cursor != "" {
+			seen[cursor] = true
+		}
+		for {
+			items, next, err := fetch(cursor)
+			if err != nil {
+				var zero T
+				yield(zero, err)
+				return
+			}
+			for _, item := range items {
+				if !yield(item, nil) {
+					return
+				}
+			}
+			if next == "" {
+				return
+			}
+			if seen[next] {
+				var zero T
+				yield(zero, fmt.Errorf("skills: server repeated pagination cursor %q", next))
+				return
+			}
+			seen[next] = true
+			cursor = next
+		}
 	}
-	if pageSize == 0 {
-		pageSize = mcp.DefaultPageSize
-	}
-	ordered := slices.Clone(resources)
-	slices.SortFunc(ordered, func(a, b *mcp.Resource) int { return strings.Compare(a.URI, b.URI) })
-	return paginate(ordered, cursor, pageSize, func(resource *mcp.Resource) string { return resource.URI })
 }

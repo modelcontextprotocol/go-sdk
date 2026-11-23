@@ -13,6 +13,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const capabilityDirectoryRead = "directoryRead"
+
 const (
 	// ExtensionID is the capability identifier for the Skills extension.
 	ExtensionID = "io.modelcontextprotocol/skills"
@@ -106,25 +108,23 @@ type ListSkillsParams struct {
 type ListSkillsResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	ResultType string   `json:"resultType,omitempty"`
-	NextCursor string   `json:"nextCursor,omitempty"`
-	Skills     []*Skill `json:"skills"`
-	omitCache  bool
+	ResultType   string   `json:"resultType,omitempty"`
+	NextCursor   string   `json:"nextCursor,omitempty"`
+	Skills       []*Skill `json:"skills"`
+	omitCache    bool
+	cachePresent bool
 }
 
 func (r *ListSkillsResult) MarshalJSON() ([]byte, error) {
-	type alias ListSkillsResult
-	data, err := json.Marshal((*alias)(r))
-	if err != nil || !r.omitCache {
-		return data, err
+	type wire ListSkillsResult
+	if !r.omitCache {
+		return json.Marshal((*wire)(r))
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	delete(fields, "ttlMs")
-	delete(fields, "cacheScope")
-	return json.Marshal(fields)
+	return json.Marshal(struct {
+		*wire
+		TTLMs      *int    `json:"ttlMs,omitempty"`
+		CacheScope *string `json:"cacheScope,omitempty"`
+	}{wire: (*wire)(r)})
 }
 
 // GetSkillParams contains parameters for skills/get.
@@ -136,8 +136,23 @@ type GetSkillParams struct {
 // GetSkillResult is the result of skills/get.
 type GetSkillResult struct {
 	mcp.ResultBase
-	ResultType string `json:"resultType,omitempty"`
-	Skill      *Skill `json:"skill"`
+	mcp.Cacheable
+	omitCache    bool
+	cachePresent bool
+	ResultType   string `json:"resultType,omitempty"`
+	Skill        *Skill `json:"skill"`
+}
+
+func (r *GetSkillResult) MarshalJSON() ([]byte, error) {
+	type wire GetSkillResult
+	if !r.omitCache {
+		return json.Marshal((*wire)(r))
+	}
+	return json.Marshal(struct {
+		*wire
+		TTLMs      *int    `json:"ttlMs,omitempty"`
+		CacheScope *string `json:"cacheScope,omitempty"`
+	}{wire: (*wire)(r)})
 }
 
 // ReadDirectoryParams contains parameters for resources/directory/read.
@@ -153,4 +168,46 @@ type ReadDirectoryResult struct {
 	ResultType string          `json:"resultType,omitempty"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 	Resources  []*mcp.Resource `json:"resources"`
+}
+
+func (r *ListSkillsResult) UnmarshalJSON(data []byte) error {
+	type wire ListSkillsResult
+	var decoded struct {
+		wire
+		TTLMs      *int    `json:"ttlMs"`
+		CacheScope *string `json:"cacheScope"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = ListSkillsResult(decoded.wire)
+	r.cachePresent = decoded.TTLMs != nil && decoded.CacheScope != nil
+	if decoded.TTLMs != nil {
+		r.TTLMs = *decoded.TTLMs
+	}
+	if decoded.CacheScope != nil {
+		r.CacheScope = *decoded.CacheScope
+	}
+	return nil
+}
+
+func (r *GetSkillResult) UnmarshalJSON(data []byte) error {
+	type wire GetSkillResult
+	var decoded struct {
+		wire
+		TTLMs      *int    `json:"ttlMs"`
+		CacheScope *string `json:"cacheScope"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = GetSkillResult(decoded.wire)
+	r.cachePresent = decoded.TTLMs != nil && decoded.CacheScope != nil
+	if decoded.TTLMs != nil {
+		r.TTLMs = *decoded.TTLMs
+	}
+	if decoded.CacheScope != nil {
+		r.CacheScope = *decoded.CacheScope
+	}
+	return nil
 }

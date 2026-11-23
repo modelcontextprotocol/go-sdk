@@ -1233,16 +1233,30 @@ per-extension settings objects.
 #### Skills extension
 
 The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
-package implements SEP-2640. Use `skills.AddHandlers` to provide custom
+package implements the Skills extension. Use `skills.AddHandlers` for request-time
 `skills/list` and `skills/get` handlers. An optional directory handler enables
 `resources/directory/read` and advertises `directoryRead: true`.
 
-Custom providers may return `skills.DynamicResources()` for generated skills
-that cannot publish stable file digests.
+Register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate`; these also advertise the required `resources`
+capability. An entry's manifest includes every file, including `SKILL.md` and
+nested skills. Use `skills.DynamicResources()` when stable digests cannot be
+published, not simply because the catalog changes over time.
 
-SEP validation is enabled by default, including the 512-resource and 16 MiB
-per-skill limits. `skills.ServerOptions` supports additional validators and
-explicit unsafe overrides.
+Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
+returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
+with an empty resource list. Other handler errors pass through unchanged.
+
+`skills.ServerOptions.Limits` configures manifest limits. Zero fields use the
+512-resource and 16 MiB per-skill defaults. A server serving larger skills is not
+guaranteed to interoperate with default clients. Structural validation always
+runs; put additional application policy in the handlers themselves. The SDK
+copies options and prepares outgoing results without mutating handler-owned data.
+
+On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
+`cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+through the result's `mcp.Cacheable` field. Earlier protocols omit cache fields
+and `resultType`. The extension does not prefetch files or start background work.
 
 ### Pagination
 

@@ -13,8 +13,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// AddClient registers the Skills extension methods that client may send.
-func AddClient(client *mcp.Client) error {
+// AddMethods registers the Skills extension methods that client may send.
+func AddMethods(client *mcp.Client) error {
 	if client == nil {
 		return fmt.Errorf("skills: nil client")
 	}
@@ -27,68 +27,92 @@ func AddClient(client *mcp.Client) error {
 	return mcp.AddSendingCustomMethod[*ReadDirectoryParams, *ReadDirectoryResult](client, MethodReadDirectory)
 }
 
+// Client calls the Skills extension on Session. Configure Limits before use;
+// its zero value uses the standard per-skill limits. Call AddMethods on the
+// underlying mcp.Client before connecting.
+//
+// Client does not prefetch content or cache entries. Keep entries scoped to
+// their originating session and verify resource bytes before using them.
+type Client struct {
+	Session *mcp.ClientSession
+	Limits  Limits
+}
+
 // List calls skills/list and validates the response.
-func List(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams) (*ListSkillsResult, error) {
-	if err := requireCapability(session, false); err != nil {
+func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkillsResult, error) {
+	if err := c.requireCapability(false); err != nil {
 		return nil, err
 	}
 	if params == nil {
 		params = &ListSkillsParams{}
 	}
-	result, err := mcp.CallCustomMethod[*ListSkillsParams, *ListSkillsResult](ctx, session, MethodList, params)
+	request := *params
+	request.Meta = maps.Clone(params.Meta)
+	result, err := mcp.CallCustomMethod[*ListSkillsParams, *ListSkillsResult](ctx, c.Session, MethodList, &request)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateListResponse(ctx, result); err != nil {
+	if err := validateListResult(result, c.Limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skills/list result: %w", err)
+	}
+	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
 // Get calls skills/get and validates the response.
-func Get(ctx context.Context, session *mcp.ClientSession, params *GetSkillParams) (*GetSkillResult, error) {
-	if err := requireCapability(session, false); err != nil {
+func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResult, error) {
+	if err := c.requireCapability(false); err != nil {
 		return nil, err
 	}
 	if params == nil || params.URI == "" {
 		return nil, fmt.Errorf("skills: get requires a URI")
 	}
-	result, err := mcp.CallCustomMethod[*GetSkillParams, *GetSkillResult](ctx, session, MethodGet, params)
+	request := *params
+	request.Meta = maps.Clone(params.Meta)
+	result, err := mcp.CallCustomMethod[*GetSkillParams, *GetSkillResult](ctx, c.Session, MethodGet, &request)
 	if err != nil {
 		return nil, err
 	}
-	if result == nil || result.Skill == nil {
-		return nil, fmt.Errorf("skills: server returned a nil skill")
-	}
-	if result.Skill.URI != params.URI {
-		return nil, fmt.Errorf("skills: server returned URI %q for %q", result.Skill.URI, params.URI)
-	}
-	if err := ValidateSkill(result.Skill); err != nil {
+	if err := validateGetResult(params.URI, result, c.Limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skill: %w", err)
+	}
+	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
 // ReadDirectory calls resources/directory/read and validates the response.
-func ReadDirectory(ctx context.Context, session *mcp.ClientSession, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
-	if err := requireCapability(session, true); err != nil {
+func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
+	if err := c.requireCapability(true); err != nil {
 		return nil, err
 	}
 	if params == nil || params.URI == "" {
 		return nil, fmt.Errorf("skills: directory read requires a URI")
 	}
-	result, err := mcp.CallCustomMethod[*ReadDirectoryParams, *ReadDirectoryResult](ctx, session, MethodReadDirectory, params)
+	request := *params
+	request.Meta = maps.Clone(params.Meta)
+	result, err := mcp.CallCustomMethod[*ReadDirectoryParams, *ReadDirectoryResult](ctx, c.Session, MethodReadDirectory, &request)
 	if err != nil {
 		return nil, err
 	}
 	if err := ValidateDirectoryResult(params.URI, result); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid directory result: %w", err)
 	}
+	if err := c.validateEnvelope(result.ResultType, nil, false); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
 // All returns an iterator that follows every page of skills/list.
-func All(ctx context.Context, session *mcp.ClientSession, params *ListSkillsParams) iter.Seq2[*Skill, error] {
+func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*Skill, error] {
+	client := Client{}
+	if c != nil {
+		client = *c
+	}
 	var initial ListSkillsParams
 	if params != nil {
 		initial = *params
@@ -96,9 +120,10 @@ func All(ctx context.Context, session *mcp.ClientSession, params *ListSkillsPara
 	}
 	return func(yield func(*Skill, error) bool) {
 		request := initial
+		request.Meta = maps.Clone(initial.Meta)
 		allPages(initial.Cursor, func(cursor string) ([]*Skill, string, error) {
 			request.Cursor = cursor
-			result, err := List(ctx, session, &request)
+			result, err := client.List(ctx, &request)
 			if err != nil {
 				return nil, "", err
 			}
@@ -108,7 +133,11 @@ func All(ctx context.Context, session *mcp.ClientSession, params *ListSkillsPara
 }
 
 // DirectoryEntries returns an iterator that follows every page of a directory read.
-func DirectoryEntries(ctx context.Context, session *mcp.ClientSession, params *ReadDirectoryParams) iter.Seq2[*mcp.Resource, error] {
+func (c *Client) DirectoryEntries(ctx context.Context, params *ReadDirectoryParams) iter.Seq2[*mcp.Resource, error] {
+	client := Client{}
+	if c != nil {
+		client = *c
+	}
 	var initial ReadDirectoryParams
 	if params != nil {
 		initial = *params
@@ -116,9 +145,10 @@ func DirectoryEntries(ctx context.Context, session *mcp.ClientSession, params *R
 	}
 	return func(yield func(*mcp.Resource, error) bool) {
 		request := initial
+		request.Meta = maps.Clone(initial.Meta)
 		allPages(initial.Cursor, func(cursor string) ([]*mcp.Resource, string, error) {
 			request.Cursor = cursor
-			result, err := ReadDirectory(ctx, session, &request)
+			result, err := client.ReadDirectory(ctx, &request)
 			if err != nil {
 				return nil, "", err
 			}
@@ -127,40 +157,11 @@ func DirectoryEntries(ctx context.Context, session *mcp.ClientSession, params *R
 	}
 }
 
-func allPages[T any](initialCursor string, fetch func(string) ([]T, string, error)) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		cursor := initialCursor
-		seen := map[string]bool{}
-		if cursor != "" {
-			seen[cursor] = true
-		}
-		for {
-			items, next, err := fetch(cursor)
-			if err != nil {
-				var zero T
-				yield(zero, err)
-				return
-			}
-			for _, item := range items {
-				if !yield(item, nil) {
-					return
-				}
-			}
-			if next == "" {
-				return
-			}
-			if seen[next] {
-				var zero T
-				yield(zero, fmt.Errorf("skills: server repeated pagination cursor %q", next))
-				return
-			}
-			seen[next] = true
-			cursor = next
-		}
+func (c *Client) requireCapability(directoryRead bool) error {
+	if c == nil {
+		return fmt.Errorf("skills: nil client")
 	}
-}
-
-func requireCapability(session *mcp.ClientSession, directoryRead bool) error {
+	session := c.Session
 	if session == nil || session.InitializeResult() == nil || session.InitializeResult().Capabilities == nil {
 		return fmt.Errorf("skills: session has no server capabilities")
 	}
@@ -168,16 +169,35 @@ func requireCapability(session *mcp.ClientSession, directoryRead bool) error {
 	if !ok {
 		return fmt.Errorf("skills: server does not advertise %s", ExtensionID)
 	}
-	if !directoryRead {
-		return nil
-	}
 	m, ok := settings.(map[string]any)
 	if !ok {
 		return fmt.Errorf("skills: server advertised invalid extension settings")
 	}
-	enabled, _ := m["directoryRead"].(bool)
+	if session.InitializeResult().Capabilities.Resources == nil {
+		return fmt.Errorf("skills: server does not advertise resources")
+	}
+	if !directoryRead {
+		return nil
+	}
+	enabled, _ := m[capabilityDirectoryRead].(bool)
 	if !enabled {
 		return fmt.Errorf("skills: server does not advertise directoryRead")
+	}
+	return nil
+}
+
+func (c *Client) validateEnvelope(resultType string, cache *mcp.Cacheable, cachePresent bool) error {
+	if c.Session.InitializeResult().ProtocolVersion < "2026-07-28" {
+		return nil
+	}
+	if resultType != "complete" {
+		return fmt.Errorf("skills: expected complete result, got %q", resultType)
+	}
+	if cache != nil {
+		if !cachePresent {
+			return fmt.Errorf("skills: missing ttlMs or cacheScope")
+		}
+		return validateCache(*cache)
 	}
 	return nil
 }

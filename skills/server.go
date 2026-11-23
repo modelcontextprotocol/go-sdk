@@ -7,6 +7,7 @@ package skills
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,24 +16,18 @@ import (
 // ListSkillsHandler handles skills/list requests.
 type ListSkillsHandler func(context.Context, *mcp.ServerSession, *ListSkillsParams) (*ListSkillsResult, error)
 
-// GetSkillHandler handles skills/get requests.
+// GetSkillHandler handles skills/get. Return (nil, nil) for an unknown skill;
+// AddHandlers translates it to JSON-RPC Invalid Params. Other errors pass through.
 type GetSkillHandler func(context.Context, *mcp.ServerSession, *GetSkillParams) (*GetSkillResult, error)
 
-// ReadDirectoryHandler handles resources/directory/read requests.
+// ReadDirectoryHandler handles resources/directory/read. Return (nil, nil) if
+// the URI does not exist or is not a directory. An empty directory has a non-nil result.
 type ReadDirectoryHandler func(context.Context, *mcp.ServerSession, *ReadDirectoryParams) (*ReadDirectoryResult, error)
 
-// UnsafeOptions permits behavior that may not interoperate with conforming hosts.
-type UnsafeOptions struct {
-	DisableDefaultValidation bool
-	Limits                   *Limits
-}
-
-// ServerOptions configures handler validation.
+// ServerOptions configures the per-skill limits. Protocol validation always
+// runs; applications can perform additional checks in their handlers.
 type ServerOptions struct {
-	SkillValidators     []func(context.Context, *Skill) error
-	ListValidators      []func(context.Context, *ListSkillsResult) error
-	DirectoryValidators []func(context.Context, *ReadDirectoryResult) error
-	Unsafe              *UnsafeOptions
+	Limits Limits
 }
 
 // Handlers contains the required and optional Skills extension handlers.
@@ -42,7 +37,12 @@ type Handlers struct {
 	ReadDirectory ReadDirectoryHandler
 }
 
-// AddHandlers registers the Skills extension handlers on server.
+// AddHandlers registers the Skills extension. Register skill content separately
+// with Server.AddResource or Server.AddResourceTemplate, which also advertises
+// the required resources capability. Configure the server before connecting.
+//
+// Options and handler functions are copied. Results are validated without
+// modifying handler-owned values; handlers must synchronize their own state.
 func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions) error {
 	if server == nil {
 		return fmt.Errorf("skills: nil server")
@@ -50,208 +50,129 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 	if handlers == nil || handlers.List == nil || handlers.Get == nil {
 		return fmt.Errorf("skills: list and get handlers are required")
 	}
-	handlers = &Handlers{List: handlers.List, Get: handlers.Get, ReadDirectory: handlers.ReadDirectory}
-	options = cloneServerOptions(options)
+	h := *handlers
+	var limits Limits
+	if options != nil {
+		limits = options.Limits
+	}
+	limits, err := limits.resolve()
+	if err != nil {
+		return err
+	}
 	if err := mcp.AddReceivingCustomMethod(server, MethodList,
 		func(ctx context.Context, session *mcp.ServerSession, params *ListSkillsParams) (*ListSkillsResult, error) {
 			if params == nil {
 				params = &ListSkillsParams{}
 			}
-			result, err := handlers.List(ctx, session, params)
+			result, err := h.List(ctx, session, params)
 			if err != nil {
 				return nil, err
 			}
-			if err := validateListResult(ctx, result, options); err != nil {
+			if result == nil {
+				return nil, fmt.Errorf("skills/list handler returned a nil result")
+			}
+			out := *result
+			out.Meta = maps.Clone(result.Meta)
+			if out.Skills == nil {
+				out.Skills = []*Skill{}
+			}
+			if err := validateListResult(&out, limits); err != nil {
 				return nil, fmt.Errorf("skills/list handler returned an invalid result: %w", err)
 			}
-			if supportsListCaching(session, params.Meta) {
-				if result.CacheScope == "" {
-					result.CacheScope = "public"
-				}
-			} else {
-				result.omitCache = true
+			out.omitCache = !supportsCaching(params.Meta)
+			out.ResultType = resultType(params.Meta)
+			normalizeCache(&out.Cacheable)
+			if err := validateCache(out.Cacheable); err != nil {
+				return nil, err
 			}
-			return result, nil
+			return &out, nil
 		}); err != nil {
 		return err
 	}
 	if err := mcp.AddReceivingCustomMethod(server, MethodGet,
 		func(ctx context.Context, session *mcp.ServerSession, params *GetSkillParams) (*GetSkillResult, error) {
-			if params == nil || params.URI == "" {
+			if params == nil {
 				return nil, invalidParams("missing required uri")
 			}
 			if _, err := skillNameFromURI(params.URI); err != nil {
 				return nil, invalidParams(err.Error())
 			}
-			result, err := handlers.Get(ctx, session, params)
+			result, err := h.Get(ctx, session, params)
 			if err != nil {
 				return nil, err
 			}
 			if result == nil || result.Skill == nil {
-				return nil, fmt.Errorf("skills/get handler returned a nil skill")
+				return nil, invalidParams("unknown skill: " + params.URI)
 			}
-			if result.Skill.URI != params.URI {
-				return nil, fmt.Errorf("skills/get handler returned URI %q for %q", result.Skill.URI, params.URI)
-			}
-			if err := validateSkillResult(ctx, result.Skill, options); err != nil {
+			if err := validateGetResult(params.URI, result, limits); err != nil {
 				return nil, fmt.Errorf("skills/get handler returned an invalid result: %w", err)
 			}
-			result.ResultType = "complete"
-			return result, nil
+			out := *result
+			out.Meta = maps.Clone(result.Meta)
+			out.omitCache = !supportsCaching(params.Meta)
+			out.ResultType = resultType(params.Meta)
+			normalizeCache(&out.Cacheable)
+			if err := validateCache(out.Cacheable); err != nil {
+				return nil, err
+			}
+			return &out, nil
 		}); err != nil {
 		return err
 	}
 	settings := map[string]any{}
-	if handlers.ReadDirectory != nil {
+	if h.ReadDirectory != nil {
 		if err := mcp.AddReceivingCustomMethod(server, MethodReadDirectory,
 			func(ctx context.Context, session *mcp.ServerSession, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
-				if params == nil || params.URI == "" {
+				if params == nil {
 					return nil, invalidParams("missing required uri")
 				}
 				if _, err := parseDirectoryURI(params.URI); err != nil {
 					return nil, invalidParams(err.Error())
 				}
-				result, err := handlers.ReadDirectory(ctx, session, params)
+				result, err := h.ReadDirectory(ctx, session, params)
 				if err != nil {
 					return nil, err
 				}
-				if err := validateDirectoryResult(ctx, params.URI, result, options); err != nil {
+				if result == nil {
+					return nil, invalidParams("unknown directory: " + params.URI)
+				}
+				out := *result
+				out.Meta = maps.Clone(result.Meta)
+				if out.Resources == nil {
+					out.Resources = []*mcp.Resource{}
+				}
+				if err := ValidateDirectoryResult(params.URI, &out); err != nil {
 					return nil, fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err)
 				}
-				return result, nil
+				out.ResultType = resultType(params.Meta)
+				return &out, nil
 			}); err != nil {
 			return err
 		}
-		settings["directoryRead"] = true
+		settings[capabilityDirectoryRead] = true
 	}
 	server.AddExtension(ExtensionID, settings)
 	return nil
 }
 
-func cloneServerOptions(options *ServerOptions) *ServerOptions {
-	if options == nil {
-		return nil
-	}
-	cloned := *options
-	cloned.SkillValidators = append([]func(context.Context, *Skill) error(nil), options.SkillValidators...)
-	cloned.ListValidators = append([]func(context.Context, *ListSkillsResult) error(nil), options.ListValidators...)
-	cloned.DirectoryValidators = append([]func(context.Context, *ReadDirectoryResult) error(nil), options.DirectoryValidators...)
-	if options.Unsafe != nil {
-		unsafe := *options.Unsafe
-		if options.Unsafe.Limits != nil {
-			limits := *options.Unsafe.Limits
-			unsafe.Limits = &limits
-		}
-		cloned.Unsafe = &unsafe
-	}
-	return &cloned
-}
-
-func validateListResponse(ctx context.Context, result *ListSkillsResult) error {
-	if result == nil {
-		return fmt.Errorf("result is nil")
-	}
-	if result.Skills == nil {
-		return fmt.Errorf("skills is missing or null")
-	}
-	seen := make(map[string]bool, len(result.Skills))
-	for _, skill := range result.Skills {
-		if err := validateSkillResult(ctx, skill, nil); err != nil {
-			return err
-		}
-		if seen[skill.URI] {
-			return fmt.Errorf("skill URI %q occurs more than once", skill.URI)
-		}
-		seen[skill.URI] = true
-	}
-	return nil
-}
-
-func supportsListCaching(session *mcp.ServerSession, meta mcp.Meta) bool {
+// Modern requests carry the validated protocol version in _meta. InitializeParams
+// contains the client's proposal, which can differ from the negotiated version.
+func supportsCaching(meta mcp.Meta) bool {
 	version, _ := meta[mcp.MetaKeyProtocolVersion].(string)
-	if version == "" && session != nil {
-		if params := session.InitializeParams(); params != nil {
-			version = params.ProtocolVersion
-		}
-	}
 	return version >= "2026-07-28"
 }
 
-func validateListResult(ctx context.Context, result *ListSkillsResult, options *ServerOptions) error {
-	if result == nil {
-		return fmt.Errorf("result is nil")
+func resultType(meta mcp.Meta) string {
+	if supportsCaching(meta) {
+		return "complete"
 	}
-	if result.Skills == nil {
-		result.Skills = []*Skill{}
-	}
-	seen := make(map[string]bool, len(result.Skills))
-	for _, skill := range result.Skills {
-		if err := validateSkillResult(ctx, skill, options); err != nil {
-			return err
-		}
-		if seen[skill.URI] {
-			return fmt.Errorf("skill URI %q occurs more than once", skill.URI)
-		}
-		seen[skill.URI] = true
-	}
-	if options != nil {
-		if err := runValidators(ctx, options.ListValidators, result); err != nil {
-			return err
-		}
-	}
-	result.ResultType = "complete"
-	return nil
+	return ""
 }
 
-func validateSkillResult(ctx context.Context, skill *Skill, options *ServerOptions) error {
-	defaultValidation, limits := validationSettings(options)
-	if defaultValidation {
-		if err := ValidateSkillWithLimits(skill, limits); err != nil {
-			return err
-		}
+func normalizeCache(cache *mcp.Cacheable) {
+	if cache.CacheScope == "" {
+		cache.CacheScope = "public"
 	}
-	if options != nil {
-		return runValidators(ctx, options.SkillValidators, skill)
-	}
-	return nil
-}
-
-func validationSettings(options *ServerOptions) (bool, Limits) {
-	limits := DefaultLimits()
-	if options == nil || options.Unsafe == nil {
-		return true, limits
-	}
-	if options.Unsafe.Limits != nil {
-		limits = *options.Unsafe.Limits
-	}
-	return !options.Unsafe.DisableDefaultValidation, limits
-}
-
-func validateDirectoryResult(ctx context.Context, uri string, result *ReadDirectoryResult, options *ServerOptions) error {
-	defaultValidation, _ := validationSettings(options)
-	if defaultValidation {
-		if err := ValidateDirectoryResult(uri, result); err != nil {
-			return err
-		}
-	}
-	if result != nil {
-		result.ResultType = "complete"
-	}
-	if options != nil {
-		return runValidators(ctx, options.DirectoryValidators, result)
-	}
-	return nil
-}
-
-func runValidators[T any](ctx context.Context, validators []func(context.Context, T) error, value T) error {
-	for _, validate := range validators {
-		if validate != nil {
-			if err := validate(ctx, value); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func invalidParams(message string) error {

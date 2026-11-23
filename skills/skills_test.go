@@ -142,7 +142,7 @@ func TestAllPagesReusable(t *testing.T) {
 }
 
 func TestGenericHandlersSupportDynamicResources(t *testing.T) {
-	server := mcp.NewServer(&mcp.Implementation{Name: "dynamic", Version: "v1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "dynamic", Version: "v1"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Resources: &mcp.ResourceCapabilities{}}})
 	skill := &Skill{
 		URI:         "skill://generated/SKILL.md",
 		Frontmatter: Frontmatter{"name": "generated", "description": "Generated on demand."},
@@ -164,7 +164,7 @@ func TestGenericHandlersSupportDynamicResources(t *testing.T) {
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "v1"}, nil)
-	if err := AddClient(client); err != nil {
+	if err := AddMethods(client); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -179,20 +179,20 @@ func TestGenericHandlersSupportDynamicResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
-	result, err := List(ctx, cs, nil)
+	result, err := (&Client{Session: cs}).List(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Skills) != 1 || !result.Skills[0].Resources.IsDynamic() {
 		t.Fatalf("List() = %+v", result)
 	}
-	if result.ResultType != "complete" {
-		t.Fatalf("List() resultType = %q, want complete", result.ResultType)
+	if result.ResultType != resultType(mcp.Meta{mcp.MetaKeyProtocolVersion: cs.InitializeResult().ProtocolVersion}) {
+		t.Fatalf("List() resultType = %q, unexpected for protocol", result.ResultType)
 	}
 }
 
 func TestValidateListResponseRejectsMissingSkills(t *testing.T) {
-	if err := validateListResponse(context.Background(), &ListSkillsResult{}); err == nil {
+	if err := validateListResult(&ListSkillsResult{}, Limits{}); err == nil {
 		t.Fatal("validateListResponse accepted missing skills")
 	}
 }
@@ -221,38 +221,5 @@ func TestListSkillsResultOmitsLegacyCacheFields(t *testing.T) {
 	}
 	if _, ok := fields["cacheScope"]; ok {
 		t.Fatalf("legacy result contains cacheScope: %s", data)
-	}
-}
-
-func TestCustomAndUnsafeValidation(t *testing.T) {
-	resources := make([]*Resource, DefaultMaxResourcesPerSkill+1)
-	for i := range resources {
-		uri := fmt.Sprintf("skill://large/%03d.txt", i)
-		if i == 0 {
-			uri = "skill://large/SKILL.md"
-		}
-		resources[i] = &Resource{URI: uri, Digest: "sha256:" + fmt.Sprintf("%064x", i), Size: 1}
-	}
-	skill := &Skill{
-		URI:         "skill://large/SKILL.md",
-		Frontmatter: Frontmatter{"name": "large", "description": "A large skill."},
-		Resources:   StaticResources(resources...),
-	}
-	if err := ValidateSkill(skill); err == nil {
-		t.Fatal("default validation accepted too many resources")
-	}
-	called := false
-	options := &ServerOptions{
-		Unsafe: &UnsafeOptions{Limits: &Limits{MaxResourcesPerSkill: len(resources), MaxTotalSize: 1024}},
-		SkillValidators: []func(context.Context, *Skill) error{func(context.Context, *Skill) error {
-			called = true
-			return nil
-		}},
-	}
-	if err := validateSkillResult(context.Background(), skill, options); err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Fatal("custom validator was not called")
 	}
 }

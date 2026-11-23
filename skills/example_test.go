@@ -8,7 +8,6 @@ import (
 	"context"
 	"log"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/skills"
 )
@@ -22,13 +21,22 @@ func ExampleAddHandlers() {
 		},
 		Resources: skills.DynamicResources(),
 	}
+
+	server.AddResource(&mcp.Resource{
+		URI: entry.URI, Name: "generated", Description: "Instructions generated on demand.", MIMEType: "text/markdown",
+	}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+			URI: entry.URI, MIMEType: "text/markdown",
+			Text: "---\nname: generated\ndescription: Instructions generated on demand.\n---\n# Generated\n",
+		}}}, nil
+	})
 	err := skills.AddHandlers(server, &skills.Handlers{
 		List: func(context.Context, *mcp.ServerSession, *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {
 			return &skills.ListSkillsResult{Skills: []*skills.Skill{entry}}, nil
 		},
 		Get: func(_ context.Context, _ *mcp.ServerSession, params *skills.GetSkillParams) (*skills.GetSkillResult, error) {
 			if params.URI != entry.URI {
-				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "unknown skill"}
+				return nil, nil
 			}
 			return &skills.GetSkillResult{Skill: entry}, nil
 		},

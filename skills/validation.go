@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,6 +24,9 @@ func parseFrontmatter(data []byte) (Frontmatter, error) {
 		return nil, fmt.Errorf("SKILL.md must begin with YAML frontmatter")
 	}
 	end := bytes.Index(normalized[4:], []byte("\n---\n"))
+	if end < 0 && bytes.HasSuffix(normalized, []byte("\n---")) {
+		end = len(normalized) - 8
+	}
 	if end < 0 {
 		return nil, fmt.Errorf("SKILL.md frontmatter has no closing delimiter")
 	}
@@ -90,7 +94,9 @@ const (
 	DefaultMaxTotalSize = 16 * 1024 * 1024
 )
 
-// Limits controls the limits applied to a static skill manifest.
+// Limits bounds a static skill manifest. Zero fields use the standard defaults;
+// negative fields are invalid. Larger limits must be explicitly configured on
+// both the server and client. Limits never disable structural validation.
 type Limits struct {
 	MaxResourcesPerSkill int
 	MaxTotalSize         int64
@@ -109,11 +115,32 @@ func DefaultLimits() Limits {
 
 // ValidateSkill validates a skill using the Agent Skills and SEP-2640 defaults.
 func ValidateSkill(skill *Skill) error {
-	return ValidateSkillWithLimits(skill, DefaultLimits())
+	return ValidateSkillWithLimits(skill, Limits{})
 }
 
 // ValidateSkillWithLimits validates a skill using the supplied manifest limits.
 func ValidateSkillWithLimits(skill *Skill, limits Limits) error {
+	limits, err := limits.resolve()
+	if err != nil {
+		return err
+	}
+	return validateSkill(skill, limits)
+}
+
+func (limits Limits) resolve() (Limits, error) {
+	if limits.MaxResourcesPerSkill < 0 || limits.MaxTotalSize < 0 {
+		return Limits{}, fmt.Errorf("skills: limits must not be negative")
+	}
+	if limits.MaxResourcesPerSkill == 0 {
+		limits.MaxResourcesPerSkill = DefaultMaxResourcesPerSkill
+	}
+	if limits.MaxTotalSize == 0 {
+		limits.MaxTotalSize = DefaultMaxTotalSize
+	}
+	return limits, nil
+}
+
+func validateSkill(skill *Skill, limits Limits) error {
 	if skill == nil {
 		return fmt.Errorf("skill is nil")
 	}
@@ -232,36 +259,28 @@ func ValidateDirectoryResult(uri string, result *ReadDirectoryResult) error {
 	if result.Resources == nil {
 		return fmt.Errorf("directory %q returned a null resources array", uri)
 	}
-	seenNames := make(map[string]bool, len(result.Resources))
 	seenURIs := make(map[string]bool, len(result.Resources))
 	for i, resource := range result.Resources {
 		if resource == nil {
 			return fmt.Errorf("directory %q resource %d is nil", uri, i)
 		}
-		child, err := url.Parse(resource.URI)
-		if err != nil || child.Scheme == "" {
+		child, err := parseURI(resource.URI)
+		if err != nil {
 			return fmt.Errorf("directory %q child has invalid URI %q", uri, resource.URI)
 		}
-		if child.Scheme != parent.Scheme || child.Host != parent.Host || child.RawQuery != "" || child.Fragment != "" {
+		if child.Scheme != parent.Scheme || child.Host != parent.Host || child.User.String() != parent.User.String() {
 			return fmt.Errorf("resource %q is not a child of directory %q", resource.URI, uri)
 		}
-		parentPath := strings.TrimSuffix(parent.Path, "/")
-		childPath := child.Path
-		prefix := parentPath + "/"
-		if parentPath == "" {
-			prefix = "/"
-		}
-		rel := strings.TrimPrefix(childPath, prefix)
-		if rel == childPath || rel == "" || strings.Contains(rel, "/") {
+		rel := strings.TrimPrefix(child.Path, parent.Path+"/")
+		if rel == child.Path || rel == "" || strings.Contains(rel, "/") {
 			return fmt.Errorf("resource %q is not a direct child of directory %q", resource.URI, uri)
 		}
-		if strings.HasSuffix(resource.URI, "/") {
-			return fmt.Errorf("resource %q has a trailing slash", resource.URI)
+		if resource.Name == "" {
+			return fmt.Errorf("directory %q child has no name", uri)
 		}
-		if seenNames[resource.Name] || seenURIs[resource.URI] {
+		if seenURIs[resource.URI] {
 			return fmt.Errorf("directory %q contains a duplicate child %q", uri, resource.URI)
 		}
-		seenNames[resource.Name] = true
 		seenURIs[resource.URI] = true
 	}
 	return nil
@@ -275,17 +294,14 @@ func validateName(name string) error {
 }
 
 func skillNameFromURI(rawURI string) (string, error) {
-	u, err := url.Parse(rawURI)
-	if err != nil || u.Scheme == "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("skill URI %q is not a valid absolute resource URI", rawURI)
-	}
-	if u.Scheme == "skill" && (u.Host == "" || u.User != nil || u.Port() != "") {
-		return "", fmt.Errorf("skill URI %q must use a host without userinfo or a port", rawURI)
+	u, err := parseURI(rawURI)
+	if err != nil {
+		return "", err
 	}
 	if !strings.HasSuffix(u.Path, "/SKILL.md") {
 		return "", fmt.Errorf("skill URI %q must end in /SKILL.md", rawURI)
 	}
-	dir := strings.Trim(strings.TrimSuffix(u.Path, "/SKILL.md"), "/")
+	dir := strings.TrimPrefix(strings.TrimSuffix(u.Path, "/SKILL.md"), "/")
 	if dir == "" {
 		dir = u.Hostname()
 	} else {
@@ -295,43 +311,95 @@ func skillNameFromURI(rawURI string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("skill URI %q has no skill name", rawURI)
 	}
+	if err := validateName(dir); err != nil {
+		return "", err
+	}
 	return dir, nil
 }
 
 func validateResourceURI(skillURI, resourceURI string) error {
-	skillURL, _ := url.Parse(skillURI)
-	resourceURL, err := url.Parse(resourceURI)
-	if err != nil || resourceURL.Scheme == "" || resourceURL.RawQuery != "" || resourceURL.Fragment != "" {
-		return fmt.Errorf("invalid resource URI")
+	skillURL, err := parseURI(skillURI)
+	if err != nil {
+		return err
 	}
-	if resourceURL.Scheme == "skill" && (resourceURL.Host == "" || resourceURL.User != nil || resourceURL.Port() != "") {
-		return fmt.Errorf("invalid skill resource authority")
+	resourceURL, err := parseURI(resourceURI)
+	if err != nil {
+		return err
 	}
-	if skillURL.Scheme != resourceURL.Scheme || skillURL.Host != resourceURL.Host {
+	if skillURL.Scheme != resourceURL.Scheme || skillURL.Host != resourceURL.Host || skillURL.User.String() != resourceURL.User.String() {
 		return fmt.Errorf("URI is outside the skill root")
 	}
 	rootPath := strings.TrimSuffix(skillURL.Path, "/SKILL.md")
-	if resourceURL.Path != skillURL.Path && !strings.HasPrefix(resourceURL.Path, rootPath+"/") {
-		return fmt.Errorf("URI is outside the skill root")
-	}
-	for _, segment := range strings.Split(resourceURL.Path, "/") {
-		if segment == "." || segment == ".." {
-			return fmt.Errorf("URI contains a traversal segment")
-		}
+	if !strings.HasPrefix(resourceURL.Path, rootPath+"/") || strings.HasSuffix(resourceURL.Path, "/") {
+		return fmt.Errorf("URI is outside the skill root or is not a file")
 	}
 	return nil
 }
 
 func parseDirectoryURI(rawURI string) (*url.URL, error) {
-	if strings.HasSuffix(rawURI, "/") {
+	u, err := parseURI(rawURI)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasSuffix(u.Path, "/") {
 		return nil, fmt.Errorf("directory URI %q must not have a trailing slash", rawURI)
 	}
+	return u, nil
+}
+
+func parseURI(rawURI string) (*url.URL, error) {
 	u, err := url.Parse(rawURI)
-	if err != nil || u.Scheme == "" || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("directory URI %q is invalid", rawURI)
+	if err != nil || u.Scheme == "" || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(rawURI, "#") {
+		return nil, fmt.Errorf("invalid resource URI %q", rawURI)
 	}
 	if u.Scheme == "skill" && (u.Host == "" || u.User != nil || u.Port() != "") {
-		return nil, fmt.Errorf("directory URI %q has an invalid skill authority", rawURI)
+		return nil, fmt.Errorf("invalid skill authority in %q", rawURI)
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return nil, fmt.Errorf("URI %q contains a traversal segment", rawURI)
+		}
 	}
 	return u, nil
+}
+
+func validateListResult(result *ListSkillsResult, limits Limits) error {
+	limits, err := limits.resolve()
+	if err != nil {
+		return err
+	}
+	if result == nil || result.Skills == nil {
+		return fmt.Errorf("skills is missing or null")
+	}
+	seen := make(map[string]bool, len(result.Skills))
+	for _, skill := range result.Skills {
+		if err := validateSkill(skill, limits); err != nil {
+			return err
+		}
+		if seen[skill.URI] {
+			return fmt.Errorf("skill URI %q occurs more than once", skill.URI)
+		}
+		seen[skill.URI] = true
+	}
+	return nil
+}
+
+func validateGetResult(uri string, result *GetSkillResult, limits Limits) error {
+	if result == nil || result.Skill == nil {
+		return fmt.Errorf("skill is missing or null")
+	}
+	if result.Skill.URI != uri {
+		return fmt.Errorf("returned URI %q for %q", result.Skill.URI, uri)
+	}
+	return ValidateSkillWithLimits(result.Skill, limits)
+}
+
+func validateCache(cache mcp.Cacheable) error {
+	if cache.TTLMs < 0 {
+		return fmt.Errorf("skills: ttlMs must not be negative")
+	}
+	if cache.CacheScope != "public" && cache.CacheScope != "private" {
+		return fmt.Errorf("skills: invalid cacheScope %q", cache.CacheScope)
+	}
+	return nil
 }
