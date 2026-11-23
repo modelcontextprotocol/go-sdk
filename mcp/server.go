@@ -229,7 +229,7 @@ func (s *Server) AddExtension(name string, settings map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.opts.Capabilities == nil {
-		s.opts.Capabilities = &ServerCapabilities{Logging: &LoggingCapabilities{}}
+		s.opts.Capabilities = defaultCapabilities()
 	} else {
 		s.opts.Capabilities = s.opts.Capabilities.clone()
 	}
@@ -695,6 +695,14 @@ func (s *Server) RemoveResourceTemplates(uriTemplates ...string) {
 	s.changeAndNotify(notificationResourceListChanged, func() bool { return s.resourceTemplates.remove(uriTemplates...) })
 }
 
+// defaultCapabilities returns the capabilities of a server whose options do not
+// set any: only logging.
+func defaultCapabilities() *ServerCapabilities {
+	return &ServerCapabilities{
+		Logging: &LoggingCapabilities{},
+	}
+}
+
 func (s *Server) capabilities() *ServerCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -705,10 +713,7 @@ func (s *Server) capabilities() *ServerCapabilities {
 		// Deep copy the user-provided capabilities to avoid mutation.
 		caps = s.opts.Capabilities.clone()
 	} else {
-		// SDK defaults: only logging capability.
-		caps = &ServerCapabilities{
-			Logging: &LoggingCapabilities{},
-		}
+		caps = defaultCapabilities()
 	}
 
 	// Augment with tools capability if tools exist or legacy HasTools is set.

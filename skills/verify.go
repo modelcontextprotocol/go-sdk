@@ -26,7 +26,11 @@ func VerifyResource(skill *Skill, uri string, content []byte) error {
 	if err := validateSkill(skill, Limits{}); err != nil {
 		return err
 	}
-	if err := validateResourceURI(skill.URI, uri); err != nil {
+	_, skillURL, err := parseSkillURI(skill.URI)
+	if err != nil {
+		return err
+	}
+	if err := validateResourceURI(skillURL, uri); err != nil {
 		return err
 	}
 	if skill.Resources.IsDynamic() {

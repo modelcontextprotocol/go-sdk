@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +32,7 @@ func main() {
 		"skill://other/SKILL.md":           "---\nname: other\ndescription: Another skill.\n---\n# Other\n",
 	}
 	var entries []*skills.Skill
+	byURI := map[string]*skills.Skill{}
 	for _, item := range []struct{ uri, name, description string }{
 		{"skill://demo/SKILL.md", "demo", "A demonstration skill."},
 		{"skill://demo/nested/SKILL.md", "nested", "A nested skill."},
@@ -48,24 +50,24 @@ func main() {
 			entry.Frontmatter["metadata"] = map[string]string{"author": "go-sdk"}
 		}
 		entries = append(entries, entry)
+		byURI[item.uri] = entry
 	}
 	directories := map[string][]*mcp.Resource{"skill://demo/empty": {}}
 	for uri, content := range files {
-		resource := &mcp.Resource{URI: uri, Name: uri[strings.LastIndex(uri, "/")+1:], MIMEType: "text/markdown"}
-		for _, entry := range entries {
-			if entry.URI == uri {
-				resource.Name = entry.Frontmatter["name"].(string)
-				resource.Description = entry.Frontmatter["description"].(string)
-			}
+		resource := &mcp.Resource{URI: uri, Name: path.Base(uri), MIMEType: "text/markdown"}
+		if entry, ok := byURI[uri]; ok {
+			resource.Name = entry.Frontmatter["name"].(string)
+			resource.Description = entry.Frontmatter["description"].(string)
 		}
 		server.AddResource(resource, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, MIMEType: "text/markdown", Text: content}}}, nil
 		})
+		// path.Dir would clean "skill://" down to "skill:/".
 		parent := uri[:strings.LastIndex(uri, "/")]
 		directories[parent] = append(directories[parent], resource)
 	}
 	for _, uri := range []string{"skill://demo/references", "skill://demo/nested", "skill://demo/empty"} {
-		directories["skill://demo"] = append(directories["skill://demo"], &mcp.Resource{URI: uri, Name: uri[strings.LastIndex(uri, "/")+1:], MIMEType: "inode/directory"})
+		directories["skill://demo"] = append(directories["skill://demo"], &mcp.Resource{URI: uri, Name: path.Base(uri), MIMEType: "inode/directory"})
 	}
 	if err := skills.AddHandlers(server, &skills.Handlers{
 		List: func(_ context.Context, _ *mcp.ServerSession, p *skills.ListSkillsParams) (*skills.ListSkillsResult, error) {

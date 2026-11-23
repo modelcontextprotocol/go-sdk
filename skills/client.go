@@ -46,7 +46,7 @@ type Client struct {
 // List calls skills/list and validates the response using c.Limits.
 // If params is nil, List requests the first page.
 func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkillsResult, error) {
-	if err := c.requireCapability(false); err != nil {
+	if _, err := c.requireExtension(); err != nil {
 		return nil, err
 	}
 	limits := c.Limits
@@ -65,7 +65,7 @@ func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkill
 	if err := validateListResult(result, limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skills/list result: %w", err)
 	}
-	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
+	if err := c.validateEnvelope(result.ResultType, result.Cacheable, result.cachePresent); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -74,7 +74,7 @@ func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkill
 // Get calls skills/get and validates the response using c.Limits.
 // The URI in params must identify a SKILL.md, whether or not it was listed.
 func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResult, error) {
-	if err := c.requireCapability(false); err != nil {
+	if _, err := c.requireExtension(); err != nil {
 		return nil, err
 	}
 	limits := c.Limits
@@ -93,7 +93,7 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 	if err := validateGetResult(params.URI, result, limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skill: %w", err)
 	}
-	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
+	if err := c.validateEnvelope(result.ResultType, result.Cacheable, result.cachePresent); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -102,7 +102,7 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 // ReadDirectory calls resources/directory/read and validates the response.
 // The server must advertise directoryRead, and params must specify a directory URI.
 func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams) (*ReadDirectoryResult, error) {
-	if err := c.requireCapability(true); err != nil {
+	if err := c.requireDirectoryRead(); err != nil {
 		return nil, err
 	}
 	if params == nil || params.URI == "" {
@@ -117,7 +117,7 @@ func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams)
 	if err := ValidateDirectoryResult(params.URI, result); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid directory result: %w", err)
 	}
-	if err := c.validateEnvelope(result.ResultType, nil, false); err != nil {
+	if err := c.validateResultType(result.ResultType); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -128,10 +128,7 @@ func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams)
 // The session, limits, and parameters are captured when All is called.
 // The iterator stops after yielding its first error.
 func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*Skill, error] {
-	client := Client{}
-	if c != nil {
-		client = *c
-	}
+	client := c.snapshot()
 	var initial ListSkillsParams
 	if params != nil {
 		initial = *params
@@ -154,10 +151,7 @@ func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*S
 // Each page is validated as in [Client.ReadDirectory].
 // The iterator stops after yielding its first error.
 func (c *Client) DirectoryEntries(ctx context.Context, params *ReadDirectoryParams) iter.Seq2[*mcp.Resource, error] {
-	client := Client{}
-	if c != nil {
-		client = *c
-	}
+	client := c.snapshot()
 	var initial ReadDirectoryParams
 	if params != nil {
 		initial = *params
@@ -176,47 +170,75 @@ func (c *Client) DirectoryEntries(ctx context.Context, params *ReadDirectoryPara
 	}
 }
 
-func (c *Client) requireCapability(directoryRead bool) error {
+// snapshot copies c so that an iterator keeps using the session and limits that
+// were configured when it was created.
+func (c *Client) snapshot() Client {
 	if c == nil {
-		return fmt.Errorf("skills: nil client")
+		return Client{}
 	}
-	session := c.Session
-	if session == nil || session.InitializeResult() == nil || session.InitializeResult().Capabilities == nil {
-		return fmt.Errorf("skills: session has no server capabilities")
+	return *c
+}
+
+// requireExtension reports the settings the server advertised for the Skills
+// extension, or an error explaining which capability is missing.
+func (c *Client) requireExtension() (map[string]any, error) {
+	if c == nil {
+		return nil, fmt.Errorf("skills: nil client")
 	}
-	settings, ok := session.InitializeResult().Capabilities.Extensions[ExtensionID]
+	if c.Session == nil {
+		return nil, fmt.Errorf("skills: session has no server capabilities")
+	}
+	init := c.Session.InitializeResult()
+	if init == nil || init.Capabilities == nil {
+		return nil, fmt.Errorf("skills: session has no server capabilities")
+	}
+	settings, ok := init.Capabilities.Extensions[ExtensionID]
 	if !ok {
-		return fmt.Errorf("skills: server does not advertise %s", ExtensionID)
+		return nil, fmt.Errorf("skills: server does not advertise %s", ExtensionID)
 	}
 	m, ok := settings.(map[string]any)
 	if !ok {
-		return fmt.Errorf("skills: server advertised invalid extension settings")
+		return nil, fmt.Errorf("skills: server advertised invalid extension settings")
 	}
-	if session.InitializeResult().Capabilities.Resources == nil {
-		return fmt.Errorf("skills: server does not advertise resources")
+	if init.Capabilities.Resources == nil {
+		return nil, fmt.Errorf("skills: server does not advertise resources")
 	}
-	if !directoryRead {
-		return nil
+	return m, nil
+}
+
+func (c *Client) requireDirectoryRead() error {
+	settings, err := c.requireExtension()
+	if err != nil {
+		return err
 	}
-	enabled, _ := m[capabilityDirectoryRead].(bool)
-	if !enabled {
+	if enabled, _ := settings[capabilityDirectoryRead].(bool); !enabled {
 		return fmt.Errorf("skills: server does not advertise directoryRead")
 	}
 	return nil
 }
 
-func (c *Client) validateEnvelope(resultType string, cache *mcp.Cacheable, cachePresent bool) error {
-	if c.Session.InitializeResult().ProtocolVersion < "2026-07-28" {
-		return nil
-	}
-	if resultType != "complete" {
+// usesCaching reports whether the negotiated protocol version requires a result
+// type, and with it the cache hints on skills/list and skills/get.
+func (c *Client) usesCaching() bool {
+	return c.Session.InitializeResult().ProtocolVersion >= protocolVersionCaching
+}
+
+func (c *Client) validateResultType(resultType string) error {
+	if c.usesCaching() && resultType != resultTypeComplete {
 		return fmt.Errorf("skills: expected complete result, got %q", resultType)
 	}
-	if cache != nil {
-		if !cachePresent {
-			return fmt.Errorf("skills: missing ttlMs or cacheScope")
-		}
-		return validateCache(*cache)
-	}
 	return nil
+}
+
+func (c *Client) validateEnvelope(resultType string, cache mcp.Cacheable, cachePresent bool) error {
+	if err := c.validateResultType(resultType); err != nil {
+		return err
+	}
+	if !c.usesCaching() {
+		return nil
+	}
+	if !cachePresent {
+		return fmt.Errorf("skills: missing ttlMs or cacheScope")
+	}
+	return validateCache(cache)
 }

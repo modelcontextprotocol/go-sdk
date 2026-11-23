@@ -89,10 +89,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			if err := validateListResult(&out, limits); err != nil {
 				return nil, internalError(fmt.Errorf("skills/list handler returned an invalid result: %w", err))
 			}
-			out.omitCache = !supportsCaching(params.Meta)
-			out.ResultType = resultType(params.Meta)
-			normalizeCache(&out.Cacheable)
-			if err := validateCache(out.Cacheable); err != nil {
+			if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
 				return nil, internalError(err)
 			}
 			return &out, nil
@@ -119,10 +116,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			}
 			out := *result
 			out.Meta = maps.Clone(result.Meta)
-			out.omitCache = !supportsCaching(params.Meta)
-			out.ResultType = resultType(params.Meta)
-			normalizeCache(&out.Cacheable)
-			if err := validateCache(out.Cacheable); err != nil {
+			if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
 				return nil, internalError(err)
 			}
 			return &out, nil
@@ -169,20 +163,28 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 // contains the client's proposal, which can differ from the negotiated version.
 func supportsCaching(meta mcp.Meta) bool {
 	version, _ := meta[mcp.MetaKeyProtocolVersion].(string)
-	return version >= "2026-07-28"
+	return version >= protocolVersionCaching
 }
 
 func resultType(meta mcp.Meta) string {
 	if supportsCaching(meta) {
-		return "complete"
+		return resultTypeComplete
 	}
 	return ""
 }
 
-func normalizeCache(cache *mcp.Cacheable) {
-	if cache.CacheScope == "" {
-		cache.CacheScope = "public"
+// stampEnvelope fills in the result type and cache hints that the request's
+// protocol version calls for, and validates the hints it settled on.
+func stampEnvelope(meta mcp.Meta, resultType *string, omitCache *bool, cache *mcp.Cacheable) error {
+	caching := supportsCaching(meta)
+	*omitCache = !caching
+	if caching {
+		*resultType = resultTypeComplete
 	}
+	if cache.CacheScope == "" {
+		cache.CacheScope = cacheScopePublic
+	}
+	return validateCache(*cache)
 }
 
 func invalidParams(message string) error {

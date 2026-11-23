@@ -139,7 +139,7 @@ func validateSkill(skill *Skill, limits Limits) error {
 	if skill == nil {
 		return fmt.Errorf("skill is nil")
 	}
-	name, err := skillNameFromURI(skill.URI)
+	name, skillURL, err := parseSkillURI(skill.URI)
 	if err != nil {
 		return err
 	}
@@ -157,12 +157,12 @@ func validateSkill(skill *Skill, limits Limits) error {
 		return fmt.Errorf("skill %q frontmatter name %q does not match URI name %q", skill.URI, frontmatterName, name)
 	}
 	description, ok := skill.Frontmatter["description"].(string)
-	if !ok || utf8.RuneCountInString(description) < 1 || utf8.RuneCountInString(description) > 1024 {
+	if length := utf8.RuneCountInString(description); !ok || length < 1 || length > 1024 {
 		return fmt.Errorf("skill %q frontmatter description must contain 1 to 1024 characters", skill.URI)
 	}
 	if compatibility, ok := skill.Frontmatter["compatibility"]; ok {
 		s, ok := compatibility.(string)
-		if !ok || utf8.RuneCountInString(s) < 1 || utf8.RuneCountInString(s) > 500 {
+		if length := utf8.RuneCountInString(s); !ok || length < 1 || length > 500 {
 			return fmt.Errorf("skill %q frontmatter compatibility must contain 1 to 500 characters", skill.URI)
 		}
 	}
@@ -196,10 +196,10 @@ func validateSkill(skill *Skill, limits Limits) error {
 		}
 	}
 
-	resources, static := skill.Resources.List()
 	if skill.Resources.IsDynamic() {
 		return nil
 	}
+	resources, static := skill.Resources.List()
 	if !static {
 		return fmt.Errorf("skill %q resources is not set", skill.URI)
 	}
@@ -212,7 +212,7 @@ func validateSkill(skill *Skill, limits Limits) error {
 		if resource == nil {
 			return fmt.Errorf("skill %q resource %d is nil", skill.URI, i)
 		}
-		if err := validateResourceURI(skill.URI, resource.URI); err != nil {
+		if err := validateResourceURI(skillURL, resource.URI); err != nil {
 			return fmt.Errorf("skill %q resource %q: %w", skill.URI, resource.URI, err)
 		}
 		if seen[resource.URI] {
@@ -278,28 +278,39 @@ func ValidateDirectoryResult(uri string, result *ReadDirectoryResult) error {
 }
 
 func validateName(name string) error {
-	length := utf8.RuneCountInString(name)
-	valid := utf8.ValidString(name) && length >= 1 && length <= 64 && name == strings.ToLower(name) &&
-		!strings.HasPrefix(name, "-") && !strings.HasSuffix(name, "-") && !strings.Contains(name, "--")
+	invalid := fmt.Errorf("name %q must contain 1 to 64 lowercase Unicode letters, numbers, or non-consecutive hyphens, with no leading or trailing hyphen", name)
+	if length := utf8.RuneCountInString(name); length < 1 || length > 64 {
+		return invalid
+	}
+	if name != strings.ToLower(name) {
+		return invalid
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") || strings.Contains(name, "--") {
+		return invalid
+	}
+	// Invalid UTF-8 decodes to U+FFFD, which is neither a letter nor a number.
 	for _, r := range name {
 		if r != '-' && !unicode.IsLetter(r) && !unicode.IsNumber(r) {
-			valid = false
-			break
+			return invalid
 		}
-	}
-	if !valid {
-		return fmt.Errorf("name %q must contain 1 to 64 lowercase Unicode letters, numbers, or non-consecutive hyphens, with no leading or trailing hyphen", name)
 	}
 	return nil
 }
 
 func skillNameFromURI(rawURI string) (string, error) {
+	name, _, err := parseSkillURI(rawURI)
+	return name, err
+}
+
+// parseSkillURI validates a SKILL.md URI, returning the skill name and the
+// parsed URI so that callers checking many resources parse the root only once.
+func parseSkillURI(rawURI string) (string, *url.URL, error) {
 	u, err := parseURI(rawURI)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !strings.HasSuffix(u.Path, "/SKILL.md") {
-		return "", fmt.Errorf("skill URI %q must end in /SKILL.md", rawURI)
+		return "", nil, fmt.Errorf("skill URI %q must end in /SKILL.md", rawURI)
 	}
 	dir := strings.TrimPrefix(strings.TrimSuffix(u.Path, "/SKILL.md"), "/")
 	if dir == "" {
@@ -309,19 +320,17 @@ func skillNameFromURI(rawURI string) (string, error) {
 		dir = parts[len(parts)-1]
 	}
 	if dir == "" {
-		return "", fmt.Errorf("skill URI %q has no skill name", rawURI)
+		return "", nil, fmt.Errorf("skill URI %q has no skill name", rawURI)
 	}
 	if err := validateName(dir); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return dir, nil
+	return dir, u, nil
 }
 
-func validateResourceURI(skillURI, resourceURI string) error {
-	skillURL, err := parseURI(skillURI)
-	if err != nil {
-		return err
-	}
+// validateResourceURI checks that resourceURI names a file under the skill root
+// described by the already-parsed skillURL.
+func validateResourceURI(skillURL *url.URL, resourceURI string) error {
 	resourceURL, err := parseURI(resourceURI)
 	if err != nil {
 		return err
@@ -349,13 +358,15 @@ func parseDirectoryURI(rawURI string) (*url.URL, error) {
 
 func parseURI(rawURI string) (*url.URL, error) {
 	u, err := url.Parse(rawURI)
-	if err != nil || u.Scheme == "" || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(rawURI, "#") {
+	// A non-empty fragment always leaves a "#" in the raw URI, so the raw check
+	// covers both a parsed fragment and an empty one.
+	if err != nil || u.Scheme == "" || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(rawURI, "#") {
 		return nil, fmt.Errorf("invalid resource URI %q", rawURI)
 	}
 	if u.Scheme == "skill" && (u.Host == "" || u.User != nil || u.Port() != "") {
 		return nil, fmt.Errorf("invalid skill authority in %q", rawURI)
 	}
-	for _, segment := range strings.Split(u.Path, "/") {
+	for segment := range strings.SplitSeq(u.Path, "/") {
 		if segment == "." || segment == ".." {
 			return nil, fmt.Errorf("URI %q contains a traversal segment", rawURI)
 		}
@@ -394,7 +405,7 @@ func validateCache(cache mcp.Cacheable) error {
 	if cache.TTLMs < 0 {
 		return fmt.Errorf("skills: ttlMs must not be negative")
 	}
-	if cache.CacheScope != "public" && cache.CacheScope != "private" {
+	if cache.CacheScope != cacheScopePublic && cache.CacheScope != cacheScopePrivate {
 		return fmt.Errorf("skills: invalid cacheScope %q", cache.CacheScope)
 	}
 	return nil

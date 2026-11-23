@@ -20,7 +20,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const capabilityDirectoryRead = "directoryRead"
+const (
+	capabilityDirectoryRead = "directoryRead"
+	// protocolVersionCaching is the first protocol version whose results carry
+	// a result type and cache hints.
+	protocolVersionCaching = "2026-07-28"
+	resultTypeComplete     = "complete"
+	cacheScopePublic       = "public"
+	cacheScopePrivate      = "private"
+)
 
 const (
 	// ExtensionID is the capability identifier for the Skills extension.
@@ -169,6 +177,33 @@ type ListSkillsResult struct {
 	cachePresent bool
 }
 
+// omittedCache shadows the [mcp.Cacheable] hints with nil pointers, dropping
+// them from the wire form of a result marshaled before protocol version
+// 2026-07-28.
+type omittedCache struct {
+	TTLMs      *int    `json:"ttlMs,omitempty"`
+	CacheScope *string `json:"cacheScope,omitempty"`
+}
+
+// decodedCache captures the cache hints as they appeared on the wire, so that a
+// result can distinguish an absent hint from a zero-valued one.
+type decodedCache struct {
+	TTLMs      *int    `json:"ttlMs"`
+	CacheScope *string `json:"cacheScope"`
+}
+
+// apply copies the hints that were present into cache, and reports whether the
+// response carried both of them.
+func (d decodedCache) apply(cache *mcp.Cacheable) bool {
+	if d.TTLMs != nil {
+		cache.TTLMs = *d.TTLMs
+	}
+	if d.CacheScope != nil {
+		cache.CacheScope = *d.CacheScope
+	}
+	return d.TTLMs != nil && d.CacheScope != nil
+}
+
 func (r *ListSkillsResult) MarshalJSON() ([]byte, error) {
 	type wire ListSkillsResult
 	if !r.omitCache {
@@ -176,8 +211,7 @@ func (r *ListSkillsResult) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		*wire
-		TTLMs      *int    `json:"ttlMs,omitempty"`
-		CacheScope *string `json:"cacheScope,omitempty"`
+		omittedCache
 	}{wire: (*wire)(r)})
 }
 
@@ -205,8 +239,7 @@ func (r *GetSkillResult) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		*wire
-		TTLMs      *int    `json:"ttlMs,omitempty"`
-		CacheScope *string `json:"cacheScope,omitempty"`
+		omittedCache
 	}{wire: (*wire)(r)})
 }
 
@@ -230,20 +263,13 @@ func (r *ListSkillsResult) UnmarshalJSON(data []byte) error {
 	type wire ListSkillsResult
 	var decoded struct {
 		wire
-		TTLMs      *int    `json:"ttlMs"`
-		CacheScope *string `json:"cacheScope"`
+		decodedCache
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = ListSkillsResult(decoded.wire)
-	r.cachePresent = decoded.TTLMs != nil && decoded.CacheScope != nil
-	if decoded.TTLMs != nil {
-		r.TTLMs = *decoded.TTLMs
-	}
-	if decoded.CacheScope != nil {
-		r.CacheScope = *decoded.CacheScope
-	}
+	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
 	return nil
 }
 
@@ -251,19 +277,12 @@ func (r *GetSkillResult) UnmarshalJSON(data []byte) error {
 	type wire GetSkillResult
 	var decoded struct {
 		wire
-		TTLMs      *int    `json:"ttlMs"`
-		CacheScope *string `json:"cacheScope"`
+		decodedCache
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = GetSkillResult(decoded.wire)
-	r.cachePresent = decoded.TTLMs != nil && decoded.CacheScope != nil
-	if decoded.TTLMs != nil {
-		r.TTLMs = *decoded.TTLMs
-	}
-	if decoded.CacheScope != nil {
-		r.CacheScope = *decoded.CacheScope
-	}
+	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
 	return nil
 }

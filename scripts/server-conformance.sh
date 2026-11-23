@@ -37,30 +37,34 @@ usage() {
     echo "  --help                   Show this help message"
 }
 
+# require_value exits unless $1 was given a usable value in $2.
+require_value() {
+    if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+    fi
+}
+
 # Parse arguments.
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --result_dir|--conformance_repo|--conformance_ref|--server)
-            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
-                echo "Missing value for $1" >&2
-                exit 1
-            fi
-            ;;
-    esac
-    case $1 in
         --result_dir)
+            require_value "$@"
             RESULT_DIR="$2"
             shift 2
             ;;
         --conformance_repo)
+            require_value "$@"
             CONFORMANCE_REPO="$2"
             shift 2
             ;;
         --conformance_ref)
+            require_value "$@"
             CONFORMANCE_REF="$2"
             shift 2
             ;;
         --server)
+            require_value "$@"
             SERVER_PACKAGE="$2"
             shift 2
             ;;
@@ -102,20 +106,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Set up the work directory.
-if [ -n "$RESULT_DIR" ]; then
-    mkdir -p "$RESULT_DIR"
-    # Make the path absolute: the tests run from inside it (see below).
-    RESULT_DIR=$(cd "$RESULT_DIR" && pwd)
-    WORKDIR="$RESULT_DIR"
-else
-    WORKDIR=$(mktemp -d)
-fi
-WORKDIR=$(cd "$WORKDIR" && pwd)
+# Set up the work directory. Results are written to an absolute path, so that
+# the conformance runner can be started from the work directory.
 OUTPUT_ARGS=()
 if [[ -n "$RESULT_DIR" ]]; then
-    RESULT_DIR="$WORKDIR"
+    mkdir -p "$RESULT_DIR"
+    RESULT_DIR=$(cd "$RESULT_DIR" && pwd)
+    WORKDIR="$RESULT_DIR"
     OUTPUT_ARGS=(--output-dir "$RESULT_DIR")
+else
+    WORKDIR=$(mktemp -d)
 fi
 
 if [[ -n "$CONFORMANCE_REPO" ]]; then
