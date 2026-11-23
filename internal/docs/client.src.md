@@ -256,14 +256,34 @@ session. This example connects to the server from the
 
 %include ../../skills/example_test.go skillsclient -
 
-`List`, `Get`, and `All` share `skillClient.Limits`. Zero fields use the standard
-512-resource and 16 MiB per-skill defaults; larger values allow larger skills
-without disabling protocol validation. Servers and clients configure these
-limits independently. `ReadDirectory` and `DirectoryEntries` expose optional
+`List`, `Get`, and `All` share `skillClient.Limits`:
+
+| Configuration | Manifest limits |
+| --- | --- |
+| `Limits: nil` | SDK defaults: currently 512 resources and 16 MiB per skill |
+| `Limits: &skills.Limits{}` | No count or size caps |
+| Positive fields in a supplied `Limits` | Exact caps for those dimensions |
+| Zero fields in a supplied `Limits` | Those dimensions are unlimited |
+| Negative fields | Configuration error |
+
+Structural validation always runs. To change one default while retaining the
+others, start from `skills.DefaultLimits()`, which returns a fresh value:
+
+%include ../../skills/example_test.go skillslimits -
+
+A literal containing only `MaxTotalSize` leaves resource count unlimited.
+`DefaultLimits()` and the exported `DefaultMaxResourcesPerSkill` and
+`DefaultMaxTotalSize` constants follow the installed SDK version. Supply explicit
+numeric values for all desired caps to pin application policy across upgrades.
+
+Servers and clients configure these limits independently. Each call captures the
+configured limits before sending its request, and `All` captures them when the
+iterator is created. Do not mutate the client or its referenced limits during use.
+
+`ReadDirectory` and `DirectoryEntries` expose optional
 directory browsing when the server advertises `directoryRead: true`. Calls fail
 if the required server capabilities are absent. Iterators follow cursors without
-modifying request parameters and stop after the first error. Configure the
-client's session and limits before concurrent use.
+modifying request parameters and stop after the first error.
 
 Listing does not fetch content. Read files on demand with `session.ReadResource`
 and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use.

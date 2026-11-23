@@ -27,7 +27,10 @@ type ReadDirectoryHandler func(context.Context, *mcp.ServerSession, *ReadDirecto
 // ServerOptions configures the per-skill limits. Protocol validation always
 // runs; applications can perform additional checks in their handlers.
 type ServerOptions struct {
-	Limits Limits
+	// Limits bounds static manifests. Nil uses [DefaultLimits]; a non-nil
+	// value supplies exact caps, with zero fields meaning unlimited.
+	// AddHandlers copies the value during registration.
+	Limits *Limits
 }
 
 // Handlers contains the Skills extension handlers.
@@ -57,11 +60,11 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 		return fmt.Errorf("skills: list and get handlers are required")
 	}
 	h := *handlers
-	var limits Limits
+	var configuredLimits *Limits
 	if options != nil {
-		limits = options.Limits
+		configuredLimits = options.Limits
 	}
-	limits, err := limits.resolve()
+	limits, err := configuredLimits.resolve()
 	if err != nil {
 		return err
 	}

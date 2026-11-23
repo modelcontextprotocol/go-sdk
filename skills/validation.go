@@ -94,18 +94,25 @@ const (
 	DefaultMaxTotalSize = 16 * 1024 * 1024
 )
 
-// Limits bounds a static skill manifest. Zero fields use the standard defaults;
-// negative fields are invalid. Larger limits must be explicitly configured on
-// both the server and client. Limits never disable structural validation.
+// Limits bounds a static skill manifest. Positive fields are exact caps; zero
+// fields are unlimited, and negative fields are invalid. The zero value imposes
+// no manifest caps. Limits never disable structural validation.
+//
+// A nil *Limits in [Client] or [ServerOptions] uses [DefaultLimits]. To customize
+// one default while retaining the others, start with the value from DefaultLimits.
 type Limits struct {
+	// MaxResourcesPerSkill limits the number of files, including SKILL.md.
 	MaxResourcesPerSkill int
-	MaxTotalSize         int64
+	// MaxTotalSize limits the sum of the files' raw byte lengths.
+	MaxTotalSize int64
 }
 
 var skillNameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// DefaultLimits returns the limits required by SEP-2640.
+// DefaultLimits returns a fresh value containing the SDK's current defaults:
+// [DefaultMaxResourcesPerSkill] and [DefaultMaxTotalSize]. To pin application
+// policy across SDK upgrades, supply explicit numeric limits instead.
 func DefaultLimits() Limits {
 	return Limits{
 		MaxResourcesPerSkill: DefaultMaxResourcesPerSkill,
@@ -115,10 +122,11 @@ func DefaultLimits() Limits {
 
 // ValidateSkill validates a skill using the Agent Skills and SEP-2640 defaults.
 func ValidateSkill(skill *Skill) error {
-	return ValidateSkillWithLimits(skill, Limits{})
+	return ValidateSkillWithLimits(skill, DefaultLimits())
 }
 
-// ValidateSkillWithLimits validates a skill using the supplied manifest limits.
+// ValidateSkillWithLimits validates a skill using exactly the supplied limits.
+// Zero fields impose no cap on that dimension; structural validation always runs.
 func ValidateSkillWithLimits(skill *Skill, limits Limits) error {
 	limits, err := limits.resolve()
 	if err != nil {
@@ -127,17 +135,14 @@ func ValidateSkillWithLimits(skill *Skill, limits Limits) error {
 	return validateSkill(skill, limits)
 }
 
-func (limits Limits) resolve() (Limits, error) {
+func (limits *Limits) resolve() (Limits, error) {
+	if limits == nil {
+		return DefaultLimits(), nil
+	}
 	if limits.MaxResourcesPerSkill < 0 || limits.MaxTotalSize < 0 {
 		return Limits{}, fmt.Errorf("skills: limits must not be negative")
 	}
-	if limits.MaxResourcesPerSkill == 0 {
-		limits.MaxResourcesPerSkill = DefaultMaxResourcesPerSkill
-	}
-	if limits.MaxTotalSize == 0 {
-		limits.MaxTotalSize = DefaultMaxTotalSize
-	}
-	return limits, nil
+	return *limits, nil
 }
 
 func validateSkill(skill *Skill, limits Limits) error {
@@ -364,10 +369,6 @@ func parseURI(rawURI string) (*url.URL, error) {
 }
 
 func validateListResult(result *ListSkillsResult, limits Limits) error {
-	limits, err := limits.resolve()
-	if err != nil {
-		return err
-	}
 	if result == nil || result.Skills == nil {
 		return fmt.Errorf("skills is missing or null")
 	}
@@ -391,7 +392,7 @@ func validateGetResult(uri string, result *GetSkillResult, limits Limits) error 
 	if result.Skill.URI != uri {
 		return fmt.Errorf("returned URI %q for %q", result.Skill.URI, uri)
 	}
-	return ValidateSkillWithLimits(result.Skill, limits)
+	return validateSkill(result.Skill, limits)
 }
 
 func validateCache(cache mcp.Cacheable) error {

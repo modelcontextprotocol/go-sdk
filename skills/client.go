@@ -30,7 +30,8 @@ func AddMethods(client *mcp.Client) error {
 
 // Client calls the Skills extension on a connected [mcp.ClientSession].
 // Call [AddMethods] on the underlying [mcp.Client] before connecting.
-// A Client may be used concurrently; do not modify its fields during use.
+// A Client may be used concurrently; do not modify its fields or the referenced
+// Limits value during use.
 //
 // Client does not prefetch content or cache entries. Keep entries scoped to
 // their originating session and verify resource bytes before using them.
@@ -38,14 +39,19 @@ type Client struct {
 	// Session is the connected MCP session. It must be non-nil.
 	Session *mcp.ClientSession
 	// Limits bounds each manifest returned by List, Get, or All.
-	// Zero fields use the standard per-skill defaults.
-	Limits Limits
+	// Nil uses [DefaultLimits]; a non-nil value supplies exact caps, with
+	// zero fields meaning unlimited.
+	Limits *Limits
 }
 
 // List calls skills/list and validates the response using c.Limits.
 // If params is nil, List requests the first page.
 func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkillsResult, error) {
 	if err := c.requireCapability(false); err != nil {
+		return nil, err
+	}
+	limits, err := c.Limits.resolve()
+	if err != nil {
 		return nil, err
 	}
 	if params == nil {
@@ -57,7 +63,7 @@ func (c *Client) List(ctx context.Context, params *ListSkillsParams) (*ListSkill
 	if err != nil {
 		return nil, err
 	}
-	if err := validateListResult(result, c.Limits); err != nil {
+	if err := validateListResult(result, limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skills/list result: %w", err)
 	}
 	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
@@ -72,6 +78,10 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 	if err := c.requireCapability(false); err != nil {
 		return nil, err
 	}
+	limits, err := c.Limits.resolve()
+	if err != nil {
+		return nil, err
+	}
 	if params == nil || params.URI == "" {
 		return nil, fmt.Errorf("skills: get requires a URI")
 	}
@@ -81,7 +91,7 @@ func (c *Client) Get(ctx context.Context, params *GetSkillParams) (*GetSkillResu
 	if err != nil {
 		return nil, err
 	}
-	if err := validateGetResult(params.URI, result, c.Limits); err != nil {
+	if err := validateGetResult(params.URI, result, limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skill: %w", err)
 	}
 	if err := c.validateEnvelope(result.ResultType, &result.Cacheable, result.cachePresent); err != nil {
@@ -116,11 +126,16 @@ func (c *Client) ReadDirectory(ctx context.Context, params *ReadDirectoryParams)
 
 // All returns an iterator over skills/list, starting at params.Cursor.
 // A nil params starts at the first page. Each page is validated as in [Client.List].
+// The session, limits, and parameters are captured when All is called.
 // The iterator stops after yielding its first error.
 func (c *Client) All(ctx context.Context, params *ListSkillsParams) iter.Seq2[*Skill, error] {
 	client := Client{}
 	if c != nil {
 		client = *c
+		if c.Limits != nil {
+			limits := *c.Limits
+			client.Limits = &limits
+		}
 	}
 	var initial ListSkillsParams
 	if params != nil {

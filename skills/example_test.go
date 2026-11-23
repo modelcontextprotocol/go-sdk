@@ -81,6 +81,12 @@ func ExampleAddHandlers() {
 	}
 	// !-skillsclient
 
+	// !+skillslimits
+	limits := skills.DefaultLimits()
+	limits.MaxTotalSize = 32 << 20
+	skillClient = &skills.Client{Session: session, Limits: &limits}
+	// !-skillslimits
+
 	// !+skillsverify
 	result, err := skillClient.Get(ctx, &skills.GetSkillParams{URI: "skill://greeting/SKILL.md"})
 	if err != nil {

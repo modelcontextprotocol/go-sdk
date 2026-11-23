@@ -1297,11 +1297,18 @@ modifying the input slice. A zero page size uses `mcp.DefaultPageSize`;
 `mcp.ServerOptions.PageSize` does not configure custom Skills handlers. Each skill
 entry contains its complete manifest, which is never split across pages.
 
-`skills.ServerOptions.Limits` configures manifest limits. Zero fields use the
-512-resource and 16 MiB per-skill defaults. A server serving larger skills is not
-guaranteed to interoperate with default clients. Structural validation always
-runs; put additional application policy in the handlers themselves. The SDK
-copies options and prepares outgoing results without mutating handler-owned data.
+`skills.ServerOptions.Limits` is an optional `*skills.Limits`. Nil uses the SDK
+defaults, currently 512 resources and 16 MiB per skill. A supplied value uses exact
+caps: zero fields are unlimited and negative fields are invalid. Pass
+`&skills.Limits{}` for no manifest caps, or modify a value from
+`skills.DefaultLimits()` to retain defaults for fields you do not override.
+The [client documentation](client.md#skills-extension) shows the configuration
+semantics and how to pin values across SDK upgrades.
+
+A server serving larger skills is not guaranteed to interoperate with default
+clients. Structural validation always runs; put additional application policy
+in the handlers themselves. The SDK copies the limits during registration and
+prepares outgoing results without mutating handler-owned data.
 
 On protocol `2026-07-28` and later, list and get responses carry `ttlMs` and
 `cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
