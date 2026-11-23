@@ -104,11 +104,10 @@ type ServerOptions struct {
 	PageSize int
 	// If non-nil, called when "notifications/roots/list_changed" is received.
 	//
-	// Deprecated: the roots feature is deprecated as of protocol version
-	// 2026-07-28 (SEP-2577). It remains functional during the deprecation
-	// window (at least twelve months). Migrate to passing paths via tool
-	// parameters, resource URIs, or configuration. See
-	// https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.
+	// It is not called for sessions negotiated at protocol version 2026-07-28
+	// or later, whose schema removes the notification (SEP-2575); such
+	// sessions read roots on demand through a multi round-trip ListRoots
+	// request.
 	RootsListChangedHandler func(context.Context, *RootsListChangedRequest)
 	// If non-nil, called when "notifications/progress" is received.
 	ProgressNotificationHandler func(context.Context, *ProgressNotificationServerRequest)
@@ -2254,13 +2253,22 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	}
 
 	switch req.Method {
-	case methodInitialize, methodPing, notificationInitialized, notificationRootsListChanged, methodSetLevel, methodSubscribe, methodUnsubscribe:
+	case methodInitialize, methodPing, methodSetLevel, methodSubscribe, methodUnsubscribe:
 		if validatedMeta.usesNewProtocol {
 			ss.server.opts.Logger.Error("method removed in the new protocol", "method", req.Method)
 			return nil, &jsonrpc.Error{
 				Code:    jsonrpc.CodeMethodNotFound,
 				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
 			}
+		}
+	case notificationInitialized, notificationRootsListChanged:
+		version := ss.protocolVersion()
+		if extra, ok := req.Extra.(*RequestExtra); version == "" && ok && extra != nil {
+			version = extra.Header.Get(protocolVersionHeader)
+		}
+		if version >= protocolVersion20260728 {
+			ss.server.opts.Logger.Error("notification removed in the new protocol", "method", req.Method)
+			return nil, nil
 		}
 	case methodDiscover:
 		// In case of methodDiscover call the state.initializeParams is populated
