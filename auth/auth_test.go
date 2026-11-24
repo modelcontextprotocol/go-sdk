@@ -66,11 +66,11 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			"forbidden", nil, "Bearer forbidden",
-			"forbidden", 403, "insufficient_scope",
+			"forbidden", 403, "",
 		},
 		{
 			"forbidden wrapped", nil, "Bearer forbidden-wrapped",
-			"token not issued for an allowed client: forbidden", 403, "insufficient_scope",
+			"token not issued for an allowed client: forbidden", 403, "",
 		},
 		{
 			"unknown verifier error", nil, "Bearer unknown",
@@ -304,7 +304,7 @@ func TestRequireBearerToken(t *testing.T) {
 			name:       "forbidden from verifier",
 			opts:       nil,
 			authHeader: "Bearer forbidden",
-			wantHeader: "Bearer error=\"insufficient_scope\"",
+			wantHeader: "",
 			wantStatus: http.StatusForbidden,
 		},
 		{
@@ -314,7 +314,7 @@ func TestRequireBearerToken(t *testing.T) {
 				Scopes:              []string{"read", "write"},
 			},
 			authHeader: "Bearer forbidden",
-			wantHeader: "Bearer error=\"insufficient_scope\", resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
+			wantHeader: "Bearer resource_metadata=\"https://example.com/resource-metadata\", scope=\"read write\"",
 			wantStatus: http.StatusForbidden,
 		},
 		{

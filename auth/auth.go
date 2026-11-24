@@ -38,8 +38,9 @@ var ErrOAuth = errors.New("oauth error")
 // The error that a TokenVerifier should return when the token is valid but the
 // resource server must refuse the request, for example because the token was
 // issued to a client the server does not serve, or it lacks a permission that
-// is not a scope. RequireBearerToken answers it with 403 Forbidden and a
-// WWW-Authenticate challenge with error="insufficient_scope" (RFC 6750 §3.1).
+// is not a scope. RequireBearerToken answers it with 403 Forbidden and no OAuth
+// error code in the WWW-Authenticate challenge, so a client does not start a
+// step-up authorization flow for a token that would be refused the same way.
 // Any other verifier error is treated as a server failure and answered with 500.
 var ErrForbidden = errors.New("forbidden")
 
@@ -159,7 +160,10 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 			return nil, err.Error(), http.StatusUnauthorized, "invalid_token"
 		}
 		if errors.Is(err, ErrForbidden) {
-			return nil, err.Error(), http.StatusForbidden, "insufficient_scope"
+			// No OAuth error code: "insufficient_scope" would make the
+			// authorization-code flow start step-up authorization, and a new
+			// token would be refused the same way.
+			return nil, err.Error(), http.StatusForbidden, ""
 		}
 		if errors.Is(err, ErrOAuth) {
 			return nil, err.Error(), http.StatusBadRequest, ""
