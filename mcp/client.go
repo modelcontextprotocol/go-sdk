@@ -270,6 +270,10 @@ func (c *Client) capabilities(protocolVersion string) *ClientCapabilities {
 		}
 	}
 
+	if protocolVersion >= protocolVersion20260728 && caps.RootsV2 != nil {
+		caps.RootsV2.ListChanged = false
+	}
+
 	// Sync Roots from RootsV2 for backward compatibility (#607).
 	if caps.RootsV2 != nil {
 		caps.Roots = *caps.RootsV2
@@ -643,6 +647,11 @@ func (cs *ClientSession) startKeepalive(interval time.Duration) {
 // replacing any with the same URIs,
 // and notifies any connected servers.
 //
+// Sessions negotiated at protocol version 2026-07-28 or later are not
+// notified: the 2026-07-28 protocol schema removes
+// notifications/roots/list_changed (SEP-2575), and servers read the current
+// roots on demand through a multi round-trip ListRoots request.
+//
 // Deprecated: the roots feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
 // (at least twelve months). Migrate to passing paths via tool parameters,
@@ -660,6 +669,9 @@ func (c *Client) AddRoots(roots ...*Root) {
 // RemoveRoots removes the roots with the given URIs,
 // and notifies any connected servers if the list has changed.
 // It is not an error to remove a nonexistent root.
+//
+// As with [Client.AddRoots], sessions negotiated at protocol version
+// 2026-07-28 or later are not notified.
 //
 // Deprecated: the roots feature is deprecated as of protocol version
 // 2026-07-28 (SEP-2577). It remains functional during the deprecation window
@@ -682,6 +694,9 @@ func changeAndNotify[P Params](c *Client, notification string, params P, change 
 		// Check if listChanged is enabled for this notification type.
 		if c.shouldSendListChangedNotification(notification) {
 			sessions = slices.Clone(c.sessions)
+			if notification == notificationRootsListChanged {
+				sessions = slices.DeleteFunc(sessions, (*ClientSession).usesNewProtocol)
+			}
 		}
 	}
 	c.mu.Unlock()
@@ -1114,7 +1129,7 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
-	if req.Method == methodPing && cs.usesNewProtocol() {
+	if (req.Method == methodPing || req.Method == methodListRoots) && req.IsCall() && cs.usesNewProtocol() {
 		return nil, &jsonrpc.Error{
 			Code:    jsonrpc.CodeMethodNotFound,
 			Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),

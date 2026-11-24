@@ -105,18 +105,21 @@ func TestServerListChangedNotifications(t *testing.T) {
 }
 
 // TestClientListChangedNotifications verifies that roots listChanged notifications
-// are correctly sent or suppressed based on client capability configuration.
+// are correctly sent or suppressed based on client capability configuration
+// and the negotiated protocol version.
 func TestClientListChangedNotifications(t *testing.T) {
 	root := &Root{URI: "file:///test"}
 
 	testCases := []struct {
 		name            string
 		clientOpts      *ClientOptions
+		protocolVersion string // defaults to protocolVersion20251125 if empty
 		wantNotifyCount int64
 	}{
 		{
 			name:            "Default: notification sent",
 			clientOpts:      nil,
+			protocolVersion: protocolVersion20251125,
 			wantNotifyCount: 1,
 		},
 		{
@@ -126,6 +129,7 @@ func TestClientListChangedNotifications(t *testing.T) {
 					RootsV2: &RootCapabilities{ListChanged: false},
 				},
 			},
+			protocolVersion: protocolVersion20251125,
 			wantNotifyCount: 0,
 		},
 		{
@@ -135,7 +139,15 @@ func TestClientListChangedNotifications(t *testing.T) {
 					RootsV2: &RootCapabilities{ListChanged: true},
 				},
 			},
+			protocolVersion: protocolVersion20251125,
 			wantNotifyCount: 1,
+		},
+		{
+			// notifications/roots/list_changed is removed in 2026-07-28 (SEP-2575).
+			name:            "New protocol: notification not sent",
+			clientOpts:      nil,
+			protocolVersion: protocolVersion20260728,
+			wantNotifyCount: 0,
 		},
 	}
 
@@ -144,8 +156,8 @@ func TestClientListChangedNotifications(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx := context.Background()
 
-				// Track notifications.
-				var notifyCount atomic.Int64
+				// Track notifications received by the server and sent by the client.
+				var notifyCount, sentCount atomic.Int64
 
 				// Create server with roots list changed handler.
 				server := NewServer(&Implementation{Name: "testServer", Version: "v1.0.0"}, &ServerOptions{
@@ -163,7 +175,16 @@ func TestClientListChangedNotifications(t *testing.T) {
 				defer ss.Close()
 
 				client := NewClient(&Implementation{Name: "testClient", Version: "v1.0.0"}, tc.clientOpts)
-				cs, err := client.Connect(ctx, cTransport, nil)
+				client.AddSendingMiddleware(func(next MethodHandler) MethodHandler {
+					return func(ctx context.Context, method string, req Request) (Result, error) {
+						if method == notificationRootsListChanged {
+							sentCount.Add(1)
+						}
+						return next(ctx, method, req)
+					}
+				})
+				protocolVersion := tc.protocolVersion
+				cs, err := client.Connect(ctx, cTransport, &ClientSessionOptions{ProtocolVersion: protocolVersion})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -175,6 +196,9 @@ func TestClientListChangedNotifications(t *testing.T) {
 				// Wait for all goroutines to be blocked (notification delivered).
 				synctest.Wait()
 
+				if got, want := sentCount.Load(), tc.wantNotifyCount; got != want {
+					t.Errorf("notifications sent by client: got %d, want %d", got, want)
+				}
 				if got, want := notifyCount.Load(), tc.wantNotifyCount; got != want {
 					t.Errorf("notification count: got %d, want %d", got, want)
 				}
