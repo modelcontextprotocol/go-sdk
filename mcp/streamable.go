@@ -347,6 +347,16 @@ var fatalnewprotocolerrors = mcpgodebug.Value("fatalnewprotocolerrors")
 // mentioning the `StreamableHTTPOptions.Stateless` field.
 var plaintextstatefulrejection = mcpgodebug.Value("plaintextstatefulrejection")
 
+// plaintextversionrejection is a compatibility parameter that restores the
+// previous behavior of a stateless [StreamableHTTPHandler] whose server
+// supports 2026-07-28 or later when a request's `MCP-Protocol-Version` header
+// names an unsupported version below 2026-07-28. When unset (the default), the
+// server responds with a JSON-RPC error of code [CodeUnsupportedProtocolVersion]
+// and an [UnsupportedProtocolVersionData] payload. When set to "1", the server
+// instead responds with a plain-text `http.Error` body. The option will be
+// removed in the 1.12.0 version of the SDK.
+var plaintextversionrejection = mcpgodebug.Value("plaintextversionrejection")
+
 // writeJSONRPCError writes a JSON-RPC error response with the given HTTP
 // status code, request ID (may be a zero ID for errors that occur before the
 // request body has been parsed), and JSON-RPC error.
@@ -399,16 +409,42 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	}
 }
 
-func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, protocolVersion string, server *Server) bool {
+// validateProtocolVersion reports whether the request's Mcp-Protocol-Version
+// header is acceptable, writing a 400 response if it is not. A version from
+// 2026-07-28 on is accepted here even if unsupported: [ServerSession.handle]
+// validates it against the request's _meta.
+func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, req *http.Request, server *Server) bool {
+	protocolVersion := protocolVersionFromContext(req.Context())
 	supportedVersions := supportedProtocolVersions
 	if server != nil {
 		supportedVersions = server.protocolVersions
 	}
-	if protocolVersion != "" && !slices.Contains(supportedVersions, protocolVersion) && protocolVersion < protocolVersion20260728 {
-		http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
+	if protocolVersion == "" || slices.Contains(supportedVersions, protocolVersion) || protocolVersion >= protocolVersion20260728 {
+		return true
+	}
+	// A stateless server that supports 2026-07-28 answers with the JSON-RPC
+	// error that version requires, whichever era the request is from.
+	if h.opts.Stateless && plaintextversionrejection != "1" &&
+		slices.ContainsFunc(supportedVersions, func(v string) bool { return v >= protocolVersion20260728 }) {
+		body, _ := io.ReadAll(req.Body)
+		msg, _ := jsonrpc.DecodeMessage(body)
+		var id jsonrpc.ID
+		if r, ok := msg.(*jsonrpc.Request); ok {
+			id = r.ID
+		}
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedVersions,
+			Requested: protocolVersion,
+		})
+		writeJSONRPCError(w, http.StatusBadRequest, id, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		})
 		return false
 	}
-	return true
+	http.Error(w, fmt.Sprintf("Bad Request: Unsupported protocol version (supported versions: %s)", strings.Join(supportedVersions, ",")), http.StatusBadRequest)
+	return false
 }
 
 // serveStateless handles requests for stateless servers.
@@ -435,7 +471,7 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	server := h.getServer(req)
-	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+	if !h.validateProtocolVersion(w, req, server) {
 		return
 	}
 	if server == nil {
@@ -621,7 +657,7 @@ func (h *StreamableHTTPHandler) serveStatefulGET(w http.ResponseWriter, req *htt
 	if !ok {
 		return
 	}
-	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+	if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
 		return
 	}
 
@@ -641,7 +677,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 	if !ok {
 		return
 	}
-	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+	if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
 		return
 	}
 
@@ -673,7 +709,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		if !ok {
 			return
 		}
-		if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server) {
+		if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
 			return
 		}
 		sessInfo.startPOST()
@@ -684,7 +720,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 
 	// No session ID: create a new session.
 	server := h.getServer(req)
-	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server) {
+	if !h.validateProtocolVersion(w, req, server) {
 		return
 	}
 	if server == nil {

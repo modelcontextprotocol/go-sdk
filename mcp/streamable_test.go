@@ -5216,6 +5216,159 @@ func TestStreamableSupportedProtocolVersions_Header(t *testing.T) {
 	})
 }
 
+// TestStreamableStateless_UnsupportedProtocolVersion verifies that a stateless
+// server supporting 2026-07-28 rejects an unsupported protocol version with
+// [CodeUnsupportedProtocolVersion], whichever side of 2026-07-28 the version
+// sorts on and whether or not the request names it in _meta, and that
+// MCPGODEBUG=plaintextversionrejection=1 restores the plain-text 400 for
+// versions below 2026-07-28.
+func TestStreamableStateless_UnsupportedProtocolVersion(t *testing.T) {
+	for _, srv := range []struct {
+		name     string
+		versions []string
+	}{
+		{name: "modern only", versions: []string{protocolVersion20260728}},
+		{name: "dual era", versions: []string{protocolVersion20260728, protocolVersion20251125}},
+	} {
+		t.Run(srv.name, func(t *testing.T) {
+			server := NewServer(testImpl, &ServerOptions{SupportedProtocolVersions: srv.versions})
+			handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+				Stateless:    true,
+				JSONResponse: true,
+			})
+			defer handler.closeAll()
+			ts := httptest.NewServer(handler)
+			defer ts.Close()
+
+			for _, test := range []struct {
+				name       string
+				version    string
+				meta       map[string]any
+				plainText  bool // with plaintextversionrejection=1: a plain-text 400
+				wantStatus int
+			}{
+				{
+					name:       "unknown version below 2026-07-28",
+					version:    "1900-01-01",
+					meta:       map[string]any{MetaKeyProtocolVersion: "1900-01-01", MetaKeyClientCapabilities: map[string]any{}},
+					wantStatus: http.StatusBadRequest,
+				},
+				{
+					name:       "unknown version above 2026-07-28",
+					version:    "2099-01-01",
+					meta:       map[string]any{MetaKeyProtocolVersion: "2099-01-01", MetaKeyClientCapabilities: map[string]any{}},
+					wantStatus: http.StatusBadRequest,
+				},
+				{
+					name:       "supported version",
+					version:    protocolVersion20260728,
+					meta:       map[string]any{MetaKeyProtocolVersion: protocolVersion20260728, MetaKeyClientCapabilities: map[string]any{}},
+					wantStatus: http.StatusOK,
+				},
+				{
+					// Legacy requests can carry _meta too; only the protocol version key
+					// marks a request as modern.
+					name:       "legacy request",
+					version:    "1900-01-01",
+					meta:       map[string]any{"progressToken": "p1"},
+					wantStatus: http.StatusBadRequest,
+				},
+				{
+					name:       "unknown version below 2026-07-28, plaintextversionrejection=1",
+					version:    "1900-01-01",
+					meta:       map[string]any{MetaKeyProtocolVersion: "1900-01-01", MetaKeyClientCapabilities: map[string]any{}},
+					plainText:  true,
+					wantStatus: http.StatusBadRequest,
+				},
+				{
+					name:       "legacy request, plaintextversionrejection=1",
+					version:    "1900-01-01",
+					meta:       map[string]any{"progressToken": "p1"},
+					plainText:  true,
+					wantStatus: http.StatusBadRequest,
+				},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					if test.plainText {
+						prev := plaintextversionrejection
+						plaintextversionrejection = "1"
+						t.Cleanup(func() { plaintextversionrejection = prev })
+					}
+					body, err := json.Marshal(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"method":  methodListTools,
+						"params":  map[string]any{"_meta": test.meta},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					req, err := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader(body))
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Accept", "application/json, text/event-stream")
+					req.Header.Set(protocolVersionHeader, test.version)
+					req.Header.Set(methodHeader, methodListTools)
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer resp.Body.Close()
+					respBody, _ := io.ReadAll(resp.Body)
+
+					if resp.StatusCode != test.wantStatus {
+						t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, test.wantStatus, respBody)
+					}
+					contentType := baseMediaType(resp.Header.Get("Content-Type"))
+					if test.plainText {
+						if contentType != "text/plain" {
+							t.Errorf("Content-Type = %q, want text/plain; body = %s", contentType, respBody)
+						}
+						return
+					}
+					if contentType != "application/json" {
+						t.Fatalf("Content-Type = %q, want application/json; body = %s", contentType, respBody)
+					}
+					msg, err := jsonrpc.DecodeMessage(respBody)
+					if err != nil {
+						t.Fatalf("decoding response: %v; body = %s", err, respBody)
+					}
+					jresp, ok := msg.(*jsonrpc.Response)
+					if !ok {
+						t.Fatalf("response is not a JSON-RPC response: %s", respBody)
+					}
+					if jresp.ID != jsonrpc2.Int64ID(1) {
+						t.Errorf("response ID = %v, want 1", jresp.ID)
+					}
+					if test.wantStatus == http.StatusOK {
+						if jresp.Error != nil {
+							t.Fatalf("unexpected error: %v", jresp.Error)
+						}
+						return
+					}
+					var jerr *jsonrpc.Error
+					if !errors.As(jresp.Error, &jerr) || jerr.Code != CodeUnsupportedProtocolVersion {
+						t.Fatalf("error = %v, want code %d", jresp.Error, CodeUnsupportedProtocolVersion)
+					}
+					var data UnsupportedProtocolVersionData
+					if err := json.Unmarshal(jerr.Data, &data); err != nil {
+						t.Fatalf("decoding error data: %v; data = %s", err, jerr.Data)
+					}
+					want := UnsupportedProtocolVersionData{
+						Supported: srv.versions,
+						Requested: test.version,
+					}
+					if diff := cmp.Diff(want, data); diff != "" {
+						t.Errorf("error data mismatch (-want +got):\n%s", diff)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestStreamableGetServerCalledOnceForNewPOST(t *testing.T) {
 	for _, stateless := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stateless=%v", stateless), func(t *testing.T) {
