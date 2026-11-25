@@ -1323,8 +1323,13 @@ func (s *Server) endSubscription(ctx context.Context, req *UnsubscribeRequest, l
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 
-	if err := s.opts.UnsubscribeHandler(ctx, req); err != nil {
-		return nil, err
+	handlerErr := s.opts.UnsubscribeHandler(ctx, req)
+	// An ended listen must not stay registered, whatever the handler returns:
+	// its teardown call runs after the listen's context is cancelled, so a
+	// handler that returns ctx.Err() is expected. An explicit
+	// resources/unsubscribe (zero listenID) can still be refused.
+	if handlerErr != nil && !listenID.IsValid() {
+		return nil, handlerErr
 	}
 
 	s.mu.Lock()
