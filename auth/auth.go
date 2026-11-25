@@ -35,8 +35,20 @@ var ErrInvalidToken = errors.New("invalid token")
 // The error that a TokenVerifier should return for OAuth-specific protocol errors.
 var ErrOAuth = errors.New("oauth error")
 
+// The error that a TokenVerifier should return when the token is valid but the
+// resource server must refuse the request, for example because the token was
+// issued to a client the server does not serve, or it lacks a permission that
+// is not a scope. RequireBearerToken answers it with 403 Forbidden and no OAuth
+// error code in the WWW-Authenticate challenge, so a client does not start a
+// step-up authorization flow for a token that would be refused the same way.
+// Any other verifier error is treated as a server failure and answered with 500.
+var ErrForbidden = errors.New("forbidden")
+
 // A TokenVerifier checks the validity of a bearer token, and extracts information
-// from it. If verification fails, it should return an error that unwraps to ErrInvalidToken.
+// from it. If verification fails, it should return an error that unwraps to
+// ErrInvalidToken when the token is invalid, to ErrForbidden when the token is
+// valid but the resource server must refuse it, or to ErrOAuth for an
+// OAuth-specific protocol error.
 // The HTTP request is provided in case verifying the token involves checking it.
 type TokenVerifier func(ctx context.Context, token string, req *http.Request) (*TokenInfo, error)
 
@@ -90,8 +102,9 @@ func TokenInfoFromContext(ctx context.Context) *TokenInfo {
 
 // RequireBearerToken returns a piece of middleware that verifies a bearer token using the verifier.
 // If verification succeeds, the [TokenInfo] is added to the request's context and the request proceeds.
-// If verification fails, the request fails with a 401 Unauthenticated, and the WWW-Authenticate header
-// is populated to enable [protected resource metadata].
+// If verification fails, the request fails with a 401 Unauthenticated or, when the verifier returns
+// [ErrForbidden], a 403 Forbidden, and the WWW-Authenticate header is populated to enable
+// [protected resource metadata].
 //
 // [protected resource metadata]: https://datatracker.ietf.org/doc/rfc9728
 func RequireBearerToken(verifier TokenVerifier, opts *RequireBearerTokenOptions) func(http.Handler) http.Handler {
@@ -145,6 +158,12 @@ func verify(req *http.Request, verifier TokenVerifier, opts *RequireBearerTokenO
 	if err != nil {
 		if errors.Is(err, ErrInvalidToken) {
 			return nil, err.Error(), http.StatusUnauthorized, "invalid_token"
+		}
+		if errors.Is(err, ErrForbidden) {
+			// No OAuth error code: "insufficient_scope" would make the
+			// authorization-code flow start step-up authorization, and a new
+			// token would be refused the same way.
+			return nil, err.Error(), http.StatusForbidden, ""
 		}
 		if errors.Is(err, ErrOAuth) {
 			return nil, err.Error(), http.StatusBadRequest, ""
