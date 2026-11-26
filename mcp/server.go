@@ -2212,13 +2212,17 @@ var nopreinitinvalidrequest = mcpgodebug.Value("nopreinitinvalidrequest")
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
 	initialized := ss.state.InitializeParams != nil
+	supportedVersions := ss.supportedVersions
 	ss.mu.Unlock()
+	if supportedVersions == nil || req.Method == methodDiscover {
+		supportedVersions = ss.server.protocolVersions
+	}
 
 	// Per-request protocol detection (SEP-2575): if the request carries
 	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
 	// follows the new sessionless protocol. The initialization gate is
 	// skipped for such requests.
-	validatedMeta, perRequestErr := validateRequestMeta(req, ss.server.protocolVersions)
+	validatedMeta, perRequestErr := validateRequestMeta(req, supportedVersions)
 	if perRequestErr != nil {
 		return nil, perRequestErr
 	}

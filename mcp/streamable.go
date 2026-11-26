@@ -1729,7 +1729,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					if plaintextstatefulrejection == "1" {
 						http.Error(w, fmt.Sprintf(
 							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-							protocolVersion),
+							requestedVersion),
 							http.StatusBadRequest)
 						return
 					}

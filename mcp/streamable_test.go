@@ -4180,6 +4180,9 @@ func TestStreamableStateful_LegacyMetaProtocolVersion(t *testing.T) {
 				if slices.Contains(data.Supported, data.Requested) {
 					t.Errorf("data.Requested %q must not appear in data.Supported %v", data.Requested, data.Supported)
 				}
+				if slices.Contains(data.Supported, protocolVersion20260728) {
+					t.Errorf("stateful server advertised %q in data.Supported %v", protocolVersion20260728, data.Supported)
+				}
 			}
 		})
 	}
