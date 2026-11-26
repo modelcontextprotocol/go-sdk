@@ -418,3 +418,31 @@ func TestSelectTokenAuthMethod(t *testing.T) {
 		})
 	}
 }
+
+// TestGetProtectedResourceMetadata_BackcompatDropsQuery checks that the
+// 2025-03-26 fallback authorization base URL keeps only the scheme and
+// authority of the MCP server URL: a query or fragment is not part of it.
+func TestGetProtectedResourceMetadata_BackcompatDropsQuery(t *testing.T) {
+	// The server publishes no protected resource metadata.
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	for _, mcpURL := range []string{
+		ts.URL + "/mcp?tenant=acme",
+		ts.URL + "/mcp#frag",
+		ts.URL + "/mcp?",
+		ts.URL + "?tenant=acme",
+	} {
+		got, err := getProtectedResourceMetadata(t.Context(), nil, mcpURL, ts.Client())
+		if err != nil {
+			t.Fatalf("getProtectedResourceMetadata(%q) error = %v", mcpURL, err)
+		}
+		want := &oauthex.ProtectedResourceMetadata{
+			Resource:             mcpURL,
+			AuthorizationServers: []string{ts.URL},
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("getProtectedResourceMetadata(%q) metadata mismatch (-want +got):\n%s", mcpURL, diff)
+		}
+	}
+}

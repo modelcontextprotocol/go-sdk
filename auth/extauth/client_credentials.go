@@ -201,9 +201,11 @@ func getProtectedResourceMetadata(ctx context.Context, wwwChallenges []oauthex.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse MCP server URL: %v", err)
 	}
-	u.Path = ""
+	// As in AuthorizationCodeHandler, the authorization base URL keeps only
+	// the scheme and authority: a query or fragment is not part of it.
+	authServerURL := &url.URL{Scheme: u.Scheme, Host: u.Host}
 	return &oauthex.ProtectedResourceMetadata{
-		AuthorizationServers: []string{u.String()},
+		AuthorizationServers: []string{authServerURL.String()},
 		Resource:             mcpServerURL,
 	}, nil
 }
