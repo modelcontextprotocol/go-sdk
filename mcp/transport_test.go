@@ -8,12 +8,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1052,4 +1054,121 @@ func TestIOConnCanceledQueuedWrite(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestIOConnDuplicateInFlightRequestID verifies that reusing an in-flight
+// request ID on an ioConn transport returns a -32600 JSON-RPC error with the
+// ID omitted, without disrupting the original in-flight call or the session.
+func TestIOConnDuplicateInFlightRequestID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"}, func(ctx context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+
+	serverT, clientT := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := clientT.rwc
+	defer ss.Close()
+	defer peer.Close()
+
+	lines := make(chan string, 10)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(peer)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	send := func(line string) {
+		t.Helper()
+		if _, err := io.WriteString(peer, line+"\n"); err != nil {
+			t.Fatalf("writing %s: %v", line, err)
+		}
+	}
+	readLine := func() string {
+		t.Helper()
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatal("connection closed before response arrived")
+			}
+			return line
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for response")
+			return ""
+		}
+	}
+
+	send(fmt.Sprintf(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"c","version":"v"}}}`, protocolVersion20251125))
+	initLine := readLine()
+	if !strings.Contains(initLine, `"id":0`) || strings.Contains(initLine, `"error"`) {
+		t.Fatalf("unexpected initialize response: %s", initLine)
+	}
+	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+
+	call := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"slow","arguments":{}}}`
+	send(call)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for slow tool to start")
+	}
+
+	// Send a second call reusing id 5 while the first is still running.
+	send(call)
+
+	dupLine := readLine()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(dupLine), &fields); err != nil {
+		t.Fatalf("unmarshaling duplicate-ID response %q: %v", dupLine, err)
+	}
+	if _, hasID := fields["id"]; hasID {
+		t.Errorf("duplicate-ID error response must omit id, got: %s", dupLine)
+	}
+	if _, hasResult := fields["result"]; hasResult {
+		t.Errorf("duplicate-ID error response must not contain result, got: %s", dupLine)
+	}
+	var jerr jsonrpc.Error
+	if err := json.Unmarshal(fields["error"], &jerr); err != nil {
+		t.Fatalf("unmarshaling error object in %q: %v", dupLine, err)
+	}
+	if jerr.Code != jsonrpc.CodeInvalidRequest {
+		t.Errorf("error code = %d, want %d (%s)", jerr.Code, jsonrpc.CodeInvalidRequest, dupLine)
+	}
+
+	// Let the original call finish and verify its response arrives intact.
+	close(release)
+	origLine := readLine()
+	if !strings.Contains(origLine, `"id":5`) || !strings.Contains(origLine, `"done"`) || strings.Contains(origLine, `"error"`) {
+		t.Fatalf("unexpected response for original call: %s", origLine)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("slow tool called %d times, want 1", got)
+	}
+
+	// Verify the session is still healthy and id 5 can now be reused sequentially.
+	send(`{"jsonrpc":"2.0","id":5,"method":"ping"}`)
+	pingLine := readLine()
+	if !strings.Contains(pingLine, `"id":5`) || strings.Contains(pingLine, `"error"`) {
+		t.Fatalf("unexpected ping response after reuse: %s", pingLine)
+	}
 }

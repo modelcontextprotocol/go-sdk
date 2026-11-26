@@ -605,13 +605,14 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 	// If the request is a call, add it to the incoming map so it can be
 	// cancelled (or responded) by ID.
 	var err error
+	var duplicateID bool
 	c.updateInFlight(func(s *inFlightState) {
 		s.incoming++
 
 		if req.IsCall() {
 			if s.incomingByID[req.ID] != nil {
-				err = fmt.Errorf("%w: request ID %v already in use", ErrInvalidRequest, req.ID)
-				req.ID = ID{} // Don't misattribute this error to the existing request.
+				err = fmt.Errorf("%w: request ID %v already in use", ErrInvalidRequest, req.ID.Raw())
+				duplicateID = true
 				return
 			}
 
@@ -627,6 +628,11 @@ func (c *Connection) acceptRequest(ctx context.Context, msg *Request, preempter 
 			err = s.shuttingDown(ErrConnClosing)
 		}
 	})
+	if duplicateID {
+		c.writeResponse(req, &Response{Error: err})
+		c.finishIncoming(req)
+		return
+	}
 	if err != nil {
 		c.processResult("acceptRequest", req, nil, err)
 		return
@@ -747,10 +753,7 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		c.updateInFlight(func(s *inFlightState) {
 			delete(s.incomingByID, req.ID)
 		})
-		writeErr := c.write(notDone{req.ctx}, response)
-		if writeErr != nil && c.onResponseWriteError != nil {
-			c.onResponseWriteError(req.Request, writeErr)
-		}
+		writeErr := c.writeResponse(req, response)
 		if err == nil {
 			err = writeErr
 		}
@@ -766,15 +769,27 @@ func (c *Connection) processResult(from any, req *incomingRequest, result any, e
 		// (Is this the right label to attach to the log?)
 	}
 
-	// Cancel the request to free any associated resources.
+	c.finishIncoming(req)
+	return nil
+}
+
+func (c *Connection) writeResponse(req *incomingRequest, resp *Response) error {
+	writeErr := c.write(notDone{req.ctx}, resp)
+	if writeErr != nil && c.onResponseWriteError != nil {
+		c.onResponseWriteError(req.Request, writeErr)
+	}
+	return writeErr
+}
+
+// finishIncoming cancels the request to free any associated resources.
+func (c *Connection) finishIncoming(req *incomingRequest) {
 	req.cancel(nil)
 	c.updateInFlight(func(s *inFlightState) {
 		if s.incoming == 0 {
-			panic("jsonrpc2: processResult called when incoming count is already zero")
+			panic("jsonrpc2: finishIncoming called when incoming count is already zero")
 		}
 		s.incoming--
 	})
-	return nil
 }
 
 // write is used by all things that write outgoing messages, including replies.

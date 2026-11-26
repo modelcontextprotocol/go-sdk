@@ -6,6 +6,7 @@ package jsonrpc2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -258,4 +260,126 @@ func (w *dropWriter) drops() []ID {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.dropped)
+}
+
+// TestDuplicateInFlightRequestID verifies that a call reusing an in-flight ID
+// receives an ErrInvalidRequest response with its ID omitted, without running
+// the handler again or disturbing the original in-flight call's tracking.
+func TestDuplicateInFlightRequestID(t *testing.T) {
+	for _, cancelOrig := range []bool{false, true} {
+		name := "original completes"
+		if cancelOrig {
+			name = "original stays cancellable"
+		}
+		t.Run(name, func(t *testing.T) {
+			in := &chanReader{msgs: make(chan Message, 4)}
+			w := fakeWriter{out: make(chan Message, 4)}
+			var calls atomic.Int32
+			started := make(chan struct{})
+			release := make(chan struct{})
+
+			conn := NewConnection(context.Background(), ConnectionConfig{
+				Reader: in,
+				Writer: w,
+				Closer: in,
+				Bind: func(*Connection) Handler {
+					return HandlerFunc(func(ctx context.Context, req *Request) (any, error) {
+						Async(ctx)
+						if req.Method == "slow" {
+							if calls.Add(1) == 1 {
+								close(started)
+							}
+							select {
+							case <-release:
+								return "done", nil
+							case <-ctx.Done():
+								return nil, ctx.Err()
+							}
+						}
+						return "ok", nil
+					})
+				},
+			})
+
+			call1, err := NewCall(Int64ID(5), "slow", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call2, err := NewCall(Int64ID(5), "slow", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.msgs <- call1
+			<-started
+
+			// Reusing id 5 while call1 is in flight must return -32600 with no id.
+			in.msgs <- call2
+			dupResp, ok := (<-w.out).(*Response)
+			if !ok {
+				t.Fatal("want *Response for duplicate ID")
+			}
+			if dupResp.ID.IsValid() {
+				t.Errorf("duplicate-ID response ID = %v, want omitted", dupResp.ID.Raw())
+			}
+			if !errors.Is(dupResp.Error, ErrInvalidRequest) {
+				t.Errorf("duplicate-ID error = %v, want ErrInvalidRequest", dupResp.Error)
+			}
+			if strings.Contains(dupResp.Error.Error(), "{5}") {
+				t.Errorf("duplicate-ID error = %q, want raw ID without struct braces", dupResp.Error)
+			}
+			wire, err := EncodeMessage(dupResp)
+			if err != nil {
+				t.Fatalf("EncodeMessage: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(wire, &fields); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", wire, err)
+			}
+			if _, hasID := fields["id"]; hasID {
+				t.Errorf("encoded duplicate-ID response must omit id, got %s", wire)
+			}
+
+			// Original call must remain unaffected and still tracked in incomingByID.
+			if cancelOrig {
+				conn.Cancel(Int64ID(5))
+			} else {
+				close(release)
+			}
+			origResp, ok := (<-w.out).(*Response)
+			if !ok {
+				t.Fatal("want *Response for original call")
+			}
+			if origResp.ID != Int64ID(5) {
+				t.Errorf("original response ID = %v, want 5", origResp.ID.Raw())
+			}
+			if cancelOrig {
+				if !errors.Is(origResp.Error, context.Canceled) {
+					t.Errorf("cancelled original error = %v, want context.Canceled", origResp.Error)
+				}
+			} else if origResp.Error != nil {
+				t.Errorf("original response error = %v, want nil", origResp.Error)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("slow handler called %d times, want 1", got)
+			}
+
+			// Reusing id 5 sequentially after call1 finishes must succeed.
+			call3, err := NewCall(Int64ID(5), "fast", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.msgs <- call3
+			reuseResp, ok := (<-w.out).(*Response)
+			if !ok {
+				t.Fatal("want *Response for sequential reuse")
+			}
+			if reuseResp.ID != Int64ID(5) || reuseResp.Error != nil {
+				t.Errorf("sequential reuse response = %+v, want id=5 with nil error", reuseResp)
+			}
+
+			if err := conn.Close(); err != nil {
+				t.Errorf("Close() = %v", err)
+			}
+		})
+	}
 }
