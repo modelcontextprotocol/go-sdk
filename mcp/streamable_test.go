@@ -4014,6 +4014,177 @@ func TestStreamableStateful_RejectsNewProtocol_LegacyPlainText(t *testing.T) {
 	}
 }
 
+// TestStreamableStateful_LegacyMetaProtocolVersion verifies that a stateful
+// HTTP handler does not misclassify requests carrying a supported legacy
+// protocol version in _meta["io.modelcontextprotocol/protocolVersion"] as
+// modern SEP-2575 requests, and reports the declared _meta version (not the
+// missing-header 2025-03-26 fallback) when rejecting modern or unknown _meta
+// versions.
+func TestStreamableStateful_LegacyMetaProtocolVersion(t *testing.T) {
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "noop"},
+		func(ctx context.Context, req *CallToolRequest, args struct{}) (*CallToolResult, any, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil, nil
+		})
+	handler := NewStreamableHTTPHandler(func(*http.Request) *Server { return server }, &StreamableHTTPOptions{
+		JSONResponse: true,
+	})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	post := func(t *testing.T, sessionID, headerVersion string, payload any) (int, []byte, http.Header) {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPost, httpServer.URL, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set(sessionIDHeader, sessionID)
+		}
+		if headerVersion != "" {
+			req.Header.Set(protocolVersionHeader, headerVersion)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, respBody, resp.Header
+	}
+
+	// Initialize a legacy 2025-11-25 session.
+	status, respBody, hdr := post(t, "", "", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  methodInitialize,
+		"params": map[string]any{
+			"protocolVersion": protocolVersion20251125,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("initialize status = %d, want 200; body = %s", status, respBody)
+	}
+	sessionID := hdr.Get(sessionIDHeader)
+	if sessionID == "" {
+		t.Fatalf("initialize response missing %s header", sessionIDHeader)
+	}
+
+	t.Run("notification with legacy meta", func(t *testing.T) {
+		status, respBody, _ := post(t, sessionID, protocolVersion20251125, map[string]any{
+			"jsonrpc": "2.0",
+			"method":  notificationInitialized,
+			"params": map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion: protocolVersion20251125,
+				},
+			},
+		})
+		if status != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body = %s", status, respBody)
+		}
+	})
+
+	for _, tc := range []struct {
+		name          string
+		headerVersion string
+		metaVersion   string
+	}{
+		{"matching legacy header and meta", protocolVersion20251125, protocolVersion20251125},
+		{"absent header with legacy meta", "", protocolVersion20251125},
+		{"absent header with 2024-11-05 meta", "", protocolVersion20241105},
+	} {
+		t.Run("call/"+tc.name, func(t *testing.T) {
+			status, respBody, _ := post(t, sessionID, tc.headerVersion, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"method":  methodListTools,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion: tc.metaVersion,
+					},
+				},
+			})
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", status, respBody)
+			}
+			msg, err := jsonrpc.DecodeMessage(respBody)
+			if err != nil {
+				t.Fatalf("decoding response: %v; body = %s", err, respBody)
+			}
+			jresp, ok := msg.(*jsonrpc.Response)
+			if !ok || jresp.Error != nil {
+				t.Fatalf("unexpected response: %s", respBody)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name          string
+		headerVersion string
+		metaVersion   string
+		wantCode      int64
+		wantRequested string
+		wantMsgSubstr string
+	}{
+		{"modern meta without header", "", protocolVersion20260728, CodeUnsupportedProtocolVersion, protocolVersion20260728, "stateful"},
+		{"modern meta with legacy header", protocolVersion20251125, protocolVersion20260728, CodeUnsupportedProtocolVersion, protocolVersion20260728, "stateful"},
+		{"unknown meta with legacy header", protocolVersion20251125, "1900-01-01", CodeUnsupportedProtocolVersion, "1900-01-01", ""},
+	} {
+		t.Run("rejected/"+tc.name, func(t *testing.T) {
+			status, respBody, _ := post(t, sessionID, tc.headerVersion, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"method":  methodListTools,
+				"params": map[string]any{
+					"_meta": map[string]any{
+						MetaKeyProtocolVersion:    tc.metaVersion,
+						MetaKeyClientCapabilities: map[string]any{},
+					},
+				},
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", status, respBody)
+			}
+			msg, err := jsonrpc.DecodeMessage(respBody)
+			if err != nil {
+				t.Fatalf("decoding response: %v; body = %s", err, respBody)
+			}
+			jresp, ok := msg.(*jsonrpc.Response)
+			if !ok || jresp.Error == nil {
+				t.Fatalf("response is not a JSON-RPC error: %s", respBody)
+			}
+			var jerr *jsonrpc.Error
+			if !errors.As(jresp.Error, &jerr) || jerr.Code != tc.wantCode {
+				t.Fatalf("error = %v, want code %d", jresp.Error, tc.wantCode)
+			}
+			if tc.wantMsgSubstr != "" && !strings.Contains(jerr.Message, tc.wantMsgSubstr) {
+				t.Errorf("error message = %q, want substring %q", jerr.Message, tc.wantMsgSubstr)
+			}
+			if tc.wantRequested != "" {
+				var data UnsupportedProtocolVersionData
+				if err := json.Unmarshal(jerr.Data, &data); err != nil {
+					t.Fatalf("decoding error data: %v; data = %s", err, jerr.Data)
+				}
+				if data.Requested != tc.wantRequested {
+					t.Errorf("data.Requested = %q, want %q", data.Requested, tc.wantRequested)
+				}
+				if slices.Contains(data.Supported, data.Requested) {
+					t.Errorf("data.Requested %q must not appear in data.Supported %v", data.Requested, data.Supported)
+				}
+			}
+		})
+	}
+}
+
 // TestCallCancellation_FastReturn verifies that a cancelled tool call
 // returns as soon as its context is cancelled, even when the peer is slow
 // to accept the follow-up notifications/cancelled POST.

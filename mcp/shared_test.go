@@ -58,9 +58,12 @@ func TestValidateRequestMeta(t *testing.T) {
 		name            string
 		method          string
 		params          any
+		supported       []string // defaults to supportedProtocolVersions
 		wantUsesNew     bool
 		wantLogLevel    LoggingLevel
+		wantErrCode     int64 // defaults to jsonrpc.CodeInvalidParams when wantErrContains != ""
 		wantErrContains string
+		wantRequested   string
 	}{
 		{
 			name:        "no params: old protocol",
@@ -164,10 +167,7 @@ func TestValidateRequestMeta(t *testing.T) {
 			wantUsesNew: false,
 		},
 		{
-			// An unsupported version sorting below 2026-07-28 is still a
-			// new-protocol request, so that the caller can answer it with
-			// CodeUnsupportedProtocolVersion.
-			name:   "unsupported version: new protocol",
+			name:   "unsupported version: rejected directly",
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
@@ -177,12 +177,15 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
-			wantUsesNew: true,
+			wantUsesNew:     false,
+			wantErrCode:     CodeUnsupportedProtocolVersion,
+			wantErrContains: "unsupported protocol version",
+			wantRequested:   "1900-01-01",
 		},
 		{
-			// The triple is defined by a revision the SDK does not know, so an
+			// The triple is defined by a revision the server does not support, so an
 			// unsupported version is reported without validating the rest of it.
-			name:   "unsupported version missing clientCapabilities: new protocol",
+			name:   "unsupported version missing clientCapabilities: rejected directly",
 			method: methodCallTool,
 			params: map[string]any{
 				"_meta": map[string]any{
@@ -190,7 +193,26 @@ func TestValidateRequestMeta(t *testing.T) {
 				},
 				"name": "x",
 			},
-			wantUsesNew: true,
+			wantUsesNew:     false,
+			wantErrCode:     CodeUnsupportedProtocolVersion,
+			wantErrContains: "unsupported protocol version",
+			wantRequested:   "1900-01-01",
+		},
+		{
+			name:      "excluded modern version: rejected directly",
+			method:    methodCallTool,
+			supported: []string{protocolVersion20251125},
+			params: map[string]any{
+				"_meta": map[string]any{
+					MetaKeyProtocolVersion:    protocolVersion20260728,
+					MetaKeyClientCapabilities: map[string]any{},
+				},
+				"name": "x",
+			},
+			wantUsesNew:     false,
+			wantErrCode:     CodeUnsupportedProtocolVersion,
+			wantErrContains: "unsupported protocol version",
+			wantRequested:   protocolVersion20260728,
 		},
 		{
 			name:   "new protocol with logLevel",
@@ -237,7 +259,11 @@ func TestValidateRequestMeta(t *testing.T) {
 			}
 			req := &jsonrpc.Request{Method: tc.method, Params: raw, ID: id}
 
-			vmeta, err := validateRequestMeta(req)
+			supported := tc.supported
+			if supported == nil {
+				supported = supportedProtocolVersions
+			}
+			vmeta, err := validateRequestMeta(req, supported)
 			usesNew := vmeta != nil && vmeta.usesNewProtocol
 			if usesNew != tc.wantUsesNew {
 				t.Errorf("usesNewProtocol = %v, want %v", usesNew, tc.wantUsesNew)
@@ -258,11 +284,27 @@ func TestValidateRequestMeta(t *testing.T) {
 			if !errors.As(err, &jerr) {
 				t.Fatalf("expected *jsonrpc.Error, got %T: %v", err, err)
 			}
-			if jerr.Code != jsonrpc.CodeInvalidParams {
-				t.Errorf("error code = %d, want %d", jerr.Code, jsonrpc.CodeInvalidParams)
+			wantCode := tc.wantErrCode
+			if wantCode == 0 {
+				wantCode = jsonrpc.CodeInvalidParams
+			}
+			if jerr.Code != wantCode {
+				t.Errorf("error code = %d, want %d", jerr.Code, wantCode)
 			}
 			if !strings.Contains(jerr.Message, tc.wantErrContains) {
 				t.Errorf("error message %q does not contain %q", jerr.Message, tc.wantErrContains)
+			}
+			if tc.wantRequested != "" {
+				var data UnsupportedProtocolVersionData
+				if err := json.Unmarshal(jerr.Data, &data); err != nil {
+					t.Fatalf("unmarshal error data: %v", err)
+				}
+				if data.Requested != tc.wantRequested {
+					t.Errorf("data.Requested = %q, want %q", data.Requested, tc.wantRequested)
+				}
+				if diff := cmp.Diff(supported, data.Supported); diff != "" {
+					t.Errorf("data.Supported mismatch (-want +got):\n%s", diff)
+				}
 			}
 		})
 	}

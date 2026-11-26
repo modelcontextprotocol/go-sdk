@@ -2218,22 +2218,9 @@ func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any,
 	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
 	// follows the new sessionless protocol. The initialization gate is
 	// skipped for such requests.
-	validatedMeta, perRequestErr := validateRequestMeta(req)
+	validatedMeta, perRequestErr := validateRequestMeta(req, ss.server.protocolVersions)
 	if perRequestErr != nil {
 		return nil, perRequestErr
-	}
-
-	if validatedMeta.usesNewProtocol &&
-		!slices.Contains(ss.server.protocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
-		data, _ := json.Marshal(UnsupportedProtocolVersionData{
-			Supported: ss.server.protocolVersions,
-			Requested: validatedMeta.initializeParams.ProtocolVersion,
-		})
-		return nil, &jsonrpc.Error{
-			Code:    CodeUnsupportedProtocolVersion,
-			Message: "unsupported protocol version",
-			Data:    data,
-		}
 	}
 
 	// A server that supports only 2026-07-28 and later serves no legacy call,
