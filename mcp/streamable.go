@@ -412,9 +412,9 @@ func (h *StreamableHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Reque
 // validateProtocolVersion reports whether the request's Mcp-Protocol-Version
 // header is acceptable, writing a 400 response if it is not. A version from
 // 2026-07-28 on is accepted here even if unsupported: [ServerSession.handle]
-// validates it against the request's _meta.
-func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, req *http.Request, server *Server) bool {
-	protocolVersion := protocolVersionFromContext(req.Context())
+// validates it against the request's _meta. id is the ID of the request, if
+// known, for a JSON-RPC error response.
+func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, protocolVersion string, server *Server, id jsonrpc.ID) bool {
 	supportedVersions := supportedProtocolVersions
 	if server != nil {
 		supportedVersions = server.protocolVersions
@@ -426,12 +426,6 @@ func (h *StreamableHTTPHandler) validateProtocolVersion(w http.ResponseWriter, r
 	// error that version requires, whichever era the request is from.
 	if h.opts.Stateless && plaintextversionrejection != "1" &&
 		slices.ContainsFunc(supportedVersions, func(v string) bool { return v >= protocolVersion20260728 }) {
-		body, _ := io.ReadAll(req.Body)
-		msg, _ := jsonrpc.DecodeMessage(body)
-		var id jsonrpc.ID
-		if r, ok := msg.(*jsonrpc.Request); ok {
-			id = r.ID
-		}
 		data, _ := json.Marshal(UnsupportedProtocolVersionData{
 			Supported: supportedVersions,
 			Requested: protocolVersion,
@@ -471,9 +465,6 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 	}
 
 	server := h.getServer(req)
-	if !h.validateProtocolVersion(w, req, server) {
-		return
-	}
 	if server == nil {
 		http.Error(w, "no server available", http.StatusBadRequest)
 		return
@@ -487,6 +478,9 @@ func (h *StreamableHTTPHandler) serveStateless(w http.ResponseWriter, req *http.
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server, info.callID) {
 		return
 	}
 
@@ -508,6 +502,7 @@ type ephemeralConnectInfo struct {
 	opts                  *ServerSessionOptions
 	usesNewProtocol       bool
 	isSubscriptionsListen bool
+	callID                jsonrpc.ID // set when the body is a single call
 }
 
 // ephemeralConnectOpts peeks at the request body to determine connection
@@ -524,6 +519,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 	}
 
 	var hasInitialize, hasInitialized, usesNewProtocol, isSubscriptionsListen bool
+	var callID jsonrpc.ID
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		// Preserve *http.MaxBytesError so serveStateless can respond with 413.
@@ -535,6 +531,9 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 	if err == nil {
 		for _, msg := range msgs {
 			if r, ok := msg.(*jsonrpc.Request); ok {
+				if r.IsCall() && len(msgs) == 1 {
+					callID = r.ID
+				}
 				switch r.Method {
 				case methodInitialize:
 					hasInitialize = true
@@ -574,6 +573,7 @@ func (h *StreamableHTTPHandler) ephemeralConnectOpts(req *http.Request) (*epheme
 		},
 		usesNewProtocol:       usesNewProtocol,
 		isSubscriptionsListen: isSubscriptionsListen,
+		callID:                callID,
 	}, nil
 }
 
@@ -657,7 +657,7 @@ func (h *StreamableHTTPHandler) serveStatefulGET(w http.ResponseWriter, req *htt
 	if !ok {
 		return
 	}
-	if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server, jsonrpc.ID{}) {
 		return
 	}
 
@@ -677,7 +677,7 @@ func (h *StreamableHTTPHandler) serveStatefulDELETE(w http.ResponseWriter, req *
 	if !ok {
 		return
 	}
-	if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server, jsonrpc.ID{}) {
 		return
 	}
 
@@ -709,7 +709,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 		if !ok {
 			return
 		}
-		if !h.validateProtocolVersion(w, req, sessInfo.session.server) {
+		if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), sessInfo.session.server, jsonrpc.ID{}) {
 			return
 		}
 		sessInfo.startPOST()
@@ -720,7 +720,7 @@ func (h *StreamableHTTPHandler) serveStatefulPOST(w http.ResponseWriter, req *ht
 
 	// No session ID: create a new session.
 	server := h.getServer(req)
-	if !h.validateProtocolVersion(w, req, server) {
+	if !h.validateProtocolVersion(w, protocolVersionFromContext(req.Context()), server, jsonrpc.ID{}) {
 		return
 	}
 	if server == nil {
