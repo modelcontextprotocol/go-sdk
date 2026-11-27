@@ -17,6 +17,20 @@
 
 ## `MCPGODEBUG` history
 
+### 1.10.0
+
+Options listed below were added and will be removed in the 1.12.0 version of the SDK.
+
+- `plaintextversionrejection` added. If set to `1`, a stateless
+  `StreamableHTTPHandler` whose server supports `2026-07-28` or later responds
+  with a plain-text `http.Error` 400 body when a request's
+  `MCP-Protocol-Version` header names an unsupported version below
+  `2026-07-28`, restoring the previous behavior. The default behavior was
+  changed so that the server responds with a JSON-RPC error of code
+  `CodeUnsupportedProtocolVersion` (`-32022`) carrying an
+  `UnsupportedProtocolVersionData` payload that lists the supported versions
+  and the requested one.
+
 ### 1.9.0
 
 Options listed below were added and will be removed in the 1.11.0 version of the SDK.
