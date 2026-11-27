@@ -292,3 +292,47 @@ func TestSkillMetaRoundTrips(t *testing.T) {
 		t.Fatalf("empty _meta serialized: %s", plain)
 	}
 }
+
+func TestStampEnvelopeClearsResultTypeForLegacyProtocol(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		meta mcp.Meta
+		want string
+	}{
+		{"legacy", nil, ""},
+		{"caching", mcp.Meta{mcp.MetaKeyProtocolVersion: protocolVersionCaching}, resultTypeComplete},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// A result decoded from an upstream response, as a proxying handler
+			// would return it, already carries a result type.
+			out := GetSkillResult{Skill: testSkill(), resultType: resultTypeComplete}
+			if err := stampEnvelope(test.meta, &out.resultType, &out.omitCache, &out.Cacheable); err != nil {
+				t.Fatal(err)
+			}
+			if out.resultType != test.want {
+				t.Errorf("resultType = %q, want %q", out.resultType, test.want)
+			}
+			data, err := json.Marshal(&out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(data), `"resultType"`); got != (test.want != "") {
+				t.Errorf("resultType serialized = %v in %s", got, data)
+			}
+		})
+	}
+}
+
+func TestResultTypeRoundTrips(t *testing.T) {
+	data, err := json.Marshal(&ReadDirectoryResult{Resources: []*mcp.Resource{}, resultType: resultTypeComplete})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ReadDirectoryResult
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.resultType != resultTypeComplete {
+		t.Fatalf("resultType = %q after round trip of %s", got.resultType, data)
+	}
+}

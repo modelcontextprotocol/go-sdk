@@ -17,7 +17,7 @@ The SDK consists of several importable packages:
   package provides extensions to the OAuth protocol, such as ProtectedResourceMetadata.
 
 - The
-  [`github.com/modelcontextprotocol/go-sdk/skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+  [`github.com/modelcontextprotocol/go-sdk/extensions/skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/extensions/skills)
   package provides opt-in Skills extension support for discovery, directory
   browsing, and content verification.
 

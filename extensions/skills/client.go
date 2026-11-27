@@ -56,7 +56,7 @@ func ListPage(ctx context.Context, session *mcp.ClientSession, params *ListSkill
 	if err != nil {
 		return nil, err
 	}
-	if err := validateEnvelope(session, result.ResultType, result.Cacheable, result.cachePresent); err != nil {
+	if err := validateEnvelope(session, result.resultType, result.Cacheable, result.cachePresent); err != nil {
 		return nil, err
 	}
 	if err := validateClientList(result, opts); err != nil {
@@ -81,11 +81,11 @@ func Get(ctx context.Context, session *mcp.ClientSession, params *GetSkillParams
 	if err != nil {
 		return nil, err
 	}
+	if err := validateEnvelope(session, result.resultType, result.Cacheable, result.cachePresent); err != nil {
+		return nil, err
+	}
 	if err := validateGetResult(params.URI, result, limits); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid skill: %w", err)
-	}
-	if err := validateEnvelope(session, result.ResultType, result.Cacheable, result.cachePresent); err != nil {
-		return nil, err
 	}
 	return result, nil
 }
@@ -105,11 +105,11 @@ func ReadDirectory(ctx context.Context, session *mcp.ClientSession, params *Read
 	if err != nil {
 		return nil, err
 	}
+	if err := validateEnvelope(session, result.resultType, result.Cacheable, result.cachePresent); err != nil {
+		return nil, err
+	}
 	if err := validateDirectoryResult(params.URI, result); err != nil {
 		return nil, fmt.Errorf("skills: server returned an invalid directory result: %w", err)
-	}
-	if err := validateEnvelope(session, result.ResultType, result.Cacheable, result.cachePresent); err != nil {
-		return nil, err
 	}
 	return result, nil
 }

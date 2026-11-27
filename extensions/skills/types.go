@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -53,9 +54,7 @@ func (f Frontmatter) Description() string { desc, _ := f["description"].(string)
 
 func (f *Frontmatter) UnmarshalJSON(data []byte) error {
 	var fields map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&fields); err != nil {
+	if err := internaljson.UnmarshalUseNumber(data, &fields); err != nil {
 		return err
 	}
 	*f = fields
@@ -78,7 +77,7 @@ func (r *Resource) UnmarshalJSON(data []byte) error {
 		wire
 		Size *int64 `json:"size"`
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := internaljson.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	if decoded.Size == nil {
@@ -135,7 +134,7 @@ func (r *Resources) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
 	if len(data) > 0 && data[0] == '"' {
 		var marker string
-		if err := json.Unmarshal(data, &marker); err != nil {
+		if err := internaljson.Unmarshal(data, &marker); err != nil {
 			return err
 		}
 		if marker != "dynamic" {
@@ -145,7 +144,7 @@ func (r *Resources) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var entries []*Resource
-	if err := json.Unmarshal(data, &entries); err != nil {
+	if err := internaljson.Unmarshal(data, &entries); err != nil {
 		return fmt.Errorf("skills: resources must be an array or %q: %w", "dynamic", err)
 	}
 	if entries == nil {
@@ -180,13 +179,13 @@ type InvalidSkill struct {
 
 // ListSkillsResult is one page of skills/list. Each Skill is a complete entry;
 // its manifest is never split across pages.
-// [AddHandlers] sets ResultType and defaults CacheScope to "public"; a zero TTLMs
+// [AddHandlers] sets the result type and defaults CacheScope to "public"; a zero TTLMs
 // marks the response immediately stale. These fields are omitted before protocol
 // version 2026-07-28.
 type ListSkillsResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	ResultType string   `json:"resultType,omitempty"`
+	resultType string
 	NextCursor string   `json:"nextCursor,omitempty"`
 	Skills     []*Skill `json:"skills"`
 	// InvalidSkills reports entries skipped by List with SkipInvalidSkills enabled.
@@ -202,6 +201,12 @@ type ListSkillsResult struct {
 type omittedCache struct {
 	TTLMs      *int    `json:"ttlMs,omitempty"`
 	CacheScope *string `json:"cacheScope,omitempty"`
+}
+
+// envelope carries the result type on the wire. Results keep it unexported so
+// that only [AddHandlers] sets it, and only for protocol versions that define it.
+type envelope struct {
+	ResultType string `json:"resultType,omitempty"`
 }
 
 // decodedCache captures the cache hints as they appeared on the wire, so that a
@@ -225,13 +230,16 @@ func (d decodedCache) apply(cache *mcp.Cacheable) bool {
 
 func (r *ListSkillsResult) MarshalJSON() ([]byte, error) {
 	type wire ListSkillsResult
-	if !r.omitCache {
-		return json.Marshal((*wire)(r))
+	if r.omitCache {
+		return json.Marshal(struct {
+			*wire
+			omittedCache
+		}{wire: (*wire)(r)})
 	}
 	return json.Marshal(struct {
 		*wire
-		omittedCache
-	}{wire: (*wire)(r)})
+		envelope
+	}{(*wire)(r), envelope{r.resultType}})
 }
 
 // GetSkillParams contains parameters for skills/get.
@@ -245,7 +253,7 @@ type GetSkillParams struct {
 type GetSkillResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	ResultType   string `json:"resultType,omitempty"`
+	resultType   string
 	Skill        *Skill `json:"skill"`
 	omitCache    bool
 	cachePresent bool
@@ -253,13 +261,16 @@ type GetSkillResult struct {
 
 func (r *GetSkillResult) MarshalJSON() ([]byte, error) {
 	type wire GetSkillResult
-	if !r.omitCache {
-		return json.Marshal((*wire)(r))
+	if r.omitCache {
+		return json.Marshal(struct {
+			*wire
+			omittedCache
+		}{wire: (*wire)(r)})
 	}
 	return json.Marshal(struct {
 		*wire
-		omittedCache
-	}{wire: (*wire)(r)})
+		envelope
+	}{(*wire)(r), envelope{r.resultType}})
 }
 
 // ReadDirectoryParams contains parameters for resources/directory/read.
@@ -275,7 +286,7 @@ type ReadDirectoryParams struct {
 type ReadDirectoryResult struct {
 	mcp.ResultBase
 	mcp.Cacheable
-	ResultType   string          `json:"resultType,omitempty"`
+	resultType   string
 	NextCursor   string          `json:"nextCursor,omitempty"`
 	Resources    []*mcp.Resource `json:"resources"`
 	omitCache    bool
@@ -284,13 +295,16 @@ type ReadDirectoryResult struct {
 
 func (r *ReadDirectoryResult) MarshalJSON() ([]byte, error) {
 	type wire ReadDirectoryResult
-	if !r.omitCache {
-		return json.Marshal((*wire)(r))
+	if r.omitCache {
+		return json.Marshal(struct {
+			*wire
+			omittedCache
+		}{wire: (*wire)(r)})
 	}
 	return json.Marshal(struct {
 		*wire
-		omittedCache
-	}{wire: (*wire)(r)})
+		envelope
+	}{(*wire)(r), envelope{r.resultType}})
 }
 
 func (r *ReadDirectoryResult) UnmarshalJSON(data []byte) error {
@@ -298,11 +312,13 @@ func (r *ReadDirectoryResult) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		wire
 		decodedCache
+		envelope
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := internaljson.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = ReadDirectoryResult(decoded.wire)
+	r.resultType = decoded.ResultType
 	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
 	return nil
 }
@@ -312,23 +328,25 @@ func (r *ListSkillsResult) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		wire
 		decodedCache
+		envelope
 		Skills []json.RawMessage `json:"skills"`
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := internaljson.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = ListSkillsResult(decoded.wire)
+	r.resultType = decoded.ResultType
 	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
 	if decoded.Skills != nil {
 		r.Skills = make([]*Skill, len(decoded.Skills))
 	}
 	for i, raw := range decoded.Skills {
 		var skill *Skill
-		if err := json.Unmarshal(raw, &skill); err != nil {
+		if err := internaljson.Unmarshal(raw, &skill); err != nil {
 			var identity struct {
 				URI string `json:"uri"`
 			}
-			_ = json.Unmarshal(raw, &identity)
+			_ = internaljson.Unmarshal(raw, &identity)
 			if r.entryErrors == nil {
 				r.entryErrors = make(map[int]InvalidSkill)
 			}
@@ -345,11 +363,13 @@ func (r *GetSkillResult) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		wire
 		decodedCache
+		envelope
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := internaljson.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*r = GetSkillResult(decoded.wire)
+	r.resultType = decoded.ResultType
 	r.cachePresent = decoded.decodedCache.apply(&r.Cacheable)
 	return nil
 }

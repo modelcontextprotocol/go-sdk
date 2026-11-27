@@ -132,7 +132,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			if err := validateListResult(&out, limits); err != nil {
 				return nil, internalError(fmt.Errorf("skills/list handler returned an invalid result: %w", err))
 			}
-			if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
+			if err := stampEnvelope(params.Meta, &out.resultType, &out.omitCache, &out.Cacheable); err != nil {
 				return nil, internalError(err)
 			}
 			return &out, nil
@@ -160,7 +160,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 			}
 			out := *result
 			out.Meta = maps.Clone(result.Meta)
-			if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
+			if err := stampEnvelope(params.Meta, &out.resultType, &out.omitCache, &out.Cacheable); err != nil {
 				return nil, internalError(err)
 			}
 			return &out, nil
@@ -193,7 +193,7 @@ func AddHandlers(server *mcp.Server, handlers *Handlers, options *ServerOptions)
 				if err := validateDirectoryResult(params.URI, &out); err != nil {
 					return nil, internalError(fmt.Errorf("resources/directory/read handler returned an invalid result: %w", err))
 				}
-				if err := stampEnvelope(params.Meta, &out.ResultType, &out.omitCache, &out.Cacheable); err != nil {
+				if err := stampEnvelope(params.Meta, &out.resultType, &out.omitCache, &out.Cacheable); err != nil {
 					return nil, internalError(err)
 				}
 				return &out, nil
@@ -218,6 +218,8 @@ func stampEnvelope(meta mcp.Meta, resultType *string, omitCache *bool, cache *mc
 	*omitCache = !caching
 	if caching {
 		*resultType = resultTypeComplete
+	} else {
+		*resultType = ""
 	}
 	if cache.CacheScope == "" {
 		cache.CacheScope = cacheScopePublic

@@ -247,13 +247,13 @@ are per-extension settings objects. Extensions require explicit opt-in.
 
 #### Skills extension
 
-The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/extensions/skills)
 package provides typed calls for the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
 Register the methods with `skills.AddMethods` before connecting, then pass the session to each call. This example connects to the server from the
 [server example](server.md#skills-extension) over an in-memory transport:
 
-%include ../../skills/example_test.go skillsclient -
+%include ../../extensions/skills/example_test.go skillsclient -
 
 `ListPage`, `Get`, and `List` validate structure without imposing count or size caps.
 They support the required baseline of 512 files and 16 MiB per skill, as well as
@@ -277,7 +277,7 @@ and check them with `skills.VerifyResource` or `skills.VerifySkillMD` before use
 A listed entry is complete; `Get` also retrieves a skill directly by URI even
 when it was not listed. For example, when the user chooses to load a known skill:
 
-%include ../../skills/example_test.go skillsverify -
+%include ../../extensions/skills/example_test.go skillsverify -
 
 Keep skill entries scoped to their originating session: equal URIs from different
 servers are different skills. Use a host-assigned server identity when persisting

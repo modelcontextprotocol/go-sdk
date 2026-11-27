@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/modelcontextprotocol/go-sdk/extensions/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/modelcontextprotocol/go-sdk/skills"
 )
 
 func ExampleAdd() {

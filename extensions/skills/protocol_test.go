@@ -300,6 +300,9 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 		{"get/null-skill", MethodGet, `{"skill":null,"resultType":"complete","ttlMs":0,"cacheScope":"public"}`},
 		{"dir/missing-ttl", MethodReadDirectory, `{"resources":[],"resultType":"complete","cacheScope":"public"}`},
 		{"dir/missing-scope", MethodReadDirectory, `{"resources":[],"resultType":"complete","ttlMs":0}`},
+		{"list/bad-envelope-and-payload", MethodList, `{"skills":null,"resultType":"input_required","ttlMs":0,"cacheScope":"public"}`},
+		{"get/bad-envelope-and-payload", MethodGet, `{"skill":null,"resultType":"input_required","ttlMs":0,"cacheScope":"public"}`},
+		{"dir/bad-envelope-and-payload", MethodReadDirectory, `{"resources":[{"uri":"other://x","name":"x"}],"resultType":"input_required","ttlMs":0,"cacheScope":"public"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := testServerWithDirectory(true)
@@ -329,6 +332,10 @@ func TestClientRejectsMalformedResponses(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("accepted malformed %s response", test.method)
+			}
+			// All three calls check the envelope before the payload.
+			if strings.HasSuffix(test.name, "/bad-envelope-and-payload") && !strings.Contains(err.Error(), "expected complete result") {
+				t.Errorf("error = %v, want the envelope error", err)
 			}
 		})
 	}

@@ -546,7 +546,7 @@ per-extension settings objects. Extensions require explicit opt-in.
 
 #### Skills extension
 
-The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/skills)
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/extensions/skills)
 package implements the
 [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
 Use `skills.Add` to serve a static catalog with built-in listing and lookup.
@@ -565,7 +565,7 @@ This example serves a complete static manifest and its content. The
 [client example](client.md#skills-extension) connects to this server and verifies
 the resource bytes:
 
-%include ../../skills/example_test.go skillsserver -
+%include ../../extensions/skills/example_test.go skillsserver -
 
 Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
 returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
