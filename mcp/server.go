@@ -2212,28 +2212,19 @@ var nopreinitinvalidrequest = mcpgodebug.Value("nopreinitinvalidrequest")
 func (ss *ServerSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
 	ss.mu.Lock()
 	initialized := ss.state.InitializeParams != nil
+	supportedVersions := ss.supportedVersions
 	ss.mu.Unlock()
+	if supportedVersions == nil || req.Method == methodDiscover {
+		supportedVersions = ss.server.protocolVersions
+	}
 
 	// Per-request protocol detection (SEP-2575): if the request carries
 	// `io.modelcontextprotocol/protocolVersion` in its `_meta` field, it
 	// follows the new sessionless protocol. The initialization gate is
 	// skipped for such requests.
-	validatedMeta, perRequestErr := validateRequestMeta(req)
+	validatedMeta, perRequestErr := validateRequestMeta(req, supportedVersions)
 	if perRequestErr != nil {
 		return nil, perRequestErr
-	}
-
-	if validatedMeta.usesNewProtocol &&
-		!slices.Contains(ss.server.protocolVersions, validatedMeta.initializeParams.ProtocolVersion) {
-		data, _ := json.Marshal(UnsupportedProtocolVersionData{
-			Supported: ss.server.protocolVersions,
-			Requested: validatedMeta.initializeParams.ProtocolVersion,
-		})
-		return nil, &jsonrpc.Error{
-			Code:    CodeUnsupportedProtocolVersion,
-			Message: "unsupported protocol version",
-			Data:    data,
-		}
 	}
 
 	// A server that supports only 2026-07-28 and later serves no legacy call,
@@ -2621,13 +2612,19 @@ func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
 	method string,
 	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
 ) error {
+	return AddReceivingCustomRequestHandler(s, method, func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+}
+
+// AddReceivingCustomRequestHandler registers a custom method with access to
+// the full request, including transport-specific request information.
+func AddReceivingCustomRequestHandler[P paramsPtr[T], R Result, T any](s *Server, method string, handler func(context.Context, *ServerRequest[P]) (R, error)) error {
 	if _, ok := serverMethodInfos[method]; ok {
 		return fmt.Errorf("mcp: AddReceivingCustomMethod: %q shadows a standard MCP method", method)
 	}
 
-	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
-		return handler(ctx, req.Session, req.Params)
-	})
+	typed := typedServerMethodHandler[P, R](handler)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

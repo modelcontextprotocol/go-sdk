@@ -621,21 +621,19 @@ type validatedMeta struct {
 
 // validateRequestMeta inspects a JSON-RPC request to detect whether it follows
 // the >= 2026-07-28 protocol via the `_meta` field.
-// If the request has no _meta, no protocolVersion in _meta, or a protocolVersion
-// naming a supported version that predates 2026-07-28, it returns a non-nil
-// validatedMeta with usesNewProtocol set to false, and a nil error: such a request
-// belongs to the initialize handshake.
-// If the protocolVersion names a version that is not supported at all, it returns
-// usesNewProtocol set to true with initializeParams carrying only that version, so
-// that the caller answers with [CodeUnsupportedProtocolVersion]. The rest of the
-// `_meta` triple is not validated in that case, since the revision defining it is
-// unknown.
-// Otherwise, it validates the presence of clientCapabilities in _meta. If it is
-// missing or invalid, it returns nil and a non-nil error. clientInfo is optional;
-// if present but invalid, an error is returned. Otherwise, it returns
-// usesNewProtocol set to true and the populated initializeParams.
-// Notifications always report usesNewProtocol false and never error.
-func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
+//
+// If the request is a notification, has no _meta, or has no protocolVersion in
+// _meta, it returns usesNewProtocol=false and a nil error.
+// If protocolVersion is not in supportedVersions, it returns a
+// [CodeUnsupportedProtocolVersion] error without validating the rest of the
+// `_meta` triple (since the revision defining it is unsupported).
+// If protocolVersion is a supported version predating 2026-07-28, it returns
+// usesNewProtocol=false and a nil error (the request belongs to the legacy
+// initialize handshake).
+// Otherwise, it validates clientCapabilities (required) and clientInfo
+// (optional) and returns usesNewProtocol=true with the populated
+// initializeParams.
+func validateRequestMeta(req *jsonrpc.Request, supportedVersions []string) (*validatedMeta, error) {
 	// SEP-2575 defines the `_meta` triple for calls only: NotificationParams
 	// declares `_meta` optional with no protocolVersion, so a notification
 	// neither selects the new protocol nor is discarded for carrying an
@@ -653,20 +651,19 @@ func validateRequestMeta(req *jsonrpc.Request) (*validatedMeta, error) {
 	if !ok || protocolVersion == "" {
 		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
-	// Classify by membership rather than by ordering: a version the SDK does not
-	// know sorts arbitrarily against 2026-07-28, and one that sorts below it would
-	// be served as a legacy handshake instead of reaching the
-	// CodeUnsupportedProtocolVersion check in ServerSession.handle. The
-	// streamable handler already applies the same membership rule to the
-	// Mcp-Protocol-Version header.
-	supported := slices.Contains(supportedProtocolVersions, protocolVersion)
-	if supported && protocolVersion < protocolVersion20260728 {
-		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
+	if !slices.Contains(supportedVersions, protocolVersion) {
+		data, _ := json.Marshal(UnsupportedProtocolVersionData{
+			Supported: supportedVersions,
+			Requested: protocolVersion,
+		})
+		return nil, &jsonrpc.Error{
+			Code:    CodeUnsupportedProtocolVersion,
+			Message: "unsupported protocol version",
+			Data:    data,
+		}
 	}
-	if !supported {
-		return &validatedMeta{usesNewProtocol: true, initializeParams: &InitializeParams{
-			ProtocolVersion: protocolVersion,
-		}}, nil
+	if protocolVersion < protocolVersion20260728 {
+		return &validatedMeta{usesNewProtocol: false, initializeParams: nil}, nil
 	}
 	var clientInfo *Implementation
 	if _, present := meta[MetaKeyClientInfo]; present {
