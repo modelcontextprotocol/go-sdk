@@ -187,7 +187,7 @@ func EncodeIndent(msg Message, prefix, indent string) ([]byte, error) {
 // when its value is the empty string (see go-sdk#976).
 type wireDecode struct {
 	VersionTag string          `json:"jsonrpc"`
-	ID         any             `json:"id,omitempty"`
+	ID         json.RawMessage `json:"id,omitempty"`
 	Method     json.RawMessage `json:"method"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
@@ -196,17 +196,24 @@ type wireDecode struct {
 
 func DecodeMessage(data []byte) (Message, error) {
 	msg := wireDecode{}
-	// UseNumber keeps a numeric ID exact (see MakeID). The other fields are
-	// raw or typed, so it affects nothing else.
-	if err := internaljson.UnmarshalUseNumber(data, &msg); err != nil {
+	if err := internaljson.Unmarshal(data, &msg); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
 	if msg.VersionTag != wireVersion {
 		return nil, fmt.Errorf("invalid message version tag %q; expected %q", msg.VersionTag, wireVersion)
 	}
-	id, err := MakeID(msg.ID)
-	if err != nil {
-		return nil, err
+	var id ID
+	if len(msg.ID) > 0 {
+		// UseNumber keeps a numeric ID exact (see MakeID).
+		var rawID any
+		if err := internaljson.UnmarshalUseNumber(msg.ID, &rawID); err != nil {
+			return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+		}
+		var err error
+		id, err = MakeID(rawID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(msg.Method) > 0 {
 		// The "method" key was present. Decode its value (including "").
@@ -222,7 +229,10 @@ func DecodeMessage(data []byte) (Message, error) {
 	}
 	// no method key, should be a response
 	if !id.IsValid() {
-		return nil, ErrInvalidRequest
+		// Allow error-only responses with an omitted ID.
+		if len(msg.ID) > 0 || msg.Error == nil || len(msg.Result) > 0 {
+			return nil, ErrInvalidRequest
+		}
 	}
 	resp := &Response{
 		ID:     id,

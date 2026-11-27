@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1058,7 +1057,8 @@ func TestIOConnCanceledQueuedWrite(t *testing.T) {
 
 // TestIOConnDuplicateInFlightRequestID verifies that reusing an in-flight
 // request ID on an ioConn transport returns a -32600 JSON-RPC error with the
-// ID omitted, without disrupting the original in-flight call or the session.
+// ID omitted, and that an SDK reader decodes it without disrupting the
+// original in-flight call or the session.
 func TestIOConnDuplicateInFlightRequestID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1085,48 +1085,45 @@ func TestIOConnDuplicateInFlightRequestID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := clientT.rwc
+	clientConn, err := clientT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ss.Close()
-	defer peer.Close()
+	defer clientConn.Close()
 
-	lines := make(chan string, 10)
-	go func() {
-		defer close(lines)
-		sc := bufio.NewScanner(peer)
-		for sc.Scan() {
-			lines <- sc.Text()
-		}
-	}()
-
-	send := func(line string) {
+	send := func(msg jsonrpc.Message) {
 		t.Helper()
-		if _, err := io.WriteString(peer, line+"\n"); err != nil {
-			t.Fatalf("writing %s: %v", line, err)
+		if err := clientConn.Write(ctx, msg); err != nil {
+			t.Fatalf("Write(%+v): %v", msg, err)
 		}
 	}
-	readLine := func() string {
+	readResp := func() *jsonrpc.Response {
 		t.Helper()
-		select {
-		case line, ok := <-lines:
-			if !ok {
-				t.Fatal("connection closed before response arrived")
-			}
-			return line
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for response")
-			return ""
+		readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer readCancel()
+		msg, err := clientConn.Read(readCtx)
+		if err != nil {
+			t.Fatalf("Read(): %v", err)
 		}
+		resp, ok := msg.(*jsonrpc.Response)
+		if !ok {
+			t.Fatalf("Read() = %T, want *jsonrpc.Response", msg)
+		}
+		return resp
 	}
 
-	send(fmt.Sprintf(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"c","version":"v"}}}`, protocolVersion20251125))
-	initLine := readLine()
-	if !strings.Contains(initLine, `"id":0`) || strings.Contains(initLine, `"error"`) {
-		t.Fatalf("unexpected initialize response: %s", initLine)
+	send(req(1, methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20251125,
+		ClientInfo:      testImpl,
+	}))
+	if resp := readResp(); resp.ID != jsonrpc2.Int64ID(1) || resp.Error != nil {
+		t.Fatalf("unexpected initialize response: %+v", resp)
 	}
-	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	send(req(0, notificationInitialized, &InitializedParams{}))
 
-	call := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"slow","arguments":{}}}`
-	send(call)
+	slowCall := req(5, methodCallTool, &CallToolParams{Name: "slow"})
+	send(slowCall)
 	select {
 	case <-started:
 	case <-ctx.Done():
@@ -1134,41 +1131,33 @@ func TestIOConnDuplicateInFlightRequestID(t *testing.T) {
 	}
 
 	// Send a second call reusing id 5 while the first is still running.
-	send(call)
+	send(slowCall)
 
-	dupLine := readLine()
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(dupLine), &fields); err != nil {
-		t.Fatalf("unmarshaling duplicate-ID response %q: %v", dupLine, err)
+	dupResp := readResp()
+	if dupResp.ID.IsValid() {
+		t.Errorf("duplicate-ID error response ID = %v, want omitted", dupResp.ID.Raw())
 	}
-	if _, hasID := fields["id"]; hasID {
-		t.Errorf("duplicate-ID error response must omit id, got: %s", dupLine)
+	if len(dupResp.Result) > 0 {
+		t.Errorf("duplicate-ID error response has result %s, want none", dupResp.Result)
 	}
-	if _, hasResult := fields["result"]; hasResult {
-		t.Errorf("duplicate-ID error response must not contain result, got: %s", dupLine)
-	}
-	var jerr jsonrpc.Error
-	if err := json.Unmarshal(fields["error"], &jerr); err != nil {
-		t.Fatalf("unmarshaling error object in %q: %v", dupLine, err)
-	}
-	if jerr.Code != jsonrpc.CodeInvalidRequest {
-		t.Errorf("error code = %d, want %d (%s)", jerr.Code, jsonrpc.CodeInvalidRequest, dupLine)
+	var jerr *jsonrpc.Error
+	if !errors.As(dupResp.Error, &jerr) || jerr.Code != jsonrpc.CodeInvalidRequest {
+		t.Errorf("duplicate-ID error = %v, want code %d", dupResp.Error, jsonrpc.CodeInvalidRequest)
 	}
 
-	// Let the original call finish and verify its response arrives intact.
+	// Let the original call finish and verify the SDK reader still processes its response.
 	close(release)
-	origLine := readLine()
-	if !strings.Contains(origLine, `"id":5`) || !strings.Contains(origLine, `"done"`) || strings.Contains(origLine, `"error"`) {
-		t.Fatalf("unexpected response for original call: %s", origLine)
+	origResp := readResp()
+	if origResp.ID != jsonrpc2.Int64ID(5) || origResp.Error != nil || !strings.Contains(string(origResp.Result), `"done"`) {
+		t.Fatalf("unexpected response for original call: %+v (result=%s)", origResp, origResp.Result)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Errorf("slow tool called %d times, want 1", got)
 	}
 
 	// Verify the session is still healthy and id 5 can now be reused sequentially.
-	send(`{"jsonrpc":"2.0","id":5,"method":"ping"}`)
-	pingLine := readLine()
-	if !strings.Contains(pingLine, `"id":5`) || strings.Contains(pingLine, `"error"`) {
-		t.Fatalf("unexpected ping response after reuse: %s", pingLine)
+	send(req(5, methodPing, &PingParams{}))
+	if resp := readResp(); resp.ID != jsonrpc2.Int64ID(5) || resp.Error != nil {
+		t.Fatalf("unexpected ping response after reuse: %+v", resp)
 	}
 }
