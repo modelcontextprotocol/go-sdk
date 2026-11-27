@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1052,4 +1053,111 @@ func TestIOConnCanceledQueuedWrite(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestIOConnDuplicateInFlightRequestID verifies that reusing an in-flight
+// request ID on an ioConn transport returns a -32600 JSON-RPC error with the
+// ID omitted, and that an SDK reader decodes it without disrupting the
+// original in-flight call or the session.
+func TestIOConnDuplicateInFlightRequestID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	server := NewServer(testImpl, nil)
+	AddTool(server, &Tool{Name: "slow"}, func(ctx context.Context, _ *CallToolRequest, _ struct{}) (*CallToolResult, any, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil, nil
+	})
+
+	serverT, clientT := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientConn, err := clientT.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	defer clientConn.Close()
+
+	send := func(msg jsonrpc.Message) {
+		t.Helper()
+		if err := clientConn.Write(ctx, msg); err != nil {
+			t.Fatalf("Write(%+v): %v", msg, err)
+		}
+	}
+	readResp := func() *jsonrpc.Response {
+		t.Helper()
+		readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer readCancel()
+		msg, err := clientConn.Read(readCtx)
+		if err != nil {
+			t.Fatalf("Read(): %v", err)
+		}
+		resp, ok := msg.(*jsonrpc.Response)
+		if !ok {
+			t.Fatalf("Read() = %T, want *jsonrpc.Response", msg)
+		}
+		return resp
+	}
+
+	send(req(1, methodInitialize, &InitializeParams{
+		ProtocolVersion: protocolVersion20251125,
+		ClientInfo:      testImpl,
+	}))
+	if resp := readResp(); resp.ID != jsonrpc2.Int64ID(1) || resp.Error != nil {
+		t.Fatalf("unexpected initialize response: %+v", resp)
+	}
+	send(req(0, notificationInitialized, &InitializedParams{}))
+
+	slowCall := req(5, methodCallTool, &CallToolParams{Name: "slow"})
+	send(slowCall)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for slow tool to start")
+	}
+
+	// Send a second call reusing id 5 while the first is still running.
+	send(slowCall)
+
+	dupResp := readResp()
+	if dupResp.ID.IsValid() {
+		t.Errorf("duplicate-ID error response ID = %v, want omitted", dupResp.ID.Raw())
+	}
+	if len(dupResp.Result) > 0 {
+		t.Errorf("duplicate-ID error response has result %s, want none", dupResp.Result)
+	}
+	var jerr *jsonrpc.Error
+	if !errors.As(dupResp.Error, &jerr) || jerr.Code != jsonrpc.CodeInvalidRequest {
+		t.Errorf("duplicate-ID error = %v, want code %d", dupResp.Error, jsonrpc.CodeInvalidRequest)
+	}
+
+	// Let the original call finish and verify the SDK reader still processes its response.
+	close(release)
+	origResp := readResp()
+	if origResp.ID != jsonrpc2.Int64ID(5) || origResp.Error != nil || !strings.Contains(string(origResp.Result), `"done"`) {
+		t.Fatalf("unexpected response for original call: %+v (result=%s)", origResp, origResp.Result)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("slow tool called %d times, want 1", got)
+	}
+
+	// Verify the session is still healthy and id 5 can now be reused sequentially.
+	send(req(5, methodPing, &PingParams{}))
+	if resp := readResp(); resp.ID != jsonrpc2.Int64ID(5) || resp.Error != nil {
+		t.Fatalf("unexpected ping response after reuse: %+v", resp)
+	}
 }

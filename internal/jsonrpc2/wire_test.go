@@ -213,6 +213,48 @@ func TestWireErrorIs(t *testing.T) {
 	}
 }
 
+// TestDecodeOmittedIDResponse checks that error-only responses with an omitted
+// ID decode cleanly, while explicit null IDs and non-error ID-less responses
+// are still rejected.
+func TestDecodeOmittedIDResponse(t *testing.T) {
+	encoded := []byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"duplicate id"}}`)
+	msg, err := jsonrpc2.DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("DecodeMessage(%s) error = %v", encoded, err)
+	}
+	resp, ok := msg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("message type = %T, want *jsonrpc2.Response", msg)
+	}
+	if resp.ID.IsValid() {
+		t.Errorf("ID = %v, want invalid/omitted", resp.ID.Raw())
+	}
+	if !errors.Is(resp.Error, jsonrpc2.ErrInvalidRequest) {
+		t.Errorf("Error = %v, want ErrInvalidRequest", resp.Error)
+	}
+	reencoded, err := jsonrpc2.EncodeMessage(resp)
+	if err != nil {
+		t.Fatalf("EncodeMessage error = %v", err)
+	}
+	checkJSON(t, reencoded, encoded)
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"explicit null id", `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"bad"}}`},
+		{"omitted id result", `{"jsonrpc":"2.0","result":{}}`},
+		{"omitted id result and error", `{"jsonrpc":"2.0","result":{},"error":{"code":-32600,"message":"bad"}}`},
+		{"empty response", `{"jsonrpc":"2.0"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := jsonrpc2.DecodeMessage([]byte(tc.raw)); !errors.Is(err, jsonrpc2.ErrInvalidRequest) {
+				t.Errorf("DecodeMessage(%s) error = %v, want ErrInvalidRequest", tc.raw, err)
+			}
+		})
+	}
+}
+
 func checkJSON(t *testing.T, got, want []byte) {
 	// compare the compact form, to allow for formatting differences
 	g := &bytes.Buffer{}
