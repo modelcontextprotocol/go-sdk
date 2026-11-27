@@ -542,7 +542,59 @@ server := mcp.NewServer(impl, &mcp.ServerOptions{
 adds an `extensions` map to `ServerCapabilities` so that optional
 capabilities outside the core protocol can be declared on the wire. Keys
 are namespaced as `"{vendor-prefix}/{extension-name}"`; values are
-per-extension settings objects.
+per-extension settings objects. Extensions require explicit opt-in.
+
+#### Skills extension
+
+The [`skills`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/extensions/skills)
+package implements the
+[Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
+Use `skills.Add` to serve a static catalog with built-in listing and lookup.
+For request-dependent catalogs, use `skills.AddHandlers` with typed request handlers.
+Declare `skills.ExtensionID` in the server capabilities before creating the server.
+Include the setting `directoryRead: true` when providing a directory handler.
+
+Register the underlying content through `Server.AddResource` or
+`Server.AddResourceTemplate` before connecting. Either registration advertises
+the required resources capability and may come before or after the Skills handlers.
+An entry's manifest includes every file, including `SKILL.md` and
+nested skills. Use `skills.DynamicResources()` when stable digests cannot be
+published, not simply because the catalog changes over time.
+
+This example serves a complete static manifest and its content. The
+[client example](client.md#skills-extension) connects to this server and verifies
+the resource bytes:
+
+%include ../../extensions/skills/example_test.go skillsserver -
+
+Return `(nil, nil)` from the get or directory handler for an unknown URI; the SDK
+returns JSON-RPC Invalid Params (`-32602`). An empty directory has a non-nil result
+with an empty resource list. Explicit JSON-RPC errors retain their code and data;
+other handler errors and invalid results become Internal Error (`-32603`).
+
+Custom handlers own pagination. `skills.PaginateDirectoryResources` sorts
+directory resources by URI and returns one page without modifying the input.
+A zero page size uses `mcp.DefaultPageSize`. Each skill
+entry contains its complete manifest, which is never split across pages.
+
+`skills.ServerOptions.Limits` is a `skills.Limits` value. By default it imposes no
+manifest caps. Positive fields set exact caps, zero fields are unlimited, and
+negative fields are invalid. Set `Limits: skills.BaselineLimits()` to opt into
+the spec's interoperability baseline of 512 resources and 16 MiB per skill.
+Servers should stay within this baseline for broad compatibility; serving larger
+skills is allowed. Clients accept larger structurally valid manifests; these
+server caps govern publication policy only.
+
+Structural validation always runs; put additional application policy in the
+handlers themselves. Dynamic content budgets belong to the application; the SDK
+does not accumulate sizes across resource reads. It copies options at registration and
+prepares outgoing results without mutating handler-owned data.
+
+On protocol `2026-07-28` and later, list, get, and directory responses carry
+`ttlMs` and `cacheScope`, defaulting to zero and `public`. Handlers can supply explicit hints
+through the result's `mcp.Cacheable` field. The SDK also supports the extension on
+earlier protocols as a compatibility backport, omitting cache fields and
+`resultType`. The extension does not prefetch files or start background work.
 
 ### Pagination
 
@@ -557,7 +609,7 @@ indicates whether page retrieval failed.
 
 - [`ClientSession.Prompts`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Prompts)
   iterates prompts.
-- [`ClientSession.Resource`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resource)
+- [`ClientSession.Resources`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.Resources)
   iterates resources.
 - [`ClientSession.ResourceTemplates`](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/mcp#ClientSession.ResourceTemplates)
   iterates resource templates.

@@ -3154,6 +3154,16 @@ func resourceSubServer(t *testing.T, subCh, unsubCh chan string) *Server {
 	return s
 }
 
+// The subscription callbacks run before the server updates its registry.
+func waitForResourceSubscription(t *testing.T, server *Server, uri string, subscribed bool) {
+	t.Helper()
+	waitUntil(t, 5*time.Second, fmt.Sprintf("%s subscribed=%t", uri, subscribed), func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return (len(server.resourceSubscriptions[uri]) > 0) == subscribed
+	})
+}
+
 // resourceSubClient returns a client wired to push every listen
 // acknowledgment and every resource update it receives into events, tagged
 // with the kind ("ack" or "updated") and the subscription ID from _meta.
@@ -3241,6 +3251,7 @@ func TestResourceSubscriptions_Streamable(t *testing.T) {
 		t.Fatal("timed out waiting for SubscribeHandler")
 	}
 
+	waitForResourceSubscription(t, server, "file:///r1", true)
 	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
 	select {
 	case e := <-events:
@@ -3315,6 +3326,7 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 	}
 	waitURI(subCh, "file:///r1")
 
+	waitForResourceSubscription(t, server, "file:///r1", true)
 	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
 	select {
 	case e := <-events:
@@ -3336,9 +3348,8 @@ func TestResourceSubscriptions_InMemory(t *testing.T) {
 	}
 	waitURI(unsubCh, "file:///r1")
 
-	// Updates for an unsubscribed URI MUST NOT be delivered. Give the server
-	// a moment to process the cancellation first.
-	time.Sleep(50 * time.Millisecond)
+	// Updates for an unsubscribed URI MUST NOT be delivered.
+	waitForResourceSubscription(t, server, "file:///r1", false)
 	server.ResourceUpdated(ctx, &ResourceUpdatedNotificationParams{URI: "file:///r1"})
 	select {
 	case e := <-events:
@@ -5179,5 +5190,21 @@ func TestResourceSubscriptions_GenGuard(t *testing.T) {
 	// Clearing an absent URI is a no-op, not a panic.
 	if cs.clearResourceSubIfGen("file:///gone", 1) {
 		t.Fatal("clearing an absent URI reported a deletion")
+	}
+}
+
+func TestCustomMethodRegistrationPreservesReaders(t *testing.T) {
+	c := NewClient(testImpl, nil)
+	session := &ClientSession{client: c}
+	before := session.sendingMethodInfos()
+	const method = "example/custom"
+	if err := AddSendingCustomMethod[*ListToolsParams, *ListToolsResult](c, method); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := before[method]; ok {
+		t.Fatal("registration changed a previously returned method map")
+	}
+	if _, ok := session.sendingMethodInfos()[method]; !ok {
+		t.Fatal("new reader did not see the registration")
 	}
 }
