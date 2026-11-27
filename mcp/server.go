@@ -800,9 +800,12 @@ func (s *Server) notifySessions(n string) {
 	s.pendingNotifications[n] = nil
 	// Legacy (pre-SEP-2575) sessions receive list-changed notifications on the
 	// shared session channel without opt-in; collect them while we hold the lock.
+	// A session with no recorded version is skipped: it is a legacy session
+	// before initialize, or a 2026-07-28 request not yet handled, whose only
+	// stream may be a subscriptions/listen that did not ask for n.
 	var legacySessions []*ServerSession
 	for _, sess := range s.sessions {
-		if sess.negotiatedLegacyProtocol() {
+		if v := sess.protocolVersion(); v != "" && v < protocolVersion20260728 {
 			legacySessions = append(legacySessions, sess)
 		}
 	}

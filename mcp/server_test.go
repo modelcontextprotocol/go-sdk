@@ -2429,6 +2429,57 @@ func TestNotifySessionsIsolatesStalledPeer(t *testing.T) {
 	stalledConn.Close()
 }
 
+// TestListChangedSkipsSessionsWithoutVersion checks that a list-changed
+// notification is not broadcast to a session whose protocol version is not
+// known yet: a legacy session before initialize, or a 2026-07-28 request not
+// yet handled, whose only stream may be a subscriptions/listen that did not
+// ask for it.
+func TestListChangedSkipsSessionsWithoutVersion(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	conn, err := ct.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	msgs := make(chan jsonrpc.Message, 10)
+	go func() {
+		defer close(msgs)
+		for {
+			msg, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			msgs <- msg
+		}
+	}()
+
+	server.notifySessions(notificationToolListChanged)
+
+	// Whatever the broadcast wrote to the session arrives before the response
+	// to a request sent after it.
+	ping := &jsonrpc.Request{ID: jsonrpc2.Int64ID(1), Method: methodPing}
+	if err := conn.Write(ctx, ping); err != nil {
+		t.Fatal(err)
+	}
+	for msg := range msgs {
+		if resp, ok := msg.(*jsonrpc.Response); ok && resp.ID == ping.ID {
+			return
+		}
+		if req, ok := msg.(*jsonrpc.Request); ok {
+			t.Errorf("session with no protocol version received %q", req.Method)
+		}
+	}
+	t.Fatal("connection closed before the ping response")
+}
+
 // TestNotifySubscribedSessionsDoesNotShareMeta: caller-supplied non-nil _meta,
 // four modern subscribers notified concurrently. Each peer must receive its own
 // subscription ID and the caller's params must be left untouched.
