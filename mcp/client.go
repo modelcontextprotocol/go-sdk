@@ -1743,6 +1743,7 @@ func AddSendingCustomMethod[P paramsPtr[PT], R Result, PT any](
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sendMethods = maps.Clone(c.sendMethods)
 	c.sendMethods[method] = mi
 	return nil
 }

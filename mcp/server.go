@@ -2621,13 +2621,19 @@ func AddReceivingCustomMethod[P paramsPtr[T], R Result, T any](
 	method string,
 	handler func(ctx context.Context, ss *ServerSession, params P) (R, error),
 ) error {
+	return AddReceivingCustomRequestHandler(s, method, func(ctx context.Context, req *ServerRequest[P]) (R, error) {
+		return handler(ctx, req.Session, req.Params)
+	})
+}
+
+// AddReceivingCustomRequestHandler registers a custom method with access to
+// the full request, including transport-specific request information.
+func AddReceivingCustomRequestHandler[P paramsPtr[T], R Result, T any](s *Server, method string, handler func(context.Context, *ServerRequest[P]) (R, error)) error {
 	if _, ok := serverMethodInfos[method]; ok {
 		return fmt.Errorf("mcp: AddReceivingCustomMethod: %q shadows a standard MCP method", method)
 	}
 
-	typed := typedServerMethodHandler[P, R](func(ctx context.Context, req *ServerRequest[P]) (R, error) {
-		return handler(ctx, req.Session, req.Params)
-	})
+	typed := typedServerMethodHandler[P, R](handler)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
