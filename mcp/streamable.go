@@ -1714,7 +1714,7 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 			if meta := extractRequestMeta(jreq.Params); meta != nil {
 				metaVersion, _ = meta[MetaKeyProtocolVersion].(string)
 			}
-			if (jreq.IsCall() && protocolVersion >= protocolVersion20260728) || metaVersion != "" {
+			if protocolVersion >= protocolVersion20260728 || metaVersion >= protocolVersion20260728 {
 				// Extract again the protocol version from the context to see what the client
 				// is advertising in the Mcp-Protocol-Version HTTP header.
 				headerVersion := protocolVersionFromContext(req.Context())
@@ -1722,10 +1722,14 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 				// rejection as it should learn about the supported protocols from the
 				// DiscoverResult response.
 				if !c.stateless && jreq.Method != methodDiscover {
+					requestedVersion := headerVersion
+					if requestedVersion < protocolVersion20260728 {
+						requestedVersion = metaVersion
+					}
 					if plaintextstatefulrejection == "1" {
 						http.Error(w, fmt.Sprintf(
 							"Bad Request: protocol version %q is only supported on stateless HTTP servers (set StreamableHTTPOptions.Stateless = true)",
-							protocolVersion),
+							requestedVersion),
 							http.StatusBadRequest)
 						return
 					}
@@ -1741,14 +1745,14 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					})
 					data, _ := json.Marshal(UnsupportedProtocolVersionData{
 						Supported: legacyVersions,
-						Requested: protocolVersion,
+						Requested: requestedVersion,
 					})
 					c.logger.Warn(fmt.Sprintf(
 						"rejecting request with protocol version %q: this server is stateful; set StreamableHTTPOptions.Stateless = true to accept it",
-						protocolVersion))
+						requestedVersion))
 					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
 						Code:    CodeUnsupportedProtocolVersion,
-						Message: fmt.Sprintf("protocol version %q is not supported by this server", protocolVersion),
+						Message: fmt.Sprintf("protocol version %q is not supported by this server in stateful configuration", requestedVersion),
 						Data:    data,
 					})
 					return
@@ -1763,15 +1767,16 @@ func (c *streamableServerConn) servePOST(w http.ResponseWriter, req *http.Reques
 					return
 				}
 				if metaVersion == "" {
-					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
-						Code: jsonrpc.CodeInvalidParams,
-						Message: fmt.Sprintf(
-							"missing or invalid _meta field %q",
-							MetaKeyProtocolVersion),
-					})
-					return
-				}
-				if headerVersion != metaVersion {
+					if jreq.IsCall() {
+						writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
+							Code: jsonrpc.CodeInvalidParams,
+							Message: fmt.Sprintf(
+								"missing or invalid _meta field %q",
+								MetaKeyProtocolVersion),
+						})
+						return
+					}
+				} else if headerVersion != metaVersion {
 					writeJSONRPCError(w, http.StatusBadRequest, jreq.ID, &jsonrpc.Error{
 						Code: CodeHeaderMismatch,
 						Message: fmt.Sprintf(
