@@ -1129,10 +1129,15 @@ func (cs *ClientSession) receivingMethodInfos() map[string]methodInfo {
 }
 
 func (cs *ClientSession) handle(ctx context.Context, req *jsonrpc.Request) (any, error) {
-	if (req.Method == methodPing || req.Method == methodListRoots) && req.IsCall() && cs.usesNewProtocol() {
-		return nil, &jsonrpc.Error{
-			Code:    jsonrpc.CodeMethodNotFound,
-			Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+	if req.IsCall() && cs.usesNewProtocol() {
+		switch req.Method {
+		// Roots, sampling and elicitation reach a 2026-07-28 client only as
+		// multi round-trip input requests, which do not pass through handle.
+		case methodPing, methodListRoots, methodCreateMessage, methodElicit:
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: fmt.Sprintf("%q is not supported in the new protocol", req.Method),
+			}
 		}
 	}
 	if req.IsCall() {

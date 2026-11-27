@@ -77,7 +77,9 @@ This function is invoked whenever the server requests sampling.
 For protocol versions `2026-07-28` and later, sampling requests are
 delivered via the
 [Multi Round-Trip Requests](#multi-round-trip-requests)
-pattern.
+pattern. On those sessions the client rejects a standalone
+`sampling/createMessage` request with `MethodNotFound` (`-32601`) without
+calling `CreateMessageHandler`.
 
 %include ../../mcp/client_example_test.go sampling -
 
@@ -99,7 +101,9 @@ you must declare that capability explicitly (see [Capabilities](#capabilities))
 For protocol versions `2026-07-28` and later, elicitation requests are
 delivered via the
 [Multi Round-Trip Requests](#multi-round-trip-requests)
-pattern.
+pattern. On those sessions the client rejects a standalone
+`elicitation/create` request with `MethodNotFound` (`-32601`) without
+calling `ElicitationHandler`.
 
 %include ../../mcp/client_example_test.go elicitation -
 

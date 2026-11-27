@@ -1114,6 +1114,67 @@ func TestClientRejectsStandaloneListRootsOnNewProtocol(t *testing.T) {
 	}
 }
 
+func TestClientRejectsStandaloneElicitationAndSamplingOnNewProtocol(t *testing.T) {
+	ctx := context.Background()
+
+	s := NewServer(testImpl, nil)
+	ct, st := NewInMemoryTransports()
+	ss, err := s.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	defer ss.Close()
+
+	var elicited, sampled atomic.Bool
+	c := NewClient(testImpl, &ClientOptions{
+		ElicitationHandler: func(context.Context, *ElicitRequest) (*ElicitResult, error) {
+			elicited.Store(true)
+			return &ElicitResult{Action: "decline"}, nil
+		},
+		CreateMessageHandler: func(context.Context, *CreateMessageRequest) (*CreateMessageResult, error) {
+			sampled.Store(true)
+			return &CreateMessageResult{Model: "m", Role: "assistant", Content: &TextContent{Text: "x"}}, nil
+		},
+	})
+	cs, err := c.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer cs.Close()
+
+	if ir := cs.InitializeResult(); ir == nil || ir.ProtocolVersion < protocolVersion20260728 {
+		t.Fatalf("InitializeResult = %+v, want a session negotiated at %s", ir, protocolVersion20260728)
+	}
+
+	// Send the requests directly, bypassing the send-side guards in
+	// ServerSession.Elicit and ServerSession.CreateMessage, to simulate a
+	// non-conforming server.
+	_, elicitErr := handleSend[*ElicitResult](ctx, methodElicit, newServerRequest(ss, &ElicitParams{
+		Message:         "name?",
+		RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}}},
+	}))
+	_, sampleErr := handleSend[*CreateMessageWithToolsResult](ctx, methodCreateMessage, newServerRequest(ss, &CreateMessageParams{
+		MaxTokens: 10,
+		Messages:  []*SamplingMessage{{Role: "user", Content: &TextContent{Text: "hi"}}},
+	}))
+	for _, tc := range []struct {
+		method string
+		err    error
+		ran    bool
+	}{
+		{methodElicit, elicitErr, elicited.Load()},
+		{methodCreateMessage, sampleErr, sampled.Load()},
+	} {
+		var jsonrpcErr *jsonrpc.Error
+		if !errors.As(tc.err, &jsonrpcErr) || jsonrpcErr.Code != jsonrpc.CodeMethodNotFound {
+			t.Errorf("%s to a 2026-07-28 client = %v, want a *jsonrpc.Error with code %d", tc.method, tc.err, jsonrpc.CodeMethodNotFound)
+		}
+		if tc.ran {
+			t.Errorf("the client's handler ran for a standalone %s", tc.method)
+		}
+	}
+}
+
 // TestClientIncomingPingDuringInitialize verifies that a ping the server
 // sends while the legacy initialize handshake is still in flight is answered,
 // and that the client's ping handler reads the session state safely while
